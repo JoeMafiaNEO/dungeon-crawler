@@ -85,6 +85,8 @@ const AFFINITY_ENEMY_CD := 5000
 ## Global tuning: scales all affinity gains. 0.25 = 4x slower than Appendix A
 ## starting values. Target ~15-20 min focused play to reach 100.
 const AFFINITY_RATE := 0.25
+## Specialization unlocks at this character level.
+const SPECIALIZATION_UNLOCK_LEVEL := 20
 ## Smoke Veil stealth: mobs can't target you while stealthed.
 var stealthed := false
 var _stealth_t := 0.0
@@ -1475,6 +1477,12 @@ func switch_class(new_class: String) -> void:
 
 ## Specialize in a skill. Must be level-unlocked.
 func specialize(skill_id: String) -> void:
+	# Gate: specialization unlocks at SPECIALIZATION_UNLOCK_LEVEL.
+	if level < SPECIALIZATION_UNLOCK_LEVEL:
+		if hud != null:
+			hud.toast("Specialization unlocks at level %d." % SPECIALIZATION_UNLOCK_LEVEL)
+			AudioManager.sfx("ui_error")
+		return
 	var found := false
 	for a in Player.class_abilities(str(get("class_id"))):
 		if str(a["id"]) == skill_id and int(a["unlock"]) <= level:
@@ -2501,6 +2509,7 @@ func gain_xp(amount: int) -> void:
 	xp += int(amount * xp_mult)
 	_register_kill()
 	var grew := false
+	var prev_level := level
 	while xp >= xp_next:
 		xp -= xp_next
 		level += 1
@@ -2510,6 +2519,11 @@ func gain_xp(amount: int) -> void:
 		leveled_up.emit(level)
 	_recalc_stats()
 	xp_changed.emit(xp, xp_next, level)
+	# Specialization unlocks at 20.
+	if prev_level < SPECIALIZATION_UNLOCK_LEVEL and level >= SPECIALIZATION_UNLOCK_LEVEL:
+		if hud != null:
+			hud.announce("Specialization unlocked — choose a skill in the abilities menu")
+			AudioManager.sfx("ability_unlock")
 	if grew:
 		Effects.burst(get_parent(), global_position + Vector3(0, 1.2, 0), Color(1.0, 0.8, 0.2), 26, 6.0)
 		AudioManager.sfx("levelup")

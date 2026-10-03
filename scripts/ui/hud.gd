@@ -258,11 +258,19 @@ func _refresh_spec_list() -> void:
 	if _player == null:
 		return
 	var cls := str(_player.get("class_id"))
+	var plevel := int(_player.get("level"))
+	var spec_locked := plevel < Player.SPECIALIZATION_UNLOCK_LEVEL
+	if spec_locked:
+		var hint := Label.new()
+		hint.text = "Specialization unlocks at level %d (currently %d)." % [Player.SPECIALIZATION_UNLOCK_LEVEL, plevel]
+		hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.75))
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		%SpecList.add_child(hint)
 	for a in Player.class_abilities(cls):
 		var sid := str(a["id"])
 		if sid == "holy_light":
 			continue  # special track, not in families
-		if int(a["unlock"]) > int(_player.get("level")):
+		if int(a["unlock"]) > plevel:
 			continue  # not unlocked yet
 		var row := HBoxContainer.new()
 		row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -281,6 +289,9 @@ func _refresh_spec_list() -> void:
 		else:
 			btn.text = "Specialize"
 			btn.pressed.connect(_on_specialize_pressed.bind(sid))
+			if spec_locked:
+				btn.disabled = true
+				btn.tooltip_text = "Unlocks at level %d" % Player.SPECIALIZATION_UNLOCK_LEVEL
 		row.add_child(btn)
 		%SpecList.add_child(row)
 

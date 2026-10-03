@@ -23,6 +23,7 @@ func _run() -> void:
 	_test_warrior_signatures()
 	_test_affinity_ui()
 	_test_affinity_save_roundtrip()
+	_test_specialization_level_gate()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -358,3 +359,18 @@ func _test_affinity_save_roundtrip() -> void:
 	# SaveManager/dungeon use get_state for persistence.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	_assert(dsrc.contains("get_state()"), "Dungeon saves via get_state")
+
+
+func _test_specialization_level_gate() -> void:
+	print("[Playtest] Specialization level gate...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("const SPECIALIZATION_UNLOCK_LEVEL := 20"), "Unlock level const is 20")
+	_assert(psrc.contains("if level < SPECIALIZATION_UNLOCK_LEVEL:"), "specialize() guards level")
+	_assert(psrc.contains("Specialization unlocks at level %d"), "specialize() shows HUD hint")
+	_assert(psrc.contains("prev_level < SPECIALIZATION_UNLOCK_LEVEL and level >= SPECIALIZATION_UNLOCK_LEVEL"), "Level-up detects crossing 20")
+	_assert(psrc.contains("Specialization unlocked — choose a skill in the abilities menu"), "Level-20 announce text")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("spec_locked"), "Pause menu tracks lock state")
+	_assert(hsrc.contains("btn.disabled = true"), "Specialize buttons disabled below 20")
+	_assert(hsrc.contains("Unlocks at level %d"), "Disabled buttons show unlock hint")
+	_assert(hsrc.contains("Specialization unlocks at level %d (currently %d)"), "Pause menu hint label")
