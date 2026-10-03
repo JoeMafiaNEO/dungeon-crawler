@@ -66,6 +66,10 @@ func _physics_process(delta: float) -> void:
 		_shatter()
 		return
 	if multiplayer.is_server():
+		var dungeon := get_tree().get_first_node_in_group("dungeon")
+		var caster: Player = null
+		if dungeon != null:
+			caster = dungeon.get_player_node(owner_peer) as Player
 		for node in get_tree().get_nodes_in_group("mobs"):
 			var mob := node as Mob
 			if mob == null or not mob.alive:
@@ -76,7 +80,14 @@ func _physics_process(delta: float) -> void:
 			var b := Vector2(global_position.x, global_position.z)
 			if a.distance_to(b) < 1.3:
 				mob.rpc_id(NetworkManager.server_id, "take_damage", damage, owner_peer, global_position)
-				mob.apply_slow(slow_duration, slow_mult)
+				# Permafrost: slows last +2s.
+				var sdur := slow_duration
+				if caster != null and caster.has_trait("permafrost"):
+					sdur += 2.0
+				mob.apply_slow(sdur, slow_mult)
+				# Affinity: +2 per enemy hit (slow applied); per-enemy 5s cd inside.
+				if caster != null:
+					caster.gain_affinity("frost", 2.0, mob.get_instance_id())
 				AudioManager.sfx("frost_hit", global_position)
 				_shatter()
 				return

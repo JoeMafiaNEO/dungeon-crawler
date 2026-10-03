@@ -9,6 +9,7 @@ const TICK := 1.0
 
 var totem_id := ""
 var owner_peer := 0
+var _affinity_awarded := false
 var rank := 1
 
 var _life := DURATION
@@ -20,9 +21,16 @@ func setup(p_id: String, p_owner: int, p_rank: int = 1) -> void:
 	totem_id = p_id
 	owner_peer = p_owner
 	rank = p_rank
+	# Signature totems have fixed lifetimes (fixed power, no ranks).
+	if totem_id == "sanctuary_totem":
+		_life = 5.0
+	elif totem_id == "doom_totem":
+		_life = 10.0
 
 
 func _ready() -> void:
+	# Wide Ward: +25% radius on Warden totems — scale the visual ring now.
+	var vis_r := _aura_radius()
 	# Totem pole: stacked stone/wood.
 	var base := MeshInstance3D.new()
 	var bc := CylinderMesh.new()
@@ -59,14 +67,14 @@ func _ready() -> void:
 	var light := OmniLight3D.new()
 	light.light_color = _color()
 	light.light_energy = 1.5
-	light.omni_range = RADIUS + 2.0
+	light.omni_range = vis_r + 2.0
 	light.position.y = 2.0
 	add_child(light)
 	# Ground ring showing the aura radius.
 	_ring = MeshInstance3D.new()
 	var torus := TorusMesh.new()
-	torus.inner_radius = RADIUS - 0.12
-	torus.outer_radius = RADIUS
+	torus.inner_radius = vis_r - 0.12
+	torus.outer_radius = vis_r
 	var rmat := StandardMaterial3D.new()
 	rmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	rmat.albedo_color = _color()
@@ -98,6 +106,10 @@ func _color() -> Color:
 			return Color(0.7, 0.65, 0.6)
 		"rally":
 			return Color(1.0, 0.9, 0.3)
+		"sanctuary_totem":
+			return Color(1.0, 0.9, 0.4)
+		"doom_totem":
+			return Color(0.7, 0.15, 0.2)
 		_:
 			return Color(0.4, 1.0, 0.5)
 
@@ -121,46 +133,153 @@ func _physics_process(delta: float) -> void:
 
 
 func _apply_aura() -> void:
+	# Affinity: award once per placement (first tick).
+	if not _affinity_awarded:
+		_affinity_awarded = true
+		_award_placement_affinity()
+	var r := _aura_radius()
+	var strength := _aura_strength()
+	var caster := _caster()
 	match totem_id:
 		"reciprocity":
 			for n in get_tree().get_nodes_in_group("players"):
 				var p := n as Player
 				if p == null or not p.alive:
 					continue
-				if p.global_position.distance_to(global_position) < RADIUS:
-					p.rpc_id(p.get_multiplayer_authority(), "heal", 4.0 * _rank_mult())
+				if p.global_position.distance_to(global_position) < r:
+					p.rpc_id(p.get_multiplayer_authority(), "heal", 4.0 * _rank_mult() * strength)
 		"bulwark":
+			var relentless := caster != null and caster.has_trait("relentless")
 			for n in get_tree().get_nodes_in_group("mobs"):
 				var m := n as Mob
 				if m == null or not m.alive:
 					continue
-				if m.global_position.distance_to(global_position) < RADIUS:
-					m.apply_slow(TICK * 1.5, 0.6)
+				if m.global_position.distance_to(global_position) < r:
+					m.apply_slow(TICK * 1.5, 0.6 / strength)
+					# Relentless: mark so bulwark-slowed enemies deal -10% damage.
+					if relentless:
+						m.bulwark_slow_t = TICK * 1.5
 		"warhorn":
 			for n in get_tree().get_nodes_in_group("players"):
 				var p := n as Player
 				if p == null or not p.alive:
 					continue
-				if p.global_position.distance_to(global_position) < RADIUS:
-					p.rpc_id(p.get_multiplayer_authority(), "apply_warhorn", TICK * 1.5)
+				if p.global_position.distance_to(global_position) < r:
+					p.rpc_id(p.get_multiplayer_authority(), "apply_warhorn", TICK * 1.5, strength)
 		"stoneskin":
+			var shared := caster != null and caster.has_trait("shared_vitality")
 			for n in get_tree().get_nodes_in_group("players"):
 				var p := n as Player
 				if p == null or not p.alive:
 					continue
-				if p.global_position.distance_to(global_position) < RADIUS:
-					p.rpc_id(p.get_multiplayer_authority(), "apply_stoneskin", TICK * 1.5)
+				if p.global_position.distance_to(global_position) < r:
+					p.rpc_id(p.get_multiplayer_authority(), "apply_stoneskin", TICK * 1.5, strength)
+					# Shared Vitality: Stoneskin also grants +10% move speed.
+					if shared:
+						p.rpc_id(p.get_multiplayer_authority(), "apply_shared_vitality", TICK * 1.5)
 		"rally":
+			var drums := caster != null and caster.has_trait("war_drums")
 			for n in get_tree().get_nodes_in_group("players"):
 				var p := n as Player
 				if p == null or not p.alive:
 					continue
-				if p.global_position.distance_to(global_position) < RADIUS:
-					p.rpc_id(p.get_multiplayer_authority(), "apply_rally", TICK * 1.5)
+				if p.global_position.distance_to(global_position) < r:
+					p.rpc_id(p.get_multiplayer_authority(), "apply_rally", TICK * 1.5, strength)
+					# War Drums: Rally also grants +10% attack speed.
+					if drums:
+						p.rpc_id(p.get_multiplayer_authority(), "apply_war_drums", TICK * 1.5)
+		"sanctuary_totem":
+			# Warden signature: allies in radius are immune to damage.
+			for n in get_tree().get_nodes_in_group("players"):
+				var p := n as Player
+				if p == null or not p.alive:
+					continue
+				if p.global_position.distance_to(global_position) < r:
+					p.rpc_id(p.get_multiplayer_authority(), "apply_sanctuary", TICK * 1.5)
+		"doom_totem":
+			# Conqueror signature: enemies in radius take +30% damage.
+			for n in get_tree().get_nodes_in_group("mobs"):
+				var m := n as Mob
+				if m == null or not m.alive:
+					continue
+				if m.global_position.distance_to(global_position) < r:
+					m.doom_t = TICK * 1.5
+
+
+## The placing player (server-side authoritative copy).
+func _caster() -> Player:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		return null
+	return dungeon.get_player_node(owner_peer) as Player
+
+
+## Warden's Oath / Commanding Presence: +15% aura strength on matching totems.
+func _aura_strength() -> float:
+	var caster := _caster()
+	if caster == null:
+		return 1.0
+	if totem_id in ["reciprocity", "stoneskin"] and caster.has_trait("wardens_oath"):
+		return 1.15
+	if totem_id in ["bulwark", "warhorn", "rally"] and caster.has_trait("commanding_presence"):
+		return 1.15
+	return 1.0
+
+
+## Wide Ward: +25% aura radius on Warden totems.
+func _aura_radius() -> float:
+	var caster := _caster()
+	if caster != null and totem_id in ["reciprocity", "stoneskin"] and caster.has_trait("wide_ward"):
+		return RADIUS * 1.25
+	return RADIUS
 
 
 func _rank_mult() -> float:
 	return 1.0 + float(rank - 1) * 0.25
+
+
+## Award affinity once per totem placement, per Appendix A.
+func _award_placement_affinity() -> void:
+	var caster := _caster()
+	if caster == null:
+		return
+	var r := _aura_radius()
+	var cast_id := "totem_%d" % get_instance_id()
+	match totem_id:
+		"reciprocity":
+			# +2 per distinct ally healed, max +6.
+			var count := 0
+			for n in get_tree().get_nodes_in_group("players"):
+				var p := n as Player
+				if p == null or not p.alive:
+					continue
+				if p.global_position.distance_to(global_position) < r:
+					count += 1
+			for i in mini(count, 3):
+				caster.gain_affinity_capped("reciprocity", 2.0, -1, cast_id, 6.0)
+		"bulwark":
+			# +2 per distinct enemy slowed, max +6.
+			var count := 0
+			for n in get_tree().get_nodes_in_group("mobs"):
+				var m := n as Mob
+				if m == null or not m.alive:
+					continue
+				if m.global_position.distance_to(global_position) < r:
+					count += 1
+			for i in mini(count, 3):
+				caster.gain_affinity_capped("bulwark", 2.0, -1, cast_id, 6.0)
+		"warhorn", "stoneskin", "rally":
+			# +3 base, +1 per extra ally, max +6.
+			var count := 0
+			for n in get_tree().get_nodes_in_group("players"):
+				var p := n as Player
+				if p == null or not p.alive:
+					continue
+				if p.global_position.distance_to(global_position) < r:
+					count += 1
+			if count > 0:
+				var pts := minf(6.0, 3.0 + float(count - 1))
+				caster.gain_affinity_capped(totem_id, pts, -1, cast_id, 6.0)
 
 
 func _fade() -> void:

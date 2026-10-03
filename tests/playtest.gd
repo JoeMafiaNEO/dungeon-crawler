@@ -8,10 +8,21 @@ var _passes: int = 0
 
 func _init() -> void:
 	print("[Playtest] Starting automated validation...")
+	# Deferred: autoload singletons (SteamManager etc.) only exist after the
+	# first frame in -s script mode; script loads that reference them fail in _init.
+	call_deferred("_run")
+
+
+func _run() -> void:
 	_test_boot()
 	_test_rts_costs()
 	_test_rts_production()
 	_test_save_roundtrip()
+	_test_affinity_families()
+	_test_rogue_traits()
+	_test_warrior_signatures()
+	_test_affinity_ui()
+	_test_affinity_save_roundtrip()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -215,3 +226,135 @@ func _test_economy() -> void:
 	_assert(src.contains("func _random_land_pos"), "_random_land_pos exists")
 	_assert(src.contains('"wood": 1000'), "Wood amount is 1000 in spawn_rts_node")
 	_assert(src.contains("per_res := 8 + 2 * cycle"), "Node count scales with cycle")
+
+
+func _test_affinity_families() -> void:
+	print("[Playtest] Affinity families...")
+	var PlayerScript = load("res://scripts/player/player.gd")
+	# Family table integrity: every skill in exactly one family.
+	var fams: Dictionary = PlayerScript.families()
+	_assert(fams.size() == 7, "7 affinity families defined")
+	var seen := {}
+	for fid in fams:
+		var f: Dictionary = fams[fid]
+		for sid in f["skills"]:
+			_assert(not seen.has(sid), "Skill %s in exactly one family" % sid)
+			seen[sid] = fid
+		_assert(f["traits"].size() == 3, "Family %s has 3 traits" % fid)
+		_assert(str(f["signature"]["id"]) != "", "Family %s has a signature" % fid)
+	# Holy Light excluded.
+	_assert(PlayerScript.family_of("holy_light") == "", "Holy Light not in a family")
+	_assert(PlayerScript.family_of("fireball") == "fire", "Fireball in Fire family")
+	_assert(PlayerScript.family_of("shadow_step") == "shadow", "Shadow Step in Shadow family")
+	_assert(PlayerScript.family_of("reciprocity") == "warden", "Reciprocity in Warden family")
+	# All 16 non-holy skills are in families.
+	_assert(seen.size() == 16, "All 16 skills assigned to families")
+
+
+func _test_rogue_traits() -> void:
+	print("[Playtest] Rogue family traits...")
+	var PlayerScript = load("res://scripts/player/player.gd")
+	var fams: Dictionary = PlayerScript.families()
+	# All six rogue trait IDs are defined in the family table.
+	var shadow_traits: Dictionary = fams["shadow"]["traits"]
+	var precision_traits: Dictionary = fams["precision"]["traits"]
+	var ids := []
+	for ms in shadow_traits:
+		ids.append(shadow_traits[ms]["id"])
+	for ms in precision_traits:
+		ids.append(precision_traits[ms]["id"])
+	for tid in ["longer_shadows", "unseen", "double_take", "true_aim", "hamstring_mark", "ricochet"]:
+		_assert(tid in ids, "Rogue trait defined: %s" % tid)
+	# Wiring present in source.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('has_trait("longer_shadows")'), "Longer Shadows wired (blink + veil)")
+	_assert(psrc.contains("unseen_crit_ready"), "Unseen crit flag exists")
+	_assert(psrc.contains('has_trait("unseen")'), "Unseen wired (veil expiry + blink)")
+	_assert(psrc.contains('spawn_decoy'), "Double Take spawns decoy via dungeon RPC")
+	_assert(psrc.contains('has_trait("hamstring_mark")'), "Hamstring Mark wired in _activate_mark")
+	_assert(psrc.contains('has_trait("ricochet")'), "Ricochet wired in _activate_fan")
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains('has_trait("true_aim")'), "True Aim wired in mob take_damage")
+	_assert(msrc.contains("is_in_group(\"decoys\")"), "Mobs target/attack decoys")
+	_assert(msrc.contains("slow_mult"), "Hamstring slow param in apply_mark")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func spawn_decoy"), "dungeon.spawn_decoy RPC exists")
+	_assert(ResourceLoader.exists("res://scripts/combat/decoy.gd"), "decoy.gd exists")
+
+
+func _test_warrior_signatures() -> void:
+	print("[Playtest] Warrior signature totems...")
+	var PlayerScript = load("res://scripts/player/player.gd")
+	var fams: Dictionary = PlayerScript.families()
+	# Both warrior signature IDs are defined in the family table.
+	_assert(str(fams["warden"]["signature"]["id"]) == "sanctuary_totem", "Sanctuary Totem defined (warden)")
+	_assert(str(fams["conqueror"]["signature"]["id"]) == "doom_totem", "Doom Totem defined (conqueror)")
+	# Wiring present in source.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("func _activate_signature_totem"), "Signature totem activation exists")
+	_assert(psrc.contains('ability_cds[cd_key] = cd'), "Signature cooldowns tracked")
+	_assert(psrc.contains("func apply_sanctuary"), "Sanctuary immunity RPC exists")
+	_assert(psrc.contains("_sanctuary_t > 0.0"), "Sanctuary immunity checked in take_damage")
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("var doom_t"), "Doom debuff timer exists on mobs")
+	_assert(msrc.contains("amount *= 1.3"), "Doom +30% damage in mob take_damage")
+	var tsrc := FileAccess.get_file_as_string("res://scripts/combat/totem.gd")
+	_assert(tsrc.contains('"sanctuary_totem"'), "Totem handles sanctuary type")
+	_assert(tsrc.contains('"doom_totem"'), "Totem handles doom type")
+	_assert(tsrc.contains("apply_sanctuary"), "Sanctuary aura applies immunity")
+	_assert(tsrc.contains("m.doom_t = "), "Doom aura applies debuff")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("sanctuary_totem"), "HUD shows sanctuary cooldown")
+
+
+func _test_affinity_ui() -> void:
+	print("[Playtest] Affinity UI...")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	# Ability bar: affinity fill + pips on specialized slot.
+	_assert(hsrc.contains('ProgressBar.new()'), "Affinity ProgressBar created")
+	_assert(hsrc.contains('bar.max_value = 100.0'), "Affinity bar scaled 0-100")
+	_assert(hsrc.contains('p.get("affinity").get(sid'), "Bar reads affinity value")
+	_assert(hsrc.contains('◆'), "Milestone pips rendered")
+	_assert(hsrc.contains('Color(1.0, 0.85, 0.3, 1.0)'), "Specialized slot gold border")
+	# Lock tint on non-specialized family skills.
+	_assert(hsrc.contains('Player.family_of(sid)'), "Slot checks family membership")
+	_assert(hsrc.contains('Color(0.05, 0.05, 0.07, 0.6)'), "Dimmed lock tint for non-specialized")
+	# Mage signature slots.
+	_assert(hsrc.contains('p.class_id == "mage"'), "Mage signature bar section")
+	_assert(hsrc.contains('family_signature'), "Signature lookup for mage slots")
+	_assert(hsrc.contains('"[8]"'), "Key 8 hint on mage signature slot")
+	_assert(hsrc.contains('String(sig["desc"])'), "Signature tooltip from desc")
+	# Family panel.
+	_assert(hsrc.contains("func _refresh_family_panel"), "Family panel function exists")
+	_assert(hsrc.contains("%FamilyPanel"), "FamilyPanel node referenced")
+	_assert(hsrc.contains("reach 100 affinity"), "Signature silhouette until earned")
+	# Collection log.
+	_assert(hsrc.contains("func _refresh_collection_log"), "Collection log function exists")
+	_assert(hsrc.contains("%CollectionLog"), "CollectionLog node referenced")
+	# Hooks: refresh on pause open and spec changes.
+	_assert(hsrc.contains("_refresh_family_panel()"), "Family panel refreshed")
+	_assert(hsrc.contains("_refresh_collection_log()"), "Collection log refreshed")
+	# TSCN nodes exist.
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
+	_assert(tsrc.contains('[node name="FamilyPanel"'), "FamilyPanel node in tscn")
+	_assert(tsrc.contains('[node name="CollectionLog"'), "CollectionLog node in tscn")
+
+
+func _test_affinity_save_roundtrip() -> void:
+	print("[Playtest] Affinity save roundtrip...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	# get_state includes affinity fields.
+	_assert(psrc.contains('"specialization": specialization'), "get_state saves specialization")
+	_assert(psrc.contains('"affinity": affinity.duplicate(true)'), "get_state saves affinity")
+	_assert(psrc.contains('"family_collection": family_collection.duplicate(true)'), "get_state saves family_collection")
+	# apply_state restores them.
+	_assert(psrc.contains('specialization = str(s.get("specialization"'), "apply_state restores specialization")
+	_assert(psrc.contains('affinity = (s.get("affinity"'), "apply_state restores affinity")
+	_assert(psrc.contains('family_collection = (s.get("family_collection"'), "apply_state restores family_collection")
+	# Class switch resets affinity.
+	_assert(psrc.contains('specialization = ""'), "switch_class clears specialization")
+	_assert(psrc.contains('affinity.clear()'), "switch_class clears affinity")
+	_assert(psrc.contains('family_collection.clear()'), "switch_class clears family_collection")
+	# SaveManager/dungeon use get_state for persistence.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("get_state()"), "Dungeon saves via get_state")

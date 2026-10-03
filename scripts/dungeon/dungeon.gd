@@ -18,6 +18,7 @@ const PlayerScene := preload("res://scenes/player/player.tscn")
 const MobScene := preload("res://scenes/mobs/mob.tscn")
 const PickupScene := preload("res://scenes/items/item_pickup.tscn")
 const HudScene := preload("res://scenes/ui/hud.tscn")
+const DecoyScript := preload("res://scripts/combat/decoy.gd")
 
 const MAX_CONCURRENT := 8
 const TOTAL_WAVES := 5
@@ -1523,6 +1524,15 @@ func place_totem(totem_id: String, pos: Vector3, owner: int, rank: int = 1) -> v
 	totem.setup(totem_id, owner, rank)
 	add_child(totem)
 	totem.global_position = Vector3(pos.x, 0.05, pos.z)
+
+
+## Spawns a rogue shadow decoy (Double Take trait) on all peers.
+@rpc("any_peer", "call_local")
+func spawn_decoy(pos: Vector3, owner: int) -> void:
+	var decoy: Node3D = DecoyScript.new()
+	decoy.setup(owner)
+	add_child(decoy)
+	decoy.global_position = Vector3(pos.x, 0.05, pos.z)
 
 
 ## Server-side helper for boss summons.

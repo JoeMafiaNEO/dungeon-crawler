@@ -9,12 +9,14 @@ var owner_peer := 0
 
 var _life := 2.5
 var _exploded := false
+var skill_tag := "fireball"  # or "barrage" for Arcane Barrage bolts
 
 
-func setup(p_velocity: Vector3, p_damage: float, p_owner: int) -> void:
+func setup(p_velocity: Vector3, p_damage: float, p_owner: int, p_skill := "fireball") -> void:
 	velocity = p_velocity
 	damage = p_damage
 	owner_peer = p_owner
+	skill_tag = p_skill
 
 
 ## True if the projectile is inside a wall/obstacle cell.
@@ -84,12 +86,30 @@ func _explode() -> void:
 	_exploded = true
 	if multiplayer.is_server():
 		# Small AoE around the impact point.
+		var dungeon := get_tree().get_first_node_in_group("dungeon")
+		var caster: Player = null
+		if dungeon != null:
+			caster = dungeon.get_player_node(owner_peer) as Player
+		var cast_id := "fireball_%d" % get_instance_id()
+		# Conflagration: +25% blast radius on fire skills.
+		var radius := 2.6
+		if caster != null and caster.has_trait("conflagration") and skill_tag == "fireball":
+			radius *= 1.25
 		for node in get_tree().get_nodes_in_group("mobs"):
 			var mob := node as Mob
 			if mob == null or not mob.alive:
 				continue
-			if mob.global_position.distance_to(global_position) < 2.6:
+			if mob.global_position.distance_to(global_position) < radius:
 				mob.take_damage(damage, owner_peer, global_position)
+				# Wildfire: fire hits apply burn (3s DoT).
+				if caster != null and caster.has_trait("wildfire"):
+					mob.apply_burn(3.0, damage * 0.3, owner_peer)
+				# Affinity: fireball +2/hit max 10/cast; barrage +1/hit max 6/cast.
+				if caster != null:
+					if skill_tag == "barrage":
+						caster.gain_affinity_capped("barrage", 1.0, mob.get_instance_id(), cast_id, 6.0)
+					else:
+						caster.gain_affinity_capped("fireball", 2.0, mob.get_instance_id(), cast_id, 10.0)
 		rpc("explode_fx")
 	else:
 		# Clients wait for the server's fx; time out just in case.

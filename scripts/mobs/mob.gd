@@ -8,6 +8,7 @@ const GRAVITY := 20.0
 var mob_id := 0
 var data: MobData
 var hp := 10.0
+var max_hp := 10.0
 var alive := true
 var hp_scale := 1.0
 var dmg_scale := 1.0
@@ -30,6 +31,15 @@ var _slow_t := 0.0
 var _slow_mult := 1.0
 ## Shatter: slowed enemies take +25% damage (mage opens windows for team).
 var _shatter_t := 0.0
+## Burn (wildfire trait): damage over time.
+var _burn_t := 0.0
+var _burn_dps := 0.0
+var _burn_attacker := 0
+var _burn_tick := 0.0
+## Relentless (Conqueror trait): while bulwark-slowed, this mob deals -10% damage.
+var bulwark_slow_t := 0.0
+## Doom Totem (Conqueror signature): mob takes +30% damage from all sources.
+var doom_t := 0.0
 # --- Boss state ---
 var _special_cd := 4.0
 var _telegraph := 0.0
@@ -52,6 +62,7 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 func _ready() -> void:
 	add_to_group("mobs")
 	hp = data.health * hp_scale
+	max_hp = hp
 	_sprite = $AnimatedSprite3D
 	var frames := SpriteFrames.new()
 	for tex in data.frames:
@@ -86,8 +97,21 @@ func _physics_process(delta: float) -> void:
 		if _slow_t <= 0.0:
 			_slow_mult = 1.0
 			_sprite.modulate = Color.WHITE
+	# Relentless marker ticks down alongside the slow.
+	if bulwark_slow_t > 0.0:
+		bulwark_slow_t -= delta
+	# Doom Totem debuff ticks down.
+	if doom_t > 0.0:
+		doom_t -= delta
 	if _shatter_t > 0.0:
 		_shatter_t -= delta
+	# Burn ticks (server-side).
+	if _burn_t > 0.0 and multiplayer.is_server():
+		_burn_t -= delta
+		_burn_tick += delta
+		if _burn_tick >= 0.5:
+			_burn_tick = 0.0
+			_take_burn_tick()
 	# Mark ticks down.
 	if _mark_t > 0.0:
 		_mark_t -= delta
@@ -117,7 +141,11 @@ func _physics_process(delta: float) -> void:
 			_attack_cd -= delta
 			if _attack_cd <= 0.0:
 				_attack_cd = data.attack_cooldown
-				_target.rpc_id(_target.get_multiplayer_authority(), "take_damage", data.damage * dmg_scale, data.display_name)
+				if _target.is_in_group("decoys"):
+					# Shadow decoy: direct damage, server-side (no RPC target).
+					_target.damage(data.damage * dmg_scale * _dmg_mult())
+				else:
+					_target.rpc_id(_target.get_multiplayer_authority(), "take_damage", data.damage * dmg_scale * _dmg_mult(), data.display_name)
 	elif not boss_busy:
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -160,6 +188,15 @@ func _nearest_player() -> Node3D:
 		if d < best_d:
 			best_d = d
 			best = p
+	# Shadow decoys (Double Take trait) also draw aggro.
+	for n in get_tree().get_nodes_in_group("decoys"):
+		var dec := n as Node3D
+		if dec == null:
+			continue
+		var dd := global_position.distance_to(dec.global_position)
+		if dd < best_d:
+			best_d = dd
+			best = dec
 	return best
 
 
@@ -167,6 +204,11 @@ func _nearest_player() -> Node3D:
 
 var _strafe_dir := 1.0
 var _strafe_t := 0.0
+
+
+## Outgoing damage multiplier: Relentless makes bulwark-slowed mobs deal -10%.
+func _dmg_mult() -> float:
+	return 0.9 if bulwark_slow_t > 0.0 else 1.0
 
 
 ## Ranged attackers hold their preferred distance: back off when crowded,
@@ -203,7 +245,7 @@ func _fire_arrow(dir: Vector3) -> void:
 	var from := global_position + Vector3(0, 1.4, 0) + dir * 0.6
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null:
-		dungeon.rpc("spawn_arrow", from, dir, data.damage * dmg_scale, data.projectile_speed, data.display_name)
+		dungeon.rpc("spawn_arrow", from, dir, data.damage * dmg_scale * _dmg_mult(), data.projectile_speed, data.display_name)
 	AudioManager.sfx("bow_shot", global_position)
 
 
@@ -219,6 +261,34 @@ func apply_slow(duration: float, mult: float) -> void:
 	rpc("slow_fx", duration, mult)
 
 
+## Applies a burn DoT (wildfire trait). Server-side; refreshes duration.
+func apply_burn(duration: float, dps: float, attacker: int) -> void:
+	if not alive:
+		return
+	if not multiplayer.is_server():
+		return
+	_burn_t = maxf(_burn_t, duration)
+	_burn_dps = maxf(_burn_dps, dps)
+	_burn_attacker = attacker
+	_sprite.modulate = Color(1.0, 0.6, 0.3)
+
+
+func _take_burn_tick() -> void:
+	if not alive or _burn_t <= 0.0:
+		return
+	hp -= _burn_dps * 0.5
+	# Credit the attacking player.
+	for n in get_tree().get_nodes_in_group("players"):
+		var pl := n as Player
+		if pl != null and pl.get_multiplayer_authority() == _burn_attacker:
+			pl.run_damage_dealt += _burn_dps * 0.5
+			break
+	if hp <= 0.0:
+		hp = 0.0
+		alive = false
+		rpc("play_death")
+
+
 @rpc("any_peer", "call_local")
 func slow_fx(_duration: float, _mult: float) -> void:
 	if _sprite != null:
@@ -226,8 +296,12 @@ func slow_fx(_duration: float, _mult: float) -> void:
 
 
 ## Eagle Eye x-ray: render through walls for recon.
+var _xray := false
+
+
 @rpc("any_peer", "call_local")
 func set_xray(enabled: bool) -> void:
+	_xray = enabled
 	if _sprite != null:
 		_sprite.no_depth_test = enabled
 		if enabled:
@@ -240,12 +314,21 @@ func set_xray(enabled: bool) -> void:
 var _mark_t := 0.0
 
 
+func is_marked() -> bool:
+	return _mark_t > 0.0
+
+
 @rpc("any_peer", "call_local")
-func apply_mark(duration: float) -> void:
+func apply_mark(duration: float, slow_mult: float = 1.0) -> void:
 	_mark_t = duration
 	if _sprite != null:
 		# Red pulsing outline effect via modulate.
 		_sprite.modulate = Color(1.0, 0.6, 0.6)
+	# Hamstring Mark trait: marked targets are also slowed 20% (no shatter synergy).
+	if slow_mult < 1.0:
+		_slow_t = maxf(_slow_t, duration)
+		_slow_mult = minf(_slow_mult, slow_mult)
+		rpc("slow_fx", duration, slow_mult)
 	AudioManager.sfx("mark_applied", global_position)
 
 
@@ -310,7 +393,7 @@ func _fire_special() -> void:
 
 func _do_slam() -> void:
 	rpc("slam_fx", global_position)
-	var dmg := data.damage * data.special_damage_mult * dmg_scale
+	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
 	for n in get_tree().get_nodes_in_group("players"):
 		var p := n as Node3D
 		if p == null or p.get("alive") == false:
@@ -335,7 +418,7 @@ func _do_charge() -> void:
 
 
 func _check_charge_hits() -> void:
-	var dmg := data.damage * data.special_damage_mult * dmg_scale
+	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
 	for n in get_tree().get_nodes_in_group("players"):
 		if n in _charge_hit:
 			continue
@@ -403,9 +486,25 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3) -> void:
 	# Marked targets take +50% damage.
 	if _mark_t > 0.0:
 		amount *= 1.5
+	# True Aim trait: attacker's +10% damage vs marked or revealed targets.
+	if _mark_t > 0.0 or _xray:
+		for n in get_tree().get_nodes_in_group("players"):
+			var pl := n as Player
+			if pl != null and pl.get_multiplayer_authority() == attacker and pl.has_trait("true_aim"):
+				amount *= 1.1
+				break
 	# Shattered (slowed) targets take +25% damage.
 	if _shatter_t > 0.0:
 		amount *= 1.25
+		# Brittle (frost trait): slowed enemies take +15% more (team-wide).
+		for n in get_tree().get_nodes_in_group("players"):
+			var pl := n as Player
+			if pl != null and pl.has_trait("brittle"):
+				amount *= 1.15
+				break
+	# Doom Totem (Conqueror signature): +30% damage from all sources.
+	if doom_t > 0.0:
+		amount *= 1.3
 	hp -= amount
 	# Credit run stats: the attacking player tracks total damage dealt.
 	# Covers every source (melee, spells, projectiles, totems) in one place.
@@ -494,6 +593,9 @@ func _drop_and_reward(attacker: int) -> void:
 	var player_node: Node = dungeon.get_player_node(attacker)
 	if player_node != null:
 		player_node.rpc_id(attacker, "gain_xp", data.xp_reward)
+		# Affinity: marked target killed → +3 mark.
+		if is_marked():
+			player_node.rpc_id(attacker, "notify_mark_kill")
 	if data.drops.is_empty():
 		return
 	# 1 + bonus_drops rolls. Luck shifts weight toward rarer items, so

@@ -94,10 +94,26 @@ func _impact() -> void:
 	# Scorch decal: darkened ground disc that fades.
 	Effects.scorch(get_parent(), target, BLAST_RADIUS)
 	if multiplayer.is_server():
+		var dungeon := get_tree().get_first_node_in_group("dungeon")
+		var caster: Player = null
+		if dungeon != null:
+			caster = dungeon.get_player_node(owner_peer) as Player
+		# Conflagration: +25% blast radius.
+		var radius := BLAST_RADIUS
+		if caster != null and caster.has_trait("conflagration"):
+			radius *= 1.25
+		var hit_any := false
 		for n in get_tree().get_nodes_in_group("mobs"):
 			var m := n as Mob
 			if m == null or not m.alive:
 				continue
-			if m.global_position.distance_to(target) < BLAST_RADIUS:
+			if m.global_position.distance_to(target) < radius:
 				m.rpc_id(NetworkManager.server_id, "take_damage", damage, owner_peer, target)
+				# Wildfire: fire hits apply burn (3s DoT).
+				if caster != null and caster.has_trait("wildfire"):
+					m.apply_burn(3.0, damage * 0.3, owner_peer)
+				hit_any = true
+		# Affinity: +8 if the impact hit at least one enemy (single grant).
+		if hit_any and caster != null:
+			caster.gain_affinity("meteor", 8.0)
 	queue_free()

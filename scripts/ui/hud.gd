@@ -249,6 +249,62 @@ func _my_player() -> Node:
 	return null
 
 
+# --- Specialization ---
+
+## Build the specialization list: one row per unlocked skill.
+func _refresh_spec_list() -> void:
+	for child in %SpecList.get_children():
+		child.queue_free()
+	if _player == null:
+		return
+	var cls := str(_player.get("class_id"))
+	for a in Player.class_abilities(cls):
+		var sid := str(a["id"])
+		if sid == "holy_light":
+			continue  # special track, not in families
+		if int(a["unlock"]) > int(_player.get("level")):
+			continue  # not unlocked yet
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 8)
+		var lbl := Label.new()
+		var aff := float(_player.get("affinity").get(sid, 0.0))
+		var fam := Player.family_of(sid)
+		lbl.text = "%s [%s] — %.0f" % [str(a["name"]), fam.capitalize(), aff]
+		if str(_player.get("specialization")) == sid:
+			lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		row.add_child(lbl)
+		var btn := Button.new()
+		if str(_player.get("specialization")) == sid:
+			btn.text = "Respec"
+			btn.pressed.connect(_on_respec_pressed)
+		else:
+			btn.text = "Specialize"
+			btn.pressed.connect(_on_specialize_pressed.bind(sid))
+		row.add_child(btn)
+		%SpecList.add_child(row)
+
+
+func _on_specialize_pressed(skill_id: String) -> void:
+	if _player == null:
+		return
+	_player.call("specialize", skill_id)
+	_refresh_spec_list()
+	_refresh_family_panel()
+	_refresh_collection_log()
+	AudioManager.sfx("ui_click")
+
+
+func _on_respec_pressed() -> void:
+	if _player == null:
+		return
+	_player.call("respec")
+	_refresh_spec_list()
+	_refresh_family_panel()
+	_refresh_collection_log()
+	AudioManager.sfx("ui_click")
+
+
 # --- Stat points ---
 
 func refresh_stats() -> void:
@@ -261,11 +317,115 @@ func refresh_stats() -> void:
 	%AuraVal.text = "+%d aura" % int(_player.bonus_aura)
 	var is_mage := str(_player.get("class_id")) == "mage"
 	%AuraRow.visible = is_mage
+	_refresh_spec_list()
+	_refresh_family_panel()
+	_refresh_collection_log()
 	var can := _player.stat_points > 0
 	%DmgPlus.disabled = not can
 	%HpPlus.disabled = not can
 	%SpdPlus.disabled = not can
 	%AuraPlus.disabled = not can
+
+
+# --- Family panel & collection log (Phase 5) ---
+
+## Refresh the pause-menu family panel: current family's progress, traits, signature.
+func _refresh_family_panel() -> void:
+	for child in %FamilyPanel.get_children():
+		child.queue_free()
+	if _player == null:
+		return
+	var spec := String(_player.get("specialization"))
+	if spec == "":
+		var lbl := Label.new()
+		lbl.text = "Specialize in a skill to begin a family collection."
+		lbl.add_theme_font_size_override("font_size", 12)
+		lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		%FamilyPanel.add_child(lbl)
+		return
+	var fid := Player.family_of(spec)
+	if fid == "":
+		return
+	var fams := Player.families()
+	var fam: Dictionary = fams[fid]
+	var aff := float(_player.get("affinity").get(spec, 0.0))
+	var coll: Dictionary = _player.get("family_collection").get(fid, {"traits": [], "signature": false})
+	# Family name + affinity bar.
+	var title := Label.new()
+	title.text = "%s Family — %.0f/100" % [String(fam["name"]), aff]
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	%FamilyPanel.add_child(title)
+	var bar := ProgressBar.new()
+	bar.min_value = 0.0
+	bar.max_value = 100.0
+	bar.value = aff
+	bar.custom_minimum_size = Vector2(220, 8)
+	bar.show_percentage = false
+	%FamilyPanel.add_child(bar)
+	# Milestone pips with trait names.
+	var earned: Array = coll.get("traits", [])
+	for m in [25, 50, 75]:
+		var tdata: Dictionary = fam["traits"][m]
+		var tid := String(tdata["id"])
+		var row := Label.new()
+		if tid in earned:
+			row.text = "◆ %d — %s: %s" % [m, String(tdata["name"]), String(tdata["desc"])]
+			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		else:
+			row.text = "◇ %d — %s (locked)" % [m, String(tdata["name"])]
+			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+		row.add_theme_font_size_override("font_size", 12)
+		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		%FamilyPanel.add_child(row)
+	# Signature: name or silhouette.
+	var sig: Dictionary = fam["signature"]
+	var sig_row := Label.new()
+	if bool(coll.get("signature", false)):
+		sig_row.text = "◆ 100 — %s: %s" % [String(sig["name"]), String(sig["desc"])]
+		sig_row.add_theme_color_override("font_color", Color(0.9, 0.6, 1.0))
+	else:
+		sig_row.text = "◇ 100 — ??? (reach 100 affinity)"
+		sig_row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+	sig_row.add_theme_font_size_override("font_size", 12)
+	sig_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	%FamilyPanel.add_child(sig_row)
+
+
+## Refresh the collection log: one compact row per family.
+func _refresh_collection_log() -> void:
+	for child in %CollectionLog.get_children():
+		child.queue_free()
+	if _player == null:
+		return
+	var fams := Player.families()
+	var coll_all: Dictionary = _player.get("family_collection")
+	for fid in fams:
+		var fam: Dictionary = fams[fid]
+		var coll: Dictionary = coll_all.get(fid, {"traits": [], "signature": false})
+		var earned: Array = coll.get("traits", [])
+		var sig_done := bool(coll.get("signature", false))
+		var row := Label.new()
+		var txt := "%s: " % String(fam["name"])
+		if earned.is_empty() and not sig_done:
+			txt += "—"
+			row.add_theme_color_override("font_color", Color(0.45, 0.45, 0.5))
+		else:
+			var parts: Array = []
+			for tid in earned:
+				parts.append(tid)
+			if sig_done:
+				parts.append(String(fam["signature"]["id"]))
+			else:
+				parts.append("???")
+			txt += ", ".join(parts)
+			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if sig_done else Color(0.8, 0.75, 0.55))
+		row.text = txt
+		row.add_theme_font_size_override("font_size", 11)
+		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		%CollectionLog.add_child(row)
 
 
 func _on_next_wave_pressed() -> void:
@@ -414,10 +574,23 @@ func refresh_abilities(p) -> void:
 		return
 	for i in p.unlocked_abilities.size():
 		var a: Dictionary = p.unlocked_abilities[i]
+		var sid := String(a["id"])
+		var spec := String(p.get("specialization"))
+		var is_spec := sid == spec and spec != ""
+		var fam := Player.family_of(sid)
 		var slot := PanelContainer.new()
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.08, 0.08, 0.1, 0.75) if i != p.selected_ability else Color(0.25, 0.2, 0.08, 0.9)
-		sb.border_color = Color(0.8, 0.65, 0.25, 1.0) if i == p.selected_ability else Color(0.35, 0.35, 0.4, 0.8)
+		if is_spec:
+			# Specialized: gold highlight.
+			sb.bg_color = Color(0.22, 0.18, 0.08, 0.9)
+			sb.border_color = Color(1.0, 0.85, 0.3, 1.0)
+		elif fam != "":
+			# Non-specialized family skill: dimmed lock tint.
+			sb.bg_color = Color(0.05, 0.05, 0.07, 0.6)
+			sb.border_color = Color(0.25, 0.25, 0.3, 0.5)
+		else:
+			sb.bg_color = Color(0.08, 0.08, 0.1, 0.75) if i != p.selected_ability else Color(0.25, 0.2, 0.08, 0.9)
+			sb.border_color = Color(0.8, 0.65, 0.25, 1.0) if i == p.selected_ability else Color(0.35, 0.35, 0.4, 0.8)
 		sb.set_border_width_all(2)
 		sb.set_corner_radius_all(4)
 		sb.content_margin_left = 8
@@ -437,26 +610,99 @@ func refresh_abilities(p) -> void:
 		name_l.text = "%s %s" % [String(a["name"]), p.rank_roman()]
 		name_l.add_theme_font_size_override("font_size", 13)
 		name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		if fam != "" and not is_spec:
+			name_l.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
 		vb.add_child(name_l)
+		# Affinity fill + milestone pips under the specialized skill.
+		if is_spec:
+			var aff := float(p.get("affinity").get(sid, 0.0))
+			var bar := ProgressBar.new()
+			bar.min_value = 0.0
+			bar.max_value = 100.0
+			bar.value = aff
+			bar.custom_minimum_size = Vector2(90, 6)
+			bar.show_percentage = false
+			vb.add_child(bar)
+			var pips := Label.new()
+			var pip_txt := ""
+			for m in [25, 50, 75, 100]:
+				pip_txt += "◆%d " % m if aff >= m else "◇%d " % m
+			pips.text = pip_txt.strip_edges()
+			pips.add_theme_font_size_override("font_size", 10)
+			pips.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+			pips.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			vb.add_child(pips)
 		# Status line: charges (warrior) or cooldown.
 		var status_l := Label.new()
 		status_l.add_theme_font_size_override("font_size", 11)
 		status_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		if p.class_id == "warrior":
-			status_l.text = "x%d" % p.totem_charges if i == p.selected_ability else ""
-			status_l.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
+			var sig_cd: float = float(p.ability_cds.get(sid, 0.0))
+			if sid in ["sanctuary_totem", "doom_totem"] and sig_cd > 0.0:
+				status_l.text = "%.0fs" % sig_cd
+				status_l.add_theme_color_override("font_color", Color(1, 0.5, 0.4))
+			else:
+				status_l.text = "x%d" % p.totem_charges if i == p.selected_ability else ""
+				status_l.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
 		else:
-			var cd: float = float(p.ability_cds.get(String(a["id"]), 0.0))
+			var cd: float = float(p.ability_cds.get(sid, 0.0))
 			if cd > 0.0:
 				status_l.text = "%.0fs" % cd
 				status_l.add_theme_color_override("font_color", Color(1, 0.5, 0.4))
-			elif String(a["id"]) == "eagle_eye" and p.eagle_eye_used_wave == _wave_number():
+			elif sid == "eagle_eye" and p.eagle_eye_used_wave == _wave_number():
 				status_l.text = "used"
 				status_l.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 		vb.add_child(status_l)
 		slot.add_child(vb)
 		slot.tooltip_text = String(a["desc"])
 		%AbilityBar.add_child(slot)
+	# Mage signature slots (key 8) appended after the regular bar.
+	if p.class_id == "mage":
+		var fams := Player.families()
+		for fid in ["fire", "frost", "storm"]:
+			var sig: Dictionary = p.call("family_signature", fid)
+			if sig.is_empty():
+				continue
+			var ssid := String(sig["id"])
+			var slot := PanelContainer.new()
+			var sb := StyleBoxFlat.new()
+			sb.bg_color = Color(0.2, 0.12, 0.25, 0.9)
+			sb.border_color = Color(0.9, 0.6, 1.0, 1.0)
+			sb.set_border_width_all(2)
+			sb.set_corner_radius_all(4)
+			sb.content_margin_left = 8
+			sb.content_margin_right = 8
+			sb.content_margin_top = 4
+			sb.content_margin_bottom = 4
+			slot.add_theme_stylebox_override("panel", sb)
+			var vb := VBoxContainer.new()
+			vb.add_theme_constant_override("separation", 0)
+			var key_l := Label.new()
+			key_l.text = "[8]"
+			key_l.add_theme_font_size_override("font_size", 11)
+			key_l.add_theme_color_override("font_color", Color(0.9, 0.6, 1.0))
+			key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			vb.add_child(key_l)
+			var name_l := Label.new()
+			name_l.text = String(sig["name"])
+			name_l.add_theme_font_size_override("font_size", 13)
+			name_l.add_theme_color_override("font_color", Color(0.95, 0.8, 1.0))
+			name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			vb.add_child(name_l)
+			var status_l := Label.new()
+			status_l.add_theme_font_size_override("font_size", 11)
+			status_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			var cd: float = float(p.ability_cds.get(ssid, 0.0))
+			if cd > 0.0:
+				status_l.text = "%.0fs" % cd
+				status_l.add_theme_color_override("font_color", Color(1, 0.5, 0.4))
+			else:
+				status_l.text = "READY"
+				status_l.add_theme_color_override("font_color", Color(0.6, 1.0, 0.6))
+			vb.add_child(status_l)
+			slot.add_child(vb)
+			slot.tooltip_text = String(sig["desc"])
+			%AbilityBar.add_child(slot)
 
 
 func _wave_number() -> int:
