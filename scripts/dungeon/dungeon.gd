@@ -409,6 +409,7 @@ func _process(delta: float) -> void:
 				_construction_check_tick = 0.0
 				_check_stalled_construction()
 			_process_node_respawns()
+			_process_river(delta)
 		if is_supermarket:
 			_process_supermarket(delta)
 		else:
@@ -713,23 +714,40 @@ func spawn_rts_dock(faction_id: int, pos: Vector3, civ_id: String) -> void:
 	_wire_building(dock, faction_id)
 
 
+## Water material for the river UV scroll effect.
+var _river_mat: StandardMaterial3D = null
+
+
 @rpc("any_peer", "call_local")
 func spawn_rts_river() -> void:
 	# Visual-only water plane (no collision: units have no pathfinding,
 	# so a solid river would trap land units). Group "rts_water" for queries.
+	# PlaneMesh at y=0.08 — avoids z-fighting with the ground at y=0.
 	var water := StaticBody3D.new()
 	water.name = "River"
 	water.add_to_group("rts_water")
+	# Dark riverbed for depth, just above the ground.
+	var bed := MeshInstance3D.new()
+	var bedm := PlaneMesh.new()
+	bedm.size = Vector2(8.0, 96.0)
+	bed.mesh = bedm
+	var bedmat := StandardMaterial3D.new()
+	bedmat.albedo_color = Color(0.08, 0.16, 0.22, 1.0)
+	bed.material_override = bedmat
+	bed.position = Vector3(0, 0.02, 0)
+	water.add_child(bed)
+	# Water surface.
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(8.0, 0.2, 96.0)
-	mi.mesh = bm
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(8.0, 96.0)
+	mi.mesh = pm
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.2, 0.45, 0.75, 0.85)
+	mat.albedo_color = Color(0.15, 0.38, 0.65, 0.92)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mi.material_override = mat
-	mi.position = Vector3(0, -0.1, 0)
+	mi.position = Vector3(0, 0.08, 0)
 	water.add_child(mi)
+	_river_mat = mat
 	$RTS.add_child(water)
 	# Decorative reeds along the banks.
 	for i in 24:
@@ -737,6 +755,14 @@ func spawn_rts_river() -> void:
 		var side := 1.0 if i % 2 == 0 else -1.0
 		var x := side * randf_range(4.5, 6.0)
 		_spawn_reed(Vector3(x, 0, z))
+
+
+## Scroll the river UVs for a subtle flow effect.
+func _process_river(delta: float) -> void:
+	if _river_mat != null:
+		var off := _river_mat.uv1_offset
+		off.y += delta * 0.05
+		_river_mat.uv1_offset = off
 
 
 func _spawn_reed(pos: Vector3) -> void:
