@@ -7,6 +7,7 @@ var _in_lobby := false
 
 
 func _ready() -> void:
+	_style_buttons()
 	if SteamManager.initialized:
 		%PersonaLabel.text = "Logged in as %s" % SteamManager.persona_name
 	else:
@@ -177,3 +178,37 @@ func _on_lobby_list(lobbies: Array) -> void:
 func _on_connection_failed(reason: String) -> void:
 	_set_status(reason)
 	_show_menu()
+
+
+## Apply pixel-art button textures to all menu buttons.
+func _style_buttons() -> void:
+	var normal_tex := load("res://assets/sprites/menu/btn_normal.png") as Texture2D
+	var hover_tex := load("res://assets/sprites/menu/btn_hover.png") as Texture2D
+	var pressed_tex := load("res://assets/sprites/menu/btn_pressed.png") as Texture2D
+	if normal_tex == null:
+		return
+	var normal := StyleBoxTexture.new()
+	normal.texture = normal_tex
+	normal.expand_margin_left = 12
+	normal.expand_margin_right = 12
+	normal.expand_margin_top = 12
+	normal.expand_margin_bottom = 12
+	var hover := normal.duplicate() as StyleBoxTexture
+	hover.texture = hover_tex
+	var pressed := normal.duplicate() as StyleBoxTexture
+	pressed.texture = pressed_tex
+	_apply_to_buttons(self, normal, hover, pressed)
+
+
+func _apply_to_buttons(node: Node, normal: StyleBoxTexture, hover: StyleBoxTexture, pressed: StyleBoxTexture) -> void:
+	for child in node.get_children():
+		if child is Button:
+			var b := child as Button
+			b.add_theme_stylebox_override("normal", normal)
+			b.add_theme_stylebox_override("hover", hover)
+			b.add_theme_stylebox_override("pressed", pressed)
+			b.add_theme_stylebox_override("focus", hover)
+			b.add_theme_stylebox_override("disabled", normal)
+			b.add_theme_color_override("font_color", Color(0.95, 0.92, 0.85))
+			b.add_theme_color_override("font_hover_color", Color(1.0, 0.95, 0.7))
+		_apply_to_buttons(child, normal, hover, pressed)
