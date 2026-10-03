@@ -189,10 +189,14 @@ func _style_buttons() -> void:
 		return
 	var normal := StyleBoxTexture.new()
 	normal.texture = normal_tex
-	normal.expand_margin_left = 12
-	normal.expand_margin_right = 12
-	normal.expand_margin_top = 12
-	normal.expand_margin_bottom = 12
+	normal.expand_margin_left = 8
+	normal.expand_margin_right = 8
+	normal.expand_margin_top = 8
+	normal.expand_margin_bottom = 8
+	normal.content_margin_left = 16
+	normal.content_margin_right = 16
+	normal.content_margin_top = 8
+	normal.content_margin_bottom = 8
 	var hover := normal.duplicate() as StyleBoxTexture
 	hover.texture = hover_tex
 	var pressed := normal.duplicate() as StyleBoxTexture

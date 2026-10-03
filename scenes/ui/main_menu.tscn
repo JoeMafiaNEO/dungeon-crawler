@@ -74,7 +74,7 @@ horizontal_alignment = 1
 
 [node name="ClassRow" type="HBoxContainer" parent="MenuScroll/MenuPanel"]
 layout_mode = 2
-theme_override_constants/separation = 12
+theme_override_constants/separation = 16
 alignment = 1
 
 [node name="WarriorButton" type="Button" parent="MenuScroll/MenuPanel/ClassRow"]
@@ -110,7 +110,7 @@ horizontal_alignment = 1
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 4
-text = "Host Game (Steam Lobby)"
+text = "Host Game"
 
 [node name="JoinLabel" type="Label" parent="MenuScroll/MenuPanel"]
 layout_mode = 2
@@ -125,7 +125,7 @@ size_flags_horizontal = 4
 
 [node name="JoinRow" type="HBoxContainer" parent="MenuScroll/MenuPanel"]
 layout_mode = 2
-theme_override_constants/separation = 12
+theme_override_constants/separation = 16
 alignment = 1
 
 [node name="RefreshButton" type="Button" parent="MenuScroll/MenuPanel/JoinRow"]
