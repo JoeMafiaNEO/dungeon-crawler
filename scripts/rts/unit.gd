@@ -767,9 +767,9 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 	to_goal.y = 0.0
 	if to_goal.length() > 0.1:
 		var dir := to_goal.normalized()
-		# Steering: separation from nearby units + slide around buildings.
-		# The building tangent is chosen toward the goal, not a fixed side.
-		var avoid := _building_avoid_steer(dir)
+		# Steering: separation from nearby units + slide around buildings
+		# and resource nodes. The tangent is chosen toward the goal.
+		var avoid := _building_avoid_steer(dir) + _resource_avoid_steer(dir)
 		dir = (dir + _separation_steer() * 1.5 + avoid * 2.5).normalized()
 		# Stuck? If we barely moved in the last 0.8s, force a hard sidestep.
 		_stuck_sample_time += delta
@@ -831,6 +831,27 @@ func _building_avoid_steer(want_dir: Vector3) -> Vector3:
 			var t1 := Vector3(-away.z, 0, away.x).normalized()
 			var tangent := t1 if t1.dot(want_dir) >= -t1.dot(want_dir) else -t1
 			push += away + tangent * 1.2
+	return push
+
+
+## Same avoidance for resource nodes — units get wedged between them.
+## Skips the node this unit is actively gathering so it can still approach.
+func _resource_avoid_steer(want_dir: Vector3) -> Vector3:
+	var push := Vector3.ZERO
+	for n in get_tree().get_nodes_in_group("rts_resources"):
+		if n == _gather_node:
+			continue
+		var nnode := n as Node3D
+		if nnode == null or not is_instance_valid(n):
+			continue
+		var diff: Vector3 = global_position - nnode.global_position
+		diff.y = 0.0
+		var d: float = diff.length()
+		if d > 0.01 and d < 2.0:
+			var away: Vector3 = diff.normalized() * (2.0 - d)
+			var t1 := Vector3(-away.z, 0, away.x).normalized()
+			var tangent := t1 if t1.dot(want_dir) >= -t1.dot(want_dir) else -t1
+			push += away + tangent * 1.0
 	return push
 
 
