@@ -49,6 +49,7 @@ var is_supermarket := false
 var is_warlord := false
 var _rts_manager: RTSManager = null
 var _warlord_setup_pending := false
+var _construction_check_tick := 0.0
 var market_cash_goal := 500
 var _market_spawn_tick := 0.0
 var _market_loot_tick := 0.0
@@ -208,6 +209,50 @@ func request_state() -> void:
 				rpc_id(sender, "spawn_key", pickup.position)
 			elif pickup.item != null:
 				rpc_id(sender, "spawn_pickup", pickup.item.id, pickup.position)
+	# Warlord: sync RTS state for late joiners.
+	if is_warlord and _rts_manager != null:
+		sync_rts_state(sender)
+
+
+## Send full RTS state to a late-joining client.
+func sync_rts_state(target_peer: int) -> void:
+	if _rts_manager == null:
+		return
+	for fid in _rts_manager.factions:
+		var fi := int(fid)
+		var f: Dictionary = _rts_manager.factions[fi]
+		var res: Dictionary = f.get("resources", {})
+		var civ: CivData = f.get("civ")
+		rpc_id(target_peer, "client_sync_faction", fi,
+			_rts_manager.faction_peers.get(fi, -1),
+			civ.civ_id if civ else "iron_vanguard",
+			int(res.get("wood", 0)), int(res.get("food", 0)),
+			int(res.get("gold", 0)), int(res.get("stone", 0)),
+			int(f.get("age", 0)))
+	for u in get_tree().get_nodes_in_group("rts_units"):
+		var uciv: CivData = u.get("civ")
+		rpc_id(target_peer, "client_spawn_unit",
+			str(u.get("unit_type")), int(u.get("faction")),
+			u.global_position, uciv.civ_id if uciv else "iron_vanguard")
+	for b in get_tree().get_nodes_in_group("rts_buildings"):
+		var bciv: CivData = b.get("civ")
+		rpc_id(target_peer, "client_spawn_building",
+			int(b.get("faction")), str(b.get("building_type")),
+			b.global_position, bciv.civ_id if bciv else "iron_vanguard")
+
+
+@rpc("any_peer", "call_local")
+func client_sync_faction(faction_id: int, peer_id: int, civ_id: String, wood: int, food: int, gold: int, stone: int, age: int) -> void:
+	if multiplayer.is_server():
+		return
+	if _rts_manager == null:
+		return
+	if not _rts_manager.factions.has(faction_id):
+		_rts_manager.register_faction(faction_id, peer_id, _class_from_civ(civ_id))
+	var f: Dictionary = _rts_manager.factions[faction_id]
+	f["resources"] = {"wood": wood, "food": food, "gold": gold, "stone": stone}
+	f["age"] = age
+	_rts_manager.resources_changed.emit(faction_id)
 
 
 @rpc("any_peer", "call_local")
@@ -250,6 +295,17 @@ func _on_peer_disconnected(peer_id: int) -> void:
 		return
 	peer_classes.erase(peer_id)
 	rpc("despawn_player", peer_id)
+	# Warlord: hand the leaver's faction to an AI so the FFA doesn't soft-lock.
+	if is_warlord and _rts_manager != null:
+		for fid in _rts_manager.faction_peers:
+			if int(_rts_manager.faction_peers[fid]) == peer_id:
+				var fi := int(fid)
+				_rts_manager.faction_peers[fi] = -1  # mark as AI-controlled
+				var ai := AIWarlord.new()
+				ai.faction_id = fi
+				add_child(ai)
+				rpc("announce", "%s's faction is now AI-controlled." % _rts_manager.get_civ(fi).display_name)
+				break
 
 
 # --- Level transitions ---
@@ -310,13 +366,20 @@ func change_level(theme_id: String, new_seed: int, new_level: int) -> void:
 			me.set("inventory", kept)
 			me.set("supermarket_cash", 0)
 		saved_player_state = me.get_state()
+		# Meta: track deepest cycle for the Explorer achievement.
+		var cycle := (new_level - 1) / THEME_ORDER.size() + 1
+		SaveManager.set_deepest_cycle(cycle)
+		SaveManager.check_achievements()
 		# Save point: persist the run so it can be continued from the menu.
-		SaveManager.save_run({
-			"theme_id": theme_id,
-			"level_number": new_level,
-			"class_id": me.class_id,
-			"player_state": me.get_state(),
-		})
+		# Server-only: clients saving would poison their solo Continue.
+		if multiplayer.is_server():
+			SaveManager.save_run({
+				"theme_id": theme_id,
+				"level_number": new_level,
+				"class_id": me.class_id,
+				"player_state": me.get_state(),
+				"seed": new_seed,
+			})
 		AudioManager.sfx("portal_enter")
 	next_theme_id = theme_id
 	next_seed = new_seed
@@ -340,6 +403,11 @@ func _process(delta: float) -> void:
 		if _warlord_setup_pending and not get_tree().get_nodes_in_group("players").is_empty():
 			_warlord_setup_pending = false
 			_setup_warlord()
+		if is_warlord and _rts_manager != null:
+			_construction_check_tick += delta
+			if _construction_check_tick >= 5.0:
+				_construction_check_tick = 0.0
+				_check_stalled_construction()
 		if is_supermarket:
 			_process_supermarket(delta)
 		else:
@@ -477,6 +545,92 @@ func _setup_warlord() -> void:
 	rpc("announce", "WARLORD'S DOMAIN — Last faction standing wins!")
 	rpc("announce", "Press TAB for command view. B to build. Right-click to order units.")
 
+	# Tell clients to build their local RTS stack (manager + camera + HUD).
+	for p in get_tree().get_nodes_in_group("players"):
+		var pid := p.get_multiplayer_authority()
+		if pid != multiplayer.get_unique_id():
+			var pfaction := int(p.get("rts_faction"))
+			var pciv := _rts_manager.get_civ(pfaction).civ_id
+			rpc_id(pid, "client_setup_warlord", pfaction, pciv)
+
+
+## Client-side RTS bootstrap: create local manager, camera, and HUD.
+## The server runs the sim; this just gives the client something to render.
+@rpc("any_peer", "call_local")
+func client_setup_warlord(my_faction: int, my_civ_id: String) -> void:
+	if multiplayer.is_server():
+		return
+	# Only the server should invoke this.
+	if multiplayer.get_remote_sender_id() != NetworkManager.server_id:
+		return
+	print("[Warlord] Client setting up RTS (faction %d)..." % my_faction)
+	_rts_manager = RTSManager.new()
+	_rts_manager.name = "RTSManager"
+	add_child(_rts_manager)
+	# Register our faction locally (server will sync resources/state).
+	var class_id := _class_from_civ(my_civ_id)
+	_rts_manager.register_faction(my_faction, multiplayer.get_unique_id(), class_id)
+	var rts_cam := RTSCamera.new()
+	rts_cam.name = "RTSCamera"
+	rts_cam.add_to_group("rts_camera")
+	add_child(rts_cam)
+	rts_cam.setup(_rts_manager, my_faction)
+	var rts_hud := RTSHUD.new()
+	rts_hud.name = "RTSHUD"
+	add_child(rts_hud)
+	rts_hud.setup(_rts_manager, my_faction)
+	# Sync rts_faction onto the local player so _damage_rts_targets runs.
+	var me := get_player_node(multiplayer.get_unique_id())
+	if me != null:
+		me.set("rts_faction", my_faction)
+
+
+## Server tick: reassign builders to stalled construction, or refund if none available.
+func _check_stalled_construction() -> void:
+	for b in get_tree().get_nodes_in_group("rts_buildings"):
+		if not bool(b.get("under_construction")) or bool(b.get("destroyed")):
+			continue
+		var faction_id := int(b.get("faction"))
+		# Is anyone building this?
+		var has_builder := false
+		for u in get_tree().get_nodes_in_group("rts_units"):
+			if int(u.get("faction")) != faction_id:
+				continue
+			var target = u.get("_build_target")
+			if target == b and is_instance_valid(target):
+				has_builder = true
+				break
+		if has_builder:
+			continue
+		# Find an idle villager to reassign.
+		var builder: Node3D = null
+		for u in get_tree().get_nodes_in_group("rts_units"):
+			if int(u.get("faction")) != faction_id or str(u.get("unit_type")) != "villager":
+				continue
+			if not bool(u.get("alive")):
+				continue
+			builder = u
+			break
+		if builder != null:
+			builder.rpc("rpc_order_build", b.get_path())
+		else:
+			# No builders left: refund and remove the stalled site.
+			var btype := str(b.get("building_type"))
+			var cost: Dictionary = RTSManager.BUILDING_COSTS.get(btype, {})
+			for k in cost:
+				_rts_manager.add_resource(faction_id, k, int(cost[k]))
+			b.queue_free()
+
+
+## Server-side build spot validation: spacing from other buildings, not on river.
+func _is_valid_build_spot(pos: Vector3) -> bool:
+	for b in get_tree().get_nodes_in_group("rts_buildings"):
+		if pos.distance_to(b.global_position) < 5.0:
+			return false
+	if is_on_water(pos):
+		return false
+	return true
+
 
 func _faction_spawn_pos(faction_id: int) -> Vector3:
 	# Spread factions around the map.
@@ -510,8 +664,7 @@ func spawn_rts_base(faction_id: int, pos: Vector3, civ_id: String) -> void:
 		villagers.append(v)
 	# Server: AI factions auto-gather immediately.
 	if multiplayer.is_server() and _rts_manager != null:
-		var f: Dictionary = _rts_manager.factions.get(faction_id, {})
-		if int(f.get("peer_id", -2)) == -1:  # AI faction
+		if int(_rts_manager.faction_peers.get(faction_id, -2)) == -1:  # AI faction
 			for v in villagers:
 				var node := _nearest_resource(v.position)
 				if node != null:
@@ -634,11 +787,19 @@ func rpc_start_construction(faction_id: int, btype: String, pos: Vector3) -> voi
 		return
 	if _rts_manager == null:
 		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0:
+		var owner := int(_rts_manager.faction_peers.get(faction_id, -2))
+		if owner != sender and owner != -1:
+			return
 	var cost: Dictionary = RTSManager.BUILDING_COSTS.get(btype, {})
 	if cost.is_empty():
 		return
 	var age_req := 1 if btype in ["siege_workshop", "monastery"] else 0
 	if _rts_manager.get_age(faction_id) < age_req:
+		return
+	# Server-side position validation (client ghost is advisory only).
+	if not _is_valid_build_spot(pos):
 		return
 	if not _rts_manager.spend(faction_id, cost):
 		return
@@ -660,13 +821,27 @@ func rpc_start_construction(faction_id: int, btype: String, pos: Vector3) -> voi
 			_rts_manager.add_resource(faction_id, k, int(cost[k]))
 		return
 	var civ: CivData = _rts_manager.factions[faction_id]["civ"]
+	var b := _spawn_building_local(faction_id, btype, pos, civ.civ_id)
+	rpc("client_spawn_building", faction_id, btype, pos, civ.civ_id)
+	builder.rpc("rpc_order_build", b.get_path())
+
+
+@rpc("any_peer", "call_local")
+func client_spawn_building(faction_id: int, btype: String, pos: Vector3, civ_id: String) -> void:
+	if multiplayer.is_server():
+		return
+	_spawn_building_local(faction_id, btype, pos, civ_id)
+
+
+func _spawn_building_local(faction_id: int, btype: String, pos: Vector3, civ_id: String) -> RTSBuilding:
+	var civ := CivData.for_civ_id(civ_id)
 	var b := RTSBuilding.new()
 	b.setup(faction_id, btype, civ)
 	b.rts_manager = _rts_manager
 	b.position = pos
 	$RTS.add_child(b)
 	b.start_construction()
-	builder.rpc("rpc_order_build", b.get_path())
+	return b
 
 
 ## Checkout counter: walk through to auto-sell supermarket loot for cash.
@@ -835,20 +1010,6 @@ func buy_potion(item_id: String, price: int) -> void:
 	player.rpc_id(sender, "on_bought", item_id, price)
 
 
-## Sell all supermarket loot in the player's inventory for cash.
-@rpc("any_peer", "call_local")
-func sell_loot() -> void:
-	if not multiplayer.is_server():
-		return
-	var sender := multiplayer.get_remote_sender_id()
-	if sender == 0:
-		sender = multiplayer.get_unique_id()
-	var player := get_player_node(sender)
-	if player == null:
-		return
-	_sell_player_loot(player)
-
-
 ## Server-side: convert a player's supermarket loot into cash.
 func _sell_player_loot(player: Node) -> void:
 	var sender := int(player.get_multiplayer_authority())
@@ -863,6 +1024,8 @@ func _sell_player_loot(player: Node) -> void:
 	if total > 0:
 		player.set("inventory", kept)
 		player.set("supermarket_cash", int(player.get("supermarket_cash")) + total)
+		SaveManager.add_cash_earned(total)
+		SaveManager.check_achievements()
 		player.rpc_id(sender, "on_sold", total)
 		_check_gate_unlock()
 

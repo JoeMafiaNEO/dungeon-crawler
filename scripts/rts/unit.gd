@@ -13,6 +13,7 @@ var damage: float = 5.0
 var attack_range: float = 1.5
 var move_speed: float = 3.0
 var alive: bool = true
+var _sync_tick := 0.0
 
 # Orders.
 var _move_target: Vector3 = Vector3.INF
@@ -136,6 +137,15 @@ func _build_visual() -> void:
 		_sprite.get_parent().remove_child(_sprite)
 		_sprite.queue_free()
 		_sprite = null
+	# Free old HP bar nodes too (convert_to rebuilds the visual).
+	if _hp_bg and is_instance_valid(_hp_bg):
+		_hp_bg.get_parent().remove_child(_hp_bg)
+		_hp_bg.queue_free()
+		_hp_bg = null
+	if _hp_fill and is_instance_valid(_hp_fill):
+		_hp_fill.get_parent().remove_child(_hp_fill)
+		_hp_fill.queue_free()
+		_hp_fill = null
 	# Billboard 3D sprite (~0.9m tall). Civ-specific: iron_vanguard_spearman.png etc.
 	var sprite := Sprite3D.new()
 	sprite.name = "UnitSprite"
@@ -222,10 +232,24 @@ func order_move(pos: Vector3) -> void:
 	_cancel_convert()
 
 
+## Verify the RPC sender owns this unit's faction. AI (peer -1) always passes.
+func _owns_me() -> bool:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:  # local call
+		return true
+	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
+	if mgr == null:
+		return false
+	var owner := int(mgr.faction_peers.get(faction, -2))
+	return owner == sender or owner == -1
+
+
 ## RPC version for the RTS camera (clients can't pass nodes over the network).
 @rpc("any_peer", "call_local")
 func rpc_order_move(pos: Vector3) -> void:
 	if not multiplayer.is_server():
+		return
+	if not _owns_me():
 		return
 	order_move(pos)
 
@@ -246,6 +270,8 @@ func order_gather(node: RTSResourceNode) -> void:
 func rpc_order_gather(target_path: NodePath) -> void:
 	if not multiplayer.is_server():
 		return
+	if not _owns_me():
+		return
 	var node := get_node_or_null(target_path) as RTSResourceNode
 	if node != null:
 		order_gather(node)
@@ -264,6 +290,8 @@ func order_attack(target: Node3D) -> void:
 @rpc("any_peer", "call_local")
 func rpc_order_attack(target_path: NodePath) -> void:
 	if not multiplayer.is_server():
+		return
+	if not _owns_me():
 		return
 	var target := get_node_or_null(target_path) as Node3D
 	if target != null:
@@ -331,13 +359,27 @@ func _cancel_convert() -> void:
 
 ## Switch this unit to a new faction (monk conversion). Server-side.
 func convert_to(new_faction: int, new_civ: CivData) -> void:
+	if not multiplayer.is_server():
+		return
+	_apply_convert(new_faction, new_civ.civ_id)
+	rpc("client_convert", new_faction, new_civ.civ_id)
+
+
+@rpc("any_peer", "call_local")
+func client_convert(new_faction: int, new_civ_id: String) -> void:
+	if multiplayer.is_server():
+		return
+	_apply_convert(new_faction, new_civ_id)
+
+
+func _apply_convert(new_faction: int, new_civ_id: String) -> void:
 	_cancel_convert()
 	_attack_target = null
 	_gather_node = null
 	_move_target = Vector3.INF
 	_clear_trade()
 	faction = new_faction
-	civ = new_civ
+	civ = CivData.for_civ_id(new_civ_id)
 	_build_visual()
 
 
@@ -366,6 +408,8 @@ func order_trade(target_market: Node3D) -> void:
 func rpc_order_trade(target_path: NodePath) -> void:
 	if not multiplayer.is_server():
 		return
+	if not _owns_me():
+		return
 	var market := get_node_or_null(target_path) as Node3D
 	if market != null:
 		order_trade(market)
@@ -387,6 +431,8 @@ func order_build(building: Node3D) -> void:
 @rpc("any_peer", "call_local")
 func rpc_order_build(target_path: NodePath) -> void:
 	if not multiplayer.is_server():
+		return
+	if not _owns_me():
 		return
 	var building := get_node_or_null(target_path) as Node3D
 	if building != null:
@@ -416,7 +462,21 @@ func _find_nearest_market(p_faction: int) -> Node3D:
 
 func take_damage(amount: float, attacker: Node3D = null) -> void:
 	if not multiplayer.is_server():
+		# Client: route to server.
+		rpc_id(NetworkManager.server_id, "rpc_take_damage", amount,
+			attacker.get_multiplayer_authority() if attacker != null else 0)
 		return
+	_apply_damage(amount)
+
+
+@rpc("any_peer", "call_local")
+func rpc_take_damage(amount: float, attacker_peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	_apply_damage(amount)
+
+
+func _apply_damage(amount: float) -> void:
 	if not alive:
 		return
 	hp -= amount
@@ -436,12 +496,23 @@ func sync_unit_hp(new_hp: float) -> void:
 
 
 func _die() -> void:
-	# Small poof, then free.
+	# Small poof, then free. Broadcast so clients despawn too.
 	_cancel_convert()
 	rpc("set_selected", false)
+	rpc("client_unit_died")
 	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 	if mgr:
 		mgr.check_elimination()
+	queue_free()
+
+
+@rpc("any_peer", "call_local")
+func client_unit_died() -> void:
+	if multiplayer.is_server():
+		return
+	# Play death FX locally, then free.
+	_cancel_convert()
+	set_selected(false)
 	queue_free()
 
 
@@ -539,6 +610,22 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity = Vector3.ZERO
 		move_and_slide()
+	# Replicate transform to clients ~12 Hz (unreliable).
+	_sync_tick += delta
+	if _sync_tick >= 0.08:
+		_sync_tick = 0.0
+		rpc("sync_transform", global_position, rotation.y, hp)
+
+
+@rpc("any_peer", "unreliable")
+func sync_transform(pos: Vector3, rot_y: float, new_hp: float) -> void:
+	if multiplayer.is_server():
+		return
+	global_position = pos
+	rotation.y = rot_y
+	if absf(hp - new_hp) > 0.01:
+		hp = new_hp
+		_update_hp_bar()
 
 
 var _attack_cd := 0.0

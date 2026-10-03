@@ -76,12 +76,12 @@ func _sync_resources(faction_id: int) -> void:
 	if f.is_empty():
 		return
 	var res: Dictionary = f.get("resources", {})
-	rpc("client_sync_resources", faction_id, res["wood"], res["food"], res["gold"], res["stone"])
+	rpc("client_sync_resources", faction_id, res["wood"], res["food"], res["gold"], res["stone"], int(f.get("age", 0)))
 	resources_changed.emit(faction_id)
 
 
 @rpc("any_peer", "call_local")
-func client_sync_resources(faction_id: int, wood: int, food: int, gold: int, stone: int) -> void:
+func client_sync_resources(faction_id: int, wood: int, food: int, gold: int, stone: int, age: int = -1) -> void:
 	# Clients: update local copy.
 	if multiplayer.is_server():
 		return
@@ -93,7 +93,11 @@ func client_sync_resources(faction_id: int, wood: int, food: int, gold: int, sto
 	res["food"] = food
 	res["gold"] = gold
 	res["stone"] = stone
-	_sync_resources(faction_id)
+	if age >= 0 and int(f.get("age", 0)) != age:
+		f["age"] = age
+		age_changed.emit(faction_id, age)
+	# Emit directly: _sync_resources early-returns on clients.
+	resources_changed.emit(faction_id)
 
 
 func get_resources(faction_id: int) -> Dictionary:
@@ -130,6 +134,20 @@ func add_resource(faction_id: int, res_type: String, amount: int) -> void:
 	var res := get_resources(faction_id)
 	res[res_type] = int(res.get(res_type, 0)) + amount
 	_sync_resources(faction_id)
+
+
+@rpc("any_peer", "call_local")
+func rpc_age_up(faction_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	# Ownership check: only the faction's owner (or AI) can age up.
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0:
+		var owner := int(faction_peers.get(faction_id, -2))
+		if owner != sender and owner != -1:
+			return
+	if age_up(faction_id):
+		_sync_resources(faction_id)
 
 
 func age_up(faction_id: int) -> bool:
@@ -184,16 +202,29 @@ func spawn_unit(unit_type: String, faction_id: int, pos: Vector3, civ: CivData) 
 	var f: Dictionary = factions.get(faction_id, {})
 	if f.is_empty() or not bool(f.get("alive", false)):
 		return
+	_spawn_unit_local(unit_type, faction_id, pos, civ.civ_id)
+	rpc("client_spawn_unit", unit_type, faction_id, pos, civ.civ_id)
+
+
+func _spawn_unit_local(unit_type: String, faction_id: int, pos: Vector3, civ_id: String) -> void:
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon == null:
 		return
 	var holder := dungeon.get_node_or_null("RTS")
 	if holder == null:
 		return
+	var civ := CivData.for_civ_id(civ_id)
 	var u := RTSUnit.new()
 	u.setup(faction_id, unit_type, civ)
 	u.position = pos
 	holder.add_child(u)
+
+
+@rpc("any_peer", "call_local")
+func client_spawn_unit(unit_type: String, faction_id: int, pos: Vector3, civ_id: String) -> void:
+	if multiplayer.is_server():
+		return
+	_spawn_unit_local(unit_type, faction_id, pos, civ_id)
 
 
 ## Called by RTSBuilding when destroyed: re-check elimination/win.

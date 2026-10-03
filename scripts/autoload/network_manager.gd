@@ -185,9 +185,22 @@ func leave_lobby() -> void:
 func play_solo() -> void:
 	leave_lobby()
 	is_host = true
+	SaveManager.clear_run()
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = randi()
+	Dungeon.next_level_number = 1
+	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
+
+
+## Start today's daily challenge run (deterministic seed).
+func play_daily() -> void:
+	leave_lobby()
+	is_host = true
+	SaveManager.clear_run()
+	Dungeon.saved_player_state = {}
+	Dungeon.next_theme_id = "village"
+	Dungeon.next_seed = DailyRun.get_today_seed()
 	Dungeon.next_level_number = 1
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
@@ -202,7 +215,7 @@ func continue_run() -> bool:
 	selected_class_id = str(run.get("class_id", "warrior"))
 	Dungeon.saved_player_state = run.get("player_state", {})
 	Dungeon.next_theme_id = str(run.get("theme_id", "village"))
-	Dungeon.next_seed = randi()
+	Dungeon.next_seed = int(run.get("seed", randi()))
 	Dungeon.next_level_number = int(run.get("level_number", 1))
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 	return true

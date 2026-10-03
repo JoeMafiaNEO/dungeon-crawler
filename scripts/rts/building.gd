@@ -142,8 +142,13 @@ func queue_unit(unit_type: String) -> bool:
 	var allowed: Array = PRODUCTION.get(building_type, [])
 	if not unit_type in allowed:
 		return false
-	if unit_type == "knight" and not knights_unlocked:
-		return false
+	if unit_type == "knight":
+		# Check live age — the cached knights_unlocked goes stale on age-up.
+		var age := 0
+		if rts_manager != null and rts_manager.has_method("get_age"):
+			age = int(rts_manager.call("get_age", faction))
+		if age < 1:
+			return false
 	if production_queue.size() >= MAX_QUEUE:
 		return false
 	# Pop space / cost checks belong to the manager.
@@ -166,6 +171,11 @@ func queue_unit(unit_type: String) -> bool:
 func rpc_queue_unit(unit_type: String) -> void:
 	if not multiplayer.is_server():
 		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0:
+		var owner := int(rts_manager.faction_peers.get(faction, -2)) if rts_manager else -2
+		if owner != sender and owner != -1:
+			return
 	queue_unit(unit_type)
 
 
@@ -238,9 +248,23 @@ func _spawn_unit(unit_type: String) -> void:
 
 
 func take_damage(amount: float, attacker: Node3D = null) -> void:
-	# Server-authoritative damage.
+	if not multiplayer.is_server():
+		# Client: route to server.
+		rpc_id(NetworkManager.server_id, "rpc_take_damage", amount,
+			attacker.get_multiplayer_authority() if attacker != null else 0)
+		return
+	_apply_damage(amount)
+
+
+@rpc("any_peer", "call_local")
+func rpc_take_damage(amount: float, attacker_peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
+	_apply_damage(amount)
+
+
+func _apply_damage(amount: float) -> void:
+	# Server-authoritative damage.
 	if destroyed:
 		return
 	hp -= amount

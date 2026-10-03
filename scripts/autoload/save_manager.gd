@@ -182,7 +182,10 @@ func save_run(run: Dictionary) -> void:
 	var data := run.duplicate(true)
 	data["saved_at"] = Time.get_datetime_string_from_system()
 	cfg.set_value("run", "data", data)
-	cfg.save(RUN_SAVE_PATH)
+	# Atomic write: save to temp, then rename.
+	var tmp_path := RUN_SAVE_PATH + ".tmp"
+	if cfg.save(tmp_path) == OK:
+		DirAccess.rename_absolute(tmp_path, RUN_SAVE_PATH)
 
 
 func load_run() -> Dictionary:

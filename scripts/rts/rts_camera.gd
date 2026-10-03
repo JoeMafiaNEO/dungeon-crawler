@@ -334,6 +334,16 @@ func _show_selection_ring(unit: Node3D) -> void:
 func _update_drag_box(p1: Vector2, p2: Vector2) -> void:
 	if _drag_box == null:
 		return
+	# Lazy-parent: the HUD may not have existed when setup() ran.
+	if _drag_box.get_parent() == null:
+		var hud := get_tree().get_first_node_in_group("hud")
+		if hud == null:
+			var dungeon := get_tree().get_first_node_in_group("dungeon")
+			hud = dungeon.get_node_or_null("RTSHUD") if dungeon else null
+		if hud != null:
+			hud.add_child(_drag_box)
+		else:
+			return
 	_drag_box.visible = true
 	var rect := Rect2(p1, p2 - p1).abs()
 	_drag_box.position = rect.position

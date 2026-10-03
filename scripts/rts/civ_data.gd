@@ -73,3 +73,14 @@ static func for_class(class_id: String) -> CivData:
 			civ.display_name = "Iron Vanguard"
 			civ.color = Color(0.8, 0.2, 0.2)
 	return civ
+
+
+static func for_civ_id(civ_id: String) -> CivData:
+	match civ_id:
+		"iron_vanguard":
+			return for_class("warrior")
+		"shadow_covenant":
+			return for_class("rogue")
+		"arcane_dominion":
+			return for_class("mage")
+	return for_class("warrior")

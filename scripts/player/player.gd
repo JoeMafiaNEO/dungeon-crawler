@@ -655,8 +655,8 @@ func refresh_abilities() -> Dictionary:
 	unlocked_abilities = fresh
 	if selected_ability >= unlocked_abilities.size():
 		selected_ability = 0
-	# Warrior gains a totem charge on level-up (max 3).
-	if class_id == "warrior" and not result.is_empty():
+	# Warrior gains a totem charge on every level-up (max 3).
+	if class_id == "warrior":
 		totem_charges = mini(3, totem_charges + 1)
 	if hud != null:
 		hud.refresh_abilities(self)
@@ -1169,7 +1169,8 @@ func _damage_rts_targets(fwd: Vector3, from: int) -> void:
 			continue
 		if fwd.angle_to(to / dist) > 0.75:
 			continue
-		node.rpc_id(NetworkManager.server_id, "take_damage", dmg, self)
+		node.rpc_id(NetworkManager.server_id, "rpc_take_damage", dmg,
+			multiplayer.get_unique_id())
 	for node in get_tree().get_nodes_in_group("rts_buildings"):
 		if int(node.get("faction")) == rts_faction:
 			continue
@@ -1180,7 +1181,8 @@ func _damage_rts_targets(fwd: Vector3, from: int) -> void:
 			continue
 		if fwd.angle_to(to / dist) > 0.75:
 			continue
-		node.rpc_id(NetworkManager.server_id, "take_damage", dmg, self)
+		node.rpc_id(NetworkManager.server_id, "rpc_take_damage", dmg,
+			multiplayer.get_unique_id())
 
 
 func _cast_spell() -> void:
@@ -1517,7 +1519,7 @@ func _try_pickup() -> void:
 		hud.toast("No loot in reach.")
 
 
-@rpc("any_peer")
+@rpc("any_peer", "call_local")
 func on_sold(amount: int) -> void:
 	if not is_multiplayer_authority():
 		return
@@ -1527,7 +1529,7 @@ func on_sold(amount: int) -> void:
 		AudioManager.sfx("cash_register")
 
 
-@rpc("any_peer")
+@rpc("any_peer", "call_local")
 func on_bought(item_id: String, price: int) -> void:
 	if not is_multiplayer_authority():
 		return
@@ -1536,7 +1538,7 @@ func on_bought(item_id: String, price: int) -> void:
 		AudioManager.sfx("cash_register")
 
 
-@rpc("any_peer")
+@rpc("any_peer", "call_local")
 func on_buy_failed(price: int) -> void:
 	if not is_multiplayer_authority():
 		return
@@ -1764,6 +1766,11 @@ func _do_death() -> void:
 func die() -> void:
 	if multiplayer.get_peers().size() == 0:
 		# Solo run over: the save point is gone.
+		# Record daily attempt if this was today's seed.
+		if Dungeon.next_seed == DailyRun.get_today_seed():
+			var stats := run_stats()
+			var score := int(stats.get("cycle", 1)) * 1000 + int(stats.get("level", 1)) * 10 + int(stats.get("kills", 0))
+			DailyRun.record_attempt(score)
 		SaveManager.clear_run()
 		if hud != null:
 			hud.show_death_screen(run_stats())
@@ -1919,6 +1926,8 @@ func get_state() -> Dictionary:
 		"run_start_msec": run_start_msec,
 		"run_kills": run_kills,
 		"run_damage_dealt": run_damage_dealt,
+		"supermarket_cash": supermarket_cash,
+		"totem_charges": totem_charges,
 	}
 
 
@@ -1935,6 +1944,8 @@ func apply_state(s: Dictionary) -> void:
 	run_start_msec = int(s.get("run_start_msec", Time.get_ticks_msec()))
 	run_kills = int(s.get("run_kills", 0))
 	run_damage_dealt = float(s.get("run_damage_dealt", 0.0))
+	supermarket_cash = int(s.get("supermarket_cash", 0))
+	totem_charges = int(s.get("totem_charges", 0))
 	inventory.clear()
 	for e in s.get("inventory", []):
 		var item := ItemDB.get_item(str(e.get("id", "")))

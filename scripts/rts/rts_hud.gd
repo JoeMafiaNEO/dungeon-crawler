@@ -8,7 +8,8 @@ var _manager: RTSManager = null
 var _faction_id := 0
 var _res_label: Label = null
 var _age_label: Label = null
-var _pop_label: Label = null
+var _pop_label: Label
+var _age_up_btn: Button = null
 var _hint_label: Label = null
 # Build menu (B key): pick a building to place.
 var _build_panel: PanelContainer = null
@@ -45,6 +46,12 @@ func _build_ui() -> void:
 	_pop_label = Label.new()
 	_pop_label.add_theme_font_size_override("font_size", 18)
 	top.add_child(_pop_label)
+
+	_age_up_btn = Button.new()
+	_age_up_btn.text = "Age Up"
+	_age_up_btn.add_theme_font_size_override("font_size", 16)
+	_age_up_btn.pressed.connect(_on_age_up_pressed)
+	top.add_child(_age_up_btn)
 
 	# Bottom hint.
 	_hint_label = Label.new()
@@ -144,9 +151,18 @@ func _pin_train_panel() -> void:
 
 
 func _pin_panel_bottom(panel: Control) -> void:
+	# Explicitly set anchors + all four offsets. Setting only `position`
+	# leaves stale offset_right/bottom values that break centering.
+	panel.anchor_left = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_top = 1.0
+	panel.anchor_bottom = 1.0
 	panel.reset_size()
 	var sz := panel.size
-	panel.position = Vector2(-sz.x / 2.0, -sz.y - 16.0)
+	panel.offset_left = -sz.x / 2.0
+	panel.offset_right = sz.x / 2.0
+	panel.offset_top = -sz.y - 16.0
+	panel.offset_bottom = -16.0
 
 
 func hide_build_menu() -> void:
@@ -268,3 +284,30 @@ func _refresh() -> void:
 		_refresh_build_buttons()
 	if _train_panel.visible:
 		_refresh_train_buttons()
+	_refresh_age_button()
+
+
+func _on_age_up_pressed() -> void:
+	if _manager == null:
+		return
+	if multiplayer.is_server():
+		_manager.rpc_age_up(_faction_id)
+	else:
+		_manager.rpc_id(NetworkManager.server_id, "rpc_age_up", _faction_id)
+
+
+func _refresh_age_button() -> void:
+	if _age_up_btn == null or _manager == null:
+		return
+	var age := _manager.get_age(_faction_id)
+	if age >= 2:
+		_age_up_btn.visible = false
+		return
+	_age_up_btn.visible = true
+	var next_cost: Dictionary = RTSManager.AGE_COSTS[age + 1]
+	var parts: Array = []
+	for k in ["wood", "food", "gold", "stone"]:
+		if int(next_cost.get(k, 0)) > 0:
+			parts.append("%d %s" % [int(next_cost[k]), k.capitalize()])
+	_age_up_btn.text = "Age Up: %s" % ", ".join(parts)
+	_age_up_btn.disabled = not _manager.can_afford(_faction_id, next_cost)

@@ -83,30 +83,61 @@ func _test_rts_production() -> void:
 
 func _test_save_roundtrip() -> void:
 	print("[Playtest] Save roundtrip...")
-	# ConfigFile roundtrip with nested dict.
-	var cfg := ConfigFile.new()
-	var data := {"level": 9, "class_id": "mage", "theme_id": "dungeon", "stats": {"str": 5}}
-	cfg.set_value("run", "data", data)
-	cfg.save("user://test_save.cfg")
-	var cfg2 := ConfigFile.new()
-	_assert(cfg2.load("user://test_save.cfg") == OK, "Save file loads")
-	var loaded: Dictionary = cfg2.get_value("run", "data", {})
-	_assert(int(loaded.get("level", 0)) == 9, "Save preserves level")
-	_assert(str(loaded.get("class_id", "")) == "mage", "Save preserves class")
-	DirAccess.remove_absolute("user://test_save.cfg")
+	# Exercise the real SaveManager code path (atomic save + load).
+	var mgr = load("res://scripts/autoload/save_manager.gd").new()
+	# Back up any real run save so the test doesn't clobber it.
+	var backup := {}
+	var real_path := "user://run_save.cfg"
+	if FileAccess.file_exists(real_path):
+		var bcfg := ConfigFile.new()
+		if bcfg.load(real_path) == OK:
+			backup = bcfg.get_value("run", "data", {})
+	mgr.clear_run()
+	var run := {
+		"level": 9, "class_id": "mage", "theme_id": "dungeon",
+		"level_number": 2, "cycle": 1, "seed": 12345,
+		"stats": {"str": 5, "vit": 3},
+	}
+	mgr.save_run(run)
+	_assert(mgr.has_run(), "SaveManager reports run exists after save")
+	var loaded: Dictionary = mgr.load_run()
+	_assert(int(loaded.get("level", 0)) == 9, "SaveManager preserves level")
+	_assert(str(loaded.get("class_id", "")) == "mage", "SaveManager preserves class")
+	_assert(str(loaded.get("theme_id", "")) == "dungeon", "SaveManager preserves theme")
+	_assert(int(loaded.get("cycle", 0)) == 1, "SaveManager preserves cycle")
+	_assert(str(loaded.get("saved_at", "")) != "", "SaveManager stamps saved_at")
+	var summary: String = mgr.run_summary()
+	_assert(str(summary) != "", "run_summary non-empty for saved run")
+	mgr.clear_run()
+	_assert(not mgr.has_run(), "clear_run removes the run")
+	# Restore the real run save if there was one.
+	if not backup.is_empty():
+		mgr.save_run(backup)
+	mgr.free()
 
 
 func _test_cycle_scaling() -> void:
 	print("[Playtest] Cycle scaling...")
-	# Grid size: 40 + 40*cycle, capped at 96.
-	for cycle in [0, 1, 2, 5]:
-		var grid: int = mini(40 + 40 * cycle, 96)
-		_assert(grid <= 96, "Grid capped at 96 (cycle %d)" % cycle)
-		_assert(grid >= 40, "Grid at least 40 (cycle %d)" % cycle)
-	# Key counts: base + cycle, capped at 8.
-	for cycle in [0, 1, 5, 10]:
-		var keys: int = mini(3 + cycle, 8)
-		_assert(keys <= 8, "Keys capped at 8 (cycle %d)" % cycle)
+	# Apply the EXACT formulas from dungeon.gd to the real theme resources.
+	var theme_ids := ["village", "dungeon", "depths", "supermarket", "warlord"]
+	for tid in theme_ids:
+		var theme: Resource = load("res://data/levels/theme_%s.tres" % tid)
+		_assert(theme != null, "Theme %s loads" % tid)
+		if theme == null:
+			continue
+		var base_grid := int(theme.get("grid_size"))
+		var base_keys := int(theme.get("puzzle_key_count"))
+		for cycle in [0, 1, 2, 5, 20]:
+			# Mirrors dungeon.gd change_level scaling.
+			var grid: int = mini(96, base_grid + cycle * 40)
+			var keys: int = mini(8, base_keys + cycle)
+			_assert(grid <= 96, "Grid capped at 96 (%s cycle %d)" % [tid, cycle])
+			_assert(grid >= base_grid, "Grid never shrinks (%s cycle %d)" % [tid, cycle])
+			_assert(keys <= 8, "Keys capped at 8 (%s cycle %d)" % [tid, cycle])
+			_assert(keys >= base_keys, "Keys never shrink (%s cycle %d)" % [tid, cycle])
+		# Cycle 0 must leave the theme untouched.
+		_assert(mini(96, base_grid + 0 * 40) == base_grid, "Cycle 0 grid unchanged (%s)" % tid)
+		_assert(mini(8, base_keys + 0) == base_keys, "Cycle 0 keys unchanged (%s)" % tid)
 
 
 func _test_ai_director() -> void:
