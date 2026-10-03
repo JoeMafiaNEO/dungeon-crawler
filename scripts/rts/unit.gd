@@ -757,13 +757,28 @@ func _is_on_water(pos: Vector3) -> bool:
 	return false
 
 
+# Stuck detection: position sampled periodically while moving.
+var _stuck_sample_pos := Vector3.ZERO
+var _stuck_sample_time := 0.0
+
+
 func _move_toward(pos: Vector3, delta: float) -> void:
-	var dir := pos - global_position
-	dir.y = 0.0
-	if dir.length() > 0.1:
-		dir = dir.normalized()
+	var to_goal := pos - global_position
+	to_goal.y = 0.0
+	if to_goal.length() > 0.1:
+		var dir := to_goal.normalized()
 		# Steering: separation from nearby units + slide around buildings.
-		dir = (dir + _separation_steer() * 1.5 + _building_avoid_steer() * 2.0).normalized()
+		# The building tangent is chosen toward the goal, not a fixed side.
+		var avoid := _building_avoid_steer(dir)
+		dir = (dir + _separation_steer() * 1.5 + avoid * 2.5).normalized()
+		# Stuck? If we barely moved in the last 0.8s, force a hard sidestep.
+		_stuck_sample_time += delta
+		if _stuck_sample_time >= 0.8:
+			if global_position.distance_to(_stuck_sample_pos) < 0.6 and avoid.length() > 0.1:
+				var side := Vector3(-dir.z, 0, dir.x)
+				dir = (dir * 0.3 + side * 1.5).normalized()
+			_stuck_sample_pos = global_position
+			_stuck_sample_time = 0.0
 		var spd := move_speed
 		if _is_ship() and _is_on_water(global_position):
 			spd *= 1.5
@@ -771,6 +786,8 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 		# Face movement direction.
 		var target_yaw := atan2(-dir.x, -dir.z)
 		rotation.y = lerp_angle(rotation.y, target_yaw, 10.0 * delta)
+	else:
+		_stuck_sample_time = 0.0
 
 
 ## Push away from nearby units so groups don't clump into a blob.
@@ -794,9 +811,10 @@ func _separation_steer() -> Vector3:
 	return push
 
 
-## Push away from nearby buildings, with a tangential slide so units
-## flow around corners instead of grinding into walls.
-func _building_avoid_steer() -> Vector3:
+## Push away from nearby buildings. The tangential slide picks the side
+## that points most toward the unit's goal, so units flow around corners
+## instead of grinding into walls or sliding the wrong way.
+func _building_avoid_steer(want_dir: Vector3) -> Vector3:
 	var push := Vector3.ZERO
 	for b in get_tree().get_nodes_in_group("rts_buildings"):
 		if not is_instance_valid(b) or bool(b.get("destroyed")):
@@ -807,11 +825,12 @@ func _building_avoid_steer() -> Vector3:
 		var diff: Vector3 = global_position - bnode.global_position
 		diff.y = 0.0
 		var d: float = diff.length()
-		if d > 0.01 and d < 3.0:
-			var away: Vector3 = diff.normalized() * (3.0 - d)
-			# Tangential component: slide around the building.
-			var tangent := Vector3(-away.z, 0, away.x)
-			push += away + tangent * 0.8
+		if d > 0.01 and d < 4.0:
+			var away: Vector3 = diff.normalized() * (4.0 - d)
+			# Two tangent options; take the one most aligned with the goal.
+			var t1 := Vector3(-away.z, 0, away.x).normalized()
+			var tangent := t1 if t1.dot(want_dir) >= -t1.dot(want_dir) else -t1
+			push += away + tangent * 1.2
 	return push
 
 
