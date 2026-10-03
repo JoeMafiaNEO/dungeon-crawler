@@ -74,7 +74,32 @@ func _on_start_game_pressed() -> void:
 
 func _on_multi_pressed() -> void:
 	AudioManager.sfx("ui_click")
+	_refresh_multi_ui()
 	_show_phase("MultiPhase")
+
+
+## Show the multiplayer Continue if a compatible multiplayer save exists.
+func _refresh_multi_ui() -> void:
+	var run := SaveManager.load_run("")
+	if not run.is_empty() and bool(run.get("is_multiplayer", false)):
+		%ContinueMultiButton.visible = true
+		%ContinueMultiInfo.visible = true
+		%ContinueMultiInfo.text = SaveManager.run_summary(run)
+		if SaveManager.is_save_compatible(""):
+			%ContinueMultiButton.disabled = false
+			%ContinueMultiButton.tooltip_text = ""
+		else:
+			%ContinueMultiButton.disabled = true
+			%ContinueMultiButton.tooltip_text = "Save from an older version"
+	else:
+		%ContinueMultiButton.visible = false
+		%ContinueMultiInfo.visible = false
+
+
+func _on_continue_multi_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	if not NetworkManager.continue_run(""):
+		_refresh_multi_ui()
 
 
 func _on_solo_pressed() -> void:
@@ -227,27 +252,29 @@ func _on_join_back_pressed() -> void:
 
 # --- Solo phase ---
 
+## Show per-class saves. Each class keeps its own run; swap freely.
 func _refresh_solo_ui() -> void:
-	if SaveManager.has_run():
-		%ContinueButton.visible = true
-		%ContinueInfoLabel.visible = true
-		%ContinueInfoLabel.text = SaveManager.run_summary()
-		# Multiplayer saves get a distinct button label.
-		var run := SaveManager.load_run()
-		if bool(run.get("is_multiplayer", false)):
-			%ContinueButton.text = "Continue Multiplayer Run"
-		else:
-			%ContinueButton.text = "Continue Run"
-		# Version mismatch: disable with explanation.
-		if not SaveManager.is_save_compatible():
-			%ContinueButton.disabled = true
-			%ContinueButton.tooltip_text = "Save from an older version"
-		else:
-			%ContinueButton.disabled = false
-			%ContinueButton.tooltip_text = ""
-	else:
-		%ContinueButton.visible = false
-		%ContinueInfoLabel.visible = false
+	for child in %SavesList.get_children():
+		child.queue_free()
+	var saves := SaveManager.list_solo_saves()
+	%SavesLabel.visible = not saves.is_empty()
+	for entry in saves:
+		var cid := str(entry.get("class_id", "warrior"))
+		var run: Dictionary = entry.get("run", {})
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 12)
+		var lbl := Label.new()
+		lbl.text = SaveManager.run_summary(run)
+		row.add_child(lbl)
+		var btn := Button.new()
+		btn.text = "Continue"
+		btn.pressed.connect(_on_continue_class_pressed.bind(cid))
+		if not SaveManager.is_save_compatible(cid):
+			btn.disabled = true
+			btn.tooltip_text = "Save from an older version"
+		row.add_child(btn)
+		%SavesList.add_child(row)
 
 
 func _on_new_game_pressed() -> void:
@@ -255,10 +282,9 @@ func _on_new_game_pressed() -> void:
 	_show_phase("ClassPhase")
 
 
-func _on_continue_pressed() -> void:
+func _on_continue_class_pressed(class_id: String) -> void:
 	AudioManager.sfx("ui_click")
-	if not NetworkManager.continue_run():
-		%ContinueInfoLabel.text = "No saved run found."
+	if not NetworkManager.continue_run(class_id):
 		_refresh_solo_ui()
 
 

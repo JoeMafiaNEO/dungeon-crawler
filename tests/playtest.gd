@@ -93,22 +93,26 @@ func _test_save_roundtrip() -> void:
 		var bcfg := ConfigFile.new()
 		if bcfg.load(real_path) == OK:
 			backup = bcfg.get_value("run", "data", {})
-	mgr.clear_run()
+	mgr.clear_run("mage")
 	var run := {
 		"level": 9, "class_id": "mage", "theme_id": "dungeon",
 		"level_number": 2, "cycle": 1, "seed": 12345,
 		"stats": {"str": 5, "vit": 3},
 	}
 	mgr.save_run(run)
-	_assert(mgr.has_run(), "SaveManager reports run exists after save")
-	var loaded: Dictionary = mgr.load_run()
+	_assert(mgr.has_run("mage"), "SaveManager reports run exists after save")
+	var loaded: Dictionary = mgr.load_run("mage")
 	_assert(int(loaded.get("level", 0)) == 9, "SaveManager preserves level")
 	_assert(str(loaded.get("class_id", "")) == "mage", "SaveManager preserves class")
 	_assert(str(loaded.get("theme_id", "")) == "dungeon", "SaveManager preserves theme")
 	_assert(int(loaded.get("cycle", 0)) == 1, "SaveManager preserves cycle")
 	_assert(str(loaded.get("saved_at", "")) != "", "SaveManager stamps saved_at")
-	var summary: String = mgr.run_summary()
+	var summary: String = mgr.run_summary("mage")
 	_assert(str(summary) != "", "run_summary non-empty for saved run")
+	# Per-class isolation: warrior slot is empty.
+	_assert(not mgr.has_run("warrior"), "Per-class saves are isolated")
+	var saves: Array = mgr.list_solo_saves()
+	_assert(saves.size() == 1, "list_solo_saves finds the mage save")
 	# Multiplayer save format.
 	var mp_run := {
 		"theme_id": "dungeon", "level_number": 2, "seed": 999,
@@ -128,10 +132,12 @@ func _test_save_roundtrip() -> void:
 	_assert(float(mp_loaded.get("host_difficulty", 0.0)) == 1.5, "Host difficulty preserved")
 	_assert(mp_loaded.get("roster", []).size() == 2, "Roster preserved")
 	_assert(mgr.is_save_compatible(), "Save compatibility check passes")
-	var mp_summary: String = mgr.run_summary()
+	var mp_summary: String = mgr.run_summary("")
 	_assert("2 players" in mp_summary, "Multiplayer summary shows player count")
-	mgr.clear_run()
-	_assert(not mgr.has_run(), "clear_run removes the run")
+	mgr.clear_run("")
+	_assert(not mgr.has_run(""), "clear_run removes the multiplayer run")
+	mgr.clear_run("mage")
+	_assert(not mgr.has_run("mage"), "clear_run removes the class save")
 	# Restore the real run save if there was one.
 	if not backup.is_empty():
 		mgr.save_run(backup)

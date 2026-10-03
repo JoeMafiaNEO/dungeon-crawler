@@ -201,7 +201,7 @@ func play_solo() -> void:
 	is_host = true
 	host_difficulty = 1.0
 	host_loot_mult = 1.0
-	SaveManager.clear_run()
+	SaveManager.clear_run(selected_class_id)
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = randi()
@@ -213,7 +213,7 @@ func play_solo() -> void:
 func play_daily() -> void:
 	leave_lobby()
 	is_host = true
-	SaveManager.clear_run()
+	# Daily is a fresh run; class saves are untouched.
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = DailyRun.get_today_seed()
@@ -222,8 +222,9 @@ func play_daily() -> void:
 
 
 ## Resume a saved run from the main menu. Branches on multiplayer saves.
-func continue_run() -> bool:
-	var run := SaveManager.load_run()
+## class_id "" = multiplayer slot; otherwise that class's solo save.
+func continue_run(class_id: String = "") -> bool:
+	var run := SaveManager.load_run(class_id)
 	if run.is_empty():
 		return false
 	if int(run.get("save_version", 0)) != SaveManager.SAVE_VERSION:

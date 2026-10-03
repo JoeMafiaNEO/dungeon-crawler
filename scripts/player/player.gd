@@ -1771,7 +1771,7 @@ func die() -> void:
 			var stats := run_stats()
 			var score := int(stats.get("cycle", 1)) * 1000 + int(stats.get("level", 1)) * 10 + int(stats.get("kills", 0))
 			DailyRun.record_attempt(score)
-		SaveManager.clear_run()
+		SaveManager.clear_run(str(get("class_id")))
 		if hud != null:
 			hud.show_death_screen(run_stats())
 		return
