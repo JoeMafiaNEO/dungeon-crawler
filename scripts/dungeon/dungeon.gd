@@ -408,6 +408,7 @@ func _process(delta: float) -> void:
 			if _construction_check_tick >= 5.0:
 				_construction_check_tick = 0.0
 				_check_stalled_construction()
+			_process_node_respawns()
 		if is_supermarket:
 			_process_supermarket(delta)
 		else:
@@ -642,6 +643,16 @@ func _faction_spawn_pos(faction_id: int) -> Vector3:
 func _spawn_faction_base(faction_id: int, pos: Vector3) -> void:
 	var civ := _rts_manager.get_civ(faction_id)
 	rpc("spawn_rts_base", faction_id, pos, civ.civ_id)
+	# Guaranteed starting cluster near the town center: 6 wood, 4 food, 3 gold, 2 stone.
+	var cluster := {"wood": 6, "food": 4, "gold": 3, "stone": 2}
+	for t in cluster:
+		for n in int(cluster[t]):
+			var angle := randf() * TAU
+			var dist := 8.0 + randf() * 6.0
+			var npos := pos + Vector3(cos(angle) * dist, 0, sin(angle) * dist)
+			if is_on_water(npos):
+				npos = pos + Vector3(cos(angle + PI) * dist, 0, sin(angle + PI) * dist)
+			rpc("spawn_rts_node", t, npos)
 
 
 @rpc("any_peer", "call_local")
@@ -753,18 +764,63 @@ func _class_from_civ(civ_id: String) -> String:
 	return "warrior"
 
 
+## Pending node respawns: {type, due} — server-side only.
+var _node_respawns: Array = []
+
+
 func _spawn_resource_nodes() -> void:
-	for i in 24:
-		var t: String = ["wood", "food", "gold", "stone"][i % 4]
-		var angle := TAU * float(i) / 18.0
-		var radius := 18.0 + randf() * 8.0
+	var faction_count := maxi(2, _rts_manager.factions.size())
+	var cycle := (level_number - 1) / THEME_ORDER.size()
+	# 8 nodes per resource per faction, +2 per cycle so late cycles don't thin out.
+	var per_res := 8 + 2 * cycle
+	var types := ["wood", "food", "gold", "stone"]
+	for fi in _rts_manager.factions:
+		for t in types:
+			for n in per_res:
+				rpc("spawn_rts_node", t, _random_land_pos(14.0, 42.0))
+	# Contested center ring: bonus gold/stone to reward map control.
+	for i in 12:
+		var t: String = "gold" if i % 2 == 0 else "stone"
+		rpc("spawn_rts_node", t, _random_land_pos(4.0, 12.0))
+
+
+## Random position on land (not river), within a radius band.
+func _random_land_pos(min_r: float, max_r: float) -> Vector3:
+	for attempt in 20:
+		var angle := randf() * TAU
+		var radius := min_r + randf() * (max_r - min_r)
 		var pos := Vector3(cos(angle) * radius, 0, sin(angle) * radius)
-		rpc("spawn_rts_node", t, pos)
+		if not is_on_water(pos):
+			return pos
+	var angle2 := randf() * TAU
+	return Vector3(cos(angle2) * 20.0, 0, sin(angle2) * 20.0)
+
+
+## Server: schedule a node respawn ~75s after depletion (faster in later cycles).
+func schedule_node_respawn(res_type: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var cycle := (level_number - 1) / THEME_ORDER.size()
+	var delay := maxf(30.0, 75.0 - 10.0 * float(cycle))
+	_node_respawns.append({"type": res_type, "due": Time.get_ticks_msec() / 1000.0 + delay})
+
+
+func _process_node_respawns() -> void:
+	if _node_respawns.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	var ready: Array = []
+	for entry in _node_respawns:
+		if float(entry["due"]) <= now:
+			ready.append(entry)
+	for entry in ready:
+		_node_respawns.erase(entry)
+		rpc("spawn_rts_node", str(entry["type"]), _random_land_pos(10.0, 42.0))
 
 
 @rpc("any_peer", "call_local")
 func spawn_rts_node(res_type: String, pos: Vector3) -> void:
-	var amounts := {"wood": 600, "food": 500, "gold": 400, "stone": 500}
+	var amounts := {"wood": 1000, "food": 800, "gold": 800, "stone": 800}
 	var node := RTSResourceNode.new()
 	node.setup(res_type, int(amounts[res_type]))
 	node.position = pos

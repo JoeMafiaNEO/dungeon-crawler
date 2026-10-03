@@ -655,7 +655,7 @@ func _do_gather() -> void:
 	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 	if mgr == null:
 		return
-	var rate := 10.0 * mgr.get_gather_mult(faction)
+	var rate := 8.0 * mgr.get_gather_mult(faction)
 	var gathered: int = _gather_node.gather(int(rate))
 	if gathered > 0:
 		mgr.add_resource(faction, _gather_node.resource_type, gathered)

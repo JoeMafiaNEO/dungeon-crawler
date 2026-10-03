@@ -61,5 +61,9 @@ func gather(requested: int) -> int:
 	var actual := mini(requested, amount)
 	amount -= actual
 	if amount <= 0:
+		# Schedule a respawn before freeing (server-side, broadcast via RPC).
+		var scene := get_tree().current_scene
+		if scene != null and scene.has_method("schedule_node_respawn"):
+			scene.schedule_node_respawn(resource_type)
 		queue_free()
 	return actual

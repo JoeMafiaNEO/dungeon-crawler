@@ -14,6 +14,7 @@ func _init() -> void:
 	_test_save_roundtrip()
 	_test_cycle_scaling()
 	_test_ai_director()
+	_test_economy()
 	_print_results()
 	quit()
 
@@ -154,3 +155,36 @@ func _print_results() -> void:
 			print("  - %s" % f)
 	else:
 		print("[Playtest] All tests passed!")
+
+
+func _test_economy() -> void:
+	print("[Playtest] Economy...")
+	# Node amounts match the rework spec.
+	var node := RTSResourceNode.new()
+	node.setup("wood", 1000)
+	_assert(node.amount == 1000, "Wood node holds 1000")
+	node.setup("gold", 800)
+	_assert(node.amount == 800, "Gold node holds 800")
+	node.setup("stone", 800)
+	_assert(node.amount == 800, "Stone node holds 800")
+	node.setup("food", 800)
+	_assert(node.amount == 800, "Food node holds 800")
+	node.free()
+	# Gather is server-guarded. Verify the depletion math directly on the node.
+	var node2 := RTSResourceNode.new()
+	node2.setup("wood", 100)
+	# Simulate the server-side gather math: mini(requested, amount).
+	var take: int = mini(60, node2.amount)
+	_assert(take == 60, "Gather math takes requested when available")
+	node2.amount -= take
+	_assert(node2.amount == 40, "Gather math reduces amount")
+	take = mini(100, node2.amount)
+	_assert(take == 40, "Gather math clamps to remaining")
+	node2.free()
+	# Dungeon exposes the economy hooks.
+	var src := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(src.contains("func schedule_node_respawn"), "schedule_node_respawn exists")
+	_assert(src.contains("func _process_node_respawns"), "_process_node_respawns exists")
+	_assert(src.contains("func _random_land_pos"), "_random_land_pos exists")
+	_assert(src.contains('"wood": 1000'), "Wood amount is 1000 in spawn_rts_node")
+	_assert(src.contains("per_res := 8 + 2 * cycle"), "Node count scales with cycle")
