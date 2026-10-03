@@ -239,7 +239,7 @@ drop_entry.gd::GDScript::1308165997101981755::1790786256::0::1::::DropEntry<>Res
 item_data.gd::GDScript::8930180961376309809::1790872008::0::1::::ItemData<>Resource<><>0<>0<><>::
 mob_data.gd::GDScript::7711161420062548439::1790835110::0::1::::MobData<>Resource<><>0<>0<><>::
 ::res://scripts/dungeon/::1790786574
-dungeon.gd::GDScript::9062429699560015640::1790990204::0::1::::Dungeon<>Node3D<><>0<>0<><>::
+dungeon.gd::GDScript::9062429699560015640::1790991790::0::1::::Dungeon<>Node3D<><>0<>0<><>::
 ::res://scripts/effects/::1790816042
 effects.gd::GDScript::6392664057358353679::1790864026::0::1::::Effects<>RefCounted<><>0<>0<><>::
 ::res://scripts/items/::1790786574
@@ -258,11 +258,11 @@ texture_gen.gd::GDScript::3589826528699285124::1790867074::0::1::::TextureGen<>R
 ai_warlord.gd::GDScript::7121322870045270848::1790924306::0::1::::AIWarlord<>Node<><>0<>0<><>::
 building.gd::GDScript::5965914552110223644::1790990204::0::1::::RTSBuilding<>StaticBody3D<><>0<>0<><>::
 civ_data.gd::GDScript::8619545202157715562::1790990204::0::1::::CivData<>Resource<><>0<>0<><>::
-resource_node.gd::GDScript::3941845374198366779::1790878696::0::1::::RTSResourceNode<>StaticBody3D<><>0<>0<><>::
+resource_node.gd::GDScript::3941845374198366779::1790991790::0::1::::RTSResourceNode<>StaticBody3D<><>0<>0<><>::
 rts_camera.gd::GDScript::4201840115373479591::1790990204::0::1::::RTSCamera<>Camera3D<><>0<>0<><>::
 rts_hud.gd::GDScript::7156680017120811085::1790990204::0::1::::RTSHUD<>CanvasLayer<><>0<>0<><>::
 rts_manager.gd::GDScript::2458560265435096863::1790990204::0::1::::RTSManager<>Node<><>0<>0<><>::
-unit.gd::GDScript::3362741734348947738::1790990204::0::1::::RTSUnit<>CharacterBody3D<><>0<>0<><>::
+unit.gd::GDScript::3362741734348947738::1790991790::0::1::::RTSUnit<>CharacterBody3D<><>0<>0<><>::
 ::res://scripts/systems/::1790872114
 ai_director.gd::GDScript::2300132005305836300::1790922460::0::1::::<>Node<><>0<>0<><>::
 tutorial.gd::GDScript::8834685004347974375::1790872092::0::1::::<>Node<><>0<>0<><>::
@@ -270,7 +270,7 @@ tutorial.gd::GDScript::8834685004347974375::1790872092::0::1::::<>Node<><>0<>0<>
 hud.gd::GDScript::181261579597509575::1790921718::0::1::::<>CanvasLayer<><>0<>0<><>::
 main_menu.gd::GDScript::3657537118326192951::1790916684::0::1::::<>Control<><>0<>0<><>::
 ::res://tests/::1790879134
-playtest.gd::GDScript::1155885280787417282::1790990204::0::1::::<>SceneTree<><>0<>0<><>::
+playtest.gd::GDScript::1155885280787417282::1790991790::0::1::::<>SceneTree<><>0<>0<><>::
 test_monk_naval.gd::GDScript::4541248338703755271::1790879094::0::1::::<>SceneTree<><>0<>0<><>::
 ::res://tools/::1790990202
 ::res://tools/camera_pass/::1790990202
