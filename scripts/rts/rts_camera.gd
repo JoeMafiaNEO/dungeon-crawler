@@ -155,6 +155,10 @@ func toggle() -> void:
 		var hud = player.get("hud")
 		if hud != null and hud.has_method("set_command_view"):
 			hud.call("set_command_view", active)
+		# Update the RTS HUD hints for the new view mode.
+		var rhud2 := _find_rts_hud()
+		if rhud2 != null and rhud2.has_method("set_command_view"):
+			rhud2.call("set_command_view", active)
 		# Hide RTS panels when leaving command view.
 		if not active:
 			var rhud := _find_rts_hud()

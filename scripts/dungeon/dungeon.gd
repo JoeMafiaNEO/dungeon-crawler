@@ -543,6 +543,7 @@ func _setup_warlord() -> void:
 	rts_hud.name = "RTSHUD"
 	add_child(rts_hud)
 	rts_hud.setup(_rts_manager, local_faction)
+	rts_hud.show_guide()
 
 	rpc("announce", "WARLORD'S DOMAIN — Last faction standing wins!")
 	rpc("announce", "Press TAB for command view. B to build. Right-click to order units.")

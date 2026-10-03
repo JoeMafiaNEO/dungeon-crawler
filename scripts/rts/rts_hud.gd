@@ -11,6 +11,8 @@ var _age_label: Label = null
 var _pop_label: Label
 var _age_up_btn: Button = null
 var _hint_label: Label = null
+var _guide_panel: PanelContainer = null
+var _guide_timer := 0.0
 # Build menu (B key): pick a building to place.
 var _build_panel: PanelContainer = null
 var _build_buttons: Dictionary = {}
@@ -53,14 +55,15 @@ func _build_ui() -> void:
 	_age_up_btn.pressed.connect(_on_age_up_pressed)
 	top.add_child(_age_up_btn)
 
-	# Bottom hint.
+	# Bottom hint (contextual: changes with command view).
 	_hint_label = Label.new()
 	_hint_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint_label.add_theme_font_size_override("font_size", 14)
-	_hint_label.text = "Tab: Command View | Click: Select | Right-click: Order | B: Build menu"
+	_hint_label.text = "TAB — Command View"
 	add_child(_hint_label)
 	_build_panels()
+	_build_guide()
 
 
 func _build_panels() -> void:
@@ -311,3 +314,93 @@ func _refresh_age_button() -> void:
 			parts.append("%d %s" % [int(next_cost[k]), k.capitalize()])
 	_age_up_btn.text = "Age Up: %s" % ", ".join(parts)
 	_age_up_btn.disabled = not _manager.can_afford(_faction_id, next_cost)
+
+
+## Command guide card: shows on Warlord entry, dismisses on Tab/click/timeout.
+func _build_guide() -> void:
+	_guide_panel = PanelContainer.new()
+	_guide_panel.set_anchors_preset(Control.PRESET_CENTER)
+	_guide_panel.custom_minimum_size = Vector2(460, 0)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.09, 0.12, 0.94)
+	style.border_color = Color(0.85, 0.65, 0.25)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(8)
+	style.content_margin_left = 24
+	style.content_margin_right = 24
+	style.content_margin_top = 18
+	style.content_margin_bottom = 18
+	_guide_panel.add_theme_stylebox_override("panel", style)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	_guide_panel.add_child(vb)
+	var title := Label.new()
+	title.text = "WARLORD'S DOMAIN"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	title.add_theme_color_override("font_color", Color(0.95, 0.8, 0.4))
+	vb.add_child(title)
+	var sub := Label.new()
+	sub.text = "Command your faction — last one standing wins."
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.add_theme_font_size_override("font_size", 14)
+	sub.add_theme_color_override("font_color", Color(0.75, 0.78, 0.82))
+	vb.add_child(sub)
+	var lines := [
+		["TAB", "Toggle top-down command view"],
+		["B", "Build menu (in command view)"],
+		["Left-click", "Select units · Click building to train · Click resource to gather"],
+		["Right-click", "Order selected units (move / attack / gather)"],
+		["Drag", "Select multiple units"],
+	]
+	for pair in lines:
+		var h := HBoxContainer.new()
+		h.add_theme_constant_override("separation", 12)
+		var key := Label.new()
+		key.text = pair[0]
+		key.custom_minimum_size = Vector2(90, 0)
+		key.add_theme_font_size_override("font_size", 15)
+		key.add_theme_color_override("font_color", Color(1.0, 0.9, 0.55))
+		h.add_child(key)
+		var desc := Label.new()
+		desc.text = pair[1]
+		desc.add_theme_font_size_override("font_size", 14)
+		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		h.add_child(desc)
+		vb.add_child(h)
+	var dismiss := Label.new()
+	dismiss.text = "Press TAB to start commanding — this card will fade."
+	dismiss.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dismiss.add_theme_font_size_override("font_size", 13)
+	dismiss.add_theme_color_override("font_color", Color(0.6, 0.65, 0.7))
+	vb.add_child(dismiss)
+	_guide_panel.visible = false
+	add_child(_guide_panel)
+
+
+func show_guide() -> void:
+	if _guide_panel != null:
+		_guide_panel.visible = true
+		_guide_timer = 15.0
+
+
+func hide_guide() -> void:
+	if _guide_panel != null:
+		_guide_panel.visible = false
+		_guide_timer = 0.0
+
+
+## Called when the command view toggles: updates hints, hides the guide.
+func set_command_view(active: bool) -> void:
+	if active:
+		hide_guide()
+		_hint_label.text = "B — Build | Click — Select / Train / Gather | Right-click — Order | Drag — Multi-select | TAB — Exit"
+	else:
+		_hint_label.text = "TAB — Command View"
+
+
+func _process(delta: float) -> void:
+	if _guide_timer > 0.0:
+		_guide_timer -= delta
+		if _guide_timer <= 0.0:
+			hide_guide()
