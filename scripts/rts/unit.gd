@@ -522,6 +522,10 @@ func _physics_process(delta: float) -> void:
 	if not alive:
 		return
 
+	# Ships float at water level (river surface is at y=0.08).
+	if _is_ship():
+		global_position.y = 0.08
+
 	# Trade cart behavior: shuttle between markets.
 	if unit_type == "trade_cart" and _trade_target != null:
 		_process_trade(delta)
