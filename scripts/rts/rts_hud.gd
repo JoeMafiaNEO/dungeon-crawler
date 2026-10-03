@@ -347,27 +347,24 @@ func _build_guide() -> void:
 	sub.add_theme_color_override("font_color", Color(0.75, 0.78, 0.82))
 	vb.add_child(sub)
 	var lines := [
-		["TAB", "Toggle top-down command view"],
-		["B", "Build menu (in command view)"],
-		["Left-click", "Select units · Click building to train · Click resource to gather"],
-		["Right-click", "Order selected units (move / attack / gather)"],
-		["Drag", "Select multiple units"],
+		"[TAB]  Toggle top-down command view",
+		"[B]  Build menu (in command view)",
+		"[Left-click]  Select units · Click building to train · Click resource to gather",
+		"[Right-click]  Order selected units (move / attack / gather)",
+		"[Drag]  Select multiple units",
 	]
-	for pair in lines:
-		var h := HBoxContainer.new()
-		h.add_theme_constant_override("separation", 12)
-		var key := Label.new()
-		key.text = pair[0]
-		key.custom_minimum_size = Vector2(90, 0)
-		key.add_theme_font_size_override("font_size", 15)
-		key.add_theme_color_override("font_color", Color(1.0, 0.9, 0.55))
-		h.add_child(key)
-		var desc := Label.new()
-		desc.text = pair[1]
-		desc.add_theme_font_size_override("font_size", 14)
-		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		h.add_child(desc)
-		vb.add_child(h)
+	for line in lines:
+		var row := RichTextLabel.new()
+		row.bbcode_enabled = true
+		row.fit_content = true
+		row.scroll_active = false
+		row.add_theme_font_size_override("normal_font_size", 14)
+		# Split "[KEY]" (gold) from the description (white).
+		var brk: int = line.find("]  ")
+		var key_part: String = line.substr(0, brk + 1)
+		var desc_part: String = line.substr(brk + 3)
+		row.text = "[color=#ffd966]%s[/color]  [color=#e8e8e8]%s[/color]" % [key_part, desc_part]
+		vb.add_child(row)
 	var dismiss := Label.new()
 	dismiss.text = "Press TAB to start commanding — this card will fade."
 	dismiss.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
