@@ -4,6 +4,7 @@ extends Node
 
 signal lobby_list_updated(lobbies: Array) # Array of Dictionaries {id, name, players, max_players}
 signal lobby_created_success
+signal continue_staging_ready
 signal lobby_join_succeeded
 signal lobby_members_changed
 signal connection_failed(reason: String)
@@ -57,6 +58,9 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 		connection_failed.emit("Steam lobby creation failed.")
 		return
 	lobby_id = new_lobby_id
+	if not _continued_run.is_empty():
+		_on_continue_lobby_created()
+		return
 	Steam.setLobbyData(lobby_id, "game", GAME_TAG)
 	Steam.setLobbyData(lobby_id, "name", "%s's Dungeon" % SteamManager.persona_name)
 	Steam.setLobbyData(lobby_id, "difficulty", str(host_difficulty))
@@ -217,11 +221,15 @@ func play_daily() -> void:
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
 
-## Resume a saved solo run from the main menu.
+## Resume a saved run from the main menu. Branches on multiplayer saves.
 func continue_run() -> bool:
 	var run := SaveManager.load_run()
 	if run.is_empty():
 		return false
+	if int(run.get("save_version", 0)) != SaveManager.SAVE_VERSION:
+		return false
+	if bool(run.get("is_multiplayer", false)):
+		return continue_multiplayer(run)
 	leave_lobby()
 	is_host = true
 	selected_class_id = str(run.get("class_id", "warrior"))
@@ -231,6 +239,90 @@ func continue_run() -> bool:
 	Dungeon.next_level_number = int(run.get("level_number", 1))
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 	return true
+
+
+## Continue a multiplayer run: re-host a Steam lobby, then load the saved level.
+## The host's saved state is applied; clients rejoin via the staging UI.
+var _continued_run: Dictionary = {}
+
+func continue_multiplayer(run: Dictionary) -> bool:
+	if not SteamManager.initialized:
+		connection_failed.emit("Steam isn't running. Can't re-host the run.")
+		return false
+	_continued_run = run
+	# Restore host settings from the save.
+	var lobby: Dictionary = run.get("lobby", {})
+	host_difficulty = float(run.get("host_difficulty", 1.0))
+	host_loot_mult = float(run.get("host_loot_mult", 1.0))
+	# Re-host a new lobby with the same settings.
+	_reset_peer()
+	peer = SteamMultiplayerPeer.new()
+	if peer.create_host() != OK:
+		connection_failed.emit("Couldn't start a host peer.")
+		return false
+	multiplayer.multiplayer_peer = peer
+	is_host = true
+	server_id = SteamManager.steam_id
+	Steam.createLobby(Steam.LOBBY_TYPE_FRIENDS_ONLY, int(lobby.get("max_players", MAX_PLAYERS)))
+	return true
+
+
+func _on_continue_lobby_created() -> void:
+	# Called after the continued-run lobby is created.
+	var run_id := "%s_%d" % [str(_continued_run.get("saved_at", "")), int(_continued_run.get("seed", 0))]
+	Steam.setLobbyData(lobby_id, "game", GAME_TAG)
+	Steam.setLobbyData(lobby_id, "name", str(_continued_run.get("lobby", {}).get("lobby_name", "Dungeon")))
+	Steam.setLobbyData(lobby_id, "continued_run", "1")
+	Steam.setLobbyData(lobby_id, "run_id", run_id)
+	Steam.setLobbyData(lobby_id, "difficulty", str(host_difficulty))
+	Steam.setLobbyData(lobby_id, "loot_mult", str(host_loot_mult))
+	Steam.setLobbyJoinable(lobby_id, true)
+	_refresh_members()
+	# Show the staging UI; the host starts the run from there.
+	continue_staging_ready.emit()
+
+
+## Host starts the continued run from the staging UI.
+## Open the Steam invite dialog for the current lobby.
+func open_invite_dialog() -> void:
+	if lobby_id != 0 and SteamManager.initialized:
+		Steam.activateGameOverlayInviteDialog(lobby_id)
+
+
+## Invite a specific friend to the lobby.
+func invite_friend(steam_id: int) -> void:
+	if lobby_id != 0 and SteamManager.initialized:
+		Steam.inviteUserToGame(lobby_id, str(steam_id))
+
+
+func start_continued_run() -> void:
+	if not is_host or lobby_id == 0:
+		return
+	Steam.setLobbyJoinable(lobby_id, false)
+	_continue_load_level()
+
+
+## Load the saved level for a continued multiplayer run.
+func _continue_load_level() -> void:
+	var run := _continued_run
+	_continued_run = {}
+	# Find the host's roster entry for their saved state.
+	var host_state := {}
+	var host_class := "warrior"
+	var my_id := SteamManager.steam_id
+	for entry in run.get("roster", []):
+		if int(entry.get("steam_id", 0)) == my_id:
+			host_state = entry.get("player_state", {})
+			host_class = str(entry.get("class_id", "warrior"))
+			break
+	selected_class_id = host_class
+	Dungeon.saved_player_state = host_state
+	Dungeon.next_theme_id = str(run.get("theme_id", "village"))
+	Dungeon.next_seed = int(run.get("seed", randi()))
+	Dungeon.next_level_number = int(run.get("level_number", 1))
+	# Stash the roster for the staging UI.
+	Dungeon.continued_roster = run.get("roster", [])
+	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
 
 func _reset_peer() -> void:

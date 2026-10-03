@@ -152,6 +152,13 @@ func show_pause() -> void:
 	_layout_pause()
 	# Class switching is solo-only.
 	%ClassButton.visible = multiplayer.get_peers().size() == 0
+	# Save & Quit label depends on host/client role.
+	if multiplayer.get_peers().size() == 0:
+		%SaveQuitButton.text = "Save & Quit to Menu"
+	elif multiplayer.is_server():
+		%SaveQuitButton.text = "Save & Quit (saves run)"
+	else:
+		%SaveQuitButton.text = "Disconnect (host holds the save)"
 
 
 func hide_pause() -> void:
@@ -173,17 +180,44 @@ func _on_quit_pressed() -> void:
 
 
 ## Save the current run as a save point, then quit to the menu.
+## Host in multiplayer: saves the full roster. Client: just disconnects.
 func _on_save_quit_pressed() -> void:
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon != null and _player != null:
-		var theme_id := str(dungeon.get("theme").get("theme_id")) if dungeon.get("theme") != null else "village"
+	if dungeon == null or _player == null:
+		_on_quit_pressed()
+		return
+	var theme_id := str(dungeon.get("theme").get("theme_id")) if dungeon.get("theme") != null else "village"
+	var level_number := int(dungeon.get("level_number"))
+	if multiplayer.get_peers().size() > 0 and not multiplayer.is_server():
+		# Client: warn that only the host's save persists.
+		_show_quit_confirm("Disconnect? Only the host's save will persist.", _on_quit_pressed)
+		return
+	if multiplayer.get_peers().size() > 0:
+		# Host: multiplayer save with roster collection (async, then quit).
+		dungeon.save_multiplayer_run(theme_id, level_number, Dungeon.next_seed)
+		# save_multiplayer_run waits 3s for clients; quit after.
+		await get_tree().create_timer(3.5).timeout
+	else:
 		SaveManager.save_run({
 			"theme_id": theme_id,
-			"level_number": int(dungeon.get("level_number")),
+			"level_number": level_number,
 			"class_id": _player.class_id,
 			"player_state": _player.get_state(),
 		})
 	_on_quit_pressed()
+
+
+## Show a confirmation dialog with a custom message and confirm callback.
+func _show_quit_confirm(message: String, on_confirm: Callable) -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.dialog_text = message
+	dialog.ok_button_text = "Confirm"
+	dialog.cancel_button_text = "Cancel"
+	add_child(dialog)
+	dialog.confirmed.connect(on_confirm)
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.popup_centered()
 
 
 func _on_class_pressed() -> void:

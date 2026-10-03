@@ -1775,6 +1775,11 @@ func die() -> void:
 		if hud != null:
 			hud.show_death_screen(run_stats())
 		return
+	# Multiplayer: check for party wipe (server clears the run).
+	# Route through the server since die() runs on the player's authority.
+	var dgn := get_tree().get_first_node_in_group("dungeon")
+	if dgn != null and dgn.has_method("notify_player_died"):
+		dgn.rpc_id(NetworkManager.server_id, "notify_player_died")
 	if hud != null:
 		hud.toast("You died! You lost all your items.")
 	await get_tree().create_timer(3.0).timeout

@@ -175,12 +175,15 @@ func set_setting(section: String, key: String, value) -> void:
 # Auto-saved on every level transition; cleared on death.
 
 const RUN_SAVE_PATH := "user://run_save.cfg"
+## Save format version. Continue refuses saves with a mismatched version.
+const SAVE_VERSION := 1
 
 
 func save_run(run: Dictionary) -> void:
 	var cfg := ConfigFile.new()
 	var data := run.duplicate(true)
 	data["saved_at"] = Time.get_datetime_string_from_system()
+	data["save_version"] = SAVE_VERSION
 	cfg.set_value("run", "data", data)
 	# Atomic write: save to temp, then rename.
 	var tmp_path := RUN_SAVE_PATH + ".tmp"
@@ -224,7 +227,22 @@ func run_summary() -> String:
 			theme_name = "MegaMart Supermarket"
 		"warlord":
 			theme_name = "Warlord's Domain"
+	if bool(run.get("is_multiplayer", false)):
+		var roster: Array = run.get("roster", [])
+		var names: Array = []
+		for entry in roster:
+			var ps2: Dictionary = entry.get("player_state", {})
+			names.append("%s %d" % [str(entry.get("class_id", "?")).capitalize(), int(ps2.get("level", 1))])
+		return "%d players (%s) · %s · Level %d" % [roster.size(), ", ".join(names), theme_name, int(run.get("level_number", 1))]
 	var ps: Dictionary = run.get("player_state", {})
 	var lvl := int(ps.get("level", 1))
 	var class_id := str(run.get("class_id", "warrior")).capitalize()
 	return "Lv %d %s · %s · Level %d" % [lvl, class_id, theme_name, int(run.get("level_number", 1))]
+
+
+## True if the saved run's version matches the current format.
+func is_save_compatible() -> bool:
+	var run := load_run()
+	if run.is_empty():
+		return false
+	return int(run.get("save_version", 0)) == SAVE_VERSION

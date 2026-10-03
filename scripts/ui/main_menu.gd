@@ -14,7 +14,7 @@ const CLASS_DESCS := {
 
 func _ready() -> void:
 	_style_buttons()
-	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %ClassPhase]
+	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %ClassPhase, %StagingPhase]
 	if SteamManager.initialized:
 		%PersonaLabel.text = "Logged in as %s" % SteamManager.persona_name
 	else:
@@ -25,6 +25,8 @@ func _ready() -> void:
 	NetworkManager.lobby_join_succeeded.connect(_on_join_ready)
 	NetworkManager.lobby_members_changed.connect(_refresh_members)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
+	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
+	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
 	_select_class("warrior")
 	_select_difficulty(1.0)
 	_select_loot(1.0)
@@ -230,6 +232,19 @@ func _refresh_solo_ui() -> void:
 		%ContinueButton.visible = true
 		%ContinueInfoLabel.visible = true
 		%ContinueInfoLabel.text = SaveManager.run_summary()
+		# Multiplayer saves get a distinct button label.
+		var run := SaveManager.load_run()
+		if bool(run.get("is_multiplayer", false)):
+			%ContinueButton.text = "Continue Multiplayer Run"
+		else:
+			%ContinueButton.text = "Continue Run"
+		# Version mismatch: disable with explanation.
+		if not SaveManager.is_save_compatible():
+			%ContinueButton.disabled = true
+			%ContinueButton.tooltip_text = "Save from an older version"
+		else:
+			%ContinueButton.disabled = false
+			%ContinueButton.tooltip_text = ""
 	else:
 		%ContinueButton.visible = false
 		%ContinueInfoLabel.visible = false
@@ -298,6 +313,101 @@ func _on_start_pressed() -> void:
 func _on_leave_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	NetworkManager.leave_lobby()
+	_show_phase("TitlePhase")
+
+
+# --- Staging (continued run) ---
+
+const STAGING_AUTO_START := 60.0
+var _staging_timer := 0.0
+var _staging_active := false
+
+
+func _on_staging_ready() -> void:
+	_show_phase("StagingPhase")
+	_staging_active = true
+	_staging_timer = STAGING_AUTO_START
+	%OpenLobbyCheck.button_pressed = false
+	Dungeon.continued_open_lobby = false
+	_refresh_staging_roster()
+	# Open the Steam invite dialog so the host can re-invite the crew.
+	NetworkManager.open_invite_dialog()
+
+
+func _process(delta: float) -> void:
+	if not _staging_active:
+		return
+	_staging_timer -= delta
+	if _staging_timer <= 0.0:
+		_staging_active = false
+		_on_start_run_pressed()
+		return
+	%AutoStartLabel.text = "Auto-start in %ds" % int(ceili(_staging_timer))
+
+
+func _refresh_staging_roster() -> void:
+	if not _staging_active:
+		return
+	# Clear existing rows.
+	for child in %RosterList.get_children():
+		child.queue_free()
+	var roster: Array = Dungeon.continued_roster
+	var run := SaveManager.load_run()
+	%StagingInfo.text = SaveManager.run_summary()
+	var joined := {}
+	for sid in NetworkManager.lobby_members:
+		joined[int(sid)] = true
+	for entry in roster:
+		var sid := int(entry.get("steam_id", 0))
+		var ps: Dictionary = entry.get("player_state", {})
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 12)
+		var lbl := Label.new()
+		var status := "Joined" if joined.has(sid) else "Waiting"
+		var status_color := Color(0.5, 1.0, 0.5) if joined.has(sid) else Color(1.0, 0.8, 0.4)
+		lbl.text = "%s — Lv %d %s [%s]" % [
+			entry.get("player_name", "?"),
+			int(ps.get("level", 1)),
+			str(entry.get("class_id", "?")).capitalize(),
+			status,
+		]
+		lbl.add_theme_color_override("font_color", status_color)
+		row.add_child(lbl)
+		if not joined.has(sid) and not bool(entry.get("is_host", false)):
+			var inv := Button.new()
+			inv.text = "Invite"
+			inv.pressed.connect(_on_invite_player_pressed.bind(sid))
+			row.add_child(inv)
+		%RosterList.add_child(row)
+
+
+func _on_invite_player_pressed(steam_id: int) -> void:
+	AudioManager.sfx("ui_click")
+	NetworkManager.invite_friend(steam_id)
+
+
+func _on_invite_all_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	NetworkManager.open_invite_dialog()
+
+
+func _on_open_lobby_toggled(pressed: bool) -> void:
+	AudioManager.sfx("ui_click")
+	Dungeon.continued_open_lobby = pressed
+
+
+func _on_start_run_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	_staging_active = false
+	NetworkManager.start_continued_run()
+
+
+func _on_staging_back_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	_staging_active = false
+	NetworkManager.leave_lobby()
+	Dungeon.continued_roster = []
 	_show_phase("TitlePhase")
 
 

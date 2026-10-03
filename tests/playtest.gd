@@ -109,6 +109,27 @@ func _test_save_roundtrip() -> void:
 	_assert(str(loaded.get("saved_at", "")) != "", "SaveManager stamps saved_at")
 	var summary: String = mgr.run_summary()
 	_assert(str(summary) != "", "run_summary non-empty for saved run")
+	# Multiplayer save format.
+	var mp_run := {
+		"theme_id": "dungeon", "level_number": 2, "seed": 999,
+		"is_multiplayer": true, "host_difficulty": 1.5, "host_loot_mult": 2.0,
+		"lobby": {"max_players": 4, "lobby_name": "Test"},
+		"roster": [
+			{"steam_id": 111, "player_name": "Host", "class_id": "warrior",
+			 "player_state": {"level": 5}, "rts_faction": 0, "is_host": true},
+			{"steam_id": 222, "player_name": "Guest", "class_id": "mage",
+			 "player_state": {"level": 3}, "rts_faction": 1, "is_host": false},
+		],
+	}
+	mgr.save_run(mp_run)
+	var mp_loaded: Dictionary = mgr.load_run()
+	_assert(bool(mp_loaded.get("is_multiplayer", false)), "Multiplayer flag preserved")
+	_assert(int(mp_loaded.get("save_version", 0)) == mgr.SAVE_VERSION, "Save version stamped")
+	_assert(float(mp_loaded.get("host_difficulty", 0.0)) == 1.5, "Host difficulty preserved")
+	_assert(mp_loaded.get("roster", []).size() == 2, "Roster preserved")
+	_assert(mgr.is_save_compatible(), "Save compatibility check passes")
+	var mp_summary: String = mgr.run_summary()
+	_assert("2 players" in mp_summary, "Multiplayer summary shows player count")
 	mgr.clear_run()
 	_assert(not mgr.has_run(), "clear_run removes the run")
 	# Restore the real run save if there was one.

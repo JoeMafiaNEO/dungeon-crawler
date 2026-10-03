@@ -8,6 +8,12 @@ extends Node3D
 ## Run handoff (set before change_scene_to_file):
 ##   next_theme_id / next_seed / next_level_number / saved_player_state
 
+## Multiplayer save: roster collection state.
+const SAVE_STATE_TIMEOUT := 3.0
+var _save_roster: Array = []
+var _save_pending: Dictionary = {}
+var _save_base: Dictionary = {}
+
 const PlayerScene := preload("res://scenes/player/player.tscn")
 const MobScene := preload("res://scenes/mobs/mob.tscn")
 const PickupScene := preload("res://scenes/items/item_pickup.tscn")
@@ -22,6 +28,10 @@ static var next_theme_id: String = "village"
 static var next_seed: int = 12345
 static var next_level_number: int = 1
 static var saved_player_state: Dictionary = {}
+## Roster from a continued multiplayer save (empty for fresh runs).
+static var continued_roster: Array = []
+## Host toggle: allow strangers to join a continued run as fresh characters.
+static var continued_open_lobby: bool = false
 
 ## Warlord's Domain: the river runs north-south at x=0, 8m wide.
 ## Ships move freely but get +50% speed on water.
@@ -182,11 +192,72 @@ func register_class(class_id: String) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
+	# Continued run: match the joiner against the saved roster.
+	var roster_entry := _find_roster_entry(sender)
+	if not continued_roster.is_empty():
+		if roster_entry.is_empty() and not continued_open_lobby:
+			# Stranger on a roster-locked lobby: reject.
+			rpc_id(sender, "reject_join", "This lobby is continuing a saved run (roster-locked).")
+			return
+		if not roster_entry.is_empty():
+			# Returning player: restore their saved class and state.
+			class_id = str(roster_entry.get("class_id", class_id))
 	peer_classes[sender] = class_id
 	_do_spawn(sender, class_id, _next_spawn_point())
 	var node := get_player_node(sender)
 	if node != null:
 		rpc("spawn_player", sender, class_id, node.position)
+	# Send the saved state to the rejoiner (server also applies locally).
+	if not roster_entry.is_empty():
+		var ps: Dictionary = roster_entry.get("player_state", {})
+		if not ps.is_empty():
+			node.apply_state(ps)
+			rpc_id(sender, "apply_continued_state", ps)
+		# Warlord: reclaim their faction from AI control.
+		if is_warlord:
+			_reclaim_faction(sender, int(roster_entry.get("rts_faction", -1)))
+
+
+## Find a roster entry by Steam ID. Returns {} if not found.
+func _find_roster_entry(steam_id: int) -> Dictionary:
+	for entry in continued_roster:
+		if int(entry.get("steam_id", 0)) == steam_id:
+			return entry
+	return {}
+
+
+@rpc("any_peer", "call_local")
+func reject_join(reason: String) -> void:
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("toast"):
+		hud.toast(reason)
+	await get_tree().create_timer(2.0).timeout
+	NetworkManager.leave_lobby()
+	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
+
+
+@rpc("any_peer", "call_local")
+func apply_continued_state(ps: Dictionary) -> void:
+	var me := _my_player()
+	if me != null:
+		me.apply_state(ps)
+
+
+## A returning player takes their saved Warlord faction back from AI control.
+func _reclaim_faction(peer_id: int, faction_id: int) -> void:
+	if _rts_manager == null or faction_id < 0:
+		return
+	if not _rts_manager.factions.has(faction_id):
+		return
+	_rts_manager.faction_peers[faction_id] = peer_id
+	# Remove the AI driver for this faction.
+	for child in get_children():
+		if child is AIWarlord and child.faction_id == faction_id:
+			child.queue_free()
+	var node := get_player_node(peer_id)
+	if node != null:
+		node.set("rts_faction", faction_id)
+	rpc("announce", "%s has rejoined the battle!" % NetworkManager.member_name(peer_id))
 
 
 @rpc("any_peer", "call_local")
@@ -373,13 +444,16 @@ func change_level(theme_id: String, new_seed: int, new_level: int) -> void:
 		# Save point: persist the run so it can be continued from the menu.
 		# Server-only: clients saving would poison their solo Continue.
 		if multiplayer.is_server():
-			SaveManager.save_run({
-				"theme_id": theme_id,
-				"level_number": new_level,
-				"class_id": me.class_id,
-				"player_state": me.get_state(),
-				"seed": new_seed,
-			})
+			if multiplayer.get_peers().size() > 0:
+				save_multiplayer_run(theme_id, new_level, new_seed)
+			else:
+				SaveManager.save_run({
+					"theme_id": theme_id,
+					"level_number": new_level,
+					"class_id": me.class_id,
+					"player_state": me.get_state(),
+					"seed": new_seed,
+				})
 		AudioManager.sfx("portal_enter")
 	next_theme_id = theme_id
 	next_seed = new_seed
@@ -489,15 +563,39 @@ func _setup_warlord() -> void:
 
 	# Register player factions.
 	var faction_id := 0
-	var players := get_tree().get_nodes_in_group("players")
-	print("[Warlord] Found %d players" % players.size())
-	for p in players:
-		var class_id := str(p.get("class_id"))
-		var peer_id := p.get_multiplayer_authority()
-		_rts_manager.register_faction(faction_id, peer_id, class_id)
-		p.set("rts_faction", faction_id)
-		_spawn_faction_base(faction_id, _faction_spawn_pos(faction_id))
-		faction_id += 1
+	if not continued_roster.is_empty():
+		# Continued run: pre-register ALL roster factions by saved ID.
+		# No-shows become AI immediately; rejoiners reclaim via _reclaim_faction.
+		var connected := {}
+		for pl in get_tree().get_nodes_in_group("players"):
+			connected[int(pl.get_multiplayer_authority())] = pl
+		for entry in continued_roster:
+			var fid := int(entry.get("rts_faction", -1))
+			if fid < 0:
+				continue
+			var sid := int(entry.get("steam_id", 0))
+			var cls := str(entry.get("class_id", "warrior"))
+			if connected.has(sid):
+				_rts_manager.register_faction(fid, sid, cls)
+				connected[sid].set("rts_faction", fid)
+			else:
+				# No-show: AI controls this faction from the start.
+				_rts_manager.register_faction(fid, -1, cls)
+				var ai := AIWarlord.new()
+				ai.faction_id = fid
+				add_child(ai)
+			_spawn_faction_base(fid, _faction_spawn_pos(fid))
+			faction_id = maxi(faction_id, fid + 1)
+	else:
+		var players := get_tree().get_nodes_in_group("players")
+		print("[Warlord] Found %d players" % players.size())
+		for p in players:
+			var class_id := str(p.get("class_id"))
+			var peer_id := p.get_multiplayer_authority()
+			_rts_manager.register_faction(faction_id, peer_id, class_id)
+			p.set("rts_faction", faction_id)
+			_spawn_faction_base(faction_id, _faction_spawn_pos(faction_id))
+			faction_id += 1
 
 	# Solo: add AI warlord opponent(s).
 	if faction_id == 1:
@@ -1823,3 +1921,135 @@ func _build_torches() -> void:
 		var sparks := Effects.make_flame()
 		sparks.position = pos + Vector3(0, 0.35, 0)
 		add_child(sparks)
+
+
+# --- Multiplayer save ---
+
+## Save a multiplayer run: collect each peer's state, then write the roster.
+## Called by the server on level transition and from the host's pause menu.
+func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) -> void:
+	if not multiplayer.is_server():
+		return
+	_save_base = {
+		"theme_id": theme_id,
+		"level_number": level_number,
+		"seed": level_seed,
+		"is_multiplayer": true,
+		"host_difficulty": NetworkManager.host_difficulty,
+		"host_loot_mult": NetworkManager.host_loot_mult,
+		"lobby": {
+			"max_players": NetworkManager.MAX_PLAYERS,
+			"lobby_name": "%s's Dungeon" % SteamManager.persona_name if SteamManager.initialized else "Dungeon",
+		},
+	}
+	_save_roster.clear()
+	_save_pending.clear()
+	# Host's own state first.
+	var me := _my_player()
+	if me != null:
+		_save_roster.append(_roster_entry(multiplayer.get_unique_id(), me))
+	# Ask each connected peer for their state.
+	for pid in multiplayer.get_peers():
+		_save_pending[pid] = true
+	if _save_pending.is_empty():
+		_write_multiplayer_save()
+		return
+	rpc("rpc_request_save_state")
+	# 3s window, then write with whoever responded.
+	await get_tree().create_timer(SAVE_STATE_TIMEOUT).timeout
+	_mark_missing_disconnected()
+	_write_multiplayer_save()
+
+
+func _roster_entry(steam_id: int, player_node: Node) -> Dictionary:
+	var rts_faction := -1
+	if is_warlord and _rts_manager != null:
+		for fid in _rts_manager.faction_peers:
+			if _rts_manager.faction_peers[fid] == steam_id:
+				rts_faction = int(fid)
+	return {
+		"steam_id": steam_id,
+		"player_name": NetworkManager.member_name(steam_id),
+		"class_id": str(player_node.get("class_id")),
+		"player_state": player_node.get_state(),
+		"rts_faction": rts_faction,
+		"is_host": steam_id == multiplayer.get_unique_id(),
+	}
+
+
+func _mark_missing_disconnected() -> void:
+	for pid in _save_pending:
+		var node := get_player_node(pid)
+		var entry := _roster_entry(pid, node) if node != null else {
+			"steam_id": pid, "player_name": NetworkManager.member_name(pid),
+			"class_id": "warrior", "player_state": {}, "rts_faction": -1, "is_host": false,
+		}
+		entry["disconnected"] = true
+		_save_roster.append(entry)
+
+
+func _write_multiplayer_save() -> void:
+	_save_base["roster"] = _save_roster
+	# class_id at top level for backwards compat (host's class).
+	if not _save_roster.is_empty():
+		_save_base["class_id"] = _save_roster[0].get("class_id", "warrior")
+		_save_base["player_state"] = _save_roster[0].get("player_state", {})
+	SaveManager.save_run(_save_base)
+
+
+@rpc("any_peer", "call_local")
+func rpc_request_save_state() -> void:
+	if multiplayer.is_server():
+		return
+	var me := _my_player()
+	if me == null:
+		return
+	var state := {
+		"steam_id": multiplayer.get_unique_id(),
+		"player_name": SteamManager.persona_name if SteamManager.initialized else "Player",
+		"class_id": str(me.get("class_id")),
+		"player_state": me.get_state(),
+		"rts_faction": -1,
+		"is_host": false,
+	}
+	rpc_id(1, "rpc_submit_save_state", state)
+
+
+@rpc("any_peer")
+func rpc_submit_save_state(state: Dictionary) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if _save_pending.has(sender):
+		_save_pending.erase(sender)
+		_save_roster.append(state)
+
+
+## A player died; the server checks if the whole party wiped.
+@rpc("any_peer", "call_local")
+func notify_player_died() -> void:
+	if not multiplayer.is_server():
+		return
+	# Defer one frame so the death flag settles.
+	await get_tree().process_frame
+	check_party_wipe()
+
+
+## If all connected players are dead, the run is over: clear the save.
+func check_party_wipe() -> void:
+	if not multiplayer.is_server():
+		return
+	if multiplayer.get_peers().is_empty():
+		return  # solo handled in player.die()
+	var connected := {}
+	for pid in multiplayer.get_peers():
+		connected[int(pid)] = true
+	connected[multiplayer.get_unique_id()] = true
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Player
+		# Only count connected players; disconnected don't block the wipe.
+		if p != null and connected.has(p.get_multiplayer_authority()):
+			if bool(p.get("alive")):
+				return  # someone's still standing
+	SaveManager.clear_run()
+	rpc("announce", "Party wiped! The run has been erased.")
