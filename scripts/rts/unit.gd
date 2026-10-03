@@ -762,6 +762,8 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 	dir.y = 0.0
 	if dir.length() > 0.1:
 		dir = dir.normalized()
+		# Steering: separation from nearby units + slide around buildings.
+		dir = (dir + _separation_steer() * 1.5 + _building_avoid_steer() * 2.0).normalized()
 		var spd := move_speed
 		if _is_ship() and _is_on_water(global_position):
 			spd *= 1.5
@@ -769,6 +771,48 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 		# Face movement direction.
 		var target_yaw := atan2(-dir.x, -dir.z)
 		rotation.y = lerp_angle(rotation.y, target_yaw, 10.0 * delta)
+
+
+## Push away from nearby units so groups don't clump into a blob.
+func _separation_steer() -> Vector3:
+	var push := Vector3.ZERO
+	var count := 0
+	for other in get_tree().get_nodes_in_group("rts_units"):
+		if other == self:
+			continue
+		var onode := other as Node3D
+		if onode == null:
+			continue
+		var diff: Vector3 = global_position - onode.global_position
+		diff.y = 0.0
+		var d: float = diff.length()
+		if d > 0.01 and d < 1.2:
+			push += diff.normalized() * (1.2 - d)
+			count += 1
+	if count > 0:
+		push /= float(count)
+	return push
+
+
+## Push away from nearby buildings, with a tangential slide so units
+## flow around corners instead of grinding into walls.
+func _building_avoid_steer() -> Vector3:
+	var push := Vector3.ZERO
+	for b in get_tree().get_nodes_in_group("rts_buildings"):
+		if not is_instance_valid(b) or bool(b.get("destroyed")):
+			continue
+		var bnode := b as Node3D
+		if bnode == null:
+			continue
+		var diff: Vector3 = global_position - bnode.global_position
+		diff.y = 0.0
+		var d: float = diff.length()
+		if d > 0.01 and d < 3.0:
+			var away: Vector3 = diff.normalized() * (3.0 - d)
+			# Tangential component: slide around the building.
+			var tangent := Vector3(-away.z, 0, away.x)
+			push += away + tangent * 0.8
+	return push
 
 
 func _find_nearest_enemy(max_dist: float) -> Node3D:
