@@ -1,4 +1,4 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=9 format=3 uid="uid://b1menu_phased"]
 
 [ext_resource type="Script" path="res://scripts/ui/main_menu.gd" id="1"]
 [ext_resource type="Texture2D" path="res://assets/sprites/menu/menu_bg.png" id="2"]
@@ -7,6 +7,7 @@
 [ext_resource type="Texture2D" path="res://assets/sprites/menu/portrait_mage_64.png" id="5"]
 
 [node name="MainMenu" type="Control"]
+layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -34,7 +35,7 @@ grow_horizontal = 2
 grow_vertical = 2
 color = Color(0.02, 0.02, 0.05, 0.55)
 
-[node name="MenuPanel" type="VBoxContainer" parent="."]
+[node name="TitlePhase" type="VBoxContainer" parent="."]
 unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
@@ -42,124 +43,383 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-theme_override_constants/separation = 6
+theme_override_constants/separation = 8
 alignment = 1
 
-[node name="Title" type="Label" parent="MenuPanel"]
+[node name="Title" type="Label" parent="TitlePhase"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 48
 text = "DUNGEON CRAWLER"
 horizontal_alignment = 1
 
-[node name="Subtitle" type="Label" parent="MenuPanel"]
+[node name="Subtitle" type="Label" parent="TitlePhase"]
 layout_mode = 2
 text = "A tiny multiplayer hack-and-slash"
 horizontal_alignment = 1
 
-[node name="PersonaLabel" type="Label" parent="MenuPanel"]
-unique_name_in_owner = true
+[node name="PersonaLabel" type="Label" parent="TitlePhase"]
 layout_mode = 2
 text = "..."
 horizontal_alignment = 1
 
-[node name="ClassLabel" type="Label" parent="MenuPanel"]
+[node name="StartButton" type="Button" parent="TitlePhase"]
+unique_name_in_owner = true
 layout_mode = 2
-text = "Choose your class:"
+size_flags_horizontal = 4
+text = "Start Game"
+
+[node name="StatsLabel" type="Label" parent="TitlePhase"]
+layout_mode = 2
+text = ""
 horizontal_alignment = 1
 
-[node name="ClassRow" type="HBoxContainer" parent="MenuPanel"]
-layout_mode = 2
-theme_override_constants/separation = 10
+[node name="ModePhase" type="VBoxContainer" parent="."
+visible = false]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
 alignment = 1
 
-[node name="WarriorButton" type="Button" parent="MenuPanel/ClassRow"]
-unique_name_in_owner = true
+[node name="ModeLabel" type="Label" parent="ModePhase"]
 layout_mode = 2
-toggle_mode = true
-text = "Warrior"
-icon = ExtResource("3")
-expand_icon = false
-
-[node name="RogueButton" type="Button" parent="MenuPanel/ClassRow"]
-unique_name_in_owner = true
-layout_mode = 2
-toggle_mode = true
-text = "Rogue"
-icon = ExtResource("4")
-expand_icon = false
-
-[node name="MageButton" type="Button" parent="MenuPanel/ClassRow"]
-unique_name_in_owner = true
-layout_mode = 2
-toggle_mode = true
-text = "Mage"
-icon = ExtResource("5")
-expand_icon = false
-
-[node name="ClassDescLabel" type="Label" parent="MenuPanel"]
-unique_name_in_owner = true
-layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Choose your mode"
 horizontal_alignment = 1
 
-[node name="HostButton" type="Button" parent="MenuPanel"]
+[node name="MultiButton" type="Button" parent="ModePhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Multiplayer"
+
+[node name="SoloButton" type="Button" parent="ModePhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Solo"
+
+[node name="ModeBackButton" type="Button" parent="ModePhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Back"
+
+[node name="MultiPhase" type="VBoxContainer" parent="."
+visible = false]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="MultiLabel" type="Label" parent="MultiPhase"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Multiplayer"
+horizontal_alignment = 1
+
+[node name="HostButton" type="Button" parent="MultiPhase"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 4
 text = "Host Game"
 
-[node name="JoinLabel" type="Label" parent="MenuPanel"]
-layout_mode = 2
-text = "— or join a friend's lobby —"
-horizontal_alignment = 1
-
-[node name="LobbyList" type="ItemList" parent="MenuPanel"]
+[node name="JoinButton" type="Button" parent="MultiPhase"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(420, 90)
 layout_mode = 2
 size_flags_horizontal = 4
+text = "Join Game"
 
-[node name="JoinRow" type="HBoxContainer" parent="MenuPanel"]
+[node name="MultiBackButton" type="Button" parent="MultiPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Back"
+
+[node name="HostPhase" type="VBoxContainer" parent="."
+visible = false]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="HostLabel" type="Label" parent="HostPhase"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Host Game"
+horizontal_alignment = 1
+
+[node name="HostClassLabel" type="Label" parent="HostPhase"]
+layout_mode = 2
+text = "Choose your class:"
+horizontal_alignment = 1
+
+[node name="HostClassRow" type="HBoxContainer" parent="HostPhase"]
 layout_mode = 2
 theme_override_constants/separation = 10
 alignment = 1
 
-[node name="RefreshButton" type="Button" parent="MenuPanel/JoinRow"]
+[node name="HostWarriorButton" type="Button" parent="HostPhase/HostClassRow"]
 unique_name_in_owner = true
-layout_mode = 2
-text = "Refresh"
-
-[node name="JoinButton" type="Button" parent="MenuPanel/JoinRow"]
-unique_name_in_owner = true
-layout_mode = 2
-text = "Join Selected"
-
-[node name="SoloButton" type="Button" parent="MenuPanel"]
 layout_mode = 2
 size_flags_horizontal = 4
-text = "Play Solo (no Steam)"
+icon = ExtResource("3")
+text = "Warrior"
 
-[node name="ContinueButton" type="Button" parent="MenuPanel"]
+[node name="HostRogueButton" type="Button" parent="HostPhase/HostClassRow"]
 unique_name_in_owner = true
-visible = false
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("4")
+text = "Rogue"
+
+[node name="HostMageButton" type="Button" parent="HostPhase/HostClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("5")
+text = "Mage"
+
+[node name="HostClassDesc" type="Label" parent="HostPhase"]
+layout_mode = 2
+text = ""
+horizontal_alignment = 1
+
+[node name="DiffLabel" type="Label" parent="HostPhase"]
+layout_mode = 2
+text = "Difficulty:"
+horizontal_alignment = 1
+
+[node name="DiffRow" type="HBoxContainer" parent="HostPhase"]
+layout_mode = 2
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="DiffEasy" type="Button" parent="HostPhase/DiffRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Easy"
+
+[node name="DiffNormal" type="Button" parent="HostPhase/DiffRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Normal"
+
+[node name="DiffHard" type="Button" parent="HostPhase/DiffRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Hard"
+
+[node name="LootLabel" type="Label" parent="HostPhase"]
+layout_mode = 2
+text = "Loot:"
+horizontal_alignment = 1
+
+[node name="LootRow" type="HBoxContainer" parent="HostPhase"]
+layout_mode = 2
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="LootHalf" type="Button" parent="HostPhase/LootRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "0.5x"
+
+[node name="LootNormal" type="Button" parent="HostPhase/LootRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "1x"
+
+[node name="LootDouble" type="Button" parent="HostPhase/LootRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "2x"
+
+[node name="CreateLobbyButton" type="Button" parent="HostPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Create Lobby"
+
+[node name="HostBackButton" type="Button" parent="HostPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Back"
+
+[node name="JoinPhase" type="VBoxContainer" parent="."
+visible = false]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="JoinLabel" type="Label" parent="JoinPhase"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Join Game"
+horizontal_alignment = 1
+
+[node name="LobbyList" type="ItemList" parent="JoinPhase"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(420, 120)
+layout_mode = 2
+size_flags_horizontal = 4
+
+[node name="JoinRow" type="HBoxContainer" parent="JoinPhase"]
+layout_mode = 2
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="RefreshButton" type="Button" parent="JoinPhase/JoinRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Refresh"
+
+[node name="JoinSelectedButton" type="Button" parent="JoinPhase/JoinRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Join Selected"
+
+[node name="JoinBackButton" type="Button" parent="JoinPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Back"
+
+[node name="JoinStatusLabel" type="Label" parent="JoinPhase"]
+layout_mode = 2
+text = ""
+horizontal_alignment = 1
+
+[node name="SoloPhase" type="VBoxContainer" parent="."
+visible = false]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="SoloLabel" type="Label" parent="SoloPhase"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Solo"
+horizontal_alignment = 1
+
+[node name="NewGameButton" type="Button" parent="SoloPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Start New Game"
+
+[node name="ContinueButton" type="Button" parent="SoloPhase"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 4
 text = "Continue Run"
 
-[node name="ContinueInfoLabel" type="Label" parent="MenuPanel"]
-unique_name_in_owner = true
-visible = false
+[node name="ContinueInfoLabel" type="Label" parent="SoloPhase"]
 layout_mode = 2
+text = ""
 horizontal_alignment = 1
 
-[node name="StatsLabel" type="Label" parent="MenuPanel"]
+[node name="SoloBackButton" type="Button" parent="SoloPhase"]
 unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 4
+text = "Back"
+
+[node name="ClassPhase" type="VBoxContainer" parent="."
+visible = false]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="ClassLabel" type="Label" parent="ClassPhase"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Choose your class:"
 horizontal_alignment = 1
 
-[node name="StatusLabel" type="Label" parent="MenuPanel"]
+[node name="ClassRow" type="HBoxContainer" parent="ClassPhase"]
+layout_mode = 2
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="WarriorButton" type="Button" parent="ClassPhase/ClassRow"]
 unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("3")
+text = "Warrior"
+
+[node name="RogueButton" type="Button" parent="ClassPhase/ClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("4")
+text = "Rogue"
+
+[node name="MageButton" type="Button" parent="ClassPhase/ClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("5")
+text = "Mage"
+
+[node name="ClassDescLabel" type="Label" parent="ClassPhase"]
+layout_mode = 2
+text = ""
 horizontal_alignment = 1
+
+[node name="StartSoloButton" type="Button" parent="ClassPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Start"
+
+[node name="ClassBackButton" type="Button" parent="ClassPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Back"
 
 [node name="LobbyPanel" type="VBoxContainer" parent="."]
 unique_name_in_owner = true
@@ -203,13 +463,34 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Leave"
 
-[connection signal="pressed" from="MenuPanel/ClassRow/WarriorButton" to="." method="_on_warrior_pressed"]
-[connection signal="pressed" from="MenuPanel/ClassRow/RogueButton" to="." method="_on_rogue_pressed"]
-[connection signal="pressed" from="MenuPanel/ClassRow/MageButton" to="." method="_on_mage_pressed"]
-[connection signal="pressed" from="MenuPanel/HostButton" to="." method="_on_host_pressed"]
-[connection signal="pressed" from="MenuPanel/JoinRow/RefreshButton" to="." method="_on_refresh_pressed"]
-[connection signal="pressed" from="MenuPanel/JoinRow/JoinButton" to="." method="_on_join_pressed"]
-[connection signal="pressed" from="MenuPanel/SoloButton" to="." method="_on_solo_pressed"]
-[connection signal="pressed" from="MenuPanel/ContinueButton" to="." method="_on_continue_pressed"]
+[connection signal="pressed" from="TitlePhase/StartButton" to="." method="_on_start_game_pressed"]
+[connection signal="pressed" from="ModePhase/MultiButton" to="." method="_on_multi_pressed"]
+[connection signal="pressed" from="ModePhase/SoloButton" to="." method="_on_solo_pressed"]
+[connection signal="pressed" from="ModePhase/ModeBackButton" to="." method="_on_mode_back_pressed"]
+[connection signal="pressed" from="MultiPhase/HostButton" to="." method="_on_host_pressed"]
+[connection signal="pressed" from="MultiPhase/JoinButton" to="." method="_on_join_pressed"]
+[connection signal="pressed" from="MultiPhase/MultiBackButton" to="." method="_on_multi_back_pressed"]
+[connection signal="pressed" from="HostPhase/HostClassRow/HostWarriorButton" to="." method="_on_host_warrior_pressed"]
+[connection signal="pressed" from="HostPhase/HostClassRow/HostRogueButton" to="." method="_on_host_rogue_pressed"]
+[connection signal="pressed" from="HostPhase/HostClassRow/HostMageButton" to="." method="_on_host_mage_pressed"]
+[connection signal="pressed" from="HostPhase/DiffRow/DiffEasy" to="." method="_on_diff_easy_pressed"]
+[connection signal="pressed" from="HostPhase/DiffRow/DiffNormal" to="." method="_on_diff_normal_pressed"]
+[connection signal="pressed" from="HostPhase/DiffRow/DiffHard" to="." method="_on_diff_hard_pressed"]
+[connection signal="pressed" from="HostPhase/LootRow/LootHalf" to="." method="_on_loot_half_pressed"]
+[connection signal="pressed" from="HostPhase/LootRow/LootNormal" to="." method="_on_loot_normal_pressed"]
+[connection signal="pressed" from="HostPhase/LootRow/LootDouble" to="." method="_on_loot_double_pressed"]
+[connection signal="pressed" from="HostPhase/CreateLobbyButton" to="." method="_on_create_lobby_pressed"]
+[connection signal="pressed" from="HostPhase/HostBackButton" to="." method="_on_host_back_pressed"]
+[connection signal="pressed" from="JoinPhase/JoinRow/RefreshButton" to="." method="_on_refresh_pressed"]
+[connection signal="pressed" from="JoinPhase/JoinRow/JoinSelectedButton" to="." method="_on_join_selected_pressed"]
+[connection signal="pressed" from="JoinPhase/JoinBackButton" to="." method="_on_join_back_pressed"]
+[connection signal="pressed" from="SoloPhase/NewGameButton" to="." method="_on_new_game_pressed"]
+[connection signal="pressed" from="SoloPhase/ContinueButton" to="." method="_on_continue_pressed"]
+[connection signal="pressed" from="SoloPhase/SoloBackButton" to="." method="_on_solo_back_pressed"]
+[connection signal="pressed" from="ClassPhase/ClassRow/WarriorButton" to="." method="_on_warrior_pressed"]
+[connection signal="pressed" from="ClassPhase/ClassRow/RogueButton" to="." method="_on_rogue_pressed"]
+[connection signal="pressed" from="ClassPhase/ClassRow/MageButton" to="." method="_on_mage_pressed"]
+[connection signal="pressed" from="ClassPhase/StartSoloButton" to="." method="_on_start_solo_pressed"]
+[connection signal="pressed" from="ClassPhase/ClassBackButton" to="." method="_on_class_back_pressed"]
 [connection signal="pressed" from="LobbyPanel/StartButton" to="." method="_on_start_pressed"]
 [connection signal="pressed" from="LobbyPanel/LeaveButton" to="." method="_on_leave_pressed"]

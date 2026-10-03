@@ -14,6 +14,9 @@ const MAX_PLAYERS := 4
 var peer: SteamMultiplayerPeer
 var lobby_id: int = 0
 var is_host: bool = false
+## Host-configurable game settings (synced to clients via lobby data).
+var host_difficulty: float = 1.0
+var host_loot_mult: float = 1.0
 var server_id: int = 1
 var selected_class_id: String = "warrior"
 var lobby_members: Array[int] = []
@@ -56,6 +59,8 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 	lobby_id = new_lobby_id
 	Steam.setLobbyData(lobby_id, "game", GAME_TAG)
 	Steam.setLobbyData(lobby_id, "name", "%s's Dungeon" % SteamManager.persona_name)
+	Steam.setLobbyData(lobby_id, "difficulty", str(host_difficulty))
+	Steam.setLobbyData(lobby_id, "loot_mult", str(host_loot_mult))
 	Steam.setLobbyJoinable(lobby_id, true)
 	_refresh_members()
 	lobby_created_success.emit()
@@ -120,6 +125,11 @@ func _on_lobby_joined(joined_id: int, _permissions: int, _locked: bool, response
 	multiplayer.multiplayer_peer = peer
 	is_host = false
 	server_id = owner
+	# Pull the host's game settings from lobby data.
+	var diff_str := Steam.getLobbyData(lobby_id, "difficulty")
+	var loot_str := Steam.getLobbyData(lobby_id, "loot_mult")
+	host_difficulty = float(diff_str) if diff_str != "" else 1.0
+	host_loot_mult = float(loot_str) if loot_str != "" else 1.0
 
 
 func _on_connected_to_server() -> void:
@@ -185,6 +195,8 @@ func leave_lobby() -> void:
 func play_solo() -> void:
 	leave_lobby()
 	is_host = true
+	host_difficulty = 1.0
+	host_loot_mult = 1.0
 	SaveManager.clear_run()
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = "village"

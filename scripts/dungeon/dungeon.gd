@@ -311,7 +311,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 # --- Level transitions ---
 
 func _difficulty_scale() -> float:
-	return pow(1.15, float(level_number - 1))
+	return pow(1.15, float(level_number - 1)) * NetworkManager.host_difficulty
 
 
 ## Average damage output across all players. Used to scale mob HP so

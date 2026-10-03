@@ -507,7 +507,7 @@ func _drop_and_reward(attacker: int) -> void:
 	var is_village := theme_id == "village"
 	var rolls := 1 + data.bonus_drops
 	for r in rolls:
-		if randf() > data.drop_chance:
+		if randf() > data.drop_chance * NetworkManager.host_loot_mult:
 			continue
 		var total := 0.0
 		for d in data.drops:
