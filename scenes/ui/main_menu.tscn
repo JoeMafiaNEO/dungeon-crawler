@@ -34,50 +34,45 @@ grow_horizontal = 2
 grow_vertical = 2
 color = Color(0.02, 0.02, 0.05, 0.55)
 
-[node name="MenuScroll" type="ScrollContainer" parent="."]
+[node name="MenuPanel" type="VBoxContainer" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-horizontal_scroll_mode = 0
-
-[node name="MenuPanel" type="VBoxContainer" parent="MenuScroll"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_constants/separation = 10
+theme_override_constants/separation = 6
 alignment = 1
-size_flags_horizontal = 3
 
-[node name="Title" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="Title" type="Label" parent="MenuPanel"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 64
+theme_override_font_sizes/font_size = 48
 text = "DUNGEON CRAWLER"
 horizontal_alignment = 1
 
-[node name="Subtitle" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="Subtitle" type="Label" parent="MenuPanel"]
 layout_mode = 2
 text = "A tiny multiplayer hack-and-slash"
 horizontal_alignment = 1
 
-[node name="PersonaLabel" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="PersonaLabel" type="Label" parent="MenuPanel"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "..."
 horizontal_alignment = 1
 
-[node name="ClassLabel" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="ClassLabel" type="Label" parent="MenuPanel"]
 layout_mode = 2
 text = "Choose your class:"
 horizontal_alignment = 1
 
-[node name="ClassRow" type="HBoxContainer" parent="MenuScroll/MenuPanel"]
+[node name="ClassRow" type="HBoxContainer" parent="MenuPanel"]
 layout_mode = 2
-theme_override_constants/separation = 16
+theme_override_constants/separation = 10
 alignment = 1
 
-[node name="WarriorButton" type="Button" parent="MenuScroll/MenuPanel/ClassRow"]
+[node name="WarriorButton" type="Button" parent="MenuPanel/ClassRow"]
 unique_name_in_owner = true
 layout_mode = 2
 toggle_mode = true
@@ -85,7 +80,7 @@ text = "Warrior"
 icon = ExtResource("3")
 expand_icon = false
 
-[node name="RogueButton" type="Button" parent="MenuScroll/MenuPanel/ClassRow"]
+[node name="RogueButton" type="Button" parent="MenuPanel/ClassRow"]
 unique_name_in_owner = true
 layout_mode = 2
 toggle_mode = true
@@ -93,7 +88,7 @@ text = "Rogue"
 icon = ExtResource("4")
 expand_icon = false
 
-[node name="MageButton" type="Button" parent="MenuScroll/MenuPanel/ClassRow"]
+[node name="MageButton" type="Button" parent="MenuPanel/ClassRow"]
 unique_name_in_owner = true
 layout_mode = 2
 toggle_mode = true
@@ -101,67 +96,67 @@ text = "Mage"
 icon = ExtResource("5")
 expand_icon = false
 
-[node name="ClassDescLabel" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="ClassDescLabel" type="Label" parent="MenuPanel"]
 unique_name_in_owner = true
 layout_mode = 2
 horizontal_alignment = 1
 
-[node name="HostButton" type="Button" parent="MenuScroll/MenuPanel"]
+[node name="HostButton" type="Button" parent="MenuPanel"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 4
 text = "Host Game"
 
-[node name="JoinLabel" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="JoinLabel" type="Label" parent="MenuPanel"]
 layout_mode = 2
 text = "— or join a friend's lobby —"
 horizontal_alignment = 1
 
-[node name="LobbyList" type="ItemList" parent="MenuScroll/MenuPanel"]
+[node name="LobbyList" type="ItemList" parent="MenuPanel"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(420, 140)
+custom_minimum_size = Vector2(420, 90)
 layout_mode = 2
 size_flags_horizontal = 4
 
-[node name="JoinRow" type="HBoxContainer" parent="MenuScroll/MenuPanel"]
+[node name="JoinRow" type="HBoxContainer" parent="MenuPanel"]
 layout_mode = 2
-theme_override_constants/separation = 16
+theme_override_constants/separation = 10
 alignment = 1
 
-[node name="RefreshButton" type="Button" parent="MenuScroll/MenuPanel/JoinRow"]
+[node name="RefreshButton" type="Button" parent="MenuPanel/JoinRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "Refresh"
 
-[node name="JoinButton" type="Button" parent="MenuScroll/MenuPanel/JoinRow"]
+[node name="JoinButton" type="Button" parent="MenuPanel/JoinRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "Join Selected"
 
-[node name="SoloButton" type="Button" parent="MenuScroll/MenuPanel"]
+[node name="SoloButton" type="Button" parent="MenuPanel"]
 layout_mode = 2
 size_flags_horizontal = 4
 text = "Play Solo (no Steam)"
 
-[node name="ContinueButton" type="Button" parent="MenuScroll/MenuPanel"]
+[node name="ContinueButton" type="Button" parent="MenuPanel"]
 unique_name_in_owner = true
 visible = false
 layout_mode = 2
 size_flags_horizontal = 4
 text = "Continue Run"
 
-[node name="ContinueInfoLabel" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="ContinueInfoLabel" type="Label" parent="MenuPanel"]
 unique_name_in_owner = true
 visible = false
 layout_mode = 2
 horizontal_alignment = 1
 
-[node name="StatsLabel" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="StatsLabel" type="Label" parent="MenuPanel"]
 unique_name_in_owner = true
 layout_mode = 2
 horizontal_alignment = 1
 
-[node name="StatusLabel" type="Label" parent="MenuScroll/MenuPanel"]
+[node name="StatusLabel" type="Label" parent="MenuPanel"]
 unique_name_in_owner = true
 layout_mode = 2
 horizontal_alignment = 1
@@ -208,13 +203,13 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Leave"
 
-[connection signal="pressed" from="MenuScroll/MenuPanel/ClassRow/WarriorButton" to="." method="_on_warrior_pressed"]
-[connection signal="pressed" from="MenuScroll/MenuPanel/ClassRow/RogueButton" to="." method="_on_rogue_pressed"]
-[connection signal="pressed" from="MenuScroll/MenuPanel/ClassRow/MageButton" to="." method="_on_mage_pressed"]
-[connection signal="pressed" from="MenuScroll/MenuPanel/HostButton" to="." method="_on_host_pressed"]
-[connection signal="pressed" from="MenuScroll/MenuPanel/JoinRow/RefreshButton" to="." method="_on_refresh_pressed"]
-[connection signal="pressed" from="MenuScroll/MenuPanel/JoinRow/JoinButton" to="." method="_on_join_pressed"]
-[connection signal="pressed" from="MenuScroll/MenuPanel/SoloButton" to="." method="_on_solo_pressed"]
-[connection signal="pressed" from="MenuScroll/MenuPanel/ContinueButton" to="." method="_on_continue_pressed"]
+[connection signal="pressed" from="MenuPanel/ClassRow/WarriorButton" to="." method="_on_warrior_pressed"]
+[connection signal="pressed" from="MenuPanel/ClassRow/RogueButton" to="." method="_on_rogue_pressed"]
+[connection signal="pressed" from="MenuPanel/ClassRow/MageButton" to="." method="_on_mage_pressed"]
+[connection signal="pressed" from="MenuPanel/HostButton" to="." method="_on_host_pressed"]
+[connection signal="pressed" from="MenuPanel/JoinRow/RefreshButton" to="." method="_on_refresh_pressed"]
+[connection signal="pressed" from="MenuPanel/JoinRow/JoinButton" to="." method="_on_join_pressed"]
+[connection signal="pressed" from="MenuPanel/SoloButton" to="." method="_on_solo_pressed"]
+[connection signal="pressed" from="MenuPanel/ContinueButton" to="." method="_on_continue_pressed"]
 [connection signal="pressed" from="LobbyPanel/StartButton" to="." method="_on_start_pressed"]
 [connection signal="pressed" from="LobbyPanel/LeaveButton" to="." method="_on_leave_pressed"]
