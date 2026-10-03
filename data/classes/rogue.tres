@@ -1,0 +1,18 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/class_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/knight.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "rogue"
+display_name = "Rogue"
+description = "Fast striker. Hits quick, moves quicker, can't take a punch."
+tint = Color(0.65, 1, 0.65, 1)
+base_health = 85.0
+base_damage = 10.0
+base_move_speed = 6.6
+base_attack_cooldown = 0.32
+base_attack_range = 2.4
+starting_weapon = "worn_dagger"
+frames = [ExtResource("2")]

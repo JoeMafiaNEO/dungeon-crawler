@@ -1,0 +1,35 @@
+[gd_resource type="Resource" script_class="LevelTheme" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/procgen/level_theme.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+theme_id = "warlord"
+display_name = "Warlord's Domain"
+grid_size = 48
+cell_size = 2.0
+clear_radius = 8
+obstacle_blobs_min = 4
+obstacle_blobs_max = 8
+ground_color = Color(0.45, 0.55, 0.35, 1)
+wall_color = Color(0.5, 0.5, 0.5, 1)
+obstacle_color = Color(0.4, 0.5, 0.3, 1)
+sky_color = Color(0.6, 0.75, 0.9, 1)
+fog_color = Color(0.7, 0.8, 0.85, 1)
+fog_density = 0.003
+ambient_color = Color(0.8, 0.85, 0.9, 1)
+ambient_energy = 1.0
+sun_color = Color(1.0, 0.95, 0.85, 1)
+sun_energy = 1.2
+sun_direction = Vector3(-0.4, -1, -0.3)
+obstacle_entries = Array[Dictionary]([])
+prop_entries = Array[Dictionary]([{ "type": "tree", "weight": 3.0 }, { "type": "rock", "weight": 2.0 }, { "type": "bush", "weight": 1.5 }])
+props_min = 20
+props_max = 30
+torch_count = 0
+mob_mix = { }
+hp_scale = 1.0
+dmg_scale = 1.0
+puzzle_key_count = 0
+maze_walls = false
+boss_id = ""

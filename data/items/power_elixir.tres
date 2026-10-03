@@ -1,0 +1,16 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "power_elixir"
+display_name = "Power Elixir"
+description = "Use: +50% damage for 20s."
+slot = 2
+rarity = 2
+world_model = "res://assets/models/kaykit/pickups/bottle_A_brown.glb"
+consumable = true
+buff_stat = "damage"
+buff_mult = 1.5
+buff_duration = 20.0

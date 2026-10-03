@@ -1,0 +1,59 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/goblin.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/worn_dagger.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/iron_sword.tres" id="6"]
+[ext_resource type="Resource" path="res://data/items/swift_boots.tres" id="7"]
+[ext_resource type="Resource" path="res://data/items/scholar_tome.tres" id="8"]
+
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="9"]
+
+[ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="10"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_3"]
+script = ExtResource("1")
+item = ExtResource("7")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_4"]
+script = ExtResource("1")
+item = ExtResource("8")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_5"]
+script = ExtResource("1")
+item = ExtResource("9")
+weight = 1.5
+
+[sub_resource type="Resource" id="DropEntry_6"]
+script = ExtResource("1")
+item = ExtResource("10")
+weight = 1.0
+
+[resource]
+script = ExtResource("2")
+id = "goblin"
+display_name = "Goblin"
+health = 55.0
+damage = 10.0
+move_speed = 4.2
+attack_range = 1.8
+attack_cooldown = 1.1
+xp_reward = 18
+drop_chance = 0.4
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4"), SubResource("DropEntry_5"), SubResource("DropEntry_6")]
+frames = [ExtResource("3")]
+loot_luck = 0.5
+bonus_drops = 0

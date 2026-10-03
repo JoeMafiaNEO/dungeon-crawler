@@ -1,0 +1,18 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/sword.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "void_blade"
+display_name = "Void Blade"
+description = "A blade forged from the void. Slayer achievement reward."
+icon = ExtResource("2")
+slot = 0
+rarity = 3
+damage_bonus = 25.0
+health_bonus = 0.0
+speed_bonus = 0.0
+damage_mult = 1.35
+meta_locked = true

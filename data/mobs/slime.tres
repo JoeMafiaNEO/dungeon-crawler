@@ -1,0 +1,40 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/slime.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/rusty_sword.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/leather_armor.tres" id="6"]
+
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="7"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_3"]
+script = ExtResource("1")
+item = ExtResource("7")
+weight = 2.0
+
+[resource]
+script = ExtResource("2")
+id = "slime"
+display_name = "Slime"
+health = 30.0
+damage = 6.0
+move_speed = 3.0
+attack_range = 1.6
+attack_cooldown = 1.4
+xp_reward = 10
+drop_chance = 0.35
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3")]
+frames = [ExtResource("3")]
+loot_luck = 0.0
+bonus_drops = 0

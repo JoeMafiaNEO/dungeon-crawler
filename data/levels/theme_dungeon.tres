@@ -1,0 +1,37 @@
+[gd_resource type="Resource" script_class="LevelTheme" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/procgen/level_theme.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+theme_id = "dungeon"
+display_name = "The Dungeon"
+grid_size = 24
+cell_size = 2.0
+clear_radius = 3
+obstacle_blobs_min = 4
+obstacle_blobs_max = 7
+ground_color = Color(0.3, 0.3, 0.33, 1)
+wall_color = Color(0.34, 0.33, 0.37, 1)
+obstacle_color = Color(0.4, 0.39, 0.43, 1)
+sky_color = Color(0.03, 0.03, 0.05, 1)
+fog_color = Color(0.04, 0.04, 0.07, 1)
+fog_density = 0.028
+ambient_color = Color(0.35, 0.32, 0.4, 1)
+ambient_energy = 0.35
+sun_color = Color(0.8, 0.8, 0.9, 1)
+sun_energy = 0.0
+sun_direction = Vector3(-0.45, -1, -0.35)
+obstacle_entries = Array[Dictionary]([{ "type": "pillar", "weight": 3.0, "size": 1 }, { "type": "rubble", "weight": 2.0, "size": 1 }, { "type": "crate", "weight": 2.0, "size": 1 }])
+prop_entries = Array[Dictionary]([{ "type": "crate", "weight": 2.0 }, { "type": "bones", "weight": 2.0 }, { "type": "rubble", "weight": 2.0 }, { "type": "pillar", "weight": 1.0 }])
+props_min = 8
+props_max = 14
+torch_count = 10
+torch_light_color = Color(1, 0.55, 0.25, 1)
+torch_light_energy = 2.2
+mob_mix = { "goblin": 3.0, "skeleton": 2.0, "bat": 1.5, "orc": 2.0, "archer": 2.0 }
+hp_scale = 1.2
+dmg_scale = 1.15
+puzzle_key_count = 3
+maze_walls = false
+boss_id = "boss_warden"

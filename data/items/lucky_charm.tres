@@ -1,0 +1,19 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/charm.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "lucky_charm"
+display_name = "Lucky Charm"
+description = "Found in a skeleton's pocket. Don't ask."
+icon = ExtResource("2")
+slot = 2
+rarity = 2
+damage_bonus = 4.0
+health_bonus = 25.0
+speed_bonus = 0.0
+damage_mult = 1.1
+xp_mult = 1.15
+world_model = "res://assets/models/kaykit/pickups/coin_stack_small.glb"

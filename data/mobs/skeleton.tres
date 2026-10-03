@@ -1,0 +1,71 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/skeleton.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/iron_sword.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/plate_armor.tres" id="6"]
+[ext_resource type="Resource" path="res://data/items/lucky_charm.tres" id="7"]
+[ext_resource type="Resource" path="res://data/items/ember_amulet.tres" id="8"]
+
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="9"]
+
+[ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="10"]
+
+[ext_resource type="Resource" path="res://data/items/power_elixir.tres" id="11"]
+[ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="12"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_3"]
+script = ExtResource("1")
+item = ExtResource("7")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_4"]
+script = ExtResource("1")
+item = ExtResource("8")
+weight = 0.7
+
+[sub_resource type="Resource" id="DropEntry_5"]
+script = ExtResource("1")
+item = ExtResource("9")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_6"]
+script = ExtResource("1")
+item = ExtResource("10")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_7"]
+script = ExtResource("1")
+item = ExtResource("11")
+weight = 0.7
+
+[sub_resource type="Resource" id="DropEntry_8"]
+script = ExtResource("1")
+item = ExtResource("12")
+weight = 1.0
+[resource]
+script = ExtResource("2")
+id = "skeleton"
+display_name = "Skeleton"
+health = 95.0
+damage = 14.0
+move_speed = 3.4
+attack_range = 1.8
+attack_cooldown = 1.3
+xp_reward = 32
+drop_chance = 0.5
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4"), SubResource("DropEntry_5"), SubResource("DropEntry_6"), SubResource("DropEntry_7"), SubResource("DropEntry_8")]
+frames = [ExtResource("3")]
+loot_luck = 1.0
+bonus_drops = 0

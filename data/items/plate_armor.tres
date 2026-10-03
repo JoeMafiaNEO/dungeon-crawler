@@ -1,0 +1,18 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/armor.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "plate_armor"
+display_name = "Plate Armor"
+description = "Clanky but effective."
+icon = ExtResource("2")
+slot = 1
+rarity = 1
+damage_bonus = 0.0
+health_bonus = 60.0
+speed_bonus = 0.0
+health_mult = 1.15
+world_model = "res://assets/models/kaykit/pickups/shield_square.gltf"

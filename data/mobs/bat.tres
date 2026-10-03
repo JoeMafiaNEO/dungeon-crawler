@@ -1,0 +1,39 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/bat.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="6"]
+[ext_resource type="Resource" path="res://data/items/lucky_charm.tres" id="7"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_3"]
+script = ExtResource("1")
+item = ExtResource("7")
+weight = 1.0
+
+[resource]
+script = ExtResource("2")
+id = "bat"
+display_name = "Giant Bat"
+health = 20.0
+damage = 4.0
+move_speed = 5.5
+attack_range = 1.6
+attack_cooldown = 1.0
+xp_reward = 12
+drop_chance = 0.3
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3")]
+frames = [ExtResource("3")]
+loot_luck = 0.0
+bonus_drops = 0

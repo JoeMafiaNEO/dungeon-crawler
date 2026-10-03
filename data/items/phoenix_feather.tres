@@ -1,0 +1,18 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/charm.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "phoenix_feather"
+display_name = "Phoenix Feather"
+description = "Burns bright, then rises again. Explorer achievement reward."
+icon = ExtResource("2")
+slot = 3
+rarity = 3
+damage_bonus = 0.0
+health_bonus = 50.0
+speed_bonus = 0.5
+damage_mult = 1.15
+meta_locked = true

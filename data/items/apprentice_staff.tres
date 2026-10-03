@@ -1,0 +1,18 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/staff.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "apprentice_staff"
+display_name = "Apprentice Staff"
+description = "Crackles faintly."
+icon = ExtResource("2")
+slot = 0
+rarity = 0
+damage_bonus = 7.0
+health_bonus = 0.0
+speed_bonus = 0.0
+damage_mult = 1.05
+world_model = "res://assets/models/kaykit/weapons/staff.gltf"

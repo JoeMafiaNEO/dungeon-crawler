@@ -1,0 +1,691 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/hud.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/ui/divider.png" id="2"]
+
+[sub_resource type="StyleBoxFlat" id="HPBg"]
+bg_color = Color(0.12, 0.05, 0.05, 0.85)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.45, 0.15, 0.12, 1)
+
+[sub_resource type="StyleBoxFlat" id="HPFill"]
+bg_color = Color(0.75, 0.16, 0.14, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="StyleBoxFlat" id="XPBg"]
+bg_color = Color(0.05, 0.08, 0.12, 0.85)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="XPFill"]
+bg_color = Color(0.25, 0.75, 0.85, 1)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="PanelDark"]
+bg_color = Color(0.07, 0.06, 0.09, 0.92)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.55, 0.42, 0.22, 1)
+content_margin_left = 12.0
+content_margin_top = 12.0
+content_margin_right = 12.0
+content_margin_bottom = 12.0
+
+[node name="HUD" type="CanvasLayer"]
+script = ExtResource("1")
+
+[node name="DamageFlash" type="ColorRect" parent="."]
+unique_name_in_owner = true
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+modulate = Color(1, 1, 1, 0)
+color = Color(0.8, 0.1, 0.1, 1)
+
+[node name="TopLeft" type="VBoxContainer" parent="."]
+anchors_preset = 0
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 280.0
+offset_bottom = 140.0
+theme_override_constants/separation = 6
+
+[node name="HPLabel" type="Label" parent="TopLeft"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "100 / 100"
+
+[node name="HPBar" type="ProgressBar" parent="TopLeft"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 20)
+layout_mode = 2
+max_value = 100.0
+value = 100.0
+show_percentage = false
+theme_override_styles/background = SubResource("HPBg")
+theme_override_styles/fill = SubResource("HPFill")
+
+[node name="XPBar" type="ProgressBar" parent="TopLeft"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(240, 10)
+layout_mode = 2
+max_value = 25.0
+show_percentage = false
+theme_override_styles/background = SubResource("XPBg")
+theme_override_styles/fill = SubResource("XPFill")
+
+[node name="LevelLabel" type="Label" parent="TopLeft"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Lv 1"
+
+[node name="EquipLabel" type="Label" parent="."]
+unique_name_in_owner = true
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -160.0
+offset_right = 420.0
+offset_bottom = -16.0
+theme_override_font_sizes/font_size = 15
+text = "Weapon: —"
+autowrap_mode = 2
+
+[node name="TopRight" type="VBoxContainer" parent="."]
+unique_name_in_owner = true
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -516.0
+offset_top = 16.0
+offset_right = -16.0
+offset_bottom = 90.0
+theme_override_constants/separation = 4
+
+[node name="WaveLabel" type="Label" parent="TopRight"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Level 1"
+horizontal_alignment = 2
+
+[node name="WaveStatus" type="Label" parent="TopRight"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Get ready..."
+horizontal_alignment = 2
+
+[node name="NextWaveButton" type="Button" parent="TopRight"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+text = "START NEXT WAVE (R)"
+theme_override_font_sizes/font_size = 20
+
+[node name="MarketLabel" type="Label" parent="TopRight"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+theme_override_colors/font_color = Color(0.3, 1.0, 0.4, 1)
+text = "Cash: $0 / $500"
+horizontal_alignment = 2
+
+[node name="AnnounceLabel" type="Label" parent="."]
+unique_name_in_owner = true
+anchor_left = 0.5
+anchor_top = 0.35
+anchor_right = 0.5
+anchor_bottom = 0.35
+offset_left = -400.0
+offset_top = -60.0
+offset_right = 400.0
+offset_bottom = 60.0
+theme_override_font_sizes/font_size = 72
+horizontal_alignment = 1
+
+[node name="DownedLabel" type="Label" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -300.0
+offset_top = -80.0
+offset_right = 300.0
+offset_bottom = 80.0
+theme_override_font_sizes/font_size = 48
+theme_override_colors/font_color = Color(1, 0.4, 0.35, 1)
+horizontal_alignment = 1
+vertical_alignment = 1
+text = "DOWNED"
+
+[node name="ReviveBar" type="ProgressBar" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 0.62
+anchor_right = 0.5
+anchor_bottom = 0.62
+offset_left = -150.0
+offset_top = -10.0
+offset_right = 150.0
+offset_bottom = 10.0
+max_value = 1.0
+show_percentage = false
+
+[node name="BossBar" type="VBoxContainer" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -250.0
+offset_top = 12.0
+offset_right = 250.0
+offset_bottom = 60.0
+theme_override_constants/separation = 2
+
+[node name="BossName" type="Label" parent="BossBar"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.45, 0.4, 1)
+theme_override_font_sizes/font_size = 20
+text = "BOSS"
+horizontal_alignment = 1
+
+[node name="BossHP" type="ProgressBar" parent="BossBar"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(0, 14)
+max_value = 1.0
+value = 1.0
+show_percentage = false
+theme_override_styles/background = SubResource("HPBg")
+theme_override_styles/fill = SubResource("HPFill")
+vertical_alignment = 1
+modulate = Color(1, 1, 1, 0)
+
+[node name="InventoryPanel" type="PanelContainer" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 1.0
+anchor_top = 0.5
+anchor_right = 1.0
+anchor_bottom = 0.5
+offset_left = -336.0
+offset_top = -200.0
+offset_right = -16.0
+offset_bottom = 200.0
+theme_override_styles/panel = SubResource("PanelDark")
+
+[node name="InvVBox" type="VBoxContainer" parent="InventoryPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="InvTitle" type="Label" parent="InventoryPanel/InvVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "Inventory (I)"
+horizontal_alignment = 1
+
+[node name="InvDivider" type="TextureRect" parent="InventoryPanel/InvVBox"]
+layout_mode = 2
+texture = ExtResource("2")
+expand_mode = 1
+stretch_mode = 5
+custom_minimum_size = Vector2(0, 20)
+
+[node name="InventoryList" type="ItemList" parent="InventoryPanel/InvVBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(280, 280)
+layout_mode = 2
+
+[node name="InvHint" type="Label" parent="InventoryPanel/InvVBox"]
+layout_mode = 2
+text = "All carried items apply their bonuses. Death loses them all."
+horizontal_alignment = 1
+autowrap_mode = 2
+
+[node name="DisposeButton" type="Button" parent="InventoryPanel/InvVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Dispose selected stack"
+
+[node name="UseButton" type="Button" parent="InventoryPanel/InvVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Use selected (consumable)"
+
+
+[node name="ToastLabel" type="Label" parent="."]
+unique_name_in_owner = true
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -300.0
+offset_top = -120.0
+offset_right = 300.0
+offset_bottom = -90.0
+horizontal_alignment = 1
+
+[node name="Crosshair" type="Label" parent="."]
+unique_name_in_owner = true
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -12.0
+offset_top = -18.0
+offset_right = 12.0
+offset_bottom = 18.0
+theme_override_font_sizes/font_size = 28
+text = "+"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="LowHPVignette" type="ColorRect" parent="."]
+unique_name_in_owner = true
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+color = Color(0.6, 0.05, 0.05, 0.0)
+
+[node name="BossCard" type="Label" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 0.22
+anchor_right = 0.5
+anchor_bottom = 0.22
+offset_left = -400.0
+offset_top = -50.0
+offset_right = 400.0
+offset_bottom = 50.0
+theme_override_colors/font_color = Color(1, 0.35, 0.3, 1)
+theme_override_font_sizes/font_size = 64
+text = "BOSS"
+horizontal_alignment = 1
+
+[node name="PickupPrompt" type="Label" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -200.0
+offset_top = -165.0
+offset_right = 200.0
+offset_bottom = -130.0
+theme_override_font_sizes/font_size = 22
+horizontal_alignment = 1
+
+[node name="AbilityBar" type="HBoxContainer" parent="."]
+unique_name_in_owner = true
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -220.0
+offset_top = -76.0
+offset_right = 220.0
+offset_bottom = -16.0
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="PausePanel" type="PanelContainer" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -240.0
+offset_top = -280.0
+offset_right = 240.0
+offset_bottom = 280.0
+theme_override_styles/panel = SubResource("PanelDark")
+
+[node name="PauseScroll" type="ScrollContainer" parent="PausePanel"]
+layout_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="PauseVBox" type="VBoxContainer" parent="PausePanel/PauseScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="PausedLabel" type="Label" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 36
+text = "Paused"
+horizontal_alignment = 1
+
+[node name="PauseDivider" type="TextureRect" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+texture = ExtResource("2")
+expand_mode = 1
+stretch_mode = 5
+custom_minimum_size = Vector2(0, 24)
+
+[node name="HintLabel" type="Label" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+text = "WASD move · Mouse look · Click attack · Shift dash · Q cycle ability · G ping · R start wave"
+horizontal_alignment = 1
+
+[node name="VolLabel" type="Label" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+text = "— Audio —"
+horizontal_alignment = 1
+
+[node name="MasterRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="MasterDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/MasterRow"]
+layout_mode = 2
+text = "Master"
+custom_minimum_size = Vector2(60, 0)
+
+[node name="MasterSlider" type="HSlider" parent="PausePanel/PauseScroll/PauseVBox/MasterRow"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(160, 0)
+max_value = 1.0
+step = 0.01
+value = 1.0
+
+[node name="MusicRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="MusicDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/MusicRow"]
+layout_mode = 2
+text = "Music"
+custom_minimum_size = Vector2(60, 0)
+
+[node name="MusicSlider" type="HSlider" parent="PausePanel/PauseScroll/PauseVBox/MusicRow"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(160, 0)
+max_value = 1.0
+step = 0.01
+value = 0.8
+
+[node name="SFXRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="SFXDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/SFXRow"]
+layout_mode = 2
+text = "SFX"
+custom_minimum_size = Vector2(60, 0)
+
+[node name="SFXSlider" type="HSlider" parent="PausePanel/PauseScroll/PauseVBox/SFXRow"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(160, 0)
+max_value = 1.0
+step = 0.01
+value = 1.0
+
+[node name="StatPointsLabel" type="Label" parent="PausePanel/PauseScroll/PauseVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Stat points: 0"
+horizontal_alignment = 1
+
+[node name="DmgRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="DmgDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/DmgRow"]
+layout_mode = 2
+text = "Power (+2 dmg)"
+size_flags_horizontal = 3
+
+[node name="DmgVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/DmgRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+0 dmg"
+
+[node name="DmgPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/DmgRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+"
+
+[node name="HpRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="HpDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/HpRow"]
+layout_mode = 2
+text = "Vitality (+12 hp)"
+size_flags_horizontal = 3
+
+[node name="HpVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/HpRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+0 hp"
+
+[node name="HpPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/HpRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+"
+
+[node name="SpdRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="SpdDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/SpdRow"]
+layout_mode = 2
+text = "Swiftness (+0.2 spd)"
+size_flags_horizontal = 3
+
+[node name="SpdVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/SpdRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+0.0 spd"
+
+[node name="SpdPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/SpdRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+"
+
+[node name="AuraRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="AuraDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/AuraRow"]
+layout_mode = 2
+text = "Aura (+staff glow)"
+size_flags_horizontal = 3
+
+[node name="AuraVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/AuraRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+0 aura"
+
+[node name="AuraPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/AuraRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "+"
+
+[node name="ResumeButton" type="Button" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+text = "Resume"
+
+[node name="ClassButton" type="Button" parent="PausePanel/PauseScroll/PauseVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Switch Class (Solo)"
+
+[node name="QuitButton" type="Button" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+text = "Quit to Menu"
+
+[node name="SaveQuitButton" type="Button" parent="PausePanel/PauseScroll/PauseVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Save & Quit to Menu"
+
+[node name="ClassPanel" type="PanelContainer" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -200.0
+offset_top = -150.0
+offset_right = 200.0
+offset_bottom = 150.0
+
+[node name="DeathPanel" type="PanelContainer" parent="."]
+unique_name_in_owner = true
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -230.0
+offset_top = -260.0
+offset_right = 230.0
+offset_bottom = 260.0
+theme_override_styles/panel = SubResource("PanelDark")
+
+[node name="DeathVBox" type="VBoxContainer" parent="DeathPanel"]
+layout_mode = 2
+theme_override_constants/separation = 12
+alignment = 1
+
+[node name="DeathTitle" type="Label" parent="DeathPanel/DeathVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.25, 0.2, 1)
+theme_override_font_sizes/font_size = 64
+text = "YOU DIED"
+horizontal_alignment = 1
+
+[node name="DeathCauseLabel" type="Label" parent="DeathPanel/DeathVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.7, 0.6, 1)
+theme_override_font_sizes/font_size = 22
+text = "Slain by a Goblin"
+horizontal_alignment = 1
+
+[node name="DeathDivider" type="TextureRect" parent="DeathPanel/DeathVBox"]
+layout_mode = 2
+texture = ExtResource("2")
+expand_mode = 1
+stretch_mode = 5
+custom_minimum_size = Vector2(0, 24)
+
+[node name="DeathStatsLabel" type="Label" parent="DeathPanel/DeathVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Time survived: 0:00
+Kills: 0
+Level reached: 1
+Cycle reached: 1
+Damage dealt: 0"
+horizontal_alignment = 1
+
+[node name="QuickRestartButton" type="Button" parent="DeathPanel/DeathVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+text = "Quick Restart"
+
+[node name="DeathMenuButton" type="Button" parent="DeathPanel/DeathVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+text = "Back to Menu"
+
+[node name="ClassVBox" type="VBoxContainer" parent="ClassPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="ClassTitle" type="Label" parent="ClassPanel/ClassVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+horizontal_alignment = 1
+text = "Switch Class"
+
+[node name="ClassWarn" type="Label" parent="ClassPanel/ClassVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.5, 0.4, 1)
+horizontal_alignment = 1
+autowrap_mode = 2
+text = "WARNING: Switching class resets your level to 1 and clears stat points!"
+
+[node name="WarriorBtn" type="Button" parent="ClassPanel/ClassVBox"]
+layout_mode = 2
+text = "Warrior"
+
+[node name="RogueBtn" type="Button" parent="ClassPanel/ClassVBox"]
+layout_mode = 2
+text = "Rogue"
+
+[node name="MageBtn" type="Button" parent="ClassPanel/ClassVBox"]
+layout_mode = 2
+text = "Mage"
+
+[node name="ClassCancel" type="Button" parent="ClassPanel/ClassVBox"]
+layout_mode = 2
+text = "Cancel"
+
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/ResumeButton" to="." method="_on_resume_pressed"]
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/QuitButton" to="." method="_on_quit_pressed"]
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/SaveQuitButton" to="." method="_on_save_quit_pressed"]
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/ClassButton" to="." method="_on_class_pressed"]
+[connection signal="pressed" from="ClassPanel/ClassVBox/WarriorBtn" to="." method="_on_class_chosen" binds=["warrior"]]
+[connection signal="pressed" from="ClassPanel/ClassVBox/RogueBtn" to="." method="_on_class_chosen" binds=["rogue"]]
+[connection signal="pressed" from="ClassPanel/ClassVBox/MageBtn" to="." method="_on_class_chosen" binds=["mage"]]
+[connection signal="pressed" from="ClassPanel/ClassVBox/ClassCancel" to="." method="_on_class_cancel"]
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/DmgRow/DmgPlus" to="." method="_on_stat_pressed" binds=["damage"]]
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/HpRow/HpPlus" to="." method="_on_stat_pressed" binds=["health"]]
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/SpdRow/SpdPlus" to="." method="_on_stat_pressed" binds=["speed"]]
+[connection signal="pressed" from="PausePanel/PauseScroll/PauseVBox/AuraRow/AuraPlus" to="." method="_on_stat_pressed" binds=["aura"]]
+[connection signal="pressed" from="InventoryPanel/InvVBox/DisposeButton" to="." method="_on_dispose_pressed"]
+[connection signal="pressed" from="InventoryPanel/InvVBox/UseButton" to="." method="_on_use_pressed"]
+[connection signal="pressed" from="TopRight/NextWaveButton" to="." method="_on_next_wave_pressed"]
+[connection signal="pressed" from="DeathPanel/DeathVBox/QuickRestartButton" to="." method="_on_quick_restart_pressed"]
+[connection signal="pressed" from="DeathPanel/DeathVBox/DeathMenuButton" to="." method="_on_death_menu_pressed"]

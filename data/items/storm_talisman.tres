@@ -1,0 +1,21 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/charm.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "storm_talisman"
+display_name = "Storm Talisman"
+description = "Crackles with captured lightning."
+icon = ExtResource("2")
+slot = 2
+rarity = 3
+damage_bonus = 0.00
+health_bonus = 0.00
+speed_bonus = 0.00
+damage_mult = 1.00
+health_mult = 1.00
+speed_mult = 1.15
+xp_mult = 1.25
+world_model = "res://assets/models/kaykit/pickups/spellbook_open.gltf"

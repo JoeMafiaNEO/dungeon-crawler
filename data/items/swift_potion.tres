@@ -1,0 +1,16 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "swift_potion"
+display_name = "Swiftness Potion"
+description = "Use: +50% move speed for 15s."
+slot = 2
+rarity = 1
+world_model = "res://assets/models/kaykit/pickups/bottle_B_green.glb"
+consumable = true
+buff_stat = "speed"
+buff_mult = 1.5
+buff_duration = 15.0

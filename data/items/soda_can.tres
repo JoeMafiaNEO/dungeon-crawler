@@ -1,0 +1,13 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "soda_can"
+display_name = "Soda Can"
+description = "Supermarket loot. Sell at checkout for cash."
+slot = 2
+rarity = 0
+supermarket_loot = true
+sell_value = 15
