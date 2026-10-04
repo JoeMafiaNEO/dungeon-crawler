@@ -10,6 +10,7 @@ extends Node3D
 
 const PlayerScene := preload("res://scenes/player/player.tscn")
 const HudScene := preload("res://scenes/ui/hud.tscn")
+const DepartureBoardScript := preload("res://scripts/station/departure_board.gd")
 
 const DEPART_TIME := 45.0
 const BOARD_CHECK := 0.5
@@ -30,8 +31,11 @@ var _local_hud: CanvasLayer
 var _time_left := DEPART_TIME
 var _board_tick := 0.0
 var _departing := false
+var _board_opened := false
 var _last_sync_sec := -1
 var _ring: MeshInstance3D
+## Destination votes: peer_id -> theme_id (server-authoritative, Phase 2).
+var votes := {}
 # --- Multiplayer run-save state (trimmed mirror of dungeon's; no RTS here) ---
 var _save_roster: Array = []
 var _save_pending: Dictionary = {}
@@ -70,9 +74,11 @@ func _process(delta: float) -> void:
 	_board_tick -= delta
 	if _board_tick <= 0.0:
 		_board_tick = BOARD_CHECK
-		if _all_aboard():
-			depart()
-			return
+		# Phase 2: all-aboard opens the departure board (vote), it no longer
+		# departs by itself. Solo boards auto-open here too.
+		if not _board_opened and _all_aboard():
+			_board_opened = true
+			rpc("open_board")
 	if _time_left <= 0.0:
 		depart()
 
@@ -94,6 +100,122 @@ func _all_aboard() -> bool:
 	return any_alive
 
 
+## Peer ids of living players (voters).
+func _living_peer_ids() -> Array:
+	var out := []
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Node3D
+		if p == null or not bool(p.get("alive")):
+			continue
+		out.append(int(p.get_multiplayer_authority()))
+	return out
+
+
+## Every living player has cast a vote.
+func _all_voted() -> bool:
+	var living := _living_peer_ids()
+	if living.is_empty():
+		return false
+	for pid in living:
+		if not votes.has(pid):
+			return false
+	return true
+
+
+## Destination resolution (static for testability). Non-voters don't count;
+## no votes -> theme rotation (today's behavior); ties -> host's pick, else
+## first tied theme in THEME_ORDER.
+static func resolve_destination(p_votes: Dictionary, living: Array, host_id: int, next_level: int) -> String:
+	var counts := {}
+	for pid in living:
+		if p_votes.has(pid):
+			var t := str(p_votes[pid])
+			counts[t] = int(counts.get(t, 0)) + 1
+	if counts.is_empty():
+		return Dungeon.THEME_ORDER[(next_level - 1) % Dungeon.THEME_ORDER.size()]
+	var best := ""
+	var best_n := 0
+	var tied: Array = []
+	for t in counts:
+		var n: int = counts[t]
+		if n > best_n:
+			best_n = n
+			best = str(t)
+			tied = [str(t)]
+		elif n == best_n:
+			tied.append(str(t))
+	if tied.size() == 1:
+		return best
+	if p_votes.has(host_id) and str(p_votes[host_id]) in tied:
+		return str(p_votes[host_id])
+	for t in Dungeon.THEME_ORDER:
+		if t in tied:
+			return str(t)
+	return best
+
+
+## Recommended level for a theme at the upcoming level: informational only.
+static func recommended_level(theme_id: String, next_level: int) -> int:
+	var cycle := int((next_level - 1) / Dungeon.THEME_ORDER.size()) + 1
+	var idx := Dungeon.THEME_ORDER.find(theme_id)
+	return (cycle - 1) * Dungeon.THEME_ORDER.size() + (idx + 1)
+
+
+## Theme display name from its .tres (falls back to capitalized id).
+static func theme_display_name(theme_id: String) -> String:
+	var t = load("res://data/levels/theme_%s.tres" % theme_id)
+	if t != null and str(t.get("display_name")) != "":
+		return str(t.get("display_name"))
+	return theme_id.capitalize()
+
+
+## Vote for a destination. Server records; every peer syncs for board UI.
+@rpc("any_peer", "call_local")
+func cast_vote(theme_id: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	if not theme_id in Dungeon.THEME_ORDER:
+		return
+	var node := get_player_node(sender)
+	if node == null or not bool(node.get("alive")):
+		return
+	votes[sender] = theme_id
+	rpc("sync_votes", votes)
+	if not _departing and _all_voted():
+		depart()
+
+
+## Keep every peer's board UI in sync with the server's vote table.
+@rpc("any_peer", "call_local")
+func sync_votes(v: Dictionary) -> void:
+	votes = v.duplicate()
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("refresh_departure_board"):
+		hud.refresh_departure_board()
+
+
+## Server opens the departure board on every peer (all-aboard trigger).
+@rpc("any_peer", "call_local")
+func open_board() -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_id:
+		return
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("show_departure_board"):
+		hud.show_departure_board()
+
+
+## "NOW ARRIVING" banner before the hop (Phase 5 will dress this further).
+@rpc("any_peer", "call_local")
+func announce_arrival(theme_id: String) -> void:
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("announce"):
+		hud.announce("NOW ARRIVING: " + Station.theme_display_name(theme_id))
+
+
 @rpc("any_peer", "call_local")
 func station_timer_sync(time_left: float) -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
@@ -101,11 +223,15 @@ func station_timer_sync(time_left: float) -> void:
 		hud.show_station_timer(time_left)
 
 
-## Server-authoritative departure: pull stragglers aboard, save, hop levels.
+## Server-authoritative departure: resolve the destination, pull
+## stragglers aboard, announce, save, hop levels.
 func depart() -> void:
 	if _departing or not multiplayer.is_server():
 		return
 	_departing = true
+	var new_level := next_level_number
+	var theme_id := resolve_destination(votes, _living_peer_ids(), multiplayer.get_unique_id(), new_level)
+	var seed := departure_seed
 	# Boarding spots inside the cars (server assigns, every peer moves its own).
 	var spots := {}
 	var i := 0
@@ -113,10 +239,8 @@ func depart() -> void:
 		spots[pid] = Vector3(-13.5 + float(i % 2) * 2.0, 1.5, 3.0)
 		i += 1
 	rpc("pull_aboard", spots)
-	await get_tree().create_timer(1.5).timeout
-	var new_level := next_level_number
-	var theme_id: String = Dungeon.THEME_ORDER[(new_level - 1) % Dungeon.THEME_ORDER.size()]
-	var seed := departure_seed
+	rpc("announce_arrival", theme_id)
+	await get_tree().create_timer(2.5).timeout
 	# Save point (moved here from dungeon's change_level): persist the run so
 	# it can be continued from the menu. Server-only.
 	var me := _my_player()
@@ -149,6 +273,8 @@ func pull_aboard(spots: Dictionary) -> void:
 			hud.toast("All aboard!")
 		if hud.has_method("hide_station_timer"):
 			hud.hide_station_timer()
+		if hud.has_method("close_departure_board"):
+			hud.close_departure_board()
 
 
 @rpc("any_peer", "call_local")
@@ -488,13 +614,12 @@ func _build_station() -> void:
 			_box(stall, Vector3(0.12, 2.4, 0.12), Vector3(px, 1.2, pz), wood_dark)
 	_box(stall, Vector3(3.4, 0.12, 1.8), Vector3(0, 2.5, 0), _mat(Color(0.65, 0.25, 0.20)))
 
-	# Signpost: pole + blank board (Phase 5 adds per-theme text).
-	var sign := Node3D.new()
-	sign.name = "Signpost"
-	sign.position = Vector3(-12, 0, -4)
-	add_child(sign)
-	_box(sign, Vector3(0.18, 3.2, 0.18), Vector3(0, 1.6, 0), wood_dark)
-	_box(sign, Vector3(2.2, 1.2, 0.12), Vector3(0, 3.0, 0), wood)
+	# Departure board (Phase 2): dark board, gold frame, DEPARTURES sign.
+	# E-interact opens the destination vote UI.
+	var board := DepartureBoardScript.new()
+	board.name = "DepartureBoard"
+	board.position = Vector3(-12, 0, -4)
+	add_child(board)
 
 	# Warm platform lamps.
 	for lx in [-10.0, 0.0, 10.0]:

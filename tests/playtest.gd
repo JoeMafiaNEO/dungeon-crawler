@@ -29,6 +29,7 @@ func _run() -> void:
 	_test_architect()
 	_test_cipher_unlock()
 	_test_station_phase1()
+	_test_station_phase2()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -641,3 +642,61 @@ func _test_station_phase1() -> void:
 	_assert(hsrc.contains("func hide_station_timer"), "hide_station_timer exists")
 	_assert(hsrc.contains("func show_station_mode"), "show_station_mode exists")
 	_assert(hsrc.contains("Station.next_level_number"), "save&quit is station-aware")
+
+
+func _test_station_phase2() -> void:
+	print("[Playtest] Train station phase 2...")
+	var StationScript := load("res://scripts/station/station.gd")
+	# Majority wins.
+	_assert(StationScript.resolve_destination(
+		{10: "dungeon", 11: "dungeon", 12: "village"}, [10, 11, 12], 10, 2) == "dungeon",
+		"majority vote wins")
+	# Tie: host's voted theme wins.
+	_assert(StationScript.resolve_destination(
+		{10: "dungeon", 11: "village"}, [10, 11], 10, 2) == "dungeon",
+		"tie broken by host vote")
+	# Tie: host abstained -> first tied theme in THEME_ORDER.
+	_assert(StationScript.resolve_destination(
+		{11: "warlord", 12: "village"}, [10, 11, 12], 10, 2) == "village",
+		"tie with abstaining host -> THEME_ORDER order")
+	# No votes -> rotation fallback for levels 1..10.
+	var order := ["village", "dungeon", "depths", "supermarket", "warlord"]
+	var expected := ["village", "dungeon", "depths", "supermarket", "warlord",
+		"village", "dungeon", "depths", "supermarket", "warlord"]
+	for n in range(1, 11):
+		_assert(StationScript.resolve_destination({}, [10], 10, n) == expected[n - 1],
+			"no votes level %d -> rotation %s" % [n, expected[n - 1]])
+	# Non-voters excluded: 1 vote among 3 living players wins.
+	_assert(StationScript.resolve_destination(
+		{10: "depths"}, [10, 11, 12], 10, 3) == "depths",
+		"non-voters don't count")
+	# Recommended levels: informational, derived from cycle + theme index.
+	_assert(StationScript.recommended_level("village", 1) == 1, "rec village @ L1 = 1")
+	_assert(StationScript.recommended_level("depths", 3) == 3, "rec depths @ L3 = 3")
+	_assert(StationScript.recommended_level("warlord", 5) == 5, "rec warlord @ L5 = 5")
+	_assert(StationScript.recommended_level("village", 6) == 6, "rec village @ L6 (cycle 2) = 6")
+	_assert(StationScript.recommended_level("dungeon", 9) == 7, "rec dungeon @ L9 = 7")
+	_assert(StationScript.recommended_level("supermarket", 24) == 24, "rec supermarket @ L24 = 24")
+	# Display names come from the theme .tres files.
+	_assert(StationScript.theme_display_name("village") == "Village Outskirts", "village display name")
+	_assert(StationScript.theme_display_name("warlord") == "Warlord's Domain", "warlord display name")
+	# Wiring: vote RPCs, board prop, HUD board UI, player E-scan.
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("func cast_vote"), "cast_vote RPC exists")
+	_assert(ssrc.contains("func sync_votes"), "sync_votes RPC exists")
+	_assert(ssrc.contains("func open_board"), "open_board RPC exists")
+	_assert(ssrc.contains("func announce_arrival"), "announce_arrival RPC exists")
+	_assert(ssrc.contains("resolve_destination(votes"), "depart resolves destination")
+	_assert(ssrc.contains("DepartureBoardScript.new()"), "departure board prop placed")
+	_assert(ResourceLoader.exists("res://scripts/station/departure_board.gd"), "departure_board.gd exists")
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("add_to_group(\"departure_board\")"), "board in departure_board group")
+	_assert(bsrc.contains("func interact"), "board interact exists")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func show_departure_board"), "show_departure_board exists")
+	_assert(hsrc.contains("func close_departure_board"), "close_departure_board exists")
+	_assert(hsrc.contains("func refresh_departure_board"), "refresh_departure_board exists")
+	_assert(hsrc.contains("BOARD_STARS"), "danger stars table exists")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("\"departure_board\""), "player E-scan includes board")
+	_assert(psrc.contains("hud.board_open"), "player E-guard covers board")

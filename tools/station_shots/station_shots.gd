@@ -50,6 +50,11 @@ func _boot_station() -> void:
 		hud.show_station_timer(32.0)
 	await get_tree().create_timer(0.5).timeout
 	_snap("station_wide")
+	# Departure board UI shot (Phase 2).
+	if hud != null and hud.has_method("show_departure_board"):
+		hud.show_departure_board()
+		await get_tree().create_timer(0.8).timeout
+		_snap("board")
 	print("[StationShots] done")
 	get_tree().quit()
 

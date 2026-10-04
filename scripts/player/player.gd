@@ -502,7 +502,7 @@ func _input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-				if hud == null or (not hud.is_paused and not hud.cipher_popup_open):
+				if hud == null or (not hud.is_paused and not hud.cipher_popup_open and not hud.board_open):
 					# Don't steal the mouse back while in RTS command view.
 					var rts_cam := get_tree().get_first_node_in_group("rts_camera")
 					if rts_cam == null or not bool(rts_cam.get("active")):
@@ -527,8 +527,8 @@ func _input(event: InputEvent) -> void:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_jump_queued = true
 		elif k.physical_keycode == KEY_E:
-			# Cipher popups handle their own E/Esc; don't double-trigger.
-			if hud != null and hud.cipher_popup_open:
+			# Cipher/board popups handle their own E/Esc; don't double-trigger.
+			if hud != null and (hud.cipher_popup_open or hud.board_open):
 				return
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_pickup()
@@ -2339,8 +2339,8 @@ func _update_pickup_prompt() -> void:
 			_prompt_pickup = null
 		hud.set_hint("Hold E to revive teammate")
 		return
-	# Cipher note / lockbox prompt.
-	var c := _nearest_cipher_node()
+	# Cipher note / lockbox / departure board prompt.
+	var c := _nearest_interact_node()
 	if c != null:
 		hud.set_pickup_prompt(true, str(c.prompt_text()))
 		return
@@ -2358,11 +2358,11 @@ func _update_pickup_prompt() -> void:
 			hud.set_pickup_prompt(false, "")
 
 
-## Nearest cipher note or lockbox within E range (notes first).
-func _nearest_cipher_node() -> Node3D:
+## Nearest cipher note, lockbox, or departure board within E range.
+func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "cipher_lockbox"]:
+	for group in ["cipher_plaques", "cipher_lockbox", "departure_board"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:
@@ -2375,10 +2375,10 @@ func _nearest_cipher_node() -> Node3D:
 
 
 func _try_pickup() -> void:
-	# Cipher interactions take priority over loot.
-	var cipher := _nearest_cipher_node()
-	if cipher != null:
-		cipher.interact(self)
+	# Cipher/board interactions take priority over loot.
+	var interact := _nearest_interact_node()
+	if interact != null:
+		interact.interact(self)
 		if hud != null:
 			hud.set_pickup_prompt(false, "")
 		get_viewport().set_input_as_handled()
