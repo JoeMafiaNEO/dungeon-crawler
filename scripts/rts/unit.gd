@@ -402,6 +402,12 @@ func convert_fx() -> void:
 func order_trade(target_market: Node3D) -> void:
 	if unit_type != "trade_cart":
 		return
+	if target_market == null or not is_instance_valid(target_market):
+		return
+	# No self-trading: routing a cart to your own market would be a
+	# zero-distance loop printing min_payout gold every trip (infinite gold).
+	if int(target_market.get("faction")) == faction:
+		return
 	# Home market = nearest friendly market to current position.
 	_home_market = _find_nearest_market(faction)
 	_trade_target = target_market
@@ -705,11 +711,12 @@ func _process_trade(delta: float) -> void:
 			var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 			if mgr != null and _home_market != null and is_instance_valid(_home_market):
 				var trip := _home_market.global_position.distance_to(_trade_target.global_position)
-				var gold := maxi(RTSTuning.get_int("trade", "min_payout", 20),
-					int(trip / RTSTuning.get_float("trade", "distance_divisor", 2.0)))
-				mgr.add_resource(faction, "gold", gold)
-				mgr.sim_bump(faction, "trade_deliveries", 1)
-				mgr.sim_bump(faction, "trade_gold", gold)
+				if trip >= 1.0:
+					var gold := maxi(RTSTuning.get_int("trade", "min_payout", 20),
+						int(trip / RTSTuning.get_float("trade", "distance_divisor", 2.0)))
+					mgr.add_resource(faction, "gold", gold)
+					mgr.sim_bump(faction, "trade_deliveries", 1)
+					mgr.sim_bump(faction, "trade_gold", gold)
 			_trade_heading_out = false
 		else:
 			# Back home: head out again.

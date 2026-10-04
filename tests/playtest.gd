@@ -31,6 +31,7 @@ func _run() -> void:
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
+	_test_trade_no_self_trade()
 	_print_results()
 	quit()
 
@@ -237,6 +238,37 @@ func _test_economy() -> void:
 	_assert(tune.load("res://scripts/rts/rts_tuning.cfg") == OK, "Tuning file loads")
 	_assert(int(tune.get_value("map", "nodes_per_resource_per_faction", 0)) == 8, "Default 8 nodes per resource")
 	_assert(int(tune.get_value("map", "nodes_cycle_bonus", 0)) == 2, "Default +2 nodes per cycle")
+
+
+func _test_trade_no_self_trade() -> void:
+	print("[Playtest] Trade self-trade guard...")
+	# Regression: routing a trade cart to its own market was a zero-distance
+	# loop paying min_payout gold every trip (infinite gold).
+	var unit_script := load("res://scripts/rts/unit.gd")
+	var bld_script := load("res://scripts/rts/building.gd")
+	var cart = unit_script.new()
+	cart.set("unit_type", "trade_cart")
+	cart.set("faction", 0)
+	cart.set("alive", true)
+	root.add_child(cart)
+	var own_market = bld_script.new()
+	own_market.set("faction", 0)
+	own_market.set("building_type", "market")
+	root.add_child(own_market)
+	var foe_market = bld_script.new()
+	foe_market.set("faction", 1)
+	foe_market.set("building_type", "market")
+	root.add_child(foe_market)
+	# Same-faction target must be refused: no trade state set.
+	cart.order_trade(own_market)
+	_assert(cart.get("_trade_target") == null, "Self-market trade order refused")
+	# Foreign market is accepted.
+	cart.order_trade(foe_market)
+	_assert(cart.get("_trade_target") == foe_market, "Foreign market trade order accepted")
+	_assert(cart.get("_home_market") == own_market, "Home market is own nearest market")
+	cart.queue_free()
+	own_market.queue_free()
+	foe_market.queue_free()
 
 
 func _test_affinity_families() -> void:
