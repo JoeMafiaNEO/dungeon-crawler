@@ -35,6 +35,7 @@ func _run() -> void:
 	_test_station_phase5()
 	_test_station_mp_vote_flow()
 	_test_music_queued_pickup()
+	_test_station_annex()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -444,6 +445,108 @@ func _test_music_queued_pickup() -> void:
 	am._gen_busy = old_busy
 	am._queued_theme = old_queued
 	am._mus_theme = old_theme
+
+
+func _test_station_annex() -> void:
+	print("[Playtest] Station annex generation (issue #2 phase 1)...")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	_assert(theme != null, "annex test theme loads")
+
+	# 1. Deterministic placement from the level seed.
+	var plans := {}
+	for s in [12345, 999, 424242]:
+		var layout = ProcGenScript.generate(theme, s)
+		var plan: Dictionary = AnnexScript.plan(s, layout)
+		plans[s] = plan
+		var half: float = layout.arena_half_size()
+		var ax := float(plan.get("attach_x", 999.0))
+		_assert(absf(ax) <= half - AnnexScript.HALL_W * 0.5 - 1.0 + 0.01,
+			"annex fits inside arena span (seed %d)" % s)
+		# Same seed -> same origin.
+		var layout_b = ProcGenScript.generate(theme, s)
+		var plan_b: Dictionary = AnnexScript.plan(s, layout_b)
+		_assert(float(plan_b.get("attach_x", -1.0)) == ax,
+			"annex origin deterministic (seed %d)" % s)
+		# Doorway rows are walkable after planning (cleared if needed).
+		_assert(AnnexScript._doorway_blocked(layout, ax) == 0,
+			"doorway cells clear (seed %d)" % s)
+
+	# 2. North wall segments leave exactly the doorway gap and cover the span.
+	var half0 := 24.0
+	var segs: Array = AnnexScript.north_wall_segments(half0, 1.5, 4.0, 4.0, AnnexScript.DOOR_W)
+	_assert(segs.size() == 2, "north wall splits into two segments")
+	var l_c: Vector3 = segs[0][0]
+	var l_s: Vector3 = segs[0][1]
+	var r_c: Vector3 = segs[1][0]
+	var r_s: Vector3 = segs[1][1]
+	_assert(absf((l_c.x + l_s.x * 0.5) - (4.0 - AnnexScript.DOOR_W * 0.5)) < 0.01,
+		"north wall gap left edge at doorway")
+	_assert(absf((r_c.x - r_s.x * 0.5) - (4.0 + AnnexScript.DOOR_W * 0.5)) < 0.01,
+		"north wall gap right edge at doorway")
+	_assert(absf((l_c.x - l_s.x * 0.5) - (-half0 - 0.75)) < 0.01
+		and absf((r_c.x + r_s.x * 0.5) - (half0 + 0.75)) < 0.01,
+		"north wall segments cover the full span")
+
+	# 3. Built shell: node, floor collision, roof, lamps.
+	var layout = ProcGenScript.generate(theme, 12345)
+	var plan: Dictionary = plans[12345]
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var annex = AnnexScript.build(holder, plan, layout)
+	_assert(annex != null and annex.name == "StationAnnex", "StationAnnex node built")
+	var ax := float(plan["attach_x"])
+	var h: float = layout.arena_half_size()
+
+	var hall_floor = annex.get_node_or_null("HallFloor")
+	_assert(hall_floor is StaticBody3D, "hall floor is a StaticBody3D")
+	if hall_floor is StaticBody3D:
+		var cs := hall_floor.get_child(0) as CollisionShape3D
+		var bs := cs.shape as BoxShape3D
+		_assert(absf(hall_floor.position.y + 0.5) < 0.01 and bs.size.y == 1.0,
+			"hall floor collision top at y=0")
+		_assert(bs.size.x >= AnnexScript.HALL_W and bs.size.z >= AnnexScript.HALL_D,
+			"hall floor covers the hall footprint")
+
+	var roof := annex.get_node_or_null("HallRoof") as MeshInstance3D
+	_assert(roof != null, "hall roof present")
+	if roof != null:
+		var rs := (roof.mesh as BoxMesh).size
+		_assert(roof.position.y > 4.0 and rs.x >= AnnexScript.HALL_W and rs.z >= AnnexScript.HALL_D,
+			"roof covers the hall from above")
+
+	var lamp_count := 0
+	for lamp in annex.lamps:
+		if lamp is OmniLight3D:
+			lamp_count += 1
+	_assert(lamp_count >= 3, "at least 3 lamp OmniLight3Ds (%d)" % lamp_count)
+
+	# 4. Doorway connectivity: probe points down the corridor must not sit
+	# inside any annex collision box (arena center -> hall center is walkable).
+	var solids: Array = []
+	for child in annex.get_children():
+		if child is StaticBody3D:
+			var c := (child as StaticBody3D).get_child(0) as CollisionShape3D
+			var b := c.shape as BoxShape3D
+			solids.append(AABB(child.position - b.size * 0.5, b.size))
+	var hc: Vector3 = annex.hall_center()
+	var blocked := 0
+	for t in [0.15, 0.35, 0.55, 0.75, 0.95]:
+		var p := Vector3(ax, 1.0, lerpf(0.0, hc.z, t))
+		for aabb: AABB in solids:
+			if aabb.has_point(p):
+				blocked += 1
+	_assert(blocked == 0, "corridor walkable from arena to hall (%d blocked probes)" % blocked)
+
+	# 5. Dungeon wiring: plan before walls, wall split, annex build call.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("StationAnnex.plan(next_seed, _layout)"), "dungeon plans annex from seed")
+	_assert(dsrc.contains("StationAnnex.north_wall_segments"), "dungeon splits north wall")
+	_assert(dsrc.contains("StationAnnex.build(self, _annex_plan, _layout)"), "dungeon builds annex")
+
+	holder.queue_free()
 
 
 func _test_cycle_scaling() -> void:

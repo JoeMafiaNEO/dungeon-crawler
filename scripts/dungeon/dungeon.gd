@@ -104,6 +104,9 @@ var wave_info := {"wave": 0, "total": TOTAL_WAVES, "level": 1, "theme_name": "",
 var _layout: LevelLayout
 var _mob_mix_sorted: Array[Dictionary] = []
 var _server_rng := RandomNumberGenerator.new()
+## Station annex placement (issue #2 Phase 1): computed from the level seed
+## before walls go up so the north wall leaves a doorway gap.
+var _annex_plan := {}
 var _torch_lights: Array[OmniLight3D] = []
 var _ambient_timer := 6.0
 var _mob_id := 0
@@ -1927,11 +1930,13 @@ func _build_arena_from_layout() -> void:
 		holder.name = holder_name
 		add_child(holder)
 	_build_environment()
+	_annex_plan = StationAnnex.plan(next_seed, _layout)
 	_build_floor()
 	_build_walls()
 	_build_obstacles()
 	_build_props()
 	_build_torches()
+	StationAnnex.build(self, _annex_plan, _layout)
 	spawn_points = _layout.player_spawns
 
 
@@ -1999,27 +2004,35 @@ func _build_walls() -> void:
 	var wall_h := 4.0
 	var thick := 1.5
 	var mat := TextureGen.textured_mat(TextureGen.wall_tex(theme.wall_color), 3.0)
-	for data in [
-		[Vector3(0, wall_h * 0.5, -half), Vector3(half * 2.0 + thick, wall_h, thick)],
+	var walls: Array = [
 		[Vector3(0, wall_h * 0.5, half), Vector3(half * 2.0 + thick, wall_h, thick)],
 		[Vector3(-half, wall_h * 0.5, 0), Vector3(thick, wall_h, half * 2.0 + thick)],
 		[Vector3(half, wall_h * 0.5, 0), Vector3(thick, wall_h, half * 2.0 + thick)],
-	]:
-		var body := StaticBody3D.new()
-		body.name = "Wall"
-		var col := CollisionShape3D.new()
-		var box := BoxShape3D.new()
-		box.size = data[1]
-		col.shape = box
-		body.add_child(col)
-		var mesh := MeshInstance3D.new()
-		var bm := BoxMesh.new()
-		bm.size = data[1]
-		bm.material = mat
-		mesh.mesh = bm
-		body.add_child(mesh)
-		body.position = data[0]
-		add_child(body)
+	]
+	# North wall: split around the station annex doorway (issue #2).
+	for seg in StationAnnex.north_wall_segments(half, thick, wall_h,
+			float(_annex_plan.get("attach_x", 0.0)), StationAnnex.DOOR_W):
+		walls.append(seg)
+	for data in walls:
+		_wall_box(data[0], data[1], mat)
+
+
+func _wall_box(center: Vector3, size: Vector3, mat: Material) -> void:
+	var body := StaticBody3D.new()
+	body.name = "Wall"
+	var col := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = size
+	col.shape = box
+	body.add_child(col)
+	var mesh := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	bm.material = mat
+	mesh.mesh = bm
+	body.add_child(mesh)
+	body.position = center
+	add_child(body)
 
 
 func _build_obstacles() -> void:
