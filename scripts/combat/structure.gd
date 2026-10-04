@@ -73,22 +73,19 @@ func _glow(mi: MeshInstance3D, c: Color, energy: float = 2.0) -> void:
 		mat.emission_energy_multiplier = energy
 
 
+func _billboard(path: String, height_m: float, y_off: float) -> Sprite3D:
+	var sp := Sprite3D.new()
+	sp.texture = load(path) as Texture2D
+	sp.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sp.pixel_size = height_m / 256.0
+	sp.position.y = y_off
+	sp.shaded = true
+	return sp
+
+
 func _build_wall() -> void:
-	# Mossy stone slab: 3m wide, 2.5m tall, 0.6m thick.
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(3.0, 2.5, 0.6)
-	mi.mesh = bm
-	mi.position.y = 1.25
-	_add_mat(mi, Color(0.55, 0.55, 0.5))
-	add_child(mi)
-	var moss := MeshInstance3D.new()
-	var mm := BoxMesh.new()
-	mm.size = Vector3(3.0, 0.15, 0.62)
-	moss.mesh = mm
-	moss.position.y = 2.55
-	_add_mat(moss, Color(0.3, 0.5, 0.25))
-	add_child(moss)
+	# Mossy stone slab sprite, 3m wide x 2.5m tall (billboarded pixel art).
+	add_child(_billboard("res://assets/sprites/structures/wall.png", 2.5, 1.25))
 	# Blocks enemies only: physics layer 2. Mobs mask layer 2; players don't.
 	var body := StaticBody3D.new()
 	body.collision_layer = 2
@@ -103,42 +100,8 @@ func _build_wall() -> void:
 
 
 func _build_turret() -> void:
-	var base := MeshInstance3D.new()
-	var bc := CylinderMesh.new()
-	bc.top_radius = 0.35
-	bc.bottom_radius = 0.45
-	bc.height = 0.4
-	base.mesh = bc
-	base.position.y = 0.2
-	_add_mat(base, Color(0.5, 0.48, 0.45))
-	add_child(base)
-	var post := MeshInstance3D.new()
-	var pm := CylinderMesh.new()
-	pm.top_radius = 0.15
-	pm.bottom_radius = 0.18
-	pm.height = 1.0
-	post.mesh = pm
-	post.position.y = 0.9
-	_add_mat(post, Color(0.45, 0.32, 0.2))
-	add_child(post)
-	var head := MeshInstance3D.new()
-	var hm := SphereMesh.new()
-	hm.radius = 0.3
-	hm.height = 0.6
-	head.mesh = hm
-	head.position.y = 1.6
-	_add_mat(head, Color(0.75, 0.6, 0.3))
-	add_child(head)
-	# Glowing sight.
-	var sight := MeshInstance3D.new()
-	var sm := SphereMesh.new()
-	sm.radius = 0.12
-	sm.height = 0.24
-	sight.mesh = sm
-	sight.position = Vector3(0, 1.6, 0.28)
-	_add_mat(sight, Color(1.0, 0.3, 0.2))
-	_glow(sight, Color(1.0, 0.3, 0.2))
-	add_child(sight)
+	# Brass/wood turret sprite with glowing amber sight (billboarded pixel art).
+	add_child(_billboard("res://assets/sprites/structures/turret.png", 1.9, 0.95))
 	var light := OmniLight3D.new()
 	light.light_color = Color(1.0, 0.5, 0.2)
 	light.light_energy = 1.0
@@ -148,15 +111,8 @@ func _build_turret() -> void:
 
 
 func _build_trap() -> void:
-	var plate := MeshInstance3D.new()
-	var pm := CylinderMesh.new()
-	pm.top_radius = 0.8
-	pm.bottom_radius = 0.8
-	pm.height = 0.08
-	plate.mesh = pm
-	plate.position.y = 0.04
-	_add_mat(plate, Color(0.35, 0.33, 0.3))
-	add_child(plate)
+	# Dark iron spike-plate sprite (billboarded pixel art), ~1.6m across.
+	add_child(_billboard("res://assets/sprites/structures/trap.png", 1.6, 0.15))
 	# Hidden: only the owning player sees the shimmer.
 	if int(multiplayer.get_unique_id()) == owner_peer:
 		var shim := MeshInstance3D.new()
@@ -172,23 +128,8 @@ func _build_trap() -> void:
 
 
 func _build_keystone() -> void:
-	var ob := MeshInstance3D.new()
-	var om := BoxMesh.new()
-	om.size = Vector3(0.7, 2.2, 0.7)
-	ob.mesh = om
-	ob.position.y = 1.1
-	_add_mat(ob, Color(0.6, 0.58, 0.55))
-	_glow(ob, Color(0.5, 0.8, 1.0))
-	add_child(ob)
-	var cap := MeshInstance3D.new()
-	var cm := SphereMesh.new()
-	cm.radius = 0.25
-	cm.height = 0.5
-	cap.mesh = cm
-	cap.position.y = 2.4
-	_add_mat(cap, Color(0.5, 0.8, 1.0))
-	_glow(cap, Color(0.5, 0.8, 1.0))
-	add_child(cap)
+	# Rune-carved obelisk sprite (billboarded pixel art), ~2.6m tall.
+	add_child(_billboard("res://assets/sprites/structures/keystone.png", 2.6, 1.3))
 	# Ground ring showing the 6m buff radius.
 	_ring = MeshInstance3D.new()
 	var torus := TorusMesh.new()
