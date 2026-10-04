@@ -938,14 +938,41 @@ func set_wave(info: Dictionary) -> void:
 				%WaveStatus.text = "Cleared!"
 
 
-func announce(text: String) -> void:
+func announce(text: String, tint: Color = Color(1.0, 1.0, 1.0)) -> void:
 	%AnnounceLabel.text = text
-	%AnnounceLabel.modulate.a = 1.0
+	%AnnounceLabel.modulate = Color(tint.r, tint.g, tint.b, 1.0)
 	%AnnounceLabel.scale = Vector2(1.25, 1.25)
 	var tw := create_tween()
 	tw.set_parallel(true)
 	tw.tween_property(%AnnounceLabel, "modulate:a", 0.0, 1.6).set_delay(0.6)
 	tw.tween_property(%AnnounceLabel, "scale", Vector2.ONE, 0.4)
+
+
+## Full-screen fade (Phase 5: the train ride). Lazy overlay; idempotent.
+func _fade_rect() -> ColorRect:
+	var r := get_node_or_null("FadeRect") as ColorRect
+	if r == null:
+		r = ColorRect.new()
+		r.name = "FadeRect"
+		r.color = Color(0, 0, 0, 0)
+		r.set_anchors_preset(Control.PRESET_FULL_RECT)
+		r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(r)
+	return r
+
+
+func fade_out(dur: float) -> void:
+	var r := _fade_rect()
+	r.color.a = 0.0
+	var tw := create_tween()
+	tw.tween_property(r, "color:a", 1.0, dur)
+
+
+func fade_in(dur: float) -> void:
+	var r := _fade_rect()
+	r.color.a = 1.0
+	var tw := create_tween()
+	tw.tween_property(r, "color:a", 0.0, dur)
 
 
 # --- Train station (Phase 1) ---

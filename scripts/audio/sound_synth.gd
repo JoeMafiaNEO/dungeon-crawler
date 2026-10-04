@@ -467,6 +467,41 @@ static func portal_enter() -> AudioStreamWAV:
 	]))
 
 
+# --- train (station Phase 5) ---
+
+static func train_whistle() -> AudioStreamWAV:
+	# Classic two-tone steam whistle: 660Hz then 550Hz, slight chorus detune
+	# for vibrato-ish shimmer.
+	return _wav(_mix([
+		_tone(660.0, 655.0, 0.55, "sine", 1.6, 0.75),
+		_tone(667.0, 662.0, 0.55, "sine", 1.6, 0.45),
+		_tone(550.0, 545.0, 0.65, "sine", 1.6, 0.75, 0.55),
+		_tone(556.0, 551.0, 0.65, "sine", 1.6, 0.45, 0.55),
+	]))
+
+
+static func train_chug() -> AudioStreamWAV:
+	# Steam engine pulling out: accelerating low filtered-noise chugs.
+	var parts: Array = []
+	var t := 0.0
+	var gap := 0.30
+	while t < 2.0:
+		parts.append(_noise(0.12, 16.0, 0.85, t, 0.88))
+		parts.append(_tone(70.0, 55.0, 0.10, "sine", 18.0, 0.5, t))
+		t += gap
+		gap = maxf(0.14, gap * 0.88)
+	return _wav(_mix(parts))
+
+
+static func train_brake() -> AudioStreamWAV:
+	# Metallic arrival screech: descending high tone + gritty noise.
+	return _wav(_mix([
+		_tone(2800.0, 1400.0, 1.5, "saw", 2.0, 0.35),
+		_tone(2850.0, 1450.0, 1.5, "saw", 2.0, 0.25, 0.03),
+		_noise(1.5, 2.2, 0.20, 0.0, 0.15),
+	]))
+
+
 # --- UI ---
 
 static func ui_click() -> AudioStreamWAV:

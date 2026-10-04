@@ -35,6 +35,22 @@ const TIER_MULT := {1: 1.0, 2: 1.3, 3: 1.7, 4: 2.2}
 static func danger_mult(theme_id: String, level_number: int) -> float:
 	return float(TIER_MULT[int(DANGER_TIERS.get(theme_id, 1))]) * pow(1.15, float(level_number - 1))
 
+
+## Theme tint for the NOW ARRIVING banner (Phase 5; mirrors station lamps).
+static func arrival_tint(theme_id: String) -> Color:
+	match theme_id:
+		"village":
+			return Color(0.6, 1.0, 0.6)
+		"dungeon":
+			return Color(0.5, 0.7, 1.0)
+		"depths":
+			return Color(0.8, 0.4, 0.9)
+		"supermarket":
+			return Color(1.0, 1.0, 0.95)
+		"warlord":
+			return Color(1.0, 0.55, 0.25)
+	return Color.WHITE
+
 static var next_theme_id: String = "village"
 static var next_seed: int = 12345
 static var next_level_number: int = 1
@@ -373,6 +389,11 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 		_local_hud = HudScene.instantiate()
 		add_child(_local_hud)
 		_local_hud.setup(p)
+		# Arrival (Phase 5): fade in from the train ride, dressed banner, brake.
+		_local_hud.fade_in(1.5)
+		_local_hud.announce("NOW ARRIVING: " + theme.display_name,
+			Dungeon.arrival_tint(theme.theme_id))
+		AudioManager.sfx("train_brake")
 
 
 @rpc("any_peer", "call_local")

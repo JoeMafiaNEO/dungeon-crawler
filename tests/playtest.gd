@@ -32,6 +32,7 @@ func _run() -> void:
 	_test_station_phase2()
 	_test_station_phase3()
 	_test_station_phase4()
+	_test_station_phase5()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -260,6 +261,8 @@ func _test_station_phase4() -> void:
 	_assert(ssrc.contains("func sync_vendor_stock"), "sync_vendor_stock RPC exists")
 	_assert(ssrc.contains("func build_vendor_stock"), "build_vendor_stock exists")
 	_assert(ssrc.contains("VendorStallScript.new()"), "vendor stall prop placed")
+
+
 	_assert(ssrc.contains("resolve_purchase("), "buy uses resolve_purchase")
 	_assert(ResourceLoader.exists("res://scripts/station/vendor_stall.gd"), "vendor_stall.gd exists")
 	var vsrc := FileAccess.get_file_as_string("res://scripts/station/vendor_stall.gd")
@@ -275,6 +278,82 @@ func _test_station_phase4() -> void:
 	_assert(psrc.contains('"vendor_stall"'), "player E-scan includes vendor stall")
 	_assert(psrc.contains("hud.refresh_vendor_cash"), "buy refreshes vendor cash header")
 	_assert(psrc.contains("_prompt_interact"), "stale interact prompt is cleared on walk-away")
+
+
+func _test_station_phase5() -> void:
+	print("[Playtest] Train station phase 5 (dressing, signage, SFX)...")
+	var StationScript := load("res://scripts/station/station.gd")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+
+	# --- Lamp tints match the spec table ---
+	var lamps: Dictionary = StationScript.DRESSING_LAMPS
+	_assert(lamps["village"] == Color(0.6, 1.0, 0.6), "village lamp tint")
+	_assert(lamps["dungeon"] == Color(0.5, 0.7, 1.0), "dungeon lamp tint")
+	_assert(lamps["depths"] == Color(0.8, 0.4, 0.9), "depths lamp tint")
+	_assert(lamps["supermarket"] == Color(1.0, 1.0, 0.95), "supermarket lamp tint")
+	_assert(lamps["warlord"] == Color(1.0, 0.55, 0.25), "warlord lamp tint")
+
+	# --- apply_dressing: exactly one prop set visible; sign names the theme ---
+	var st = StationScript.new()
+	st._build_dressing()
+	for tid in ["village", "dungeon", "depths", "supermarket", "warlord"]:
+		st.apply_dressing(tid)
+		var vis: Array = []
+		for child in st._dressing.get_children():
+			if child.visible:
+				vis.append(str(child.name))
+		_assert(vis == [tid], "dressing shows only %s set" % tid)
+	_assert(st._dressing.get_child_count() == 5, "5 theme prop sets built")
+	st.apply_dressing("bogus_theme")
+	var vis2: Array = []
+	for child in st._dressing.get_children():
+		if child.visible:
+			vis2.append(str(child.name))
+	_assert(vis2 == ["village"], "unknown theme falls back to village dressing")
+	st.free()
+
+	# --- NOW BOARDING sign text (built in _build_station) ---
+	var st2 = StationScript.new()
+	st2._build_station()
+	st2.apply_dressing("depths")
+	_assert(st2._boarding_sign != null and "THE DEPTHS" in st2._boarding_sign.text,
+		"NOW BOARDING sign names the destination")
+	st2.free()
+
+	# --- SFX exist and are registered ---
+	for sfx in ["train_whistle", "train_chug", "train_brake"]:
+		var w: AudioStreamWAV = SoundScript.call(sfx)
+		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
+	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	for sfx in ["train_whistle", "train_chug", "train_brake"]:
+		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
+
+	# --- HUD fade + dressed announce ---
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func fade_out"), "hud.fade_out exists")
+	_assert(hsrc.contains("func fade_in"), "hud.fade_in exists")
+	_assert(hsrc.contains("func announce(text: String, tint: Color"),
+		"announce takes a theme tint")
+
+	# --- Departure ride wiring: whistle -> chug -> fade before the hop ---
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("func begin_departure"), "begin_departure RPC exists")
+	_assert(ssrc.find('rpc("begin_departure"') < ssrc.find('rpc("leave_station"'),
+		"departure ride runs before the station hop")
+	_assert(ssrc.find("func begin_departure") < ssrc.find('sfx("train_whistle")'),
+		"whistle sounds in the departure ride")
+	_assert(ssrc.contains('sfx("train_chug")'), "chug in departure ride")
+	_assert(ssrc.contains("fade_out(1.2)"), "fade_out(1.2) in departure ride")
+	_assert(ssrc.contains("apply_dressing(theme_id)"), "departure re-dresses for vote")
+
+	# --- Arrival: dungeon entry fades in with a dressed banner + brake ---
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("fade_in(1.5)"), "dungeon entry fades in")
+	_assert(dsrc.contains("NOW ARRIVING: "), "arrival banner on dungeon entry")
+	_assert(dsrc.contains('sfx("train_brake")'), "brake screech on arrival")
+	_assert(DungeonScript.arrival_tint("warlord") == Color(1.0, 0.55, 0.25),
+		"arrival tint matches lamp table")
 
 
 func _test_cycle_scaling() -> void:
@@ -799,7 +878,7 @@ func _test_station_phase2() -> void:
 	_assert(ssrc.contains("func cast_vote"), "cast_vote RPC exists")
 	_assert(ssrc.contains("func sync_votes"), "sync_votes RPC exists")
 	_assert(not ssrc.contains("func open_board"), "open_board RPC removed (no auto-open)")
-	_assert(ssrc.contains("func announce_arrival"), "announce_arrival RPC exists")
+	_assert(not ssrc.contains("func announce_arrival"), "announce_arrival moved to dungeon entry (Phase 5)")
 	_assert(ssrc.contains("resolve_destination(votes"), "depart resolves destination")
 	_assert(ssrc.contains("DepartureBoardScript.new()"), "departure board prop placed")
 	_assert(ssrc.contains("const BOARD_STARS"), "danger stars live in station.gd now")

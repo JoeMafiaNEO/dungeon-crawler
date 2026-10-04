@@ -34,6 +34,15 @@ const BOARD_STARS := {
 	"supermarket": "★☆☆☆", "warlord": "★★★★",
 }
 
+## Per-theme station dressing: platform lamp tint (Phase 5).
+const DRESSING_LAMPS := {
+	"village": Color(0.6, 1.0, 0.6),
+	"dungeon": Color(0.5, 0.7, 1.0),
+	"depths": Color(0.8, 0.4, 0.9),
+	"supermarket": Color(1.0, 1.0, 0.95),
+	"warlord": Color(1.0, 0.55, 0.25),
+}
+
 static var next_level_number: int = 1
 
 var peer_classes := {} # int peer_id -> String class_id
@@ -54,6 +63,10 @@ var _heal_pad: Area3D
 var _heal_tick := 0.0
 ## Destination votes: peer_id -> theme_id (server-authoritative, Phase 2).
 var votes := {}
+## Phase 5 dressing: platform lamps, NOW BOARDING sign, per-theme prop sets.
+var _lamps: Array = []
+var _boarding_sign: Label3D
+var _dressing: Node3D
 # --- Multiplayer run-save state (trimmed mirror of dungeon's; no RTS here) ---
 var _save_roster: Array = []
 var _save_pending: Dictionary = {}
@@ -67,6 +80,8 @@ func _ready() -> void:
 		departure_seed = randi()
 		_roll_vendor_stock()
 	_build_station()
+	# Dress for the rotation default; re-dressed when a vote resolves.
+	apply_dressing(Dungeon.THEME_ORDER[(next_level_number - 1) % Dungeon.THEME_ORDER.size()])
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	AudioManager.play_music("menu")
 	if multiplayer.is_server():
@@ -294,13 +309,6 @@ func buy_vendor_item(item_id: String) -> void:
 	player.rpc_id(sender, "on_bought", item_id, int(res.get("price")))
 
 
-## "NOW ARRIVING" banner before the hop (Phase 5 will dress this further).@rpc("any_peer", "call_local")
-func announce_arrival(theme_id: String) -> void:
-	var hud := get_tree().get_first_node_in_group("hud")
-	if hud != null and hud.has_method("announce"):
-		hud.announce("NOW ARRIVING: " + Station.theme_display_name(theme_id))
-
-
 @rpc("any_peer", "call_local")
 func station_timer_sync(time_left: float) -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
@@ -308,8 +316,8 @@ func station_timer_sync(time_left: float) -> void:
 		hud.show_station_timer(time_left)
 
 
-## Server-authoritative departure: resolve the destination, pull
-## stragglers aboard, announce, save, hop levels.
+## Server-authoritative departure: resolve the destination, ride out with
+## whistle/chug/fade (Phase 5), then save and hop levels.
 func depart() -> void:
 	if _departing or not multiplayer.is_server():
 		return
@@ -323,9 +331,10 @@ func depart() -> void:
 	for pid in peer_classes:
 		spots[pid] = Vector3(-13.5 + float(i % 2) * 2.0, 1.5, 3.0)
 		i += 1
-	rpc("pull_aboard", spots)
-	rpc("announce_arrival", theme_id)
-	await get_tree().create_timer(2.5).timeout
+	rpc("begin_departure", theme_id, spots)
+	# 3.5s ride: 1.2s fade + ~1s black, whistle into chug. No moving-train
+	# gameplay (scope control).
+	await get_tree().create_timer(3.5).timeout
 	# Save point (moved here from dungeon's change_level): persist the run so
 	# it can be continued from the menu. Server-only.
 	var me := _my_player()
@@ -344,6 +353,21 @@ func depart() -> void:
 				"seed": seed,
 			})
 	rpc("leave_station", theme_id, seed, new_level)
+
+
+## Departure ride (all peers): re-dress for the resolved theme, whistle,
+## pull stragglers aboard, chug + rumble, fade to black.
+@rpc("any_peer", "call_local")
+func begin_departure(theme_id: String, spots: Dictionary) -> void:
+	apply_dressing(theme_id)
+	AudioManager.sfx("train_whistle")
+	pull_aboard(spots) # moves players, toasts "All aboard!", hides the timer
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("fade_out"):
+		hud.fade_out(1.2)
+	await get_tree().create_timer(1.0).timeout
+	AudioManager.sfx("train_chug")
+	AudioManager.sfx("rumble")
 
 
 @rpc("any_peer", "call_local")
@@ -753,7 +777,122 @@ func _build_station() -> void:
 		lamp.omni_range = 12.0
 		lamp.position = Vector3(lx, 4.0, -6.2)
 		add_child(lamp)
+		_lamps.append(lamp)
+
+	# NOW BOARDING sign (Phase 5): big gold label near the train doors.
+	_boarding_sign = Label3D.new()
+	_boarding_sign.font_size = 84
+	_boarding_sign.modulate = Color(1.0, 0.82, 0.35)
+	_boarding_sign.outline_size = 12
+	_boarding_sign.position = Vector3(-9, 4.6, -0.6)
+	_boarding_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(_boarding_sign)
+
+	# Per-theme dressing props (Phase 5); only the active set is visible.
+	_build_dressing()
 
 	var players := Node3D.new()
 	players.name = "Players"
 	add_child(players)
+
+
+## Dress the station for a destination theme: tint the lamps, show that
+## theme's prop set, set the NOW BOARDING sign. Unknown ids fall back to
+## village. Called on load (rotation default) and again when a vote resolves.
+func apply_dressing(theme_id: String) -> void:
+	var tid := theme_id if theme_id in Dungeon.THEME_ORDER else "village"
+	var tint: Color = DRESSING_LAMPS.get(tid, Color.WHITE)
+	for lamp in _lamps:
+		(lamp as OmniLight3D).light_color = tint
+	if _dressing != null:
+		for child in _dressing.get_children():
+			child.visible = (child.name == tid)
+	if _boarding_sign != null:
+		_boarding_sign.text = "NOW BOARDING: " + Station.theme_display_name(tid).to_upper()
+
+
+## Prop set builder: one Node3D per theme under Dressing. All procedural,
+## a few boxes each — no new textures.
+func _build_dressing() -> void:
+	_dressing = Node3D.new()
+	_dressing.name = "Dressing"
+	add_child(_dressing)
+	var hay := _mat(Color(0.85, 0.70, 0.40))
+	var leaf := _mat(Color(0.30, 0.55, 0.28))
+	var trunk_m := _mat(Color(0.40, 0.28, 0.16))
+	var torch_tip := _mat(Color(1.0, 0.55, 0.15), Color(1.0, 0.45, 0.10), 3.0)
+	var chain_m := _mat(Color(0.18, 0.18, 0.20))
+	var rock := _mat(Color(0.30, 0.28, 0.34))
+	var crystal := _mat(Color(0.55, 0.30, 0.85), Color(0.45, 0.20, 0.80), 2.5)
+	var crate_r := _mat(Color(0.75, 0.25, 0.20))
+	var crate_b := _mat(Color(0.20, 0.40, 0.75))
+	var crate_y := _mat(Color(0.85, 0.75, 0.25))
+	var cart_m := _mat(Color(0.55, 0.58, 0.62))
+	var banner_m := _mat(Color(0.70, 0.12, 0.12))
+	var steel_dark := _mat(Color(0.25, 0.25, 0.28))
+
+	# village: hay bales + a low-poly tree.
+	var v := Node3D.new()
+	v.name = "village"
+	_dressing.add_child(v)
+	_box(v, Vector3(0.9, 0.9, 0.9), Vector3(-13.5, 1.45, -6.0), hay)
+	_box(v, Vector3(0.9, 0.9, 0.9), Vector3(-12.4, 1.45, -6.1), hay)
+	_box(v, Vector3(0.9, 0.9, 0.9), Vector3(-13.0, 2.32, -6.0), hay)
+	_cyl(v, 0.18, 0.24, 1.6, Vector3(13.0, 1.8, -6.0), trunk_m)
+	_box(v, Vector3(1.6, 1.4, 1.6), Vector3(13.0, 3.2, -6.0), leaf)
+
+	# dungeon: torch posts + a beam with hanging chains.
+	var d := Node3D.new()
+	d.name = "dungeon"
+	_dressing.add_child(d)
+	for tx in [-13.5, 7.5]:
+		_box(d, Vector3(0.14, 1.8, 0.14), Vector3(tx, 1.9, -6.2), trunk_m)
+		_box(d, Vector3(0.30, 0.22, 0.30), Vector3(tx, 2.9, -6.2), torch_tip)
+	_box(d, Vector3(3.0, 0.18, 0.18), Vector3(-4.5, 3.4, -6.3), trunk_m)
+	for i in range(3):
+		_box(d, Vector3(0.06, 1.1, 0.06), Vector3(-5.5 + float(i), 2.75, -6.3), chain_m)
+
+	# depths: crystal clusters on rock bases.
+	var de := Node3D.new()
+	de.name = "depths"
+	_dressing.add_child(de)
+	_box(de, Vector3(1.4, 0.5, 1.4), Vector3(-13.5, 1.25, -6.0), rock)
+	var cry1 := _box(de, Vector3(0.35, 1.1, 0.35), Vector3(-13.7, 2.0, -6.0), crystal)
+	cry1.rotation.z = 0.18
+	var cry2 := _box(de, Vector3(0.30, 0.8, 0.30), Vector3(-13.2, 1.85, -6.2), crystal)
+	cry2.rotation.z = -0.22
+	var cry3 := _box(de, Vector3(0.28, 0.9, 0.28), Vector3(-13.5, 1.9, -5.7), crystal)
+	cry3.rotation.x = 0.15
+	_box(de, Vector3(1.0, 0.4, 1.0), Vector3(13.0, 1.2, -6.0), rock)
+	var cry4 := _box(de, Vector3(0.30, 0.9, 0.30), Vector3(13.0, 1.8, -6.0), crystal)
+	cry4.rotation.z = 0.12
+
+	# supermarket: product crates + a shopping cart.
+	var s := Node3D.new()
+	s.name = "supermarket"
+	_dressing.add_child(s)
+	_box(s, Vector3(1.0, 1.0, 1.0), Vector3(-13.5, 1.5, -6.0), crate_r)
+	_box(s, Vector3(1.0, 1.0, 1.0), Vector3(-12.3, 1.5, -6.1), crate_b)
+	_box(s, Vector3(1.0, 1.0, 1.0), Vector3(-13.0, 2.5, -6.0), crate_y)
+	_box(s, Vector3(1.2, 0.7, 0.8), Vector3(7.5, 1.55, -6.2), cart_m)
+	for wx in [7.15, 7.85]:
+		for wz in [-6.45, -5.95]:
+			var wheel := _cyl(s, 0.12, 0.12, 0.08, Vector3(wx, 1.12, wz), chain_m)
+			wheel.rotation_degrees.x = 90.0
+	var handle := _box(s, Vector3(0.08, 0.08, 0.9), Vector3(8.15, 2.0, -6.2), chain_m)
+	handle.rotation_degrees.z = -25.0
+
+	# warlord: war banners + a weapon rack.
+	var w := Node3D.new()
+	w.name = "warlord"
+	_dressing.add_child(w)
+	for bx in [-13.5, 13.0]:
+		_box(w, Vector3(0.14, 2.8, 0.14), Vector3(bx, 2.4, -6.2), trunk_m)
+		_box(w, Vector3(0.80, 1.5, 0.06), Vector3(bx, 2.9, -6.2), banner_m)
+	_box(w, Vector3(0.14, 1.4, 0.14), Vector3(-5.0, 1.7, -6.3), trunk_m)
+	_box(w, Vector3(0.14, 1.4, 0.14), Vector3(-4.0, 1.7, -6.3), trunk_m)
+	_box(w, Vector3(1.3, 0.12, 0.12), Vector3(-4.5, 2.3, -6.3), trunk_m)
+	var sw1 := _box(w, Vector3(0.10, 1.2, 0.10), Vector3(-4.5, 1.75, -6.25), steel_dark)
+	sw1.rotation_degrees.z = 28.0
+	var sw2 := _box(w, Vector3(0.10, 1.2, 0.10), Vector3(-4.5, 1.75, -6.25), steel_dark)
+	sw2.rotation_degrees.z = -28.0

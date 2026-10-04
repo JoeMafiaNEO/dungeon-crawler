@@ -90,6 +90,22 @@ func _boot_station() -> void:
 		cam.look_at(Vector3(10, 1.0, -4))
 		await get_tree().create_timer(1.2).timeout
 		_snap("healpad")
+	# Phase 5 dressing shots: depths + supermarket prop sets and lamp tints.
+	var station := tree.get_first_node_in_group("station")
+	if station != null and station.has_method("apply_dressing"):
+		cam.position = Vector3(2, 6.5, 10)
+		cam.look_at(Vector3(-2, 1.0, -4))
+		station.apply_dressing("depths")
+		await get_tree().create_timer(0.6).timeout
+		_snap("dress_depths")
+		station.apply_dressing("supermarket")
+		await get_tree().create_timer(0.6).timeout
+		_snap("dress_market")
+		# NOW BOARDING sign close-up.
+		cam.position = Vector3(-9, 3.0, 2.6)
+		cam.look_at(Vector3(-9, 3.0, -0.6))
+		await get_tree().create_timer(0.6).timeout
+		_snap("boarding_sign")
 	print("[StationShots] done")
 	get_tree().quit()
 
