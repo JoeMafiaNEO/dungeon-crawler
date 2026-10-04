@@ -2339,7 +2339,7 @@ func _update_pickup_prompt() -> void:
 			_prompt_pickup = null
 		hud.set_hint("Hold E to revive teammate")
 		return
-	# Cipher plaque / lockbox prompt.
+	# Cipher note / lockbox prompt.
 	var c := _nearest_cipher_node()
 	if c != null:
 		hud.set_pickup_prompt(true, str(c.prompt_text()))
@@ -2358,7 +2358,7 @@ func _update_pickup_prompt() -> void:
 			hud.set_pickup_prompt(false, "")
 
 
-## Nearest cipher plaque or lockbox within E range (plaques first).
+## Nearest cipher note or lockbox within E range (notes first).
 func _nearest_cipher_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5

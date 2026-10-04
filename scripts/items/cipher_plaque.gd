@@ -1,9 +1,9 @@
 class_name CipherPlaque
 extends Node3D
-## Weathered stone plaque hiding one Mason's Cipher poem.
+## Parchment note hiding one Mason's Cipher poem.
 ## One spawns per dungeon level (server-side). Reading grants the reader's
 ## next uncollected fragment (local meta, no networking). Each machine tracks
-## its own read state on its local instance; clients with all 8 hide plaques.
+## its own read state on its local instance; clients with all 8 hide notes.
 
 var _read_locally := false
 var _granted_idx := -1
@@ -16,16 +16,47 @@ func _ready() -> void:
 	if SaveManager.get_cipher_fragments().size() >= CipherPoems.POEMS.size():
 		visible = false
 		return
-	# Dark stone slab.
-	var slab := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.8, 1.2, 0.2)
-	slab.mesh = bm
-	slab.position.y = 0.6
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.25, 0.24, 0.22)
-	slab.set_surface_override_material(0, mat)
-	add_child(slab)
+	# Parchment scroll: paper sheet on wooden rods, faint ink lines.
+	var paper := MeshInstance3D.new()
+	var pm := BoxMesh.new()
+	pm.size = Vector3(0.7, 1.0, 0.03)
+	paper.mesh = pm
+	paper.position.y = 0.65
+	paper.rotation.x = -0.06
+	var pmat := StandardMaterial3D.new()
+	pmat.albedo_color = Color(0.93, 0.87, 0.72)
+	pmat.roughness = 0.9
+	paper.set_surface_override_material(0, pmat)
+	add_child(paper)
+	# Ink lines suggesting verse (4 thin + 1 bold cipher line).
+	var ink := StandardMaterial3D.new()
+	ink.albedo_color = Color(0.25, 0.2, 0.15)
+	for i in range(5):
+		var line := MeshInstance3D.new()
+		var lm := BoxMesh.new()
+		var w := 0.5 - float(i % 3) * 0.08
+		var h := 0.035 if i == 4 else 0.02
+		lm.size = Vector3(w, h, 0.005)
+		line.mesh = lm
+		line.position = Vector3(0.0, 0.92 - float(i) * 0.16, 0.02)
+		line.rotation.x = -0.06
+		line.set_surface_override_material(0, ink)
+		add_child(line)
+	# Wooden scroll rods, top and bottom.
+	var wood := StandardMaterial3D.new()
+	wood.albedo_color = Color(0.45, 0.32, 0.2)
+	wood.roughness = 0.8
+	for ry in [1.18, 0.12]:
+		var rod := MeshInstance3D.new()
+		var rm := CylinderMesh.new()
+		rm.top_radius = 0.05
+		rm.bottom_radius = 0.05
+		rm.height = 0.9
+		rod.mesh = rm
+		rod.rotation.z = PI / 2.0
+		rod.position.y = ry
+		rod.set_surface_override_material(0, wood)
+		add_child(rod)
 	# Faint gold light so it catches the eye in dark corners.
 	var light := OmniLight3D.new()
 	light.light_color = Color(1.0, 0.85, 0.4)
@@ -60,7 +91,7 @@ func _process(delta: float) -> void:
 
 
 func prompt_text() -> String:
-	return "Read weathered plaque"
+	return "Read old note"
 
 
 func interact(player: Player) -> void:

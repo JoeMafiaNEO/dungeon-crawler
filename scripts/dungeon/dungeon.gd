@@ -133,7 +133,7 @@ func _ready() -> void:
 			_spawn_potion_shop()
 			# Mason's Cipher: the lockbox sits near the checkout (any cycle).
 			rpc("spawn_cipher_lockbox", _portal_pos() + Vector3(9, 0, 0))
-	# Mason's Cipher: one weathered plaque per dungeon level.
+	# Mason's Cipher: one parchment note per dungeon level.
 	if multiplayer.is_server() and not is_supermarket and not is_warlord:
 		rpc("spawn_cipher_plaque", _cipher_plaque_pos())
 	# Warlord mode: RTS hybrid. No waves, no keys. Portal sealed until victory.
@@ -1682,7 +1682,7 @@ func spawn_key(pos: Vector3) -> void:
 	$Pickups.add_child(key)
 
 
-## Mason's Cipher: weathered plaque hiding one poem (one per dungeon level).
+## Mason's Cipher: parchment note hiding one poem (one per dungeon level).
 @rpc("any_peer", "call_local")
 func spawn_cipher_plaque(pos: Vector3) -> void:
 	var plaque := CipherPlaque.new()
@@ -1700,7 +1700,7 @@ func spawn_cipher_lockbox(pos: Vector3) -> void:
 	$Pickups.add_child(box)
 
 
-## Random floor spot for the cipher plaque, away from the spawn area.
+## Random floor spot for the cipher note, away from the spawn area.
 ## Server-side only.
 func _cipher_plaque_pos() -> Vector3:
 	var rng := RandomNumberGenerator.new()

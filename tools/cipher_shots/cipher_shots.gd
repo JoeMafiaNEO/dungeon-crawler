@@ -106,6 +106,18 @@ func _process(_delta: float) -> void:
 		6:
 			if t > 19.0:
 				_snap("collection_cipher")
+				# Park the player in front of the parchment note and snap it.
+				_player.hud.hide_pause()
+				var notes := get_tree().get_nodes_in_group("cipher_plaques")
+				if not notes.is_empty():
+					var note := notes[0] as Node3D
+					var np: Vector3 = note.global_position
+					_player.global_position = np + Vector3(0, 0, 2.2)
+					_player.rotation.y = atan2(np.x - _player.global_position.x, np.z - _player.global_position.z) + PI
+				_phase = 7
+		7:
+			if t > 21.0:
+				_snap("cipher_note")
 				print("[CipherShots] done")
 				# Restore meta.
 				if _meta_backup.is_empty():

@@ -326,7 +326,7 @@ func show_poem_popup(idx: int) -> void:
 	var p: Dictionary = poems[idx]
 	var vb := _cipher_panel()
 	var title := Label.new()
-	title.text = "Weathered Plaque — fragment %d/8" % (idx + 1)
+	title.text = "Old Note — fragment %d/8" % (idx + 1)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))

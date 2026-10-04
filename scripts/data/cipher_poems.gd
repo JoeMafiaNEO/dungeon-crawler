@@ -1,5 +1,5 @@
 class_name CipherPoems
-## The Mason's Cipher: 8 cryptic poems hidden on weathered plaques.
+## The Mason's Cipher: 8 cryptic poems hidden on parchment notes.
 ## Each poem ends with a Caesar-shifted word (word shifted FORWARD by shift;
 ## the verse hints the shift — count BACK to decode).
 ## Decoding all eight in order yields the passphrase for the lockbox.
