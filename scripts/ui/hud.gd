@@ -264,6 +264,74 @@ func show_toast(message: String) -> void:
 	toast(message)
 
 
+# --- Station vendor (Train Station Phase 4) ---
+
+var vendor_open := false
+var _vendor_cash_label: Label = null
+
+
+## Vendor panel: 3 potions + 3 rotating items, compact, no scroll.
+## Reuses the cipher popup shell (mouse visible, E/Esc closes).
+func show_vendor() -> void:
+	var st := get_tree().get_first_node_in_group("station")
+	if st == null or _player == null:
+		return
+	var stock: Array = st.get("vendor_stock")
+	vendor_open = true
+	var vb := _cipher_panel()
+	var title := Label.new()
+	title.text = "Vendor"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(title)
+	_vendor_cash_label = Label.new()
+	_vendor_cash_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_vendor_cash_label.add_theme_font_size_override("font_size", 14)
+	_vendor_cash_label.add_theme_color_override("font_color", Color(0.6, 1.0, 0.6))
+	vb.add_child(_vendor_cash_label)
+	refresh_vendor_cash()
+	for entry in stock:
+		var item_id := str(entry.get("id"))
+		var price := int(entry.get("price"))
+		var item := ItemDB.get_item(item_id)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		var nl := Label.new()
+		nl.text = item.display_name if item != null else item_id
+		nl.custom_minimum_size = Vector2(230, 0)
+		nl.add_theme_font_size_override("font_size", 14)
+		row.add_child(nl)
+		var pl := Label.new()
+		pl.text = "$%d" % price
+		pl.custom_minimum_size = Vector2(64, 0)
+		pl.add_theme_font_size_override("font_size", 14)
+		pl.add_theme_color_override("font_color", Color(0.55, 1.0, 0.6))
+		row.add_child(pl)
+		var buy := Button.new()
+		buy.text = "BUY"
+		buy.pressed.connect(_on_vendor_buy.bind(st, item_id))
+		row.add_child(buy)
+		vb.add_child(row)
+	var close_hint := Label.new()
+	close_hint.text = "E / Esc — close"
+	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_hint.add_theme_font_size_override("font_size", 12)
+	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+	vb.add_child(close_hint)
+	_open_cipher_popup(vb.get_parent() as Control)
+
+
+func refresh_vendor_cash() -> void:
+	if _vendor_cash_label != null and is_instance_valid(_vendor_cash_label) and _player != null:
+		_vendor_cash_label.text = "Your cash: $%d" % int(_player.get("supermarket_cash"))
+
+
+func _on_vendor_buy(st: Node, item_id: String) -> void:
+	st.rpc_id(NetworkManager.server_id, "buy_vendor_item", item_id)
+	AudioManager.sfx("ui_click")
+
+
 # --- Mason's Cipher popups ---
 
 var cipher_popup_open := false
@@ -314,6 +382,8 @@ func close_cipher_popup() -> void:
 	if _cipher_popup != null and is_instance_valid(_cipher_popup):
 		_cipher_popup.queue_free()
 	_cipher_popup = null
+	vendor_open = false
+	_vendor_cash_label = null
 	cipher_popup_open = false
 	if not is_paused:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED

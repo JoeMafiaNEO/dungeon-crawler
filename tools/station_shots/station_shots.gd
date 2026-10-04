@@ -66,6 +66,30 @@ func _boot_station() -> void:
 		cam.look_at(Vector3(-12, 1.5, -4))
 		await get_tree().create_timer(0.8).timeout
 		_snap("board")
+	# Vendor stall shot: park the player at the stall and open the panel.
+	var stall := tree.get_first_node_in_group("vendor_stall")
+	if player != null and stall != null and hud != null:
+		if player.has_method("exit_reading"):
+			player.exit_reading()
+		player.global_position = Vector3(4, 1.2, -3.2)
+		player.rotation.y = PI # face the stall (toward -z... stall is at z=-5.5)
+		cam.position = Vector3(4, 2.6, 0.2)
+		cam.look_at(Vector3(4, 1.4, -5.5))
+		await get_tree().create_timer(0.5).timeout
+		if hud.has_method("show_vendor"):
+			hud.show_vendor()
+		await get_tree().create_timer(0.8).timeout
+		_snap("vendor")
+		if hud.has_method("close_cipher_popup"):
+			hud.close_cipher_popup()
+	# Heal pad shot: hurt the player, stand them on the pad, catch a heal tick.
+	if player != null:
+		player.set("hp", float(player.get("max_hp")) * 0.4)
+		player.global_position = Vector3(10, 1.2, -4)
+		cam.position = Vector3(10, 3.2, 1.5)
+		cam.look_at(Vector3(10, 1.0, -4))
+		await get_tree().create_timer(1.2).timeout
+		_snap("healpad")
 	print("[StationShots] done")
 	get_tree().quit()
 

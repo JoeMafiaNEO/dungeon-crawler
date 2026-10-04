@@ -11,9 +11,21 @@ extends Node3D
 const PlayerScene := preload("res://scenes/player/player.tscn")
 const HudScene := preload("res://scenes/ui/hud.tscn")
 const DepartureBoardScript := preload("res://scripts/station/departure_board.gd")
+const VendorStallScript := preload("res://scripts/station/vendor_stall.gd")
 
 const DEPART_TIME := 45.0
 const SAVE_STATE_TIMEOUT := 3.0
+const HEAL_TICK := 0.5
+const HEAL_RADIUS := 2.2
+
+## Vendor stock (server-authoritative, picked fresh every station visit).
+const VENDOR_POTIONS := [
+	{"id": "health_potion", "price": 50},
+	{"id": "swift_potion", "price": 75},
+	{"id": "power_elixir", "price": 100},
+]
+const VENDOR_POTION_IDS := ["health_potion", "swift_potion", "power_elixir"]
+var vendor_stock: Array = [] # [{id, price}]
 
 ## Danger stars per theme (informational only — no locks). Moved here from
 ## the old floating HUD board panel; the physical 3D board reads it.
@@ -38,6 +50,8 @@ var _time_left := DEPART_TIME
 var _departing := false
 var _last_sync_sec := -1
 var _ring: MeshInstance3D
+var _heal_pad: Area3D
+var _heal_tick := 0.0
 ## Destination votes: peer_id -> theme_id (server-authoritative, Phase 2).
 var votes := {}
 # --- Multiplayer run-save state (trimmed mirror of dungeon's; no RTS here) ---
@@ -51,6 +65,7 @@ func _ready() -> void:
 	randomize()
 	if multiplayer.is_server():
 		departure_seed = randi()
+		_roll_vendor_stock()
 	_build_station()
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	AudioManager.play_music("menu")
@@ -71,12 +86,56 @@ func _process(delta: float) -> void:
 	if not multiplayer.is_server() or _departing:
 		return
 	_time_left -= delta
+	_heal_tick -= delta
+	if _heal_tick <= 0.0:
+		_heal_tick = HEAL_TICK
+		_process_heal_pad()
 	var sec := int(ceil(maxf(_time_left, 0.0)))
 	if sec != _last_sync_sec:
 		_last_sync_sec = sec
 		rpc("station_timer_sync", maxf(_time_left, 0.0))
 	if _time_left <= 0.0:
 		depart()
+
+
+## Heal pad: every tick, living players on the pad get 15% max HP.
+## Server-authoritative; heal() itself does FX + clamps to max.
+func _process_heal_pad() -> void:
+	if _heal_pad == null:
+		return
+	for b in _heal_pad.get_overlapping_bodies():
+		if not b.is_in_group("players"):
+			continue
+		if not bool(b.get("alive")):
+			continue
+		if float(b.get("hp")) >= float(b.get("max_hp")):
+			continue
+		b.rpc_id(b.get_multiplayer_authority(), "heal", heal_tick_amount(float(b.get("max_hp"))))
+
+
+## Heal tick amount: 15% of max HP per 0.5s tick (~3.3s to full from empty).
+static func heal_tick_amount(max_hp: float) -> float:
+	return max_hp * 0.15
+
+
+## Vendor buy price: 3x sell value, $50 floor (potions have fixed prices).
+static func vendor_price(sell_value: int) -> int:
+	return maxi(50, sell_value * 3)
+
+
+## Pure purchase resolution (static for testability).
+## Returns {ok, price, new_cash} or {ok:false, reason}.
+static func resolve_purchase(cash: int, stock: Array, item_id: String) -> Dictionary:
+	var price := -1
+	for entry in stock:
+		if str(entry.get("id")) == item_id:
+			price = int(entry.get("price"))
+			break
+	if price < 0:
+		return {"ok": false, "reason": "not_in_stock"}
+	if cash < price:
+		return {"ok": false, "reason": "broke", "price": price}
+	return {"ok": true, "price": price, "new_cash": cash - price}
 
 
 ## Peer ids of living players (voters).
@@ -178,8 +237,64 @@ func sync_votes(v: Dictionary) -> void:
 			board.set_my_vote(str(votes.get(multiplayer.get_unique_id(), "")))
 
 
-## "NOW ARRIVING" banner before the hop (Phase 5 will dress this further).
+## Vendor stock (Phase 4): 3 fixed potions + 3 rotating items.
+## Rotating picks exclude potions, supermarket_loot, and meta-locked items
+## unless the local save has them unlocked. New stock every station visit.
+func _roll_vendor_stock() -> void:
+	vendor_stock = build_vendor_stock()
+	rpc("sync_vendor_stock", vendor_stock)
+
+
+## Pure stock builder (static for testability).
+static func build_vendor_stock() -> Array:
+	var stock: Array = VENDOR_POTIONS.duplicate(true)
+	var pool: Array = []
+	for id in ItemDB.items.keys():
+		if id in VENDOR_POTION_IDS:
+			continue
+		var item: ItemData = ItemDB.items[id]
+		if item == null:
+			continue
+		if bool(item.get("supermarket_loot")):
+			continue
+		if bool(item.get("meta_locked")) and not SaveManager.is_item_unlocked(id):
+			continue
+		pool.append(id)
+	pool.shuffle()
+	for i in mini(3, pool.size()):
+		var item: ItemData = ItemDB.items[pool[i]]
+		stock.append({"id": pool[i], "price": vendor_price(int(item.get("sell_value")))})
+	return stock
+
+
+## Sync vendor stock to every peer (also called for late joiners).
 @rpc("any_peer", "call_local")
+func sync_vendor_stock(stock: Array) -> void:
+	vendor_stock = stock.duplicate(true)
+
+
+## Buy a vendor item. Server validates stock + cash; mirrors buy_potion.
+@rpc("any_peer", "call_local")
+func buy_vendor_item(item_id: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	var player := get_player_node(sender)
+	if player == null or not bool(player.get("alive")):
+		return
+	var res := resolve_purchase(int(player.get("supermarket_cash")), vendor_stock, item_id)
+	if not bool(res.get("ok")):
+		if str(res.get("reason")) == "broke":
+			player.rpc_id(sender, "on_buy_failed", int(res.get("price")))
+		return
+	player.set("supermarket_cash", int(res.get("new_cash")))
+	player.rpc_id(sender, "receive_item", item_id)
+	player.rpc_id(sender, "on_bought", item_id, int(res.get("price")))
+
+
+## "NOW ARRIVING" banner before the hop (Phase 5 will dress this further).@rpc("any_peer", "call_local")
 func announce_arrival(theme_id: String) -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("announce"):
@@ -273,6 +388,7 @@ func register_class(class_id: String) -> void:
 	var node := get_player_node(sender)
 	if node != null:
 		rpc("spawn_player", sender, class_id, node.position)
+		rpc_id(sender, "sync_vendor_stock", vendor_stock)
 
 
 @rpc("any_peer", "call_local")
@@ -582,7 +698,8 @@ func _build_station() -> void:
 	board_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(board_label)
 
-	# Heal pad (visual only in Phase 1): glowing green disc + REST sign.
+	# Heal pad (Phase 4): glowing green disc + REST sign + heal trigger.
+	# The server ticks heal(max_hp * 0.15) for living players inside.
 	_cyl(self, 2.0, 2.0, 0.10, Vector3(10, 1.06, -4), heal_glow)
 	var rest_label := Label3D.new()
 	rest_label.text = "REST"
@@ -592,17 +709,25 @@ func _build_station() -> void:
 	rest_label.position = Vector3(10, 2.6, -4)
 	rest_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(rest_label)
+	var pad := Area3D.new()
+	pad.name = "HealPad"
+	pad.collision_layer = 0
+	pad.collision_mask = 1 # players (default layer 1)
+	pad.position = Vector3(10, 1.5, -4)
+	var pcs := CollisionShape3D.new()
+	var pcyl := CylinderShape3D.new()
+	pcyl.radius = HEAL_RADIUS
+	pcyl.height = 3.0
+	pcs.shape = pcyl
+	pad.add_child(pcs)
+	add_child(pad)
+	_heal_pad = pad
 
-	# Vendor stall (visual only in Phase 1): table + posts + awning.
-	var stall := Node3D.new()
+	# Vendor stall (Phase 4): E-interact opens the vendor panel.
+	var stall := VendorStallScript.new()
 	stall.name = "VendorStall"
 	stall.position = Vector3(4, 1.0, -5.5)
 	add_child(stall)
-	_box(stall, Vector3(3.0, 0.15, 1.4), Vector3(0, 0.85, 0), wood)
-	for px in [-1.35, 1.35]:
-		for pz in [-0.6, 0.6]:
-			_box(stall, Vector3(0.12, 2.4, 0.12), Vector3(px, 1.2, pz), wood_dark)
-	_box(stall, Vector3(3.4, 0.12, 1.8), Vector3(0, 2.5, 0), _mat(Color(0.65, 0.25, 0.20)))
 
 	# Departure board (Phase 2): dark board, gold frame, DEPARTURES sign.
 	# E-interact opens the destination vote UI.

@@ -31,6 +31,7 @@ func _run() -> void:
 	_test_station_phase1()
 	_test_station_phase2()
 	_test_station_phase3()
+	_test_station_phase4()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -162,6 +163,118 @@ func _test_save_roundtrip() -> void:
 	if not backup.is_empty():
 		mgr.save_run(backup)
 	mgr.free()
+
+
+func _test_station_phase4() -> void:
+	print("[Playtest] Train station phase 4 (vendor + heal pad)...")
+	var StationScript := load("res://scripts/station/station.gd")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+
+	# --- Vendor pricing formula: 3x sell value, $50 floor ---
+	_assert(StationScript.vendor_price(0) == 50, "vendor price floor $50")
+	_assert(StationScript.vendor_price(10) == 50, "vendor price 10 -> floor")
+	_assert(StationScript.vendor_price(20) == 60, "vendor price 20 -> 60")
+	_assert(StationScript.vendor_price(100) == 300, "vendor price 100 -> 300")
+
+	# --- Purchase resolution: cash deducted, broke rejected, unknown rejected ---
+	var stock := [{"id": "health_potion", "price": 50}, {"id": "runeblade", "price": 300}]
+	var r1: Dictionary = StationScript.resolve_purchase(100, stock, "health_potion")
+	_assert(bool(r1.get("ok")) and int(r1.get("price")) == 50 and int(r1.get("new_cash")) == 50,
+		"buy: cash deducted")
+	var r2: Dictionary = StationScript.resolve_purchase(30, stock, "runeblade")
+	_assert(not bool(r2.get("ok")) and str(r2.get("reason")) == "broke" \
+		and int(r2.get("price")) == 300, "buy: broke rejected, price reported")
+	var r3: Dictionary = StationScript.resolve_purchase(1000, stock, "bogus_item")
+	_assert(not bool(r3.get("ok")) and str(r3.get("reason")) == "not_in_stock",
+		"buy: item not in stock rejected")
+
+	# --- Heal pad math: 15% max HP per 0.5s tick, clamps at max ---
+	_assert(StationScript.heal_tick_amount(100.0) == 15.0, "heal tick = 15% max HP")
+	var hp := 50.0
+	for t in 8:
+		hp = minf(100.0, hp + StationScript.heal_tick_amount(100.0))
+		_assert(hp <= 100.0, "heal never exceeds max_hp (tick %d)" % t)
+	_assert(hp == 100.0, "50% HP reaches full within 8 ticks (4s)")
+	var ticks := 0
+	var hp2 := 0.0
+	while hp2 < 100.0 and ticks < 20:
+		hp2 = minf(100.0, hp2 + StationScript.heal_tick_amount(100.0))
+		ticks += 1
+	_assert(ticks == 7, "empty -> full in 7 ticks (~3.5s)")
+
+	# --- Stock composition: 3 potions + 3 rotating, distinct, priced by formula ---
+	var vs: Array = StationScript.build_vendor_stock()
+	_assert(vs.size() == 6, "vendor stock = 6 items")
+	var ids: Array = []
+	var prices := {}
+	for e in vs:
+		ids.append(str(e.get("id")))
+		prices[str(e.get("id"))] = int(e.get("price"))
+	_assert(ids.slice(0, 3) == ["health_potion", "swift_potion", "power_elixir"],
+		"first 3 stock entries are the potions")
+	_assert(prices["health_potion"] == 50 and prices["swift_potion"] == 75 \
+		and prices["power_elixir"] == 100, "potion prices match supermarket shop")
+	var rot := ids.slice(3, 6)
+	_assert(rot.size() == 3, "3 rotating items")
+	var seen := {}
+	# Autoload singletons aren't compile-visible in -s script mode; look them
+	# up at runtime (they exist after the first frame, like the rest of _run).
+	var itemdb := root.get_node("ItemDB")
+	var savemgr := root.get_node("SaveManager")
+	for id in rot:
+		_assert(not seen.has(id), "rotating items distinct")
+		seen[id] = true
+		_assert(not id in ["health_potion", "swift_potion", "power_elixir"],
+			"no potions in rotating: %s" % id)
+		var item: ItemData = itemdb.get_item(id)
+		_assert(item != null, "rotating item exists in ItemDB: %s" % id)
+		_assert(not bool(item.get("supermarket_loot")), "no supermarket_loot in rotating: %s" % id)
+		if bool(item.get("meta_locked")):
+			_assert(savemgr.is_item_unlocked(id),
+				"meta-locked rotating only when unlocked: %s" % id)
+		_assert(prices[id] == StationScript.vendor_price(int(item.get("sell_value"))),
+			"rotating price follows formula: %s" % id)
+
+	# --- Gate integrity: earnings unlock, spending can't re-lock ---
+	_assert(DungeonScript.gate_unlocked(500, 500), "gate unlocks at goal")
+	_assert(not DungeonScript.gate_unlocked(499, 500), "gate sealed below goal")
+	var earned := 500
+	var cash := 500 - 100 # bought a potion after unlocking
+	_assert(DungeonScript.gate_unlocked(earned, 500) and cash == 400,
+		"spending after unlock doesn't re-lock the gate")
+
+	# --- Cash persistence: handoff no longer zeroes supermarket_cash ---
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(not dsrc.contains('set("supermarket_cash", 0)'),
+		"cash no longer zeroed on station handoff")
+	_assert(dsrc.contains("market_earned_visit += total"),
+		"sell adds to per-visit earnings")
+	_assert(dsrc.contains("market_earned_visit = 0"),
+		"earnings reset each supermarket visit")
+
+	# --- Wiring: heal pad, vendor stall, panel, buy RPC, E-scan ---
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains('name = "HealPad"'), "heal pad Area3D placed")
+	_assert(ssrc.contains("func _process_heal_pad"), "heal pad tick exists")
+	_assert(ssrc.contains("func buy_vendor_item"), "buy_vendor_item RPC exists")
+	_assert(ssrc.contains("func sync_vendor_stock"), "sync_vendor_stock RPC exists")
+	_assert(ssrc.contains("func build_vendor_stock"), "build_vendor_stock exists")
+	_assert(ssrc.contains("VendorStallScript.new()"), "vendor stall prop placed")
+	_assert(ssrc.contains("resolve_purchase("), "buy uses resolve_purchase")
+	_assert(ResourceLoader.exists("res://scripts/station/vendor_stall.gd"), "vendor_stall.gd exists")
+	var vsrc := FileAccess.get_file_as_string("res://scripts/station/vendor_stall.gd")
+	_assert(vsrc.contains('add_to_group("vendor_stall")'), "stall in vendor_stall group")
+	_assert(vsrc.contains("func prompt_text"), "stall prompt_text exists")
+	_assert(vsrc.contains("func interact"), "stall interact exists")
+	_assert(vsrc.contains("show_vendor"), "stall interact opens vendor panel")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func show_vendor"), "show_vendor panel exists")
+	_assert(hsrc.contains("func refresh_vendor_cash"), "vendor cash refresh exists")
+	_assert(hsrc.contains("Your cash: $%d"), "panel shows cash header")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('"vendor_stall"'), "player E-scan includes vendor stall")
+	_assert(psrc.contains("hud.refresh_vendor_cash"), "buy refreshes vendor cash header")
+	_assert(psrc.contains("_prompt_interact"), "stale interact prompt is cleared on walk-away")
 
 
 func _test_cycle_scaling() -> void:

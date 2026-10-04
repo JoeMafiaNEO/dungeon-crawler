@@ -72,6 +72,10 @@ var _rts_manager: RTSManager = null
 var _warlord_setup_pending := false
 var _construction_check_tick := 0.0
 var market_cash_goal := 500
+## Per-visit supermarket earnings (server). The gate unlocks on earnings, not
+## held cash, so spending at vendors can never re-lock it (Phase 4: cash is
+## persistent across the whole run).
+var market_earned_visit := 0
 var _market_spawn_tick := 0.0
 var _market_loot_tick := 0.0
 var wave_timer := 8.0 # countdown to the first wave
@@ -135,6 +139,7 @@ func _ready() -> void:
 	if is_supermarket:
 		var mkt_cycle := (level_number - 1) / THEME_ORDER.size()
 		market_cash_goal = 500 + mkt_cycle * 250
+		market_earned_visit = 0
 		wave_state = WaveState.CLEARED  # skip wave logic
 		# Spawn the gate (sealed) and checkout immediately.
 		if multiplayer.is_server():
@@ -451,6 +456,7 @@ func go_to_station_net() -> void:
 	var me := _my_player()
 	if me != null:
 		# Leaving the supermarket: confiscate supermarket loot (potions stay).
+		# Cash persists across the run now (Phase 4) — only loot is taken.
 		if theme != null and theme.theme_id == "supermarket":
 			var kept: Array = []
 			for entry in me.get("inventory"):
@@ -458,7 +464,6 @@ func go_to_station_net() -> void:
 				if not bool(item.get("supermarket_loot")):
 					kept.append(entry)
 			me.set("inventory", kept)
-			me.set("supermarket_cash", 0)
 		saved_player_state = me.get_state()
 		# NOTE: run save + deepest-cycle meta moved to the station departure.
 	Station.next_level_number = level_number + 1
@@ -1219,6 +1224,7 @@ func _sell_player_loot(player: Node) -> void:
 	if total > 0:
 		player.set("inventory", kept)
 		player.set("supermarket_cash", int(player.get("supermarket_cash")) + total)
+		market_earned_visit += total
 		SaveManager.add_cash_earned(total)
 		SaveManager.check_achievements()
 		player.rpc_id(sender, "on_sold", total)
@@ -1228,13 +1234,18 @@ func _sell_player_loot(player: Node) -> void:
 func _check_gate_unlock() -> void:
 	if not is_supermarket or not _portal_sealed:
 		return
-	var team_cash := 0
-	for n in get_tree().get_nodes_in_group("players"):
-		team_cash += int(n.get("supermarket_cash"))
-	if team_cash >= market_cash_goal:
+	# Gate integrity: unlock on per-visit EARNINGS, not held cash. Cash is
+	# persistent (Phase 4), so a team-cash check would trivialize future gates
+	# and spending could re-lock this one. Earnings only grow.
+	if gate_unlocked(market_earned_visit, market_cash_goal):
 		_portal_sealed = false
 		rpc("unlock_portal")
 		rpc("announce", "GATE UNLOCKED!")
+
+
+## Static for testability: the gate opens on per-visit earnings.
+static func gate_unlocked(earned: int, goal: int) -> bool:
+	return earned >= goal
 
 
 @rpc("any_peer", "call_local")

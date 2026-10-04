@@ -139,6 +139,7 @@ var net_aura_level := 1
 var net_bonus_aura := 0.0
 var _bob_t := 0.0
 var _prompt_pickup: ItemPickup = null
+var _prompt_interact := false
 ## Departure-board reading mode (station only, local per client). While set,
 ## input is modal: cursor raycast votes on the 3D board's rows.
 var _reading_board: DepartureBoard = null
@@ -2429,10 +2430,19 @@ func _update_pickup_prompt() -> void:
 			_prompt_pickup = null
 		hud.set_hint("Hold E to revive teammate")
 		return
-	# Cipher note / lockbox / departure board prompt.
+	# Cipher note / lockbox / departure board / vendor stall prompt.
 	var c := _nearest_interact_node()
 	if c != null:
+		if _prompt_pickup != null:
+			_prompt_pickup = null
+		_prompt_interact = true
 		hud.set_pickup_prompt(true, str(c.prompt_text()))
+		return
+	# Interact node gone: clear its stale prompt (the pickup branch below only
+	# reacts to pickup changes, so it would leave "Browse vendor" up forever).
+	if _prompt_interact:
+		_prompt_interact = false
+		hud.set_pickup_prompt(false, "")
 		return
 	var p := _nearest_pickup()
 	if p != _prompt_pickup:
@@ -2448,11 +2458,11 @@ func _update_pickup_prompt() -> void:
 			hud.set_pickup_prompt(false, "")
 
 
-## Nearest cipher note, lockbox, or departure board within E range.
+## Nearest cipher note, lockbox, departure board, or vendor stall within E range.
 func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "cipher_lockbox", "departure_board"]:
+	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:
@@ -2510,6 +2520,8 @@ func on_bought(item_id: String, price: int) -> void:
 		return
 	if hud != null:
 		hud.toast("Bought %s for $%d!" % [item_id.replace("_", " ").capitalize(), price])
+		if hud.vendor_open:
+			hud.refresh_vendor_cash()
 		AudioManager.sfx("cash_register")
 
 
