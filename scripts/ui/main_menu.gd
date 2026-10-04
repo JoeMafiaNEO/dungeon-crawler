@@ -9,6 +9,7 @@ const CLASS_DESCS := {
 	"warrior": "Warrior — Tanky melee, totems and auras.",
 	"rogue": "Rogue — Fast ranged, stealth and burst.",
 	"mage": "Mage — Spells, arcane power and aura.",
+	"architect": "Architect — Secret builder: walls, turrets, traps.",
 }
 
 
@@ -149,7 +150,8 @@ func _update_class_row(row_path: String, class_id: String, desc_label: String) -
 			var b := child as Button
 			var is_sel := (class_id == "warrior" and "Warrior" in b.name) or \
 				(class_id == "rogue" and "Rogue" in b.name) or \
-				(class_id == "mage" and "Mage" in b.name)
+				(class_id == "mage" and "Mage" in b.name) or \
+				(class_id == "architect" and "Architect" in b.name)
 			b.modulate = Color(1.3, 1.25, 1.0) if is_sel else Color(1, 1, 1)
 	var desc := get_node_or_null("%" + desc_label) as Label
 	if desc != null:
@@ -311,6 +313,11 @@ func _on_rogue_pressed() -> void:
 func _on_mage_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	_select_class("mage")
+
+
+func _on_architect_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	_select_class("architect")
 
 
 # --- Lobby panel ---

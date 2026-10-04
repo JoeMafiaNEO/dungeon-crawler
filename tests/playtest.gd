@@ -26,6 +26,7 @@ func _run() -> void:
 	_test_specialization_level_gate()
 	_test_pause_tabs()
 	_test_switch_class_refresh()
+	_test_architect()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -408,3 +409,62 @@ func _test_switch_class_refresh() -> void:
 	# Player refresh_abilities rebuilds unlocked_abilities and refreshes HUD bar.
 	_assert(psrc.contains("unlocked_abilities = fresh"), "refresh_abilities rebuilds unlocked_abilities")
 	_assert(psrc.contains("hud.refresh_abilities(self)"), "refresh_abilities updates HUD bar")
+
+
+func _test_architect() -> void:
+	print("[Playtest] Architect class...")
+	var PlayerScript = load("res://scripts/player/player.gd")
+	var StructureScript = load("res://scripts/combat/structure.gd")
+	# Kit: 6 abilities, turret first (wall-first would leave 1-3 with no damage).
+	var abs: Array = PlayerScript.class_abilities("architect")
+	_assert(abs.size() == 6, "Architect has 6 abilities")
+	var expect := [
+		["sentry_turret", 1, "1"], ["bulwark_wall", 4, "2"], ["spike_trap", 8, "3"],
+		["keystone", 15, "4"], ["reinforce", 20, "5"], ["demolish", 30, "6"],
+	]
+	for i in expect.size():
+		var a: Dictionary = abs[i]
+		_assert(str(a["id"]) == expect[i][0], "Architect slot %d is %s" % [i + 1, expect[i][0]])
+		_assert(int(a["unlock"]) == expect[i][1], "Architect %s unlocks at %d" % [expect[i][0], expect[i][1]])
+		_assert(str(a["key"]) == expect[i][2], "Architect %s on key %s" % [expect[i][0], expect[i][2]])
+	# Foundation family deferred: all six return "" (safe for HUD + milestones).
+	for e in expect:
+		_assert(PlayerScript.family_of(str(e[0])) == "", "Architect %s has no family yet" % e[0])
+	# Structure stats sane.
+	var stats: Dictionary = StructureScript.STATS
+	_assert(float(stats["bulwark_wall"]["hp"]) == 150.0, "Wall 150 HP / 20s")
+	_assert(float(stats["bulwark_wall"]["life"]) == 20.0, "Wall 20s life")
+	_assert(float(stats["sentry_turret"]["hp"]) == 100.0, "Turret 100 HP / 60s")
+	_assert(float(stats["spike_trap"]["hp"]) == 60.0, "Trap 60 HP")
+	_assert(float(stats["keystone"]["hp"]) == 200.0, "Keystone 200 HP / 45s")
+	_assert(StructureScript.STRUCTURE_CAP == 6, "Structure cap 6")
+	_assert(StructureScript.KEYSTONE_RADIUS == 6.0, "Keystone radius 6m")
+	# Demolish formula: 50% of max HP (keystone 1.5x buff applies).
+	var st = StructureScript.new()
+	st.setup("sentry_turret", 1, 1, 1.5, "1_1")
+	_assert(st.max_hp == 150.0, "Keystone buff: turret max HP 150")
+	_assert(st.max_hp * 0.5 == 75.0, "Demolish deals 50% of max HP")
+	_assert(st.uid == "1_1", "Structure uid stored")
+	st.free()
+	# Save path pattern.
+	var mgr = load("res://scripts/autoload/save_manager.gd").new()
+	_assert("architect" in mgr.SOLO_CLASSES, "architect in SOLO_CLASSES")
+	_assert("user://solo_%s.cfg" % "architect" == "user://solo_architect.cfg", "Architect save path pattern")
+	mgr.free()
+	# Class data loads.
+	var cd = load("res://data/classes/architect.tres")
+	_assert(cd != null and str(cd.id) == "architect", "architect.tres loads with id")
+	# Player routes architect input through the ability caster, not melee.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('class_id in ["mage", "architect"]'), "Architect uses 1-6 ability keys")
+	_assert(psrc.contains('_cast_architect_ability()'), "Architect casts via ability router")
+	_assert(psrc.contains("func apply_reinforce"), "Reinforce buff exists")
+	# Dungeon hosts the structure RPCs.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func place_structure"), "place_structure RPC exists")
+	_assert(dsrc.contains("func break_structure"), "break_structure RPC exists")
+	_assert(dsrc.contains("func demolish_structures"), "demolish_structures RPC exists")
+	# Mobs target structures and collide with walls.
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("take_structure_damage"), "Mobs damage structures")
+	_assert(msrc.contains("collision_mask = 3"), "Mob mask includes wall layer")

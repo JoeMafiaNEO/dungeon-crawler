@@ -548,7 +548,7 @@ func _input(event: InputEvent) -> void:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_start_wave()
 		elif k.physical_keycode >= KEY_1 and k.physical_keycode <= KEY_6:
-			if class_id == "mage" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
+			if class_id in ["mage", "architect"] and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_select_ability(k.physical_keycode - KEY_1)
 		elif k.physical_keycode == KEY_8:
 			if class_id == "mage" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
@@ -633,6 +633,15 @@ static func class_abilities(cid: String) -> Array:
 				{"id": "mark", "name": "Mark Target", "unlock": 7, "key": "F", "desc": "Marked foe takes +50% dmg"},
 				{"id": "shadow_step", "name": "Shadow Step", "unlock": 15, "key": "F", "desc": "Blink 8m forward"},
 				{"id": "fan", "name": "Fan of Knives", "unlock": 30, "key": "F", "desc": "Blades hit all nearby foes"},
+			]
+		"architect":
+			return [
+				{"id": "sentry_turret", "name": "Sentry Turret", "unlock": 1, "key": "1", "desc": "Turret shoots nearby foes"},
+				{"id": "bulwark_wall", "name": "Bulwark Wall", "unlock": 4, "key": "2", "desc": "Stone wall blocks enemies"},
+				{"id": "spike_trap", "name": "Spike Trap", "unlock": 8, "key": "3", "desc": "Hidden trap, AoE + slow"},
+				{"id": "keystone", "name": "Keystone", "unlock": 15, "key": "4", "desc": "Buffs nearby structures"},
+				{"id": "reinforce", "name": "Reinforce", "unlock": 20, "key": "5", "desc": "Ally takes -50% damage 6s"},
+				{"id": "demolish", "name": "Demolish", "unlock": 30, "key": "6", "desc": "Detonate all your structures"},
 			]
 	return []
 
@@ -1391,6 +1400,35 @@ func apply_stoneskin(duration: float, strength: float = 1.0) -> void:
 	_stoneskin_strength = strength
 
 
+## Reinforce (Architect): -50% damage taken while shelled.
+var _reinforce_t := 0.0
+var _reinforce_shell: MeshInstance3D = null
+
+
+@rpc("any_peer", "call_local")
+func apply_reinforce(duration: float) -> void:
+	if not is_multiplayer_authority():
+		return
+	_reinforce_t = maxf(_reinforce_t, duration)
+	_update_reinforce_shell()
+
+
+func _update_reinforce_shell() -> void:
+	if _reinforce_shell == null:
+		_reinforce_shell = MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(1.2, 2.2, 1.2)
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = Color(0.6, 0.58, 0.55, 0.35)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		bm.material = mat
+		_reinforce_shell.mesh = bm
+		_reinforce_shell.position = Vector3(0, 1.1, 0)
+		add_child(_reinforce_shell)
+	_reinforce_shell.visible = _reinforce_t > 0.0
+
+
 ## Rally totem: +30% move speed while in the aura (scaled by aura strength).
 var _rally_t := 0.0
 var _rally_strength := 1.0
@@ -1655,6 +1693,10 @@ func _physics_process(delta: float) -> void:
 		_dash_cd = maxf(0.0, _dash_cd - delta)
 		_warhorn_t = maxf(0.0, _warhorn_t - delta)
 		_stoneskin_t = maxf(0.0, _stoneskin_t - delta)
+		if _reinforce_t > 0.0:
+			_reinforce_t = maxf(0.0, _reinforce_t - delta)
+			if _reinforce_t <= 0.0:
+				_update_reinforce_shell()
 		_rally_t = maxf(0.0, _rally_t - delta)
 		_shared_vitality_t = maxf(0.0, _shared_vitality_t - delta)
 		_war_drums_t = maxf(0.0, _war_drums_t - delta)
@@ -1786,6 +1828,9 @@ func _do_attack() -> void:
 	if class_id == "mage":
 		_cast_spell()
 		return
+	if class_id == "architect":
+		_cast_architect_ability()
+		return
 	AudioManager.sfx("swing")
 	var from := int(multiplayer.get_unique_id())
 	var fwd := -global_transform.basis.z
@@ -1870,6 +1915,126 @@ func _cast_spell() -> void:
 		_:
 			AudioManager.sfx("fireball_cast")
 			_cast_fireball()
+
+
+## Architect: Q/1-6 select, left-click places/casts (mage input pattern).
+## The Architect has no basic attack — the turret is the level-1 damage.
+var _structure_seq := 0
+
+
+func _cast_architect_ability() -> void:
+	match _selected_ability_id():
+		"sentry_turret", "bulwark_wall", "spike_trap", "keystone":
+			_place_structure(_selected_ability_id())
+		"reinforce":
+			_cast_reinforce()
+		"demolish":
+			_cast_demolish()
+
+
+## Cursor raycast onto the ground (blizzard pattern).
+func _cursor_ground_point() -> Vector3:
+	if _camera == null:
+		return Vector3.ZERO
+	var from: Vector3 = _camera.global_position
+	var dir := -_camera.global_transform.basis.z
+	var target := from + dir * 20.0
+	var params := PhysicsRayQueryParameters3D.create(from, target)
+	var space := get_world_3d().direct_space_state
+	var hit := space.intersect_ray(params)
+	var point: Vector3 = hit["position"] if not hit.is_empty() else target
+	point.y = maxf(point.y, 0.1)
+	return point
+
+
+func _place_structure(structure_id: String) -> void:
+	var cds := {"sentry_turret": 12.0, "bulwark_wall": 8.0, "spike_trap": 10.0, "keystone": 30.0}
+	var cd: float = cds.get(structure_id, 10.0)
+	if float(ability_cds.get(structure_id, 0.0)) > 0.0:
+		if hud != null:
+			hud.toast("Still recharging!")
+		AudioManager.sfx("ui_error")
+		return
+	# Per-type caps, checked locally for instant feedback (dungeon enforces too).
+	var me := int(multiplayer.get_unique_id())
+	var same := 0
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.owner_peer == me and not s.is_queued_for_deletion() \
+				and s.structure_id == structure_id:
+			same += 1
+	if structure_id == "spike_trap" and same >= 3:
+		if hud != null:
+			hud.toast("Trap limit reached (3)!")
+		AudioManager.sfx("ui_error")
+		return
+	if structure_id == "keystone" and same >= 1:
+		if hud != null:
+			hud.toast("Only one keystone!")
+		AudioManager.sfx("ui_error")
+		return
+	var point := _cursor_ground_point()
+	ability_cds[structure_id] = cd
+	_structure_seq += 1
+	var uid := "%d_%d" % [me, _structure_seq]
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null:
+		dungeon.rpc("place_structure", structure_id, point, me, ability_rank(), uid)
+	if hud != null:
+		hud.refresh_abilities(self)
+
+
+## Reinforce: stone shell on the ally nearest the cursor (or self).
+func _cast_reinforce() -> void:
+	if float(ability_cds.get("reinforce", 0.0)) > 0.0:
+		if hud != null:
+			hud.toast("Reinforce on cooldown!")
+		return
+	var point := _cursor_ground_point()
+	var best: Player = null
+	var best_d := 3.0
+	for n in get_tree().get_nodes_in_group("players"):
+		if n == self:
+			continue
+		var p := n as Player
+		if p == null or not p.alive:
+			continue
+		var to: Vector3 = p.global_position - point
+		to.y = 0.0
+		if to.length() < best_d:
+			best_d = to.length()
+			best = p
+	ability_cds["reinforce"] = 25.0
+	AudioManager.sfx("totem_place")
+	var target: Player = best if best != null else self
+	target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0)
+	if hud != null:
+		hud.refresh_abilities(self)
+
+
+## Demolish: detonate every owned structure for 50% of its max HP as AoE.
+func _cast_demolish() -> void:
+	if float(ability_cds.get("demolish", 0.0)) > 0.0:
+		if hud != null:
+			hud.toast("Demolish on cooldown!")
+		return
+	var me := int(multiplayer.get_unique_id())
+	var mine := 0
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.owner_peer == me and not s.is_queued_for_deletion():
+			mine += 1
+	if mine == 0:
+		if hud != null:
+			hud.toast("No structures to demolish!")
+		AudioManager.sfx("ui_error")
+		return
+	ability_cds["demolish"] = 45.0
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null:
+		dungeon.rpc("demolish_structures", me)
+	if hud != null:
+		hud.refresh_abilities(self)
 
 
 ## Holy Light: bathes the whole map in radiant light for 10s. 20s cooldown.
@@ -2380,6 +2545,10 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	# Stoneskin: -30% damage taken, scaled by Warden aura strength.
 	if _stoneskin_t > 0.0:
 		amount *= 1.0 - 0.3 * _stoneskin_strength
+	# Reinforce (Architect): -50% damage taken. (take_damage applies no
+	# knockback, so there is nothing further to skip.)
+	if _reinforce_t > 0.0:
+		amount *= 0.5
 	# Remember who hit us so the death screen can name the killer.
 	if not attacker_name.is_empty():
 		run_death_cause = attacker_name

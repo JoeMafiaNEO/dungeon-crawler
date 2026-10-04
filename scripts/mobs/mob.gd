@@ -61,6 +61,9 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 
 func _ready() -> void:
 	add_to_group("mobs")
+	# Mask layers 1+2: dungeon geometry/players AND architect walls (layer 2).
+	# Players keep mask 1, so walls block enemies but not allies.
+	collision_mask = 3
 	hp = data.health * hp_scale
 	max_hp = hp
 	_sprite = $AnimatedSprite3D
@@ -144,6 +147,9 @@ func _physics_process(delta: float) -> void:
 				if _target.is_in_group("decoys"):
 					# Shadow decoy: direct damage, server-side (no RPC target).
 					_target.damage(data.damage * dmg_scale * _dmg_mult())
+				elif _target.is_in_group("structures"):
+					# Architect structure: direct damage, server-side (no RPC target).
+					_target.take_structure_damage(data.damage * dmg_scale * _dmg_mult(), NetworkManager.server_id)
 				else:
 					_target.rpc_id(_target.get_multiplayer_authority(), "take_damage", data.damage * dmg_scale * _dmg_mult(), data.display_name)
 	elif not boss_busy:
@@ -197,6 +203,19 @@ func _nearest_player() -> Node3D:
 		if dd < best_d:
 			best_d = dd
 			best = dec
+	# Architect structures draw aggro (traps are hidden).
+	for n in get_tree().get_nodes_in_group("structures"):
+		var st := n as Structure
+		if st == null:
+			continue
+		if st.structure_id == "spike_trap":
+			continue
+		if st.hp <= 0.0:
+			continue
+		var sd := global_position.distance_to(st.global_position)
+		if sd < best_d:
+			best_d = sd
+			best = st
 	return best
 
 

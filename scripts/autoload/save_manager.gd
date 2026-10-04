@@ -179,7 +179,7 @@ func set_setting(section: String, key: String, value) -> void:
 
 const RUN_SAVE_PATH := "user://run_save.cfg"
 const SOLO_SAVE_PATTERN := "user://solo_%s.cfg"
-const SOLO_CLASSES: Array[String] = ["warrior", "rogue", "mage"]
+const SOLO_CLASSES: Array[String] = ["warrior", "rogue", "mage", "architect"]
 ## Save format version. Continue refuses saves with a mismatched version.
 const SAVE_VERSION := 1
 

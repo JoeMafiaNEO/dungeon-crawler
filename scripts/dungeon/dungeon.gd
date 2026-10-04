@@ -1526,6 +1526,83 @@ func place_totem(totem_id: String, pos: Vector3, owner: int, rank: int = 1) -> v
 	totem.global_position = Vector3(pos.x, 0.05, pos.z)
 
 
+## Places an architect structure on all peers. Caps are enforced
+## deterministically on every peer (same reliable RPC order => same outcome).
+@rpc("any_peer", "call_local")
+func place_structure(structure_id: String, pos: Vector3, owner: int, rank: int, uid: String) -> void:
+	var mine: Array = []
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.owner_peer == owner and not s.is_queued_for_deletion():
+			mine.append(s)
+	# Per-type caps: 3 traps; keystones replace (a 2nd keystone despawns the first).
+	var same := 0
+	for s in mine:
+		if (s as Structure).structure_id == structure_id:
+			same += 1
+	if structure_id == "spike_trap" and same >= 3:
+		return
+	if structure_id == "keystone":
+		for s in mine.duplicate():
+			if (s as Structure).structure_id == "keystone":
+				(s as Structure).queue_free()
+				mine.erase(s)
+	# Global cap: evict the oldest non-keystone structure.
+	if mine.size() >= Structure.STRUCTURE_CAP:
+		var evicted := false
+		for s in mine:
+			var st := s as Structure
+			if st.structure_id != "keystone":
+				st.queue_free()
+				evicted = true
+				break
+		if not evicted:
+			return
+	# Keystone buff: +50% max HP when placed within 6m of a keystone.
+	var hp_mult := 1.0
+	if Structure.keystone_near(get_tree(), Vector3(pos.x, 0.0, pos.z), owner):
+		hp_mult = 1.5
+	var st := Structure.new()
+	st.setup(structure_id, owner, rank, hp_mult, uid)
+	add_child(st)
+	st.global_position = Vector3(pos.x, 0.05, pos.z)
+
+
+## Server: a structure was destroyed. Every peer plays rubble FX and frees
+## its local copy (structures are created per-peer via call_local).
+@rpc("any_peer", "call_local")
+func break_structure(uid: String) -> void:
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.uid == uid and not s.is_queued_for_deletion():
+			Effects.burst(s.get_parent(), s.global_position + Vector3(0, 0.8, 0), Color(0.5, 0.48, 0.45), 12, 4.0)
+			AudioManager.sfx("totem_expire", s.global_position)
+			s.queue_free()
+			return
+
+
+## Architect Demolish: detonate all of one player's structures. Damage is
+## server-side; every peer plays the explosion and frees its copies.
+@rpc("any_peer", "call_local")
+func demolish_structures(owner: int) -> void:
+	var mine: Array = []
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.owner_peer == owner and not s.is_queued_for_deletion():
+			mine.append(s)
+	for s in mine:
+		var st := s as Structure
+		if multiplayer.is_server():
+			var dmg := st.max_hp * 0.5
+			for m in get_tree().get_nodes_in_group("mobs"):
+				var mob := m as Mob
+				if mob == null or not mob.alive:
+					continue
+				if mob.global_position.distance_to(st.global_position) < Structure.DEMOLISH_RADIUS:
+					mob.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, st.global_position)
+		st.demolish()
+
+
 ## Spawns a rogue shadow decoy (Double Take trait) on all peers.
 @rpc("any_peer", "call_local")
 func spawn_decoy(pos: Vector3, owner: int) -> void:

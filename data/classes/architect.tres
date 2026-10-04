@@ -1,0 +1,18 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/class_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/knight.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "architect"
+display_name = "Architect"
+description = "Secret builder: raises walls, turrets and traps, then demolishes the board."
+tint = Color(1, 1, 1, 1)
+base_health = 100.0
+base_damage = 12.0
+base_move_speed = 5.2
+base_attack_cooldown = 0.6
+base_attack_range = 2.5
+starting_weapon = "rusty_sword"
+frames = [ExtResource("2")]

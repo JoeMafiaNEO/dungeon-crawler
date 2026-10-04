@@ -51,6 +51,16 @@ func _physics_process(delta: float) -> void:
 		_break()
 		return
 	if multiplayer.is_server():
+		# Architect walls block enemy projectiles.
+		for node in get_tree().get_nodes_in_group("structures"):
+			var st := node as Structure
+			if st == null or st.structure_id != "bulwark_wall":
+				continue
+			var to_w: Vector3 = st.global_position - global_position
+			to_w.y = 0.0
+			if to_w.length() < 1.6 and global_position.y < 2.5:
+				_break()
+				return
 		for node in get_tree().get_nodes_in_group("players"):
 			var p := node as Player
 			if p == null or not p.alive:

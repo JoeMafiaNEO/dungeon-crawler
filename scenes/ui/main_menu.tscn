@@ -94,6 +94,13 @@ size_flags_horizontal = 4
 icon = ExtResource("5")
 text = "Mage"
 
+[node name="TitleArchitectButton" type="Button" parent="TitlePhase/TitleClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("5")
+text = "Architect"
+
 [node name="TitleClassDesc" type="Label" parent="TitlePhase"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -526,6 +533,7 @@ text = "Leave"
 [connection signal="pressed" from="TitlePhase/TitleClassRow/TitleWarriorButton" to="." method="_on_warrior_pressed"]
 [connection signal="pressed" from="TitlePhase/TitleClassRow/TitleRogueButton" to="." method="_on_rogue_pressed"]
 [connection signal="pressed" from="TitlePhase/TitleClassRow/TitleMageButton" to="." method="_on_mage_pressed"]
+[connection signal="pressed" from="TitlePhase/TitleClassRow/TitleArchitectButton" to="." method="_on_architect_pressed"]
 [connection signal="pressed" from="ModePhase/MultiButton" to="." method="_on_multi_pressed"]
 [connection signal="pressed" from="ModePhase/SoloButton" to="." method="_on_solo_pressed"]
 [connection signal="pressed" from="ModePhase/ModeBackButton" to="." method="_on_mode_back_pressed"]
