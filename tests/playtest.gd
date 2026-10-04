@@ -34,6 +34,7 @@ func _run() -> void:
 	_test_station_phase4()
 	_test_station_phase5()
 	_test_station_mp_vote_flow()
+	_test_music_queued_pickup()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -414,6 +415,35 @@ func _test_station_mp_vote_flow() -> void:
 	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
 	_assert(ssrc.contains("func record_vote(peer_id"), "record_vote exists")
 	_assert(ssrc.contains("record_vote(sender, theme_id)"), "cast_vote delegates to record_vote")
+
+
+func _test_music_queued_pickup() -> void:
+	print("[Playtest] Music: queued theme picked up after in-flight gen...")
+	# Regression: requesting a new theme while a track gen is in flight must
+	# not leave the new theme un-generated (silent music until next change).
+	# (Bare autoload identifiers don't compile in -s script mode; go via root.)
+	var am: Variant = root.get_node("AudioManager")
+	var old_cache: Dictionary = am._music_cache
+	var old_busy: bool = am._gen_busy
+	var old_queued: String = am._queued_theme
+	var old_theme: String = am._mus_theme
+	# Pre-cache the queued theme so pickup takes the instant crossfade branch
+	# (no worker thread -> deterministic, no teardown races).
+	var fake := AudioStreamWAV.new()
+	am._music_cache = {"village": fake}
+	am._gen_busy = true
+	am._queued_theme = "village"
+	var th := Thread.new()
+	th.start(func() -> void: pass)
+	am._on_track_ready("menu", null, th)
+	_assert(am._mus_theme == "village", "queued theme picked up after in-flight gen")
+	_assert(am._queued_theme == "village", "queued theme preserved")
+	# Cleanup: stop the crossfaded dummy playback, restore prior audio state.
+	am.stop_music()
+	am._music_cache = old_cache
+	am._gen_busy = old_busy
+	am._queued_theme = old_queued
+	am._mus_theme = old_theme
 
 
 func _test_cycle_scaling() -> void:

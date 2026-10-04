@@ -197,6 +197,10 @@ func _on_track_ready(theme_id: String, w: AudioStream, th: Thread) -> void:
 	_gen_busy = false
 	if _queued_theme == theme_id:
 		_crossfade_to(theme_id)
+	elif _queued_theme != "":
+		# A different theme was requested while this one generated; pick it up
+		# now instead of leaving the game silent until the next theme change.
+		play_music(_queued_theme)
 
 
 func _crossfade_to(theme_id: String) -> void:
