@@ -504,8 +504,16 @@ func _refresh_family_panel() -> void:
 	bar.min_value = 0.0
 	bar.max_value = 100.0
 	bar.value = aff
-	bar.custom_minimum_size = Vector2(220, 6)
+	bar.custom_minimum_size = Vector2(220, 10)
 	bar.show_percentage = false
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.15, 0.15, 0.18, 1.0)
+	bg.set_corner_radius_all(3)
+	bar.add_theme_stylebox_override("background", bg)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = Color(0.8, 0.65, 0.25, 1.0)
+	fill.set_corner_radius_all(3)
+	bar.add_theme_stylebox_override("fill", fill)
 	%FamilyPanel.add_child(bar)
 	# Milestone pips with trait names (compact: no descs, they show in tooltips).
 	var earned: Array = coll.get("traits", [])
@@ -784,6 +792,14 @@ func refresh_abilities(p) -> void:
 			bar.value = aff
 			bar.custom_minimum_size = Vector2(90, 6)
 			bar.show_percentage = false
+			var bg2 := StyleBoxFlat.new()
+			bg2.bg_color = Color(0.15, 0.15, 0.18, 1.0)
+			bg2.set_corner_radius_all(2)
+			bar.add_theme_stylebox_override("background", bg2)
+			var fill2 := StyleBoxFlat.new()
+			fill2.bg_color = Color(0.8, 0.65, 0.25, 1.0)
+			fill2.set_corner_radius_all(2)
+			bar.add_theme_stylebox_override("fill", fill2)
 			vb.add_child(bar)
 			var pips := Label.new()
 			var pip_txt := ""
