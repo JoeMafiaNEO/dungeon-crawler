@@ -139,6 +139,11 @@ var net_aura_level := 1
 var net_bonus_aura := 0.0
 var _bob_t := 0.0
 var _prompt_pickup: ItemPickup = null
+## Departure-board reading mode (station only, local per client). While set,
+## input is modal: cursor raycast votes on the 3D board's rows.
+var _reading_board: DepartureBoard = null
+var _reading_hover := ""
+const READ_HINT := "Aim at a destination and click to vote — E to step away"
 
 
 func _ready() -> void:
@@ -489,6 +494,9 @@ func _attack_anim() -> void:
 func _input(event: InputEvent) -> void:
 	if not is_multiplayer_authority() or not alive:
 		return
+	if _reading_board != null:
+		_reading_input(event)
+		return
 	if event is InputEventMouseMotion:
 		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			var mm := event as InputEventMouseMotion
@@ -502,7 +510,7 @@ func _input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-				if hud == null or (not hud.is_paused and not hud.cipher_popup_open and not hud.board_open):
+				if hud == null or (not hud.is_paused and not hud.cipher_popup_open and _reading_board == null):
 					# Don't steal the mouse back while in RTS command view.
 					var rts_cam := get_tree().get_first_node_in_group("rts_camera")
 					if rts_cam == null or not bool(rts_cam.get("active")):
@@ -527,8 +535,8 @@ func _input(event: InputEvent) -> void:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_jump_queued = true
 		elif k.physical_keycode == KEY_E:
-			# Cipher/board popups handle their own E/Esc; don't double-trigger.
-			if hud != null and (hud.cipher_popup_open or hud.board_open):
+			# Cipher popup handles its own E/Esc; reading mode intercepts earlier.
+			if hud != null and (hud.cipher_popup_open or _reading_board != null):
 				return
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_pickup()
@@ -1775,6 +1783,12 @@ func _physics_process(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	if is_multiplayer_authority():
+		if _reading_board != null:
+			_update_board_hover()
+			# Walking away from the board steps out of reading mode.
+			if not is_instance_valid(_reading_board) or \
+					_reading_board.global_position.distance_to(global_position) > 4.0:
+				exit_reading()
 		if _streak_timer > 0.0:
 			_streak_timer -= delta
 			if _streak_timer <= 0.0:
@@ -2312,6 +2326,78 @@ func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 	get_parent().get_tree().create_timer(0.5).timeout.connect(storm.queue_free)
 
 
+# --- Departure board reading mode (station) ---
+
+## Enter cursor-vote mode on the 3D departure board (local only).
+func enter_reading(board: DepartureBoard) -> void:
+	if not is_multiplayer_authority() or not alive or board == null:
+		return
+	_reading_board = board
+	_reading_hover = ""
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if hud != null:
+		hud.set_hint(READ_HINT)
+	AudioManager.sfx("ui_click")
+
+
+## Leave reading mode. Safe to call when not reading.
+func exit_reading() -> void:
+	if _reading_board == null:
+		return
+	_reading_board.set_hover("")
+	_reading_board = null
+	_reading_hover = ""
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if hud != null:
+		hud.set_hint("")
+
+
+## Modal input while reading: E steps away, Esc pauses, left-click votes.
+func _reading_input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		var k := event as InputEventKey
+		if not k.pressed or k.echo:
+			return
+		if k.physical_keycode == KEY_E:
+			exit_reading()
+			get_viewport().set_input_as_handled()
+		elif k.physical_keycode == KEY_ESCAPE:
+			exit_reading()
+			if hud != null:
+				hud.show_pause()
+			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT and _reading_hover != "":
+			var st := get_tree().get_first_node_in_group("station")
+			if st != null:
+				st.rpc("cast_vote", _reading_hover)
+				AudioManager.sfx("ui_click")
+			get_viewport().set_input_as_handled()
+
+
+## Cursor raycast against the board's row hitboxes (physics layer 4).
+func _update_board_hover() -> void:
+	if _reading_board == null or _camera == null:
+		return
+	var mp := get_viewport().get_mouse_position()
+	var from := _camera.project_ray_origin(mp)
+	var to := from + _camera.project_ray_normal(mp) * 10.0
+	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collision_mask = 8 # layer 4: departure board rows only
+	q.collide_with_areas = true
+	q.collide_with_bodies = false
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	var tid := ""
+	if not hit.is_empty():
+		var col = hit["collider"]
+		if col is Area3D and col.has_meta("theme_id"):
+			tid = str(col.get_meta("theme_id"))
+	if tid != _reading_hover:
+		_reading_hover = tid
+		_reading_board.set_hover(tid)
+
+
 # --- Pickups & inventory ---
 
 func _nearest_pickup() -> ItemPickup:
@@ -2332,6 +2418,10 @@ func _nearest_pickup() -> ItemPickup:
 
 func _update_pickup_prompt() -> void:
 	if hud == null:
+		return
+	# Reading mode owns the hint label.
+	if _reading_board != null:
+		hud.set_hint(READ_HINT)
 		return
 	# Revive prompt takes priority over loot.
 	if _nearest_downed_teammate() != null:

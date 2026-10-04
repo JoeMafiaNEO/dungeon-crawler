@@ -50,9 +50,20 @@ func _boot_station() -> void:
 		hud.show_station_timer(32.0)
 	await get_tree().create_timer(0.5).timeout
 	_snap("station_wide")
-	# Departure board UI shot (Phase 2).
-	if hud != null and hud.has_method("show_departure_board"):
-		hud.show_departure_board()
+	# Physical departure board shot: park the player in front of it, enter
+	# reading mode, and light up a hovered/voted row.
+	var player := tree.get_first_node_in_group("players")
+	var board := tree.get_first_node_in_group("departure_board")
+	if player != null and board != null:
+		player.global_position = Vector3(-12, 1.2, -2.2)
+		player.rotation.y = 0.0 # faces -z, toward the board
+		if player.has_method("enter_reading"):
+			player.enter_reading(board)
+		board.set_tallies({1: "depths", 2: "depths"})
+		board.set_my_vote("depths")
+		board.set_hover("depths")
+		cam.position = Vector3(-12, 2.7, 0.9)
+		cam.look_at(Vector3(-12, 1.5, -4))
 		await get_tree().create_timer(0.8).timeout
 		_snap("board")
 	print("[StationShots] done")

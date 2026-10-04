@@ -13,8 +13,14 @@ const HudScene := preload("res://scenes/ui/hud.tscn")
 const DepartureBoardScript := preload("res://scripts/station/departure_board.gd")
 
 const DEPART_TIME := 45.0
-const BOARD_CHECK := 0.5
 const SAVE_STATE_TIMEOUT := 3.0
+
+## Danger stars per theme (informational only — no locks). Moved here from
+## the old floating HUD board panel; the physical 3D board reads it.
+const BOARD_STARS := {
+	"village": "★☆☆☆", "dungeon": "★★☆☆", "depths": "★★★☆",
+	"supermarket": "★☆☆☆", "warlord": "★★★★",
+}
 
 static var next_level_number: int = 1
 
@@ -29,9 +35,7 @@ var departure_seed := 0
 
 var _local_hud: CanvasLayer
 var _time_left := DEPART_TIME
-var _board_tick := 0.0
 var _departing := false
-var _board_opened := false
 var _last_sync_sec := -1
 var _ring: MeshInstance3D
 ## Destination votes: peer_id -> theme_id (server-authoritative, Phase 2).
@@ -71,33 +75,8 @@ func _process(delta: float) -> void:
 	if sec != _last_sync_sec:
 		_last_sync_sec = sec
 		rpc("station_timer_sync", maxf(_time_left, 0.0))
-	_board_tick -= delta
-	if _board_tick <= 0.0:
-		_board_tick = BOARD_CHECK
-		# Phase 2: all-aboard opens the departure board (vote), it no longer
-		# departs by itself. Solo boards auto-open here too.
-		if not _board_opened and _all_aboard():
-			_board_opened = true
-			rpc("open_board")
 	if _time_left <= 0.0:
 		depart()
-
-
-## Early departure: every living player stands in the boarding zone.
-func _all_aboard() -> bool:
-	var zone := $BoardingZone as Area3D
-	if zone == null:
-		return false
-	var bodies := zone.get_overlapping_bodies()
-	var any_alive := false
-	for n in get_tree().get_nodes_in_group("players"):
-		var p := n as Node3D
-		if p == null or not bool(p.get("alive")):
-			continue
-		any_alive = true
-		if not bodies.has(p):
-			return false
-	return any_alive
 
 
 ## Peer ids of living players (voters).
@@ -188,24 +167,15 @@ func cast_vote(theme_id: String) -> void:
 		depart()
 
 
-## Keep every peer's board UI in sync with the server's vote table.
+## Keep every peer's physical board in sync with the server's vote table.
 @rpc("any_peer", "call_local")
 func sync_votes(v: Dictionary) -> void:
 	votes = v.duplicate()
-	var hud := get_tree().get_first_node_in_group("hud")
-	if hud != null and hud.has_method("refresh_departure_board"):
-		hud.refresh_departure_board()
-
-
-## Server opens the departure board on every peer (all-aboard trigger).
-@rpc("any_peer", "call_local")
-func open_board() -> void:
-	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_id:
-		return
-	var hud := get_tree().get_first_node_in_group("hud")
-	if hud != null and hud.has_method("show_departure_board"):
-		hud.show_departure_board()
+	var board := get_tree().get_first_node_in_group("departure_board")
+	if board != null:
+		board.set_tallies(votes)
+		if board.has_method("set_my_vote"):
+			board.set_my_vote(str(votes.get(multiplayer.get_unique_id(), "")))
 
 
 ## "NOW ARRIVING" banner before the hop (Phase 5 will dress this further).
@@ -263,6 +233,10 @@ func depart() -> void:
 
 @rpc("any_peer", "call_local")
 func pull_aboard(spots: Dictionary) -> void:
+	# Anyone mid-vote steps away from the board first.
+	for n in get_tree().get_nodes_in_group("players"):
+		if n.has_method("exit_reading"):
+			n.exit_reading()
 	var me := _my_player()
 	if me != null:
 		var spot: Vector3 = spots.get(multiplayer.get_unique_id(), Vector3(-11, 1.5, 3))
@@ -273,8 +247,6 @@ func pull_aboard(spots: Dictionary) -> void:
 			hud.toast("All aboard!")
 		if hud.has_method("hide_station_timer"):
 			hud.hide_station_timer()
-		if hud.has_method("close_departure_board"):
-			hud.close_departure_board()
 
 
 @rpc("any_peer", "call_local")
@@ -330,6 +302,7 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 		add_child(_local_hud)
 		_local_hud.setup(p)
 		_local_hud.show_station_mode()
+		_local_hud.toast("Check the DEPARTURES board (E) to vote!")
 
 
 @rpc("any_peer", "call_local")
@@ -496,6 +469,20 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshIns
 	return mi
 
 
+## Invisible physics slab so players can actually stand in the station.
+func _static_box(size: Vector3, pos: Vector3) -> void:
+	var body := StaticBody3D.new()
+	body.collision_layer = 1
+	body.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	cs.shape = shape
+	body.position = pos
+	body.add_child(cs)
+	add_child(body)
+
+
 func _cyl(parent: Node3D, r_top: float, r_bot: float, h: float, pos: Vector3, mat: Material) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	var cm := CylinderMesh.new()
@@ -535,6 +522,9 @@ func _build_station() -> void:
 	# Platform: raised 30 x 1 x 6 slab + lighter edge stripe.
 	_box(self, Vector3(30, 1, 6), Vector3(0, 0.5, -4), stone)
 	_box(self, Vector3(30, 0.08, 0.35), Vector3(0, 1.02, -1.15), stone_light)
+	# Physics: platform top (y=1.0) and ground level (y=0) slabs.
+	_static_box(Vector3(30, 1, 6), Vector3(0, 0.5, -4))
+	_static_box(Vector3(48, 1, 24), Vector3(0, -0.5, 0))
 
 	# Tracks: two steel rails beside the platform + wooden sleepers.
 	_box(self, Vector3(38, 0.14, 0.14), Vector3(0, 0.10, 2.2), steel)
@@ -618,7 +608,7 @@ func _build_station() -> void:
 	# E-interact opens the destination vote UI.
 	var board := DepartureBoardScript.new()
 	board.name = "DepartureBoard"
-	board.position = Vector3(-12, 0, -4)
+	board.position = Vector3(-12, 1.0, -4) # on the platform (top y=1.0)
 	add_child(board)
 
 	# Warm platform lamps.
