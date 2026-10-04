@@ -45,6 +45,23 @@ const BUILDING_COSTS := {
 var factions: Dictionary = {}
 # faction_id -> peer_id (for players). AI factions have peer_id = -1.
 var faction_peers: Dictionary = {}
+# Additive instrumentation for the balance sim harness. Never affects gameplay:
+# faction_id -> {"units_trained": {type: count}, "conversions": int,
+#                "trade_deliveries": int, "trade_gold": int, "fish_food": int}
+var sim_stats: Dictionary = {}
+
+
+## Bump a sim-harness counter (no-op if the faction isn't tracked).
+func sim_bump(faction_id: int, key: String, amount: int = 1, subkey: String = "") -> void:
+	var s: Dictionary = sim_stats.get(faction_id, {})
+	if s.is_empty():
+		return
+	if subkey != "":
+		var d: Dictionary = s.get(key, {})
+		d[subkey] = int(d.get(subkey, 0)) + amount
+		s[key] = d
+	else:
+		s[key] = int(s.get(key, 0)) + amount
 
 
 func _ready() -> void:
@@ -55,14 +72,18 @@ func register_faction(faction_id: int, peer_id: int, class_id: String) -> void:
 	var civ := CivData.for_class(class_id)
 	factions[faction_id] = {
 		"resources": {
-			"wood": 200 + civ.start_wood,
-			"food": 200 + civ.start_food,
-			"gold": 100 + civ.start_gold,
-			"stone": 100,
+			"wood": RTSTuning.get_int("starting_resources", "wood", 200) + civ.start_wood,
+			"food": RTSTuning.get_int("starting_resources", "food", 200) + civ.start_food,
+			"gold": RTSTuning.get_int("starting_resources", "gold", 100) + civ.start_gold,
+			"stone": RTSTuning.get_int("starting_resources", "stone", 100),
 		},
 		"age": 0,
 		"civ": civ,
 		"alive": true,
+	}
+	sim_stats[faction_id] = {
+		"units_trained": {}, "conversions": 0,
+		"trade_deliveries": 0, "trade_gold": 0, "fish_food": 0,
 	}
 	faction_peers[faction_id] = peer_id
 	_sync_resources(faction_id)
@@ -155,7 +176,9 @@ func age_up(faction_id: int) -> bool:
 	var current_age := int(f.get("age", 0))
 	if current_age >= 2:
 		return false
-	var cost: Dictionary = AGE_COSTS[current_age + 1].duplicate()
+	var cost: Dictionary = RTSTuning.get_cost(
+		"age_costs", "age_%d" % (current_age + 1),
+		AGE_COSTS[current_age + 1]).duplicate()
 	var civ := get_civ(faction_id)
 	if civ:
 		for key in cost:
@@ -168,13 +191,15 @@ func age_up(faction_id: int) -> bool:
 
 
 func get_pop_cap(faction_id: int) -> int:
-	return POP_CAPS[get_age(faction_id)]
+	var caps := RTSTuning.get_array("ages", "pop_caps", POP_CAPS)
+	return int(caps[get_age(faction_id)])
 
 
 func get_gather_mult(faction_id: int) -> float:
 	var civ := get_civ(faction_id)
 	var civ_mult := civ.gather_rate_mult if civ else 1.0
-	return GATHER_BONUS[get_age(faction_id)] * civ_mult
+	var bonus := RTSTuning.get_array("ages", "gather_bonus", GATHER_BONUS)
+	return float(bonus[get_age(faction_id)]) * civ_mult
 
 
 func get_population(faction_id: int) -> int:
@@ -191,7 +216,8 @@ func get_population(faction_id: int) -> int:
 func can_train(faction_id: int, unit_type: String) -> bool:
 	if get_population(faction_id) >= get_pop_cap(faction_id):
 		return false
-	var cost: Dictionary = UNIT_COSTS.get(unit_type, {})
+	var cost: Dictionary = RTSTuning.get_cost(
+		"unit_costs", unit_type, UNIT_COSTS.get(unit_type, {}))
 	return can_afford(faction_id, cost)
 
 
@@ -218,6 +244,7 @@ func _spawn_unit_local(unit_type: String, faction_id: int, pos: Vector3, civ_id:
 	u.setup(faction_id, unit_type, civ)
 	u.position = pos
 	holder.add_child(u)
+	sim_bump(faction_id, "units_trained", 1, unit_type)
 
 
 @rpc("any_peer", "call_local")
@@ -234,6 +261,9 @@ func on_building_destroyed(_b: Node3D) -> void:
 
 func check_elimination() -> void:
 	#Called when a building/unit dies. Eliminates factions with nothing left.#
+	#NOTE: dead units (alive=false) and destroyed buildings are still in their
+	#groups until queue_free() processes, so filter them explicitly — otherwise
+	#a faction is never eliminated when its last unit/building dies.
 	for faction_id in factions:
 		var f: Dictionary = factions[faction_id]
 		if not bool(f["alive"]):
@@ -241,11 +271,11 @@ func check_elimination() -> void:
 		var has_buildings := false
 		var has_units := false
 		for b in get_tree().get_nodes_in_group("rts_buildings"):
-			if b.get("faction") == faction_id:
+			if b.get("faction") == faction_id and not bool(b.get("destroyed")):
 				has_buildings = true
 				break
 		for u in get_tree().get_nodes_in_group("rts_units"):
-			if u.get("faction") == faction_id:
+			if u.get("faction") == faction_id and bool(u.get("alive")):
 				has_units = true
 				break
 		if not has_buildings and not has_units:

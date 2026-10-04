@@ -1,0 +1,1255 @@
+{
+	"base_seed": 9999,
+	"generated": "2026-10-04T12:54:07",
+	"matches": 1,
+	"results": [
+		{
+			"civs": {
+				"0": "iron_vanguard",
+				"1": "shadow_covenant",
+				"2": "arcane_dominion"
+			},
+			"duration_s": 432.557874000045,
+			"match": 0,
+			"samples": [
+				{
+					"age": {
+						"0": 0,
+						"1": 0,
+						"2": 1
+					},
+					"army_pos": {
+						"0": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						]
+					},
+					"buildings": {
+						"0": {
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 74,
+							"gold": 100,
+							"stone": 532,
+							"wood": 50
+						},
+						"1": {
+							"food": 0,
+							"gold": 788,
+							"stone": 100,
+							"wood": 50
+						},
+						"2": {
+							"food": 240,
+							"gold": 200,
+							"stone": 280,
+							"wood": 190
+						}
+					},
+					"t": 30.072354,
+					"units": {
+						"0": {
+							"villager": 7
+						},
+						"1": {
+							"villager": 6
+						},
+						"2": {
+							"villager": 6
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 0,
+						"1": 0,
+						"2": 1
+					},
+					"army_pos": {
+						"0": [
+							[
+								37.6041641235352,
+								0.500203669071198,
+								10.7065877914429
+							],
+							2
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						]
+					},
+					"buildings": {
+						"0": {
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 270,
+							"gold": 320,
+							"stone": 1140,
+							"wood": 50
+						},
+						"1": {
+							"food": 0,
+							"gold": 1700,
+							"stone": 244,
+							"wood": 50
+						},
+						"2": {
+							"food": 450,
+							"gold": 200,
+							"stone": 530,
+							"wood": 1150
+						}
+					},
+					"t": 60.0460500000001,
+					"units": {
+						"0": {
+							"spearman": 2,
+							"villager": 12
+						},
+						"1": {
+							"villager": 7
+						},
+						"2": {
+							"villager": 10
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 0,
+						"1": 0,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								37.6041641235352,
+								0.406599394666652,
+								10.7065877914429
+							],
+							6
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						]
+					},
+					"buildings": {
+						"0": {
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"monastery": 1,
+							"siege_workshop": 1,
+							"town_hall": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 1318,
+							"gold": 936,
+							"stone": 1492,
+							"wood": 50
+						},
+						"1": {
+							"food": 0,
+							"gold": 2172,
+							"stone": 900,
+							"wood": 50
+						},
+						"2": {
+							"food": 142,
+							"gold": 278,
+							"stone": 538,
+							"wood": 1832
+						}
+					},
+					"t": 90.019626,
+					"units": {
+						"0": {
+							"spearman": 6,
+							"villager": 14
+						},
+						"1": {
+							"villager": 7
+						},
+						"2": {
+							"villager": 14
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 0,
+						"1": 0,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								37.5473625183105,
+								0.275429315224756,
+								10.5028679847717
+							],
+							10
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								0.0,
+								0.0799999982118607,
+								-25.9807624816895
+							],
+							1
+						]
+					},
+					"buildings": {
+						"0": {
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"monastery": 1,
+							"siege_workshop": 1,
+							"town_hall": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 1886,
+							"gold": 1520,
+							"stone": 2052,
+							"wood": 50
+						},
+						"1": {
+							"food": 450,
+							"gold": 2692,
+							"stone": 900,
+							"wood": 50
+						},
+						"2": {
+							"food": 449,
+							"gold": 1458,
+							"stone": 1374,
+							"wood": 2492
+						}
+					},
+					"t": 120.064446,
+					"units": {
+						"0": {
+							"spearman": 10,
+							"villager": 14
+						},
+						"1": {
+							"villager": 9
+						},
+						"2": {
+							"fishing_ship": 1,
+							"villager": 17
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 0,
+						"1": 0,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								37.5493569007287,
+								0.304871027442949,
+								10.5761781105628
+							],
+							13
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-5.0,
+								-0.0613681823015213,
+								-24.9807624816895
+							],
+							3
+						]
+					},
+					"buildings": {
+						"0": {
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"monastery": 1,
+							"siege_workshop": 1,
+							"town_hall": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 2566,
+							"gold": 2480,
+							"stone": 2500,
+							"wood": 82
+						},
+						"1": {
+							"food": 1150,
+							"gold": 3300,
+							"stone": 1020,
+							"wood": 50
+						},
+						"2": {
+							"food": 895,
+							"gold": 1438,
+							"stone": 1970,
+							"wood": 5392
+						}
+					},
+					"t": 150.035862000001,
+					"units": {
+						"0": {
+							"spearman": 13,
+							"villager": 14
+						},
+						"1": {
+							"villager": 13
+						},
+						"2": {
+							"fishing_ship": 1,
+							"knight": 1,
+							"villager": 18,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 0,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								-11.3988302548726,
+								0.253449774360181,
+								2.38539842764537
+							],
+							18
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-9.0,
+								0.881830281950533,
+								-24.1807624816895
+							],
+							5
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1,
+							"town_hall": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"monastery": 1,
+							"siege_workshop": 1,
+							"town_hall": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 2586,
+							"gold": 2174,
+							"stone": 2100,
+							"wood": 286
+						},
+						"1": {
+							"food": 1982,
+							"gold": 3300,
+							"stone": 2092,
+							"wood": 50
+						},
+						"2": {
+							"food": 2076,
+							"gold": 1798,
+							"stone": 1970,
+							"wood": 7420
+						}
+					},
+					"t": 180.016858000002,
+					"units": {
+						"0": {
+							"knight": 1,
+							"spearman": 17,
+							"villager": 14
+						},
+						"1": {
+							"villager": 16
+						},
+						"2": {
+							"fishing_ship": 1,
+							"knight": 3,
+							"villager": 18,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 0,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								-9.65539574104807,
+								0.200290955210854,
+								-20.5684553643932
+							],
+							23
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-10.7439075197492,
+								0.0477502197526129,
+								-23.4866395677839
+							],
+							7
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"monastery": 1,
+							"siege_workshop": 1,
+							"town_hall": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 3290,
+							"gold": 2140,
+							"stone": 2000,
+							"wood": 1426
+						},
+						"1": {
+							"food": 3550,
+							"gold": 3620,
+							"stone": 2908,
+							"wood": 50
+						},
+						"2": {
+							"food": 3786,
+							"gold": 2234,
+							"stone": 2770,
+							"wood": 8536
+						}
+					},
+					"t": 210.01071666667,
+					"units": {
+						"0": {
+							"knight": 2,
+							"spearman": 21,
+							"villager": 14
+						},
+						"1": {
+							"villager": 16
+						},
+						"2": {
+							"fishing_ship": 1,
+							"knight": 5,
+							"villager": 18,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 0,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								-0.110533356666565,
+								0.272335487126838,
+								13.326215967536
+							],
+							16
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-7.15588521957397,
+								0.0848760385488276,
+								1.85488450527191
+							],
+							8
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1,
+							"dock": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 2910,
+							"gold": 1920,
+							"stone": 2654,
+							"wood": 3218
+						},
+						"1": {
+							"food": 4414,
+							"gold": 4820,
+							"stone": 3724,
+							"wood": 50
+						},
+						"2": {
+							"food": 5219,
+							"gold": 3894,
+							"stone": 2770,
+							"wood": 10228
+						}
+					},
+					"t": 240.020790000005,
+					"units": {
+						"0": {
+							"knight": 2,
+							"spearman": 14,
+							"villager": 14
+						},
+						"1": {
+							"villager": 16
+						},
+						"2": {
+							"fishing_ship": 1,
+							"knight": 6,
+							"villager": 18,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 0,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								0.906183401743571,
+								0.249153868365102,
+								-17.5824825286865
+							],
+							15
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-4.45799171924591,
+								0.0848887178872246,
+								-22.2712231874466
+							],
+							8
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1
+						},
+						"2": {
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 2470,
+							"gold": 2480,
+							"stone": 3816,
+							"wood": 4130
+						},
+						"1": {
+							"food": 5854,
+							"gold": 5700,
+							"stone": 3932,
+							"wood": 242
+						},
+						"2": {
+							"food": 5465,
+							"gold": 6306,
+							"stone": 2770,
+							"wood": 12428
+						}
+					},
+					"t": 270.059766000011,
+					"units": {
+						"0": {
+							"knight": 3,
+							"ram": 1,
+							"spearman": 11,
+							"villager": 14
+						},
+						"1": {
+							"villager": 16
+						},
+						"2": {
+							"fishing_ship": 1,
+							"knight": 6,
+							"villager": 18,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 1,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								26.8426356315613,
+								0.546871393210798,
+								8.30140244960785
+							],
+							12
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-10.6147412657738,
+								0.0848407113153371,
+								-16.7550364732742
+							],
+							8
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1
+						},
+						"2": {
+							"barracks": 1
+						}
+					},
+					"res": {
+						"0": {
+							"food": 1930,
+							"gold": 2664,
+							"stone": 4600,
+							"wood": 5750
+						},
+						"1": {
+							"food": 5694,
+							"gold": 6994,
+							"stone": 5214,
+							"wood": 468
+						},
+						"2": {
+							"food": 6335,
+							"gold": 8798,
+							"stone": 2806,
+							"wood": 13552
+						}
+					},
+					"t": 300.021858000019,
+					"units": {
+						"0": {
+							"knight": 2,
+							"ram": 4,
+							"spearman": 6,
+							"villager": 14
+						},
+						"1": {
+							"villager": 16
+						},
+						"2": {
+							"fishing_ship": 1,
+							"knight": 6,
+							"villager": 14,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 2,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								-4.56469815969467,
+								0.162019419531134,
+								2.00456155650318
+							],
+							16
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-18.7107595205307,
+								0.0848889369444805,
+								-6.56171211600304
+							],
+							8
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {
+							"archery_range": 1
+						},
+						"2": {}
+					},
+					"res": {
+						"0": {
+							"food": 1554,
+							"gold": 2580,
+							"stone": 5500,
+							"wood": 7226
+						},
+						"1": {
+							"food": 5403,
+							"gold": 6900,
+							"stone": 7176,
+							"wood": 189
+						},
+						"2": {
+							"food": 6400,
+							"gold": 9478,
+							"stone": 2974,
+							"wood": 16596
+						}
+					},
+					"t": 330.052082000027,
+					"units": {
+						"0": {
+							"knight": 2,
+							"ram": 6,
+							"spearman": 8,
+							"villager": 14
+						},
+						"1": {
+							"villager": 15
+						},
+						"2": {
+							"fishing_ship": 1,
+							"knight": 6,
+							"villager": 14,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 2,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								6.76958951685164,
+								0.155526269450396,
+								-11.0124454961883
+							],
+							18
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								-6.34076897303263,
+								0.0272939779679291,
+								-15.6189734141032
+							],
+							3
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {},
+						"2": {}
+					},
+					"res": {
+						"0": {
+							"food": 1814,
+							"gold": 3080,
+							"stone": 5444,
+							"wood": 8138
+						},
+						"1": {
+							"food": 5728,
+							"gold": 7924,
+							"stone": 8080,
+							"wood": 1150
+						},
+						"2": {
+							"food": 6450,
+							"gold": 10654,
+							"stone": 3670,
+							"wood": 18612
+						}
+					},
+					"t": 360.042082000033,
+					"units": {
+						"0": {
+							"knight": 3,
+							"ram": 5,
+							"spearman": 10,
+							"villager": 14
+						},
+						"1": {
+							"villager": 15
+						},
+						"2": {
+							"knight": 2,
+							"villager": 14,
+							"war_galley": 1
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 2,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								-5.41118298127101,
+								0.108072128377479,
+								-6.63781841901632
+							],
+							26
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {},
+						"2": {}
+					},
+					"res": {
+						"0": {
+							"food": 2706,
+							"gold": 3740,
+							"stone": 6458,
+							"wood": 7838
+						},
+						"1": {
+							"food": 6760,
+							"gold": 8444,
+							"stone": 8589,
+							"wood": 2150
+						},
+						"2": {
+							"food": 7213,
+							"gold": 11026,
+							"stone": 5301,
+							"wood": 18820
+						}
+					},
+					"t": 390.073686000035,
+					"units": {
+						"0": {
+							"knight": 6,
+							"ram": 7,
+							"spearman": 13,
+							"villager": 14
+						},
+						"1": {
+							"villager": 12
+						},
+						"2": {
+							"villager": 10
+						}
+					}
+				},
+				{
+					"age": {
+						"0": 2,
+						"1": 2,
+						"2": 2
+					},
+					"army_pos": {
+						"0": [
+							[
+								-19.7805730665431,
+								0.0828968818070066,
+								0.6320200807908
+							],
+							34
+						],
+						"1": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						],
+						"2": [
+							[
+								0.0,
+								0.0,
+								0.0
+							],
+							0
+						]
+					},
+					"buildings": {
+						"0": {
+							"archery_range": 1,
+							"barracks": 1,
+							"dock": 1,
+							"siege_workshop": 1,
+							"tower": 1,
+							"town_hall": 1
+						},
+						"1": {},
+						"2": {}
+					},
+					"res": {
+						"0": {
+							"food": 4594,
+							"gold": 3876,
+							"stone": 7876,
+							"wood": 7750
+						},
+						"1": {
+							"food": 6851,
+							"gold": 8964,
+							"stone": 9434,
+							"wood": 2735
+						},
+						"2": {
+							"food": 7453,
+							"gold": 11570,
+							"stone": 5543,
+							"wood": 20080
+						}
+					},
+					"t": 420.042082000044,
+					"units": {
+						"0": {
+							"knight": 8,
+							"ram": 9,
+							"spearman": 17,
+							"villager": 14
+						},
+						"1": {
+							"villager": 2
+						},
+						"2": {
+							"villager": 5
+						}
+					}
+				}
+			],
+			"seed": 9999,
+			"sim_stats": {
+				"0": {
+					"conversions": 0,
+					"fish_food": 0,
+					"trade_deliveries": 0,
+					"trade_gold": 0,
+					"units_trained": {
+						"knight": 18,
+						"ram": 13,
+						"spearman": 47,
+						"villager": 11
+					}
+				},
+				"1": {
+					"conversions": 0,
+					"fish_food": 0,
+					"trade_deliveries": 0,
+					"trade_gold": 0,
+					"units_trained": {
+						"villager": 13
+					}
+				},
+				"2": {
+					"conversions": 0,
+					"fish_food": 530,
+					"trade_deliveries": 0,
+					"trade_gold": 0,
+					"units_trained": {
+						"fishing_ship": 1,
+						"knight": 6,
+						"villager": 15,
+						"war_galley": 1
+					}
+				}
+			},
+			"winner": 0
+		}
+	],
+	"time_scale": 12.0,
+	"timeout_min": 15.0,
+	"tuning_file_mtime": "1791136319",
+	"tuning_file_sha256": "126c9e26f9a4c2e3e6341146d2bdcf57f0d9f105c06f02cfe0052aeb65fdf3c5"
+}

@@ -472,6 +472,8 @@ func change_level(theme_id: String, new_seed: int, new_level: int) -> void:
 # --- Mobs (host only) ---
 
 func _process(delta: float) -> void:
+	# Sim clock for the RTS economy (respawns etc.) — tracks time_scale.
+	sim_time += delta
 	# Torch flicker and portal spin run on every peer; pure ambience.
 	var t := Time.get_ticks_msec() / 1000.0
 	for i in _torch_lights.size():
@@ -655,7 +657,7 @@ func _setup_warlord() -> void:
 	# Tell clients to build their local RTS stack (manager + camera + HUD).
 	for p in get_tree().get_nodes_in_group("players"):
 		var pid := p.get_multiplayer_authority()
-		if pid != multiplayer.get_unique_id():
+		if pid != multiplayer.get_unique_id() and multiplayer.get_peers().has(pid):
 			var pfaction := int(p.get("rts_faction"))
 			var pciv := _rts_manager.get_civ(pfaction).civ_id
 			rpc_id(pid, "client_setup_warlord", pfaction, pciv)
@@ -723,7 +725,7 @@ func _check_stalled_construction() -> void:
 		else:
 			# No builders left: refund and remove the stalled site.
 			var btype := str(b.get("building_type"))
-			var cost: Dictionary = RTSManager.BUILDING_COSTS.get(btype, {})
+			var cost: Dictionary = RTSTuning.get_cost("building_costs", btype, RTSManager.BUILDING_COSTS.get(btype, {}))
 			for k in cost:
 				_rts_manager.add_resource(faction_id, k, int(cost[k]))
 			b.queue_free()
@@ -742,15 +744,16 @@ func _is_valid_build_spot(pos: Vector3) -> bool:
 func _faction_spawn_pos(faction_id: int) -> Vector3:
 	# Spread factions around the map.
 	var angle := TAU * float(faction_id) / float(maxi(2, _rts_manager.factions.size()))
-	var radius := 30.0
+	var radius := RTSTuning.get_float("map", "faction_radius", 30.0)
 	return Vector3(cos(angle) * radius, 0, sin(angle) * radius)
 
 
 func _spawn_faction_base(faction_id: int, pos: Vector3) -> void:
 	var civ := _rts_manager.get_civ(faction_id)
 	rpc("spawn_rts_base", faction_id, pos, civ.civ_id)
-	# Guaranteed starting cluster near the town center: 6 wood, 4 food, 3 gold, 2 stone.
-	var cluster := {"wood": 6, "food": 4, "gold": 3, "stone": 2}
+	# Guaranteed starting cluster near the town center (tunable via [map]).
+	var cluster := RTSTuning.get_dict("map", "starting_cluster",
+		{"wood": 6, "food": 4, "gold": 3, "stone": 2})
 	for t in cluster:
 		for n in int(cluster[t]):
 			var angle := randf() * TAU
@@ -897,20 +900,35 @@ func _class_from_civ(civ_id: String) -> String:
 
 ## Pending node respawns: {type, due} — server-side only.
 var _node_respawns: Array = []
+## Simulation clock (seconds). Advanced by _process delta so it tracks
+## Engine.time_scale — wall-clock Time.get_ticks_msec() does not.
+var sim_time := 0.0
+
+
+## Server: schedule a node respawn after depletion (faster in later cycles).
+func schedule_node_respawn(res_type: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var cycle := (level_number - 1) / THEME_ORDER.size()
+	var base := RTSTuning.get_float("map", "respawn_base", 75.0)
+	var per_cycle := RTSTuning.get_float("map", "respawn_cycle_reduction", 10.0)
+	var min_d := RTSTuning.get_float("map", "respawn_min", 30.0)
+	var delay := maxf(min_d, base - per_cycle * float(cycle))
+	_node_respawns.append({"type": res_type, "due": sim_time + delay})
 
 
 func _spawn_resource_nodes() -> void:
 	var faction_count := maxi(2, _rts_manager.factions.size())
 	var cycle := (level_number - 1) / THEME_ORDER.size()
-	# 8 nodes per resource per faction, +2 per cycle so late cycles don't thin out.
-	var per_res := 8 + 2 * cycle
+	# Nodes per resource per faction, +bonus per cycle so late cycles don't thin out.
+	var per_res: int = RTSTuning.get_int("map", "nodes_per_resource_per_faction", 8) + RTSTuning.get_int("map", "nodes_cycle_bonus", 2) * cycle
 	var types := ["wood", "food", "gold", "stone"]
 	for fi in _rts_manager.factions:
 		for t in types:
 			for n in per_res:
 				rpc("spawn_rts_node", t, _random_land_pos(14.0, 42.0))
 	# Contested center ring: bonus gold/stone to reward map control.
-	for i in 12:
+	for i in RTSTuning.get_int("map", "center_ring_nodes", 12):
 		var t: String = "gold" if i % 2 == 0 else "stone"
 		rpc("spawn_rts_node", t, _random_land_pos(4.0, 12.0))
 
@@ -927,22 +945,12 @@ func _random_land_pos(min_r: float, max_r: float) -> Vector3:
 	return Vector3(cos(angle2) * 20.0, 0, sin(angle2) * 20.0)
 
 
-## Server: schedule a node respawn ~75s after depletion (faster in later cycles).
-func schedule_node_respawn(res_type: String) -> void:
-	if not multiplayer.is_server():
-		return
-	var cycle := (level_number - 1) / THEME_ORDER.size()
-	var delay := maxf(30.0, 75.0 - 10.0 * float(cycle))
-	_node_respawns.append({"type": res_type, "due": Time.get_ticks_msec() / 1000.0 + delay})
-
-
 func _process_node_respawns() -> void:
 	if _node_respawns.is_empty():
 		return
-	var now := Time.get_ticks_msec() / 1000.0
 	var ready: Array = []
 	for entry in _node_respawns:
-		if float(entry["due"]) <= now:
+		if float(entry["due"]) <= sim_time:
 			ready.append(entry)
 	for entry in ready:
 		_node_respawns.erase(entry)
@@ -951,9 +959,10 @@ func _process_node_respawns() -> void:
 
 @rpc("any_peer", "call_local")
 func spawn_rts_node(res_type: String, pos: Vector3) -> void:
-	var amounts := {"wood": 1000, "food": 800, "gold": 800, "stone": 800}
+	var amounts := RTSTuning.get_dict("map", "node_amounts",
+		{"wood": 1000, "food": 800, "gold": 800, "stone": 800})
 	var node := RTSResourceNode.new()
-	node.setup(res_type, int(amounts[res_type]))
+	node.setup(res_type, int(amounts.get(res_type, 500)))
 	node.position = pos
 	node.add_to_group("rts_resources")
 	$RTS.add_child(node)
@@ -979,7 +988,7 @@ func rpc_start_construction(faction_id: int, btype: String, pos: Vector3) -> voi
 		var owner := int(_rts_manager.faction_peers.get(faction_id, -2))
 		if owner != sender and owner != -1:
 			return
-	var cost: Dictionary = RTSManager.BUILDING_COSTS.get(btype, {})
+	var cost: Dictionary = RTSTuning.get_cost("building_costs", btype, RTSManager.BUILDING_COSTS.get(btype, {}))
 	if cost.is_empty():
 		return
 	var age_req := 1 if btype in ["siege_workshop", "monastery"] else 0

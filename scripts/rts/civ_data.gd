@@ -41,33 +41,33 @@ static func for_class(class_id: String) -> CivData:
 			civ.display_name = "Iron Vanguard"
 			civ.color = Color(0.8, 0.2, 0.2)
 			civ.description = "Heavy infantry swarm. Outlast them."
-			civ.spearman_hp_mult = 1.3
-			civ.spearman_dmg_mult = 1.15
-			civ.train_time_mult = 0.8
-			civ.townhall_hp_mult = 1.5
+			civ.spearman_hp_mult = RTSTuning.get_civ_mult("iron_vanguard", "spearman_hp_mult", 1.3)
+			civ.spearman_dmg_mult = RTSTuning.get_civ_mult("iron_vanguard", "spearman_dmg_mult", 1.15)
+			civ.train_time_mult = RTSTuning.get_civ_mult("iron_vanguard", "train_time_mult", 0.8)
+			civ.townhall_hp_mult = RTSTuning.get_civ_mult("iron_vanguard", "townhall_hp_mult", 1.5)
 			civ.spearman_name = "Legionary"
 		"rogue":
 			civ.civ_id = "shadow_covenant"
 			civ.display_name = "Shadow Covenant"
 			civ.color = Color(0.5, 0.2, 0.8)
 			civ.description = "Fast raiders. Strike where they aren't."
-			civ.archer_dmg_mult = 1.25
-			civ.archer_range_mult = 1.1
-			civ.move_speed_mult = 1.15
-			civ.gather_rate_mult = 1.1
+			civ.archer_dmg_mult = RTSTuning.get_civ_mult("shadow_covenant", "archer_dmg_mult", 1.25)
+			civ.archer_range_mult = RTSTuning.get_civ_mult("shadow_covenant", "archer_range_mult", 1.1)
+			civ.move_speed_mult = RTSTuning.get_civ_mult("shadow_covenant", "move_speed_mult", 1.15)
+			civ.gather_rate_mult = RTSTuning.get_civ_mult("shadow_covenant", "gather_rate_mult", 1.1)
 			civ.archer_name = "Ranger"
 		"mage":
 			civ.civ_id = "arcane_dominion"
 			civ.display_name = "Arcane Dominion"
 			civ.color = Color(0.2, 0.4, 0.9)
 			civ.description = "Race through the ages. Hit Empire first."
-			civ.age_cost_mult = 0.7
-			civ.knight_dmg_mult = 1.3
-			civ.knight_hp_mult = 1.15
+			civ.age_cost_mult = RTSTuning.get_civ_mult("arcane_dominion", "age_cost_mult", 0.7)
+			civ.knight_dmg_mult = RTSTuning.get_civ_mult("arcane_dominion", "knight_dmg_mult", 1.3)
+			civ.knight_hp_mult = RTSTuning.get_civ_mult("arcane_dominion", "knight_hp_mult", 1.15)
 			civ.knight_name = "Spellblade"
-			civ.start_wood = 100
-			civ.start_food = 100
-			civ.start_gold = 100
+			civ.start_wood = RTSTuning.get_civ_int("arcane_dominion", "start_wood", 100)
+			civ.start_food = RTSTuning.get_civ_int("arcane_dominion", "start_food", 100)
+			civ.start_gold = RTSTuning.get_civ_int("arcane_dominion", "start_gold", 100)
 		_:
 			civ.civ_id = "iron_vanguard"
 			civ.display_name = "Iron Vanguard"

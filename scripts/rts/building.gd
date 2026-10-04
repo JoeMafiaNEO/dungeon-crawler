@@ -75,7 +75,7 @@ func setup(p_faction: int, p_type: String, p_civ: CivData) -> void:
 	faction = p_faction
 	building_type = p_type
 	civ = p_civ
-	var base: float = BASE_HP.get(p_type, 600.0)
+	var base: float = RTSTuning.get_float("building_hp", p_type, BASE_HP.get(p_type, 600.0))
 	if p_type == "town_hall" and civ != null:
 		base *= civ.townhall_hp_mult
 	max_hp = base
@@ -127,7 +127,7 @@ func set_selected(on: bool) -> void:
 
 
 func _train_time_for(unit_type: String) -> float:
-	var base: float = TRAIN_TIMES.get(unit_type, 10.0)
+	var base: float = RTSTuning.get_float("train_times", unit_type, TRAIN_TIMES.get(unit_type, 10.0))
 	var mult := 1.0
 	if civ != null:
 		mult = civ.train_time_mult
@@ -149,10 +149,11 @@ func queue_unit(unit_type: String) -> bool:
 			age = int(rts_manager.call("get_age", faction))
 		if age < 1:
 			return false
-	if production_queue.size() >= MAX_QUEUE:
+	if production_queue.size() >= RTSTuning.get_int("buildings", "max_queue", MAX_QUEUE):
 		return false
 	# Pop space / cost checks belong to the manager.
-	var cost: Dictionary = RTSManager.UNIT_COSTS.get(unit_type, {})
+	var cost: Dictionary = RTSTuning.get_cost(
+		"unit_costs", unit_type, RTSManager.UNIT_COSTS.get(unit_type, {}))
 	if rts_manager != null and rts_manager.has_method("can_train"):
 		if not bool(rts_manager.call("can_train", faction, unit_type)):
 			return false
@@ -185,6 +186,18 @@ const TOWER_DAMAGE := 8.0
 const TOWER_COOLDOWN := 1.5
 
 
+func _tower_range() -> float:
+	return RTSTuning.get_float("buildings", "tower_range", TOWER_RANGE)
+
+
+func _tower_damage() -> float:
+	return RTSTuning.get_float("buildings", "tower_damage", TOWER_DAMAGE)
+
+
+func _tower_cooldown() -> float:
+	return RTSTuning.get_float("buildings", "tower_cooldown", TOWER_COOLDOWN)
+
+
 func _process(delta: float) -> void:
 	# Server-only: production timer.
 	if not multiplayer.is_server():
@@ -193,7 +206,7 @@ func _process(delta: float) -> void:
 	if building_type == "tower" and not under_construction and not destroyed:
 		_tower_cd -= delta
 		if _tower_cd <= 0.0:
-			_tower_cd = TOWER_COOLDOWN
+			_tower_cd = _tower_cooldown()
 			_tower_shoot()
 	if production_queue.is_empty():
 		_train_t = 0.0
@@ -220,8 +233,9 @@ func _process(delta: float) -> void:
 
 
 func _tower_shoot() -> void:
+	var t_range := _tower_range()
 	var best: Node3D = null
-	var best_d := TOWER_RANGE
+	var best_d := t_range
 	for u in get_tree().get_nodes_in_group("rts_units"):
 		if int(u.get("faction")) == faction:
 			continue
@@ -230,7 +244,7 @@ func _tower_shoot() -> void:
 			best_d = d
 			best = u
 	if best != null and best.has_method("take_damage"):
-		best.take_damage(TOWER_DAMAGE, self)
+		best.take_damage(_tower_damage(), self)
 		rpc("tower_fx", best.global_position)
 
 
@@ -648,7 +662,8 @@ func start_construction() -> void:
 func add_build_work(amount: float) -> void:
 	if not under_construction or destroyed:
 		return
-	build_progress = minf(1.0, build_progress + amount / BUILD_TIME)
+	var build_time := RTSTuning.get_float("buildings", "build_time", BUILD_TIME)
+	build_progress = minf(1.0, build_progress + amount / build_time)
 	hp = max_hp * lerpf(0.1, 1.0, build_progress)
 	if build_progress >= 1.0:
 		under_construction = false

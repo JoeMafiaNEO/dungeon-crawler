@@ -10,10 +10,23 @@ var faction_id: int = 1
 var _think_tick := 0.0
 var _attack_wave := 0
 
-# AI tuning: beatable but threatening.
+# AI tuning: beatable but threatening. All values live in rts_tuning.cfg [ai].
 const THINK_INTERVAL := 3.0
 const VILLAGER_TARGET := 12
 const ARMY_TARGET := [10, 16, 24] # Per age.
+
+
+func _think_interval() -> float:
+	return RTSTuning.get_float("ai", "think_interval", THINK_INTERVAL)
+
+
+func _villager_target() -> int:
+	return RTSTuning.get_int("ai", "villager_target", VILLAGER_TARGET)
+
+
+func _army_target(age: int) -> int:
+	var arr := RTSTuning.get_array("ai", "army_target", ARMY_TARGET)
+	return int(arr[clampi(age, 0, arr.size() - 1)])
 
 
 func _ready() -> void:
@@ -27,7 +40,7 @@ func _process(delta: float) -> void:
 		return
 	_think_tick -= delta
 	if _think_tick <= 0.0:
-		_think_tick = THINK_INTERVAL
+		_think_tick = _think_interval()
 		_think()
 
 
@@ -44,11 +57,11 @@ func _think() -> void:
 	_assign_gatherers()
 
 	# 1. Train villagers up to target (Vanguard wants more army, fewer vils).
-	var vil_target := VILLAGER_TARGET
+	var vil_target := _villager_target()
 	if civ_id == "iron_vanguard":
-		vil_target = 10
+		vil_target = RTSTuning.get_int("ai", "vanguard_villager_target", 10)
 	elif civ_id == "arcane_dominion":
-		vil_target = 14
+		vil_target = RTSTuning.get_int("ai", "dominion_villager_target", 14)
 	var villagers := _count_units("villager")
 	if villagers < vil_target:
 		_try_train("villager")
@@ -63,17 +76,17 @@ func _think() -> void:
 
 	# 4. Train army up to target for our age.
 	var army := _count_army()
-	var army_target: int = ARMY_TARGET[age]
+	var army_target := _army_target(age)
 	if civ_id == "iron_vanguard":
-		army_target += 4  # Vanguard fields larger armies
+		army_target += RTSTuning.get_int("ai", "vanguard_army_bonus", 4)  # Vanguard fields larger armies
 	if army < army_target:
 		_try_train(_pick_unit(civ_id, age))
 
 	# 5. Attack when we have a decent force (Fortress+).
 	# Vanguard attacks earlier and more aggressively.
-	var attack_threshold := 0.7
+	var attack_threshold := RTSTuning.get_float("ai", "attack_threshold", 0.7)
 	if civ_id == "iron_vanguard":
-		attack_threshold = 0.5
+		attack_threshold = RTSTuning.get_float("ai", "vanguard_attack_threshold", 0.5)
 	if age >= 1 and army >= army_target * attack_threshold:
 		_attack(civ_id)
 
@@ -252,6 +265,9 @@ func _attack(civ_id: String = "") -> void:
 		# No town hall? Attack nearest enemy building.
 		target = _find_enemy_building()
 	if target == null:
+		# No buildings left? Hunt down remaining enemy units so the game can end.
+		target = _find_enemy_unit()
+	if target == null:
 		return
 	var troops := []
 	for u in get_tree().get_nodes_in_group("rts_units"):
@@ -288,4 +304,23 @@ func _find_enemy_building() -> Node3D:
 		if d < best_d:
 			best_d = d
 			best = b
+	return best
+
+
+func _find_enemy_unit() -> Node3D:
+	# Last resort: nearest living enemy unit (hunt stragglers so the game ends).
+	var best: Node3D = null
+	var best_d := 9999.0
+	var my_pos := Vector3.ZERO
+	for b in get_tree().get_nodes_in_group("rts_buildings"):
+		if b.get("faction") == faction_id:
+			my_pos = b.global_position
+			break
+	for u in get_tree().get_nodes_in_group("rts_units"):
+		if int(u.get("faction")) == faction_id or not bool(u.get("alive")):
+			continue
+		var d: float = my_pos.distance_to((u as Node3D).global_position)
+		if d < best_d:
+			best_d = d
+			best = u
 	return best

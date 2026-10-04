@@ -76,9 +76,17 @@ func _process_select_ring(delta: float) -> void:
 	var s := 1.0 + 0.12 * sin(_select_t * 6.0)
 	_select_ring.scale = Vector3(s, 1.0, s)
 
-# AoE-style conversion: channel time and leash range.
+# AoE-style conversion: channel time and leash range (tunable via [monks]).
 const CONVERT_TIME := 5.0
 const CONVERT_RANGE := 6.0
+
+
+func _convert_time() -> float:
+	return RTSTuning.get_float("monks", "convert_time", CONVERT_TIME)
+
+
+func _convert_range() -> float:
+	return RTSTuning.get_float("monks", "convert_range", CONVERT_RANGE)
 
 # Base stats per type.
 const BASE_STATS := {
@@ -109,7 +117,8 @@ func setup(p_faction: int, p_type: String, p_civ: CivData) -> void:
 	faction = p_faction
 	unit_type = p_type
 	civ = p_civ
-	var stats: Dictionary = BASE_STATS.get(p_type, BASE_STATS["villager"])
+	var stats: Dictionary = RTSTuning.get_dict(
+		"unit_stats", p_type, BASE_STATS.get(p_type, BASE_STATS["villager"]))
 	max_hp = float(stats["hp"])
 	damage = float(stats["dmg"])
 	attack_range = float(stats["range"])
@@ -525,6 +534,12 @@ func _physics_process(delta: float) -> void:
 	# Ships float at water level (river surface is at y=0.08).
 	if _is_ship():
 		global_position.y = 0.08
+	# Safety: the map is flat — never let land units leave the ground plane.
+	# Dense crowds can pop units skyward via collision resolution (units have
+	# no gravity); without this they'd hover forever, out of attack range.
+	if not _is_ship() and (global_position.y < -1.0 or global_position.y > 1.5):
+		global_position = Vector3(global_position.x, 0.0, global_position.z)
+		velocity.y = 0.0
 
 	# Trade cart behavior: shuttle between markets.
 	if unit_type == "trade_cart" and _trade_target != null:
@@ -561,11 +576,13 @@ func _physics_process(delta: float) -> void:
 	if unit_type == "fishing_ship":
 		_fish_tick -= delta
 		if _fish_tick <= 0.0:
-			_fish_tick = 2.0
+			_fish_tick = RTSTuning.get_float("naval", "fish_interval", 2.0)
 			if _is_on_water(global_position):
 				var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 				if mgr != null:
-					mgr.add_resource(faction, "food", 5)
+					var amt := RTSTuning.get_int("naval", "fish_amount", 5)
+					mgr.add_resource(faction, "food", amt)
+					mgr.sim_bump(faction, "fish_food", amt)
 
 	# Auto-attack nearest enemy (combat units only).
 	if not unit_type in NO_AUTO_ATTACK and _attack_target == null:
@@ -579,8 +596,10 @@ func _physics_process(delta: float) -> void:
 			velocity = Vector3.ZERO
 			_attack_tick(delta, _attack_target)
 		else:
-			# Move toward target.
-			_move_toward(_attack_target.global_position, delta)
+			# Move toward target. If the target is a building, don't let
+			# building-avoidance push us away from it (see _move_toward).
+			var skip_b: Node3D = _attack_target if _attack_target.is_in_group("rts_buildings") else null
+			_move_toward(_attack_target.global_position, delta, skip_b)
 		move_and_slide()
 		return
 	elif _attack_target != null:
@@ -593,7 +612,7 @@ func _physics_process(delta: float) -> void:
 			velocity = Vector3.ZERO
 			_gather_tick -= delta
 			if _gather_tick <= 0.0:
-				_gather_tick = 1.0
+				_gather_tick = RTSTuning.get_float("economy", "gather_tick", 1.0)
 				_do_gather()
 		else:
 			_move_toward(_gather_node.global_position, delta)
@@ -638,18 +657,18 @@ func _attack_tick(delta: float, target: Node3D) -> void:
 	_attack_cd -= delta
 	if _attack_cd > 0.0:
 		return
-	_attack_cd = 1.0
+	_attack_cd = RTSTuning.get_float("units", "attack_cooldown", 1.0)
 	if target.has_method("take_damage"):
 		var dmg := damage
 		var is_bldg := target.is_in_group("rts_buildings")
 		# Siege bonuses vs buildings.
 		if unit_type == "catapult" and is_bldg:
-			dmg *= 3.0
+			dmg *= RTSTuning.get_float("siege", "catapult_vs_building", 3.0)
 		elif unit_type == "ram":
 			if is_bldg:
-				dmg *= 4.0
+				dmg *= RTSTuning.get_float("siege", "ram_vs_building", 4.0)
 			else:
-				dmg *= 0.25
+				dmg *= RTSTuning.get_float("siege", "ram_vs_unit", 0.25)
 		target.take_damage(dmg, self)
 
 
@@ -659,7 +678,7 @@ func _do_gather() -> void:
 	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 	if mgr == null:
 		return
-	var rate := 8.0 * mgr.get_gather_mult(faction)
+	var rate := RTSTuning.get_float("economy", "gather_rate", 8.0) * mgr.get_gather_mult(faction)
 	var gathered: int = _gather_node.gather(int(rate))
 	if gathered > 0:
 		mgr.add_resource(faction, _gather_node.resource_type, gathered)
@@ -682,12 +701,15 @@ func _process_trade(delta: float) -> void:
 	if dist <= 2.5:
 		# Arrived.
 		if _trade_heading_out:
-			# Deliver: gold based on one-way distance (min 20).
+			# Deliver: gold based on one-way distance (min payout from [trade]).
 			var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 			if mgr != null and _home_market != null and is_instance_valid(_home_market):
 				var trip := _home_market.global_position.distance_to(_trade_target.global_position)
-				var gold := maxi(20, int(trip / 2.0))
+				var gold := maxi(RTSTuning.get_int("trade", "min_payout", 20),
+					int(trip / RTSTuning.get_float("trade", "distance_divisor", 2.0)))
 				mgr.add_resource(faction, "gold", gold)
+				mgr.sim_bump(faction, "trade_deliveries", 1)
+				mgr.sim_bump(faction, "trade_gold", gold)
 			_trade_heading_out = false
 		else:
 			# Back home: head out again.
@@ -700,6 +722,8 @@ func _process_trade(delta: float) -> void:
 
 ## Monk conversion channel. Server-side, called from _physics_process.
 func _convert_tick(delta: float) -> void:
+	var conv_range := _convert_range()
+	var conv_time := _convert_time()
 	if _convert_target == null or not is_instance_valid(_convert_target):
 		_cancel_convert()
 		velocity = Vector3.ZERO
@@ -711,7 +735,7 @@ func _convert_tick(delta: float) -> void:
 		move_and_slide()
 		return
 	var dist := global_position.distance_to(_convert_target.global_position)
-	if dist > CONVERT_RANGE + 2.0:
+	if dist > conv_range + 2.0:
 		# Target escaped the leash: cancel.
 		_cancel_convert()
 		velocity = Vector3.ZERO
@@ -724,9 +748,9 @@ func _convert_tick(delta: float) -> void:
 		return
 	velocity = Vector3.ZERO
 	move_and_slide()
-	if dist <= CONVERT_RANGE:
+	if dist <= conv_range:
 		_convert_timer += delta
-		if _convert_timer >= CONVERT_TIME:
+		if _convert_timer >= conv_time:
 			_complete_conversion()
 
 
@@ -743,6 +767,7 @@ func _complete_conversion() -> void:
 	target.rpc("convert_fx")
 	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 	if mgr != null:
+		mgr.sim_bump(faction, "conversions", 1)
 		mgr.check_elimination()
 
 
@@ -762,14 +787,17 @@ var _stuck_sample_pos := Vector3.ZERO
 var _stuck_sample_time := 0.0
 
 
-func _move_toward(pos: Vector3, delta: float) -> void:
+func _move_toward(pos: Vector3, delta: float, skip_avoid_building: Node3D = null) -> void:
 	var to_goal := pos - global_position
 	to_goal.y = 0.0
 	if to_goal.length() > 0.1:
 		var dir := to_goal.normalized()
 		# Steering: separation from nearby units + slide around buildings
 		# and resource nodes. The tangent is chosen toward the goal.
-		var avoid := _building_avoid_steer(dir) + _resource_avoid_steer(dir)
+		# skip_avoid_building: when attacking a building, don't get pushed
+		# away from the very target we're trying to reach (avoidance radius
+		# exceeds melee range, so units would otherwise orbit forever).
+		var avoid := _building_avoid_steer(dir, skip_avoid_building) + _resource_avoid_steer(dir)
 		dir = (dir + _separation_steer() * 1.5 + avoid * 2.5).normalized()
 		# Stuck? If we barely moved in the last 0.8s, force a hard sidestep.
 		_stuck_sample_time += delta
@@ -781,7 +809,7 @@ func _move_toward(pos: Vector3, delta: float) -> void:
 			_stuck_sample_time = 0.0
 		var spd := move_speed
 		if _is_ship() and _is_on_water(global_position):
-			spd *= 1.5
+			spd *= RTSTuning.get_float("naval", "water_speed_mult", 1.5)
 		velocity = dir * spd
 		# Face movement direction.
 		var target_yaw := atan2(-dir.x, -dir.z)
@@ -814,13 +842,13 @@ func _separation_steer() -> Vector3:
 ## Push away from nearby buildings. The tangential slide picks the side
 ## that points most toward the unit's goal, so units flow around corners
 ## instead of grinding into walls or sliding the wrong way.
-func _building_avoid_steer(want_dir: Vector3) -> Vector3:
+func _building_avoid_steer(want_dir: Vector3, skip: Node3D = null) -> Vector3:
 	var push := Vector3.ZERO
 	for b in get_tree().get_nodes_in_group("rts_buildings"):
 		if not is_instance_valid(b) or bool(b.get("destroyed")):
 			continue
 		var bnode := b as Node3D
-		if bnode == null:
+		if bnode == null or bnode == skip:
 			continue
 		var diff: Vector3 = global_position - bnode.global_position
 		diff.y = 0.0

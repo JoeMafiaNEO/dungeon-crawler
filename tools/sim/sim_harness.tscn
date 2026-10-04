@@ -1,0 +1,4 @@
+[gd_scene load_steps=2 format=3 uid="uid://bsimharne5s001"]
+[ext_resource type="Script" path="res://tools/sim/sim_harness.gd" id="1"]
+[node name="SimHarness" type="Node"]
+script = ExtResource("1")

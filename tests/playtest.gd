@@ -230,7 +230,13 @@ func _test_economy() -> void:
 	_assert(src.contains("func _process_node_respawns"), "_process_node_respawns exists")
 	_assert(src.contains("func _random_land_pos"), "_random_land_pos exists")
 	_assert(src.contains('"wood": 1000'), "Wood amount is 1000 in spawn_rts_node")
-	_assert(src.contains("per_res := 8 + 2 * cycle"), "Node count scales with cycle")
+	_assert(src.contains("nodes_per_resource_per_faction"), "Node count reads per-faction tuning")
+	_assert(src.contains("nodes_cycle_bonus"), "Node count reads cycle bonus tuning")
+	# Tuned defaults are unchanged: 8 nodes per resource per faction, +2 per cycle.
+	var tune := ConfigFile.new()
+	_assert(tune.load("res://scripts/rts/rts_tuning.cfg") == OK, "Tuning file loads")
+	_assert(int(tune.get_value("map", "nodes_per_resource_per_faction", 0)) == 8, "Default 8 nodes per resource")
+	_assert(int(tune.get_value("map", "nodes_cycle_bonus", 0)) == 2, "Default +2 nodes per cycle")
 
 
 func _test_affinity_families() -> void:
