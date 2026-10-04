@@ -34,6 +34,8 @@ func _ready() -> void:
 	_show_phase("TitlePhase")
 	_refresh_title_stats()
 	_refresh_solo_ui()
+	# Mason's Cipher: the Architect stays hidden until unlocked.
+	%TitleArchitectButton.visible = SaveManager.is_architect_unlocked()
 	AudioManager.play_music("menu")
 
 

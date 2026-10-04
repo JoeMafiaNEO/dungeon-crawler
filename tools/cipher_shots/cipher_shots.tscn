@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://cciphershot0001"]
+
+[ext_resource type="Script" path="res://tools/cipher_shots/cipher_shots.gd" id="1"]
+
+[node name="CipherShots" type="Node"]
+script = ExtResource("1")

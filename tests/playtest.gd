@@ -27,6 +27,7 @@ func _run() -> void:
 	_test_pause_tabs()
 	_test_switch_class_refresh()
 	_test_architect()
+	_test_cipher_unlock()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -468,3 +469,74 @@ func _test_architect() -> void:
 	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
 	_assert(msrc.contains("take_structure_damage"), "Mobs damage structures")
 	_assert(msrc.contains("collision_mask = 3"), "Mob mask includes wall layer")
+
+
+func _test_cipher_unlock() -> void:
+	print("[Playtest] Mason's cipher unlock...")
+	_assert(load("res://scripts/data/cipher_poems.gd") != null, "CipherPoems loads")
+	_assert(load("res://scripts/items/cipher_plaque.gd") != null, "CipherPlaque loads")
+	_assert(load("res://scripts/items/cipher_lockbox.gd") != null, "CipherLockbox loads")
+	# Caesar vectors from the spec.
+	_assert(CipherPoems.cipher_word("THE", 3) == "WKH", "cipher THE+3=WKH")
+	_assert(CipherPoems.cipher_word("QUIET", 5) == "VZNJY", "cipher QUIET+5=VZNJY")
+	_assert(CipherPoems.cipher_word("STONE", 7) == "ZAVUL", "cipher STONE+7=ZAVUL")
+	_assert(CipherPoems.cipher_word("REMEMBERS", 4) == "VIQIQFIVW", "cipher REMEMBERS+4=VIQIQFIVW")
+	_assert(CipherPoems.cipher_word("EVERY", 6) == "KBKXE", "cipher EVERY+6=KBKXE")
+	_assert(CipherPoems.cipher_word("HAND", 8) == "PIVL", "cipher HAND+8=PIVL")
+	_assert(CipherPoems.cipher_word("THAT", 3) == "WKDW", "cipher THAT+3=WKDW")
+	_assert(CipherPoems.cipher_word("BUILDS", 5) == "GZNQIX", "cipher BUILDS+5=GZNQIX")
+	_assert(CipherPoems.cipher_word("XYZ", 3) == "ABC", "cipher wraps Z->A")
+	_assert(CipherPoems.cipher_word("A-B", 1) == "B-C", "cipher leaves non-letters")
+	# Every poem's stored cipher matches its word+shift.
+	for p in CipherPoems.POEMS:
+		_assert(CipherPoems.cipher_word(str(p["word"]), int(p["shift"])) == str(p["cipher"]),
+			"poem cipher self-consistent: " + str(p["word"]))
+	_assert(CipherPoems.POEMS.size() == 8, "8 cipher poems")
+	_assert(CipherPoems.passphrase() == "THE QUIET STONE REMEMBERS EVERY HAND THAT BUILDS",
+		"passphrase decodes in order")
+	_assert(CipherPoems.normalize_key("  the\tQUIET\nstone  ") == "THE QUIET STONE",
+		"normalize_key collapses whitespace")
+	_assert(CipherPoems.next_fragment([]) == 0, "next_fragment starts at 0")
+	_assert(CipherPoems.next_fragment([0, 1, 3]) == 2, "next_fragment finds lowest gap")
+	_assert(CipherPoems.next_fragment([0, 1, 2, 3, 4, 5, 6, 7]) == -1, "next_fragment -1 when complete")
+	# Meta round-trip (back up user://savegame.cfg so the test can't clobber it).
+	var cfg_path := "user://savegame.cfg"
+	var backup := PackedByteArray()
+	if FileAccess.file_exists(cfg_path):
+		backup = FileAccess.get_file_as_bytes(cfg_path)
+	var mgr = load("res://scripts/autoload/save_manager.gd").new()
+	_assert(mgr.get_cipher_fragments().is_empty(), "cipher fragments start empty")
+	_assert(mgr.add_cipher_fragment(2), "add_cipher_fragment grants new")
+	_assert(not mgr.add_cipher_fragment(2), "add_cipher_fragment rejects duplicate")
+	_assert(mgr.add_cipher_fragment(0), "add_cipher_fragment grants 0")
+	_assert(not mgr.is_architect_unlocked(), "architect locked initially")
+	_assert(mgr.unlock_architect(), "unlock_architect grants")
+	_assert(not mgr.unlock_architect(), "unlock_architect not double-granted")
+	_assert(mgr.is_architect_unlocked(), "architect unlocked after grant")
+	_assert(mgr.unlock_achievement("drafted"), "drafted achievement grants")
+	_assert(not mgr.unlock_achievement("drafted"), "drafted not double-granted")
+	var prog: Dictionary = mgr.get_achievement_progress("drafted")
+	_assert(bool(prog.get("done", false)), "drafted shows done in progress")
+	# A fresh instance sees the persisted state.
+	var mgr2 = load("res://scripts/autoload/save_manager.gd").new()
+	mgr2.load_game()
+	_assert(mgr2.get_cipher_fragments().has(2) and mgr2.get_cipher_fragments().has(0),
+		"cipher fragments persist")
+	_assert(mgr2.is_architect_unlocked(), "architect unlock persists")
+	mgr.free()
+	mgr2.free()
+	if backup.is_empty():
+		DirAccess.remove_absolute(cfg_path)
+	else:
+		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
+		f.store_buffer(backup)
+	# Wiring: spawns, HUD popups, picker gating.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func spawn_cipher_plaque"), "spawn_cipher_plaque RPC exists")
+	_assert(dsrc.contains("func spawn_cipher_lockbox"), "spawn_cipher_lockbox RPC exists")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func show_poem_popup"), "show_poem_popup exists")
+	_assert(hsrc.contains("func show_lockbox_popup"), "show_lockbox_popup exists")
+	_assert(hsrc.contains("func show_toast"), "show_toast alias exists")
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("is_architect_unlocked"), "title picker gated on unlock")

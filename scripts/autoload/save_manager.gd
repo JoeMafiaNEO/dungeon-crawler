@@ -115,6 +115,7 @@ const ACHIEVEMENTS := [
 	{"id": "kill_100", "name": "Slayer", "desc": "Kill 100 mobs", "item": "void_blade", "check": "kills", "threshold": 100},
 	{"id": "cycle_2", "name": "Explorer", "desc": "Reach Cycle 2", "item": "phoenix_feather", "check": "cycle", "threshold": 2},
 	{"id": "cash_1000", "name": "Entrepreneur", "desc": "Earn $1000 at MegaMart", "item": "storm_caller", "check": "cash", "threshold": 1000},
+	{"id": "drafted", "name": "Drafted", "desc": "Unlock the secret Architect class", "item": "", "check": "manual", "threshold": 1},
 ]
 
 
@@ -133,14 +134,33 @@ func check_achievements() -> Array:
 				progress = get_deepest_cycle()
 			"cash":
 				progress = get_total_cash_earned()
+			"manual":
+				# Never auto-fires; granted via unlock_achievement().
+				progress = 0
 		if progress >= a["threshold"]:
 			done.append(a["id"])
 			unlocked.append(a["id"])
-			unlock_item(a["item"])
+			if str(a["item"]) != "":
+				unlock_item(a["item"])
 	if not unlocked.is_empty():
 		_save.set_value("meta", "unlocked_achievements", done)
 		save_game()
 	return unlocked
+
+
+## Manually grant an achievement (for "manual"-check achievements).
+## Returns true if newly unlocked.
+func unlock_achievement(ach_id: String) -> bool:
+	var done: Array = _save.get_value("meta", "unlocked_achievements", [])
+	if ach_id in done:
+		return false
+	done.append(ach_id)
+	for a in ACHIEVEMENTS:
+		if a["id"] == ach_id and str(a.get("item", "")) != "":
+			unlock_item(a["item"])
+	_save.set_value("meta", "unlocked_achievements", done)
+	save_game()
+	return true
 
 
 func get_achievement_progress(ach_id: String) -> Dictionary:
@@ -154,12 +174,44 @@ func get_achievement_progress(ach_id: String) -> Dictionary:
 					progress = get_deepest_cycle()
 				"cash":
 					progress = get_total_cash_earned()
+				"manual":
+					progress = 1 if a["id"] in _save.get_value("meta", "unlocked_achievements", []) else 0
 			return {"name": a["name"], "desc": a["desc"], "progress": progress, "threshold": a["threshold"], "done": progress >= a["threshold"]}
 	return {}
 
 
-# --- Settings ---
+# --- Architect Cipher (meta) ---
+# Fragments: Array[int] of collected poem indices 0..7, permanent like achievements.
 
+func get_cipher_fragments() -> Array:
+	return _save.get_value("meta", "cipher_fragments", [])
+
+
+## Grant a fragment. Returns true if newly added.
+func add_cipher_fragment(idx: int) -> bool:
+	var frags: Array = get_cipher_fragments()
+	if idx in frags:
+		return false
+	frags.append(idx)
+	_save.set_value("meta", "cipher_fragments", frags)
+	save_game()
+	return true
+
+
+func is_architect_unlocked() -> bool:
+	return bool(_save.get_value("meta", "architect_unlocked", false))
+
+
+## Permanently unlock the Architect class. Returns true if newly unlocked.
+func unlock_architect() -> bool:
+	if is_architect_unlocked():
+		return false
+	_save.set_value("meta", "architect_unlocked", true)
+	save_game()
+	return true
+
+
+# --- Settings ---
 func get_setting(section: String, key: String, default = null):
 	return _settings.get_value(section, key, default)
 

@@ -165,6 +165,9 @@ func select_pause_tab(idx: int) -> void:
 
 
 func _process(delta: float) -> void:
+	# Cipher popup input grace (don't let the opening keypress close it).
+	if _cipher_grace > 0.0:
+		_cipher_grace -= delta
 	# Low-HP vignette: pulses red as health drops below 35%.
 	if _hp_frac < 0.35 and _player != null and _player.get("alive"):
 		_vignette_t += delta
@@ -253,6 +256,169 @@ func toast(message: String) -> void:
 	_toast_tween = create_tween()
 	_toast_tween.tween_interval(2.2)
 	_toast_tween.tween_property(%ToastLabel, "modulate:a", 0.0, 0.6)
+
+
+## Alias used by achievement unlock calls.
+func show_toast(message: String) -> void:
+	toast(message)
+
+
+# --- Mason's Cipher popups ---
+
+var cipher_popup_open := false
+var _cipher_popup: Control = null
+var _cipher_grace := 0.0
+
+
+func _input(event: InputEvent) -> void:
+	if not cipher_popup_open or _cipher_grace > 0.0:
+		return
+	if event is InputEventKey:
+		var k := event as InputEventKey
+		if not k.pressed or k.echo:
+			return
+		if k.physical_keycode == KEY_E or k.physical_keycode == KEY_ESCAPE:
+			close_cipher_popup()
+			get_viewport().set_input_as_handled()
+
+
+func _cipher_panel() -> VBoxContainer:
+	var panel := PanelContainer.new()
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	panel.add_child(vb)
+	return vb
+
+
+func _open_cipher_popup(content: Control) -> void:
+	close_cipher_popup()
+	_cipher_grace = 0.3
+	cipher_popup_open = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.55)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(bg)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.add_child(content)
+	root.add_child(center)
+	_cipher_popup = root
+	add_child(root)
+
+
+func close_cipher_popup() -> void:
+	if _cipher_popup != null and is_instance_valid(_cipher_popup):
+		_cipher_popup.queue_free()
+	_cipher_popup = null
+	cipher_popup_open = false
+	if not is_paused:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## Poem popup: verse + cipher + shift hint. Game keeps running.
+func show_poem_popup(idx: int) -> void:
+	var poems := CipherPoems.POEMS
+	if idx < 0 or idx >= poems.size():
+		return
+	var p: Dictionary = poems[idx]
+	var vb := _cipher_panel()
+	var title := Label.new()
+	title.text = "Weathered Plaque — fragment %d/8" % (idx + 1)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(title)
+	for line in p["verse"]:
+		var l := Label.new()
+		l.text = str(line)
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		l.add_theme_font_size_override("font_size", 14)
+		l.add_theme_color_override("font_color", Color(0.85, 0.8, 0.7))
+		vb.add_child(l)
+	var cipher := Label.new()
+	cipher.text = str(p["cipher"])
+	cipher.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cipher.add_theme_font_size_override("font_size", 28)
+	cipher.add_theme_color_override("font_color", Color(1.0, 0.9, 0.3))
+	vb.add_child(cipher)
+	var hint := Label.new()
+	hint.text = "(the mason shifts his letters forward — count back %d)" % int(p["shift"])
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
+	vb.add_child(hint)
+	var close_hint := Label.new()
+	close_hint.text = "E / Esc — close"
+	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_hint.add_theme_font_size_override("font_size", 12)
+	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+	vb.add_child(close_hint)
+	AudioManager.sfx("pickup")
+	_open_cipher_popup(vb.get_parent() as Control)
+
+
+## Lockbox popup: text entry for the mason's key.
+func show_lockbox_popup() -> void:
+	var vb := _cipher_panel()
+	var title := Label.new()
+	title.text = "Brass Lockbox"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(title)
+	var desc := Label.new()
+	desc.text = "A brass lockbox etched with mason's marks."
+	desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	desc.add_theme_font_size_override("font_size", 13)
+	desc.add_theme_color_override("font_color", Color(0.85, 0.8, 0.7))
+	vb.add_child(desc)
+	var entry := LineEdit.new()
+	entry.placeholder_text = "Enter the mason's key..."
+	entry.custom_minimum_size = Vector2(320, 0)
+	entry.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(entry)
+	var feedback := Label.new()
+	feedback.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	feedback.add_theme_font_size_override("font_size", 13)
+	feedback.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+	vb.add_child(feedback)
+	var submit := Button.new()
+	submit.text = "Unlock"
+	submit.pressed.connect(_on_lockbox_submit.bind(entry, feedback))
+	vb.add_child(submit)
+	var close_hint := Label.new()
+	close_hint.text = "E / Esc — close"
+	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_hint.add_theme_font_size_override("font_size", 12)
+	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+	vb.add_child(close_hint)
+	entry.text_submitted.connect(_on_lockbox_submit.bind(entry, feedback))
+	_open_cipher_popup(vb.get_parent() as Control)
+	entry.grab_focus()
+
+
+func _on_lockbox_submit(_text: String, entry: LineEdit, feedback: Label) -> void:
+	var key := CipherPoems.normalize_key(entry.text)
+	if key == CipherPoems.passphrase():
+		var fresh := SaveManager.unlock_architect()
+		SaveManager.unlock_achievement("drafted")
+		AudioManager.sfx("unlock")
+		close_cipher_popup()
+		if fresh:
+			toast("SECRET CLASS UNLOCKED: Architect")
+			var prog: Dictionary = SaveManager.get_achievement_progress("drafted")
+			if not prog.is_empty():
+				show_toast("ACHIEVEMENT: %s — %s" % [prog["name"], prog["desc"]])
+		else:
+			toast("The Architect is already unlocked.")
+	else:
+		AudioManager.sfx("ui_error")
+		var n := SaveManager.get_cipher_fragments().size()
+		feedback.text = "The lockbox clicks shut. (%d/8 fragments)" % n
+		entry.select_all()
 
 
 func flash_damage() -> void:
@@ -584,6 +750,33 @@ func _refresh_collection_log() -> void:
 		row.add_theme_font_size_override("font_size", 11)
 		(cols[idx % 2] as VBoxContainer).add_child(row)
 		idx += 1
+	_refresh_cipher_section()
+
+
+## Architect Cipher section: collected fragments as raw cipher + shift hint
+## (never the solution). Compact, at most 8 short rows.
+func _refresh_cipher_section() -> void:
+	var frags: Array = SaveManager.get_cipher_fragments()
+	var header := Label.new()
+	header.text = "Architect Cipher — %d/8" % frags.size()
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	%CollectionLog.add_child(header)
+	var sorted := frags.duplicate()
+	sorted.sort()
+	for i in sorted:
+		var idx := int(i)
+		if idx < 0 or idx >= CipherPoems.POEMS.size():
+			continue
+		var p: Dictionary = CipherPoems.POEMS[idx]
+		var row := Label.new()
+		row.text = "%s. %s — the verse speaks of %s" % [
+			CipherPoems.roman(idx), str(p["cipher"]), CipherPoems.shift_word(int(p["shift"]))]
+		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		row.add_theme_font_size_override("font_size", 11)
+		row.add_theme_color_override("font_color", Color(0.8, 0.75, 0.55))
+		%CollectionLog.add_child(row)
 
 
 ## Tooltip detail for a collection log row.
