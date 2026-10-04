@@ -1962,10 +1962,81 @@ func _build_station_annex_content() -> void:
 	add_child(station)
 
 
-## Station departure resolved in the annex (issue #2 Phase 2 stub).
-## Phase 3 implements the whistle/chug/fade ride and the hop to next_level.
+## Station departure resolved in the annex (issue #2 Phase 3): the server
+## drives the whistle/chug/fade ride on all peers, saves the run, then hops
+## to the next level directly.
+var _ride_running := false
+
+
 func _on_station_departure_resolved(theme_id: String) -> void:
-	print("[Dungeon] Station departure resolved: ", theme_id, " (Phase 3: ride + hop)")
+	if not multiplayer.is_server() or _ride_running:
+		return
+	_ride_running = true
+	var new_level := level_number + 1
+	var seed := randi()
+	rpc("begin_annex_departure", theme_id, _boarding_spots())
+	# 3.5s ride: 1.2s fade + ~1s black, whistle into chug. No moving-train
+	# gameplay (scope control).
+	await get_tree().create_timer(3.5).timeout
+	# Save point (moved here from the old station's depart()): persist the
+	# run so it can be continued from the menu. Server-only.
+	var cycle := (new_level - 1) / THEME_ORDER.size() + 1
+	SaveManager.set_deepest_cycle(cycle)
+	SaveManager.check_achievements()
+	var me := _my_player()
+	if me != null:
+		if multiplayer.get_peers().size() > 0:
+			await save_multiplayer_run(theme_id, new_level, seed)
+		else:
+			SaveManager.save_run({
+				"theme_id": theme_id,
+				"level_number": new_level,
+				"class_id": me.class_id,
+				"player_state": me.get_state(),
+				"seed": seed,
+			})
+	rpc("hop_to_next_level", theme_id, seed, new_level)
+
+
+## Boarding spots near the train doors (global), one per connected player.
+## The server assigns; every peer moves its own player (see pull_aboard).
+func _boarding_spots() -> Dictionary:
+	var spots := {}
+	var station := get_node_or_null("Station")
+	var locals := [
+		Vector3(-2.5, 0.1, -2.0), Vector3(0.5, 0.1, -2.0),
+		Vector3(-2.5, 0.1, -0.5), Vector3(0.5, 0.1, -0.5),
+	]
+	var i := 0
+	var holders := get_node_or_null("Players")
+	if holders != null:
+		for child in holders.get_children():
+			var pid := child.get_multiplayer_authority()
+			var lp: Vector3 = locals[i % locals.size()]
+			spots[pid] = station.to_global(lp) if station != null else lp
+			i += 1
+	return spots
+
+
+## Departure ride (all peers): the station plays whistle/pull-aboard/
+## chug+rumble/fade locally.
+@rpc("any_peer", "call_local")
+func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
+	var station := get_node_or_null("Station")
+	if station != null and station.has_method("play_departure_ride"):
+		station.play_departure_ride(theme_id, spots)
+
+
+## Level hop (all peers): set the handoff statics and load the next dungeon.
+@rpc("any_peer", "call_local")
+func hop_to_next_level(theme_id: String, new_seed: int, new_level: int) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_id:
+		return
+	Dungeon.next_theme_id = theme_id
+	Dungeon.next_seed = new_seed
+	Dungeon.next_level_number = new_level
+	get_tree().call_deferred("change_scene_to_file", "res://scenes/dungeon/dungeon.tscn")
 
 
 func _build_environment() -> void:

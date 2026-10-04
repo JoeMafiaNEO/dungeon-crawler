@@ -37,6 +37,7 @@ func _run() -> void:
 	_test_music_queued_pickup()
 	_test_station_annex()
 	_test_station_embedded()
+	_test_annex_departure()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -636,9 +637,78 @@ func _test_station_embedded() -> void:
 	_assert(dsrc.contains("departure_resolved.connect(_on_station_departure_resolved)"),
 		"dungeon connects departure_resolved")
 	_assert(dsrc.contains("func _on_station_departure_resolved"),
-		"dungeon has departure stub handler")
+		"dungeon has departure handler (issue #2 phase 3)")
 
 	holder.queue_free()
+
+
+func _test_annex_departure() -> void:
+	print("[Playtest] Annex departure trigger + ride (issue #2 phase 3)...")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+
+	# 1. Handler exists, server-only, re-entry guarded.
+	_assert(dsrc.contains("func _on_station_departure_resolved"),
+		"departure: handler exists")
+	_assert(dsrc.contains("if not multiplayer.is_server() or _ride_running:"),
+		"departure: server-only + re-entry guard")
+
+	# 2. Sequence order: ride rpc -> wait -> save -> hop rpc.
+	var h_start := dsrc.find("func _on_station_departure_resolved")
+	_assert(h_start > 0, "departure: handler found")
+	var h := dsrc.substr(h_start, 2600)
+	var p_ride := h.find("begin_annex_departure")
+	var p_wait := h.find("create_timer(3.5)")
+	var p_save := h.find("save_multiplayer_run")
+	var p_solo := h.find("SaveManager.save_run")
+	var p_hop := h.find("hop_to_next_level")
+	_assert(p_ride > 0 and p_wait > 0 and p_save > 0 and p_hop > 0,
+		"departure: ride + wait + save + hop all present")
+	_assert(p_ride < p_wait and p_wait < p_save and p_save < p_hop,
+		"departure: ride before wait before save before hop")
+	_assert(p_solo > p_save, "departure: solo save fallback present")
+	_assert(h.contains("set_deepest_cycle"), "departure: cycle recorded at departure")
+	_assert(h.contains("check_achievements"), "departure: achievements checked")
+
+	# 3. Hop rpc: server-sender check, handoff statics, dungeon scene load.
+	var hop_start := dsrc.find("func hop_to_next_level")
+	_assert(hop_start > 0, "departure: hop rpc exists")
+	var hop := dsrc.substr(hop_start, 900)
+	_assert(hop.contains("Dungeon.next_theme_id = theme_id"), "hop: sets next theme")
+	_assert(hop.contains("Dungeon.next_seed = new_seed"), "hop: sets next seed")
+	_assert(hop.contains("Dungeon.next_level_number = new_level"), "hop: sets next level")
+	_assert(hop.contains("dungeon.tscn"), "hop: loads the dungeon scene")
+	_assert(hop.contains("NetworkManager.server_id"), "hop: server-sender check")
+
+	# 4. Ride rpc delegates to the station's local ride on all peers.
+	var ride_start := dsrc.find("func begin_annex_departure")
+	_assert(ride_start > 0, "departure: ride rpc exists")
+	var ride := dsrc.substr(ride_start, 600)
+	_assert(ride.contains("play_departure_ride"), "ride rpc: delegates to station")
+
+	# 5. Station ride order: whistle -> pull aboard -> fade -> chug + rumble.
+	var pr_start := ssrc.find("func play_departure_ride")
+	_assert(pr_start > 0, "station: play_departure_ride exists")
+	var pr := ssrc.substr(pr_start, 900)
+	var q_w := pr.find("train_whistle")
+	var q_pull := pr.find("pull_aboard")
+	var q_fade := pr.find("fade_out")
+	var q_chug := pr.find("train_chug")
+	var q_rumble := pr.find("\"rumble\"")
+	_assert(q_w > 0 and q_pull > 0 and q_fade > 0 and q_chug > 0 and q_rumble > 0,
+		"ride: whistle + aboard + fade + chug + rumble present")
+	_assert(q_w < q_pull and q_pull < q_fade and q_fade < q_chug,
+		"ride: whistle -> aboard -> fade -> chug")
+
+	# 6. Arrival (dungeon entry): fade in + NOW ARRIVING banner + brake.
+	_assert(dsrc.contains("fade_in(1.5)"), "arrival: fade_in on entry")
+	_assert(dsrc.contains("NOW ARRIVING: "), "arrival: banner text")
+	_assert(dsrc.contains("train_brake"), "arrival: brake sfx")
+
+	# 7. Boarding spots: helper exists, spots converted to global coords.
+	_assert(dsrc.contains("func _boarding_spots"), "departure: boarding spots helper")
+	_assert(dsrc.contains("to_global"), "departure: spots are global")
 
 
 func _test_cycle_scaling() -> void:

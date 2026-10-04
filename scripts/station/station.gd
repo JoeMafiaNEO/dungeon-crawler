@@ -420,6 +420,21 @@ func begin_departure(theme_id: String, spots: Dictionary) -> void:
 	AudioManager.sfx("rumble")
 
 
+## Departure ride for embedded mode (issue #2 Phase 3): re-dress for the
+## resolved theme, whistle, pull stragglers aboard, chug + rumble, fade to
+## black. Called on all peers via the dungeon's begin_annex_departure rpc.
+func play_departure_ride(theme_id: String, spots: Dictionary) -> void:
+	apply_dressing(theme_id)
+	AudioManager.sfx("train_whistle")
+	pull_aboard(spots) # moves players, toasts "All aboard!", hides the timer
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("fade_out"):
+		hud.fade_out(1.2)
+	await get_tree().create_timer(1.0).timeout
+	AudioManager.sfx("train_chug")
+	AudioManager.sfx("rumble")
+
+
 @rpc("any_peer", "call_local")
 func pull_aboard(spots: Dictionary) -> void:
 	# Anyone mid-vote steps away from the board first.
@@ -428,7 +443,10 @@ func pull_aboard(spots: Dictionary) -> void:
 			n.exit_reading()
 	var me := _my_player()
 	if me != null:
-		var spot: Vector3 = spots.get(multiplayer.get_unique_id(), Vector3(-11, 1.5, 3))
+		# Fallback is station-relative (works in both standalone and
+		# embedded layouts).
+		var fallback: Vector3 = to_global(Vector3(0, 0.1, 2.0))
+		var spot: Vector3 = spots.get(multiplayer.get_unique_id(), fallback)
 		me.global_position = spot
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null:
