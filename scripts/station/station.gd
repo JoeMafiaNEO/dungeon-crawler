@@ -164,9 +164,10 @@ func _living_peer_ids() -> Array:
 	return out
 
 
-## Every living player has cast a vote.
-func _all_voted() -> bool:
-	var living := _living_peer_ids()
+## Every living player has cast a vote. living_override lets tests drive the
+## flow without a scene tree full of players.
+func _all_voted(living_override: Array = []) -> bool:
+	var living := living_override if not living_override.is_empty() else _living_peer_ids()
 	if living.is_empty():
 		return false
 	for pid in living:
@@ -222,6 +223,19 @@ static func theme_display_name(theme_id: String) -> String:
 	return theme_id.capitalize()
 
 
+## Record a vote from a peer. Pure logic (no RPC): the cast_vote RPC wrapper
+## handles networking + the all-voted early departure. living_override lets
+## tests drive the flow without a scene tree. Returns {"ok": bool, ...}.
+func record_vote(peer_id: int, theme_id: String, living_override: Array = []) -> Dictionary:
+	if not theme_id in Dungeon.THEME_ORDER:
+		return {"ok": false, "reason": "bad_theme"}
+	var living := living_override if not living_override.is_empty() else _living_peer_ids()
+	if not peer_id in living:
+		return {"ok": false, "reason": "not_living"}
+	votes[peer_id] = theme_id
+	return {"ok": true}
+
+
 ## Vote for a destination. Server records; every peer syncs for board UI.
 @rpc("any_peer", "call_local")
 func cast_vote(theme_id: String) -> void:
@@ -230,12 +244,9 @@ func cast_vote(theme_id: String) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender == 0:
 		sender = multiplayer.get_unique_id()
-	if not theme_id in Dungeon.THEME_ORDER:
+	var res: Dictionary = record_vote(sender, theme_id)
+	if not bool(res.get("ok", false)):
 		return
-	var node := get_player_node(sender)
-	if node == null or not bool(node.get("alive")):
-		return
-	votes[sender] = theme_id
 	rpc("sync_votes", votes)
 	if not _departing and _all_voted():
 		depart()

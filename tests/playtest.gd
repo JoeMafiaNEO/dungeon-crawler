@@ -33,6 +33,7 @@ func _run() -> void:
 	_test_station_phase3()
 	_test_station_phase4()
 	_test_station_phase5()
+	_test_station_mp_vote_flow()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -354,6 +355,65 @@ func _test_station_phase5() -> void:
 	_assert(dsrc.contains('sfx("train_brake")'), "brake screech on arrival")
 	_assert(DungeonScript.arrival_tint("warlord") == Color(1.0, 0.55, 0.25),
 		"arrival tint matches lamp table")
+
+
+func _test_station_mp_vote_flow() -> void:
+	print("[Playtest] Station MP vote flow...")
+	var StationScript := load("res://scripts/station/station.gd")
+	# (a) 3 fake peers drive the same record path the cast_vote RPC uses.
+	var living := [10, 11, 12]
+	var st = StationScript.new()
+	_assert(bool(st.record_vote(10, "dungeon", living)["ok"]), "peer 10 vote recorded")
+	_assert(bool(st.record_vote(11, "dungeon", living)["ok"]), "peer 11 vote recorded")
+	_assert(st.votes == {10: "dungeon", 11: "dungeon"}, "votes dict holds both")
+	_assert(StationScript.resolve_destination(st.votes, living, 10, 2) == "dungeon",
+		"2/3 majority wins")
+	# (e) Vote change counts once (overwrite, not a second vote).
+	_assert(bool(st.record_vote(10, "village", living)["ok"]), "vote change accepted")
+	_assert(st.votes.size() == 2 and st.votes[10] == "village",
+		"vote change overwrites, counts once")
+	# (b) 1-1 tie with abstaining host -> first in THEME_ORDER.
+	var st2 = StationScript.new()
+	st2.record_vote(11, "warlord", living)
+	st2.record_vote(12, "village", living)
+	_assert(StationScript.resolve_destination(st2.votes, living, 10, 2) == "village",
+		"1-1 tie, host abstained -> THEME_ORDER order")
+	# (b) 1-1 tie -> host's pick wins (host = peer 10).
+	var st3 = StationScript.new()
+	st3.record_vote(10, "warlord", living)
+	st3.record_vote(11, "village", living)
+	_assert(StationScript.resolve_destination(st3.votes, living, 10, 2) == "warlord",
+		"1-1 tie -> host pick wins")
+	# (c) Timer-expiry path: partial votes resolve, non-voters excluded.
+	var st4 = StationScript.new()
+	st4.record_vote(12, "depths", living)
+	_assert(not st4._all_voted(living), "partial votes: not all voted")
+	_assert(StationScript.resolve_destination(st4.votes, living, 10, 3) == "depths",
+		"timer expiry: lone vote wins")
+	# (d) Zero votes -> rotation fallback.
+	var st5 = StationScript.new()
+	_assert(StationScript.resolve_destination(st5.votes, living, 10, 4) == "supermarket",
+		"zero votes -> rotation fallback")
+	# Rejections never touch the vote table.
+	_assert(not bool(st5.record_vote(10, "moon", living)["ok"]), "bad theme rejected")
+	_assert(not bool(st5.record_vote(99, "village", living)["ok"]), "non-living peer rejected")
+	_assert(st5.votes.is_empty(), "rejected votes not recorded")
+	# sync_votes payload applies on the client path (no board in test tree).
+	root.add_child(st5)
+	st5.sync_votes({10: "village", 11: "dungeon"})
+	_assert(st5.votes == {10: "village", 11: "dungeon"}, "sync_votes payload applied")
+	st5.queue_free()
+	# Solo: single living peer, one vote -> all voted -> pick resolves.
+	var st6 = StationScript.new()
+	_assert(not st6._all_voted([10]), "solo: not voted yet")
+	st6.record_vote(10, "depths", [10])
+	_assert(st6._all_voted([10]), "solo: single vote = all voted")
+	_assert(StationScript.resolve_destination(st6.votes, [10], 10, 3) == "depths",
+		"solo pick resolves to the vote")
+	# Wiring: the RPC stays thin and delegates to record_vote.
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("func record_vote(peer_id"), "record_vote exists")
+	_assert(ssrc.contains("record_vote(sender, theme_id)"), "cast_vote delegates to record_vote")
 
 
 func _test_cycle_scaling() -> void:
