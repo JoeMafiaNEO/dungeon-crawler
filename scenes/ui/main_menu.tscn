@@ -63,6 +63,43 @@ layout_mode = 2
 text = "..."
 horizontal_alignment = 1
 
+[node name="TitleClassLabel" type="Label" parent="TitlePhase"]
+layout_mode = 2
+text = "Choose your class:"
+horizontal_alignment = 1
+
+[node name="TitleClassRow" type="HBoxContainer" parent="TitlePhase"]
+layout_mode = 2
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="TitleWarriorButton" type="Button" parent="TitlePhase/TitleClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("3")
+text = "Warrior"
+
+[node name="TitleRogueButton" type="Button" parent="TitlePhase/TitleClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("4")
+text = "Rogue"
+
+[node name="TitleMageButton" type="Button" parent="TitlePhase/TitleClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("5")
+text = "Mage"
+
+[node name="TitleClassDesc" type="Label" parent="TitlePhase"]
+unique_name_in_owner = true
+layout_mode = 2
+text = ""
+horizontal_alignment = 1
+
 [node name="StartButton" type="Button" parent="TitlePhase"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -379,68 +416,6 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Back"
 
-[node name="ClassPhase" type="VBoxContainer" parent="."
-visible = false]
-unique_name_in_owner = true
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-theme_override_constants/separation = 8
-alignment = 1
-
-[node name="ClassLabel" type="Label" parent="ClassPhase"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 32
-text = "Choose your class:"
-horizontal_alignment = 1
-
-[node name="ClassRow" type="HBoxContainer" parent="ClassPhase"]
-layout_mode = 2
-theme_override_constants/separation = 10
-alignment = 1
-
-[node name="WarriorButton" type="Button" parent="ClassPhase/ClassRow"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 4
-icon = ExtResource("3")
-text = "Warrior"
-
-[node name="RogueButton" type="Button" parent="ClassPhase/ClassRow"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 4
-icon = ExtResource("4")
-text = "Rogue"
-
-[node name="MageButton" type="Button" parent="ClassPhase/ClassRow"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 4
-icon = ExtResource("5")
-text = "Mage"
-
-[node name="ClassDescLabel" type="Label" parent="ClassPhase"]
-unique_name_in_owner = true
-layout_mode = 2
-text = ""
-horizontal_alignment = 1
-
-[node name="StartSoloButton" type="Button" parent="ClassPhase"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 4
-text = "Start"
-
-[node name="ClassBackButton" type="Button" parent="ClassPhase"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 4
-text = "Back"
-
 [node name="StagingPhase" type="VBoxContainer" parent="."
 visible = false]
 unique_name_in_owner = true
@@ -548,6 +523,9 @@ size_flags_horizontal = 4
 text = "Leave"
 
 [connection signal="pressed" from="TitlePhase/StartButton" to="." method="_on_start_game_pressed"]
+[connection signal="pressed" from="TitlePhase/TitleClassRow/TitleWarriorButton" to="." method="_on_warrior_pressed"]
+[connection signal="pressed" from="TitlePhase/TitleClassRow/TitleRogueButton" to="." method="_on_rogue_pressed"]
+[connection signal="pressed" from="TitlePhase/TitleClassRow/TitleMageButton" to="." method="_on_mage_pressed"]
 [connection signal="pressed" from="ModePhase/MultiButton" to="." method="_on_multi_pressed"]
 [connection signal="pressed" from="ModePhase/SoloButton" to="." method="_on_solo_pressed"]
 [connection signal="pressed" from="ModePhase/ModeBackButton" to="." method="_on_mode_back_pressed"]
@@ -570,11 +548,6 @@ text = "Leave"
 [connection signal="pressed" from="JoinPhase/JoinBackButton" to="." method="_on_join_back_pressed"]
 [connection signal="pressed" from="SoloPhase/NewGameButton" to="." method="_on_new_game_pressed"]
 [connection signal="pressed" from="SoloPhase/SoloBackButton" to="." method="_on_solo_back_pressed"]
-[connection signal="pressed" from="ClassPhase/ClassRow/WarriorButton" to="." method="_on_warrior_pressed"]
-[connection signal="pressed" from="ClassPhase/ClassRow/RogueButton" to="." method="_on_rogue_pressed"]
-[connection signal="pressed" from="ClassPhase/ClassRow/MageButton" to="." method="_on_mage_pressed"]
-[connection signal="pressed" from="ClassPhase/StartSoloButton" to="." method="_on_start_solo_pressed"]
-[connection signal="pressed" from="ClassPhase/ClassBackButton" to="." method="_on_class_back_pressed"]
 [connection signal="pressed" from="LobbyPanel/StartButton" to="." method="_on_start_pressed"]
 [connection signal="pressed" from="LobbyPanel/LeaveButton" to="." method="_on_leave_pressed"]
 [connection signal="pressed" from="StagingPhase/StagingRow/InviteAllButton" to="." method="_on_invite_all_pressed"]

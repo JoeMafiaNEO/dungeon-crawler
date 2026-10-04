@@ -14,7 +14,7 @@ const CLASS_DESCS := {
 
 func _ready() -> void:
 	_style_buttons()
-	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %ClassPhase, %StagingPhase]
+	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %StagingPhase]
 	if SteamManager.initialized:
 		%PersonaLabel.text = "Logged in as %s" % SteamManager.persona_name
 	else:
@@ -116,6 +116,8 @@ func _on_mode_back_pressed() -> void:
 
 func _on_host_pressed() -> void:
 	AudioManager.sfx("ui_click")
+	# Initialize from the title selection (don't clobber); keep changeable.
+	_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
 	_show_phase("HostPhase")
 
 
@@ -135,7 +137,7 @@ func _on_multi_back_pressed() -> void:
 func _select_class(class_id: String) -> void:
 	NetworkManager.selected_class_id = class_id
 	_update_class_row("HostPhase/HostClassRow", class_id, "HostClassDesc")
-	_update_class_row("ClassPhase/ClassRow", class_id, "ClassDescLabel")
+	_update_class_row("TitlePhase/TitleClassRow", class_id, "TitleClassDesc")
 
 
 func _update_class_row(row_path: String, class_id: String, desc_label: String) -> void:
@@ -279,7 +281,8 @@ func _refresh_solo_ui() -> void:
 
 func _on_new_game_pressed() -> void:
 	AudioManager.sfx("ui_click")
-	_show_phase("ClassPhase")
+	# Title class picker is the selection; skip ClassPhase.
+	NetworkManager.play_solo()
 
 
 func _on_continue_class_pressed(class_id: String) -> void:
@@ -308,16 +311,6 @@ func _on_rogue_pressed() -> void:
 func _on_mage_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	_select_class("mage")
-
-
-func _on_start_solo_pressed() -> void:
-	AudioManager.sfx("ui_click")
-	NetworkManager.play_solo()
-
-
-func _on_class_back_pressed() -> void:
-	AudioManager.sfx("ui_click")
-	_show_phase("SoloPhase")
 
 
 # --- Lobby panel ---
