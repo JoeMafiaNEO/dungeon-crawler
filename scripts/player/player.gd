@@ -2522,12 +2522,17 @@ func on_buy_failed(price: int) -> void:
 
 
 @rpc("any_peer", "call_local")
-func receive_item(item_id: String) -> void:
+func receive_item(item_id: String, sell_value: int = -1) -> void:
 	if not is_multiplayer_authority():
 		return
 	var item := ItemDB.get_item(item_id)
 	if item == null:
 		return
+	# Danger-model scaled drops carry their sell value from the pickup.
+	# Duplicate before mutating so the shared ItemDB entry stays pristine.
+	if sell_value >= 0 and sell_value != item.sell_value:
+		item = item.duplicate() as ItemData
+		item.sell_value = sell_value
 	# Same-type items combine into the existing stack.
 	for entry in inventory:
 		var e_item := entry["item"] as ItemData

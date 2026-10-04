@@ -12,6 +12,9 @@ var max_hp := 10.0
 var alive := true
 var hp_scale := 1.0
 var dmg_scale := 1.0
+## Danger-model reward scale (tier × depth at spawn): drives XP and loot
+## sell values. Server-authoritative, synced like hp/dmg scale.
+var reward_scale := 1.0
 
 var _target: Node3D
 var _attack_cd := 0.0
@@ -49,11 +52,12 @@ var _charge_dir := Vector3.ZERO
 var _charge_hit: Array = []
 
 
-func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: float = 1.0, p_elite: bool = false) -> void:
+func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: float = 1.0, p_elite: bool = false, p_reward_scale: float = 1.0) -> void:
 	mob_id = p_id
 	data = p_data
 	hp_scale = p_hp_scale
 	dmg_scale = p_dmg_scale
+	reward_scale = p_reward_scale
 	is_elite = p_elite and not p_data.is_boss
 	if is_elite:
 		hp_scale *= 2.5
@@ -611,7 +615,8 @@ func _drop_and_reward(attacker: int) -> void:
 		return
 	var player_node: Node = dungeon.get_player_node(attacker)
 	if player_node != null:
-		player_node.rpc_id(attacker, "gain_xp", data.xp_reward)
+		# Danger model: XP scales with tier × depth (never less than 1).
+		player_node.rpc_id(attacker, "gain_xp", maxi(1, roundi(float(data.xp_reward) * reward_scale)))
 		# Affinity: marked target killed → +3 mark.
 		if is_marked():
 			player_node.rpc_id(attacker, "notify_mark_kill")
@@ -647,7 +652,7 @@ func _drop_and_reward(attacker: int) -> void:
 				continue
 			roll -= d.weight * _luck_weight(d.item.rarity)
 			if roll <= 0.0:
-				dungeon.rpc("spawn_pickup", d.item.id, global_position + Vector3(0, 0.8, 0))
+				dungeon.rpc("spawn_pickup", d.item.id, global_position + Vector3(0, 0.8, 0), reward_scale)
 				break
 	# Meta items from elites/bosses.
 	_try_meta_drop(dungeon)
@@ -670,7 +675,7 @@ func _try_meta_drop(dungeon: Dungeon) -> void:
 	if randf() > chance:
 		return
 	var item_id: String = unlocked[randi() % unlocked.size()]
-	dungeon.rpc("spawn_pickup", item_id, global_position + Vector3(0, 0.8, 0))
+	dungeon.rpc("spawn_pickup", item_id, global_position + Vector3(0, 0.8, 0), reward_scale)
 
 
 ## Higher luck multiplies the weight of rarer items (rarity 0..4).

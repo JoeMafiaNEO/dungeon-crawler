@@ -25,6 +25,16 @@ const TOTAL_WAVES := 5
 const INTERMISSION_TIME := 10.0
 const THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket", "warlord"]
 
+## Danger model (Phase 3): base tier per theme × depth scaling.
+## Single source of truth for mob HP/damage, XP, and loot sell values.
+## Risk/reward: picking a harder destination pays more if you survive.
+const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4}
+const TIER_MULT := {1: 1.0, 2: 1.3, 3: 1.7, 4: 2.2}
+
+
+static func danger_mult(theme_id: String, level_number: int) -> float:
+	return float(TIER_MULT[int(DANGER_TIERS.get(theme_id, 1))]) * pow(1.15, float(level_number - 1))
+
 static var next_theme_id: String = "village"
 static var next_seed: int = 12345
 static var next_level_number: int = 1
@@ -278,14 +288,14 @@ func request_state() -> void:
 	for m in $Mobs.get_children():
 		var mob := m as Mob
 		if mob != null and mob.alive:
-			rpc_id(sender, "spawn_mob", mob.mob_id, mob.data.id, mob.position, mob.hp_scale, mob.dmg_scale, mob.is_elite)
+			rpc_id(sender, "spawn_mob", mob.mob_id, mob.data.id, mob.position, mob.hp_scale, mob.dmg_scale, mob.is_elite, mob.reward_scale)
 	for p in $Pickups.get_children():
 		var pickup := p as ItemPickup
 		if pickup != null and not pickup.claimed:
 			if pickup.is_key:
 				rpc_id(sender, "spawn_key", pickup.position)
 			elif pickup.item != null:
-				rpc_id(sender, "spawn_pickup", pickup.item.id, pickup.position)
+				rpc_id(sender, "spawn_pickup", pickup.item.id, pickup.position, pickup.value_mult)
 	# Warlord: sync RTS state for late joiners.
 	if is_warlord and _rts_manager != null:
 		sync_rts_state(sender)
@@ -391,6 +401,12 @@ func _difficulty_scale() -> float:
 	return pow(1.15, float(level_number - 1)) * NetworkManager.host_difficulty
 
 
+## Danger multiplier for this level: theme tier × depth. Drives mob HP and
+## damage, XP rewards, and loot sell values (risk/reward).
+func _danger_mult() -> float:
+	return danger_mult(theme.theme_id, level_number)
+
+
 ## Average damage output across all players. Used to scale mob HP so
 ## the challenge stays consistent as the team gears up.
 func _team_avg_damage() -> float:
@@ -406,14 +422,15 @@ func _team_avg_damage() -> float:
 	return total / float(count)
 
 
-## Mob HP multiplier: base difficulty × team damage adaptation.
-## At 15 avg damage this is 1.0x; scales linearly beyond that.
+## Mob HP multiplier: danger model (tier × depth) × host difficulty × team
+## damage adaptation. At 15 avg damage the adaptation is 1.0x; scales
+## linearly beyond that.
 func _hp_scale() -> float:
 	var adapt := _team_avg_damage() / 15.0
 	# Bounded: 0.85x-1.75x (roadmap). Difficulty comes from composition,
 	# positioning, elites, and attack cadence — not HP mirroring.
 	adapt = clampf(adapt, 0.85, 1.75)
-	return _difficulty_scale() * theme.hp_scale * adapt
+	return _danger_mult() * NetworkManager.host_difficulty * adapt
 
 
 ## Portal exits now lead to the train station pit-stop (Phase 1).
@@ -530,8 +547,8 @@ func _spawn_market_mob() -> void:
 		return
 	_mob_id += 1
 	var hp_scale := _hp_scale()
-	var dmg_scale := _difficulty_scale() * theme.dmg_scale
-	rpc("spawn_mob", _mob_id, data.id, pos, hp_scale, dmg_scale, elite and not data.is_boss)
+	var dmg_scale := _danger_mult() * NetworkManager.host_difficulty
+	rpc("spawn_mob", _mob_id, data.id, pos, hp_scale, dmg_scale, elite and not data.is_boss, _danger_mult())
 
 
 func _spawn_market_loot() -> void:
@@ -1307,9 +1324,9 @@ func _process_waves(delta: float) -> void:
 				if data == null:
 					data = _pick_mob_type()
 				var hp_scale := _hp_scale()
-				var dmg_scale := _difficulty_scale() * theme.dmg_scale
+				var dmg_scale := _danger_mult() * NetworkManager.host_difficulty
 				var elite := bool(pick["elite"]) and not data.is_boss
-				rpc("spawn_mob", _mob_id, data.id, _random_mob_pos(), hp_scale, dmg_scale, elite)
+				rpc("spawn_mob", _mob_id, data.id, _random_mob_pos(), hp_scale, dmg_scale, elite, _danger_mult())
 			if mobs_to_spawn <= 0 and $Mobs.get_child_count() == 0:
 				_wave_cleared()
 	_wave_broadcast -= delta
@@ -1360,7 +1377,7 @@ func _spawn_boss() -> void:
 		if d > best_d:
 			best_d = d
 			pos = Vector3(s.x, 0.5, s.z)
-	rpc("spawn_mob", _mob_id, theme.boss_id, pos, _difficulty_scale() * theme.hp_scale, _difficulty_scale() * theme.dmg_scale)
+	rpc("spawn_mob", _mob_id, theme.boss_id, pos, _danger_mult() * NetworkManager.host_difficulty, _danger_mult() * NetworkManager.host_difficulty, false, _danger_mult())
 
 
 func _wave_cleared() -> void:
@@ -1483,13 +1500,13 @@ func _pick_mob_type() -> MobData:
 
 
 @rpc("any_peer", "call_local")
-func spawn_mob(mob_id: int, type_id: String, pos: Vector3, hp_scale: float = 1.0, dmg_scale: float = 1.0, elite: bool = false) -> void:
+func spawn_mob(mob_id: int, type_id: String, pos: Vector3, hp_scale: float = 1.0, dmg_scale: float = 1.0, elite: bool = false, reward_scale: float = 1.0) -> void:
 	var data := _mob_data(type_id)
 	if data == null:
 		return
 	var m := MobScene.instantiate() as Mob
 	m.name = "Mob_%d" % mob_id
-	m.setup(mob_id, data, hp_scale, dmg_scale, elite)
+	m.setup(mob_id, data, hp_scale, dmg_scale, elite, reward_scale)
 	m.position = pos
 	$Mobs.add_child(m)
 	if data.is_boss:
@@ -1615,7 +1632,7 @@ func server_spawn_mob(type_id: String, pos: Vector3) -> void:
 	_mob_id += 1
 	var data := _mob_data(type_id)
 	var elite := data != null and not data.is_boss and randf() < 0.10
-	rpc("spawn_mob", _mob_id, type_id, pos, _difficulty_scale() * theme.hp_scale, _difficulty_scale() * theme.dmg_scale, elite)
+	rpc("spawn_mob", _mob_id, type_id, pos, _danger_mult() * NetworkManager.host_difficulty, _danger_mult() * NetworkManager.host_difficulty, elite, _danger_mult())
 
 
 func _mob_data(type_id: String) -> MobData:
@@ -1650,13 +1667,19 @@ func _random_mob_pos() -> Vector3:
 # --- Pickups ---
 
 @rpc("any_peer", "call_local")
-func spawn_pickup(item_id: String, pos: Vector3) -> void:
+func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
 	var item := ItemDB.get_item(item_id)
 	if item == null:
 		return
+	# Danger model: mob drops carry scaled sell values (risk/reward).
+	# Shelf loot, keys, and shop stock use the default 1.0.
+	if value_mult != 1.0 and item.sell_value > 0:
+		item = item.duplicate() as ItemData
+		item.sell_value = roundi(float(item.sell_value) * value_mult)
 	_pickup_id += 1
 	var pickup := PickupScene.instantiate() as ItemPickup
 	pickup.name = "Pickup_%d" % _pickup_id
+	pickup.value_mult = value_mult
 	pickup.setup(item)
 	pickup.position = pos
 	$Pickups.add_child(pickup)

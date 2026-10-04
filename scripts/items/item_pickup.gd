@@ -9,6 +9,9 @@ const WARN_AT := 5.0
 
 var item: ItemData
 var claimed := false
+## Danger-model loot multiplier at spawn (1.0 = base sell value). Preserved
+## across late-joiner re-syncs so scaled drops keep their scaled price.
+var value_mult := 1.0
 ## Key mode: this pickup is a puzzle key, not inventory loot. The dungeon
 ## counts it toward unsealing the portal. Set before _ready runs.
 var is_key := false
@@ -200,7 +203,7 @@ func claim(claimer: int) -> void:
 	if dungeon != null:
 		player_node = dungeon.get_player_node(claimer)
 	if player_node != null:
-		player_node.rpc_id(claimer, "receive_item", item.id)
+		player_node.rpc_id(claimer, "receive_item", item.id, item.sell_value)
 
 
 @rpc("any_peer", "call_local")

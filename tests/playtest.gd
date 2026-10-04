@@ -30,6 +30,7 @@ func _run() -> void:
 	_test_cipher_unlock()
 	_test_station_phase1()
 	_test_station_phase2()
+	_test_station_phase3()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -724,3 +725,62 @@ func _test_station_phase2() -> void:
 		"row text warlord")
 	_assert(BoardScript.row_base_text("village", 6) == "VILLAGE OUTSKIRTS   ★☆☆☆   Rec. Lv 6",
 		"row text rec level follows cycle")
+
+
+func _test_station_phase3() -> void:
+	print("[Playtest] Train station phase 3 (danger model)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	# Tier mapping covers all 5 themes.
+	var tiers: Dictionary = DungeonScript.DANGER_TIERS
+	_assert(tiers.get("village") == 1 and tiers.get("dungeon") == 2 \
+		and tiers.get("depths") == 3 and tiers.get("supermarket") == 1 \
+		and tiers.get("warlord") == 4, "DANGER_TIERS covers all 5 themes")
+	_assert(DungeonScript.TIER_MULT.get(1) == 1.0 and DungeonScript.TIER_MULT.get(4) == 2.2,
+		"TIER_MULT endpoints sane")
+	# danger_mult spot checks (epsilon).
+	_assert(absf(DungeonScript.danger_mult("village", 1) - 1.0) < 0.001,
+		"village L1 = 1.0")
+	_assert(absf(DungeonScript.danger_mult("dungeon", 2) - 1.3 * 1.15) < 0.001,
+		"dungeon L2 = 1.3*1.15")
+	_assert(absf(DungeonScript.danger_mult("depths", 3) - 1.7 * pow(1.15, 2)) < 0.001,
+		"depths L3 = 1.7*1.15^2")
+	_assert(absf(DungeonScript.danger_mult("warlord", 5) - 2.2 * pow(1.15, 4)) < 0.001,
+		"warlord L5 = 2.2*1.15^4")
+	_assert(absf(DungeonScript.danger_mult("village", 6) - pow(1.15, 5)) < 0.001,
+		"cycle-2 village L6 = 1.15^5")
+	_assert(absf(DungeonScript.danger_mult("supermarket", 4) - pow(1.15, 3)) < 0.001,
+		"supermarket L4 = tier 1 * depth (economy run)")
+	_assert(absf(DungeonScript.danger_mult("nope", 1) - 1.0) < 0.001,
+		"unknown theme defaults to tier 1")
+	# XP formula: scaled, never below 1.
+	_assert(maxi(1, roundi(5.0 * 0.1)) == 1, "XP floor at 1")
+	_assert(maxi(1, roundi(10.0 * 2.24825)) == 22, "XP scales with danger")
+	# Loot sell formula: rounded int.
+	_assert(roundi(25.0 * 1.495) == 37, "cereal box $25 * dungeon L2 -> $37")
+	_assert(roundi(0.0 * 3.8) == 0, "zero sell_value stays zero")
+	# Wiring.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0)"),
+		"spawn_pickup value_mult param")
+	_assert(dsrc.contains("pickup.value_mult = value_mult"), "pickup stores value_mult")
+	_assert(dsrc.contains("reward_scale: float = 1.0"), "spawn_mob reward_scale param")
+	_assert(dsrc.contains("mob.reward_scale"), "late-joiner re-sync passes reward_scale")
+	_assert(dsrc.contains("_danger_mult() * NetworkManager.host_difficulty"),
+		"dmg_scale from danger model")
+	_assert(dsrc.contains("func _danger_mult()"), "_danger_mult helper exists")
+	_assert(not dsrc.contains("theme.hp_scale"), "theme.hp_scale no longer read")
+	_assert(not dsrc.contains("theme.dmg_scale"), "theme.dmg_scale no longer read")
+	_assert(dsrc.contains("(level_number - 1) / THEME_ORDER.size()"),
+		"cycle math untouched")
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("var reward_scale := 1.0"), "mob stores reward_scale")
+	_assert(msrc.contains("maxi(1, roundi(float(data.xp_reward) * reward_scale))"),
+		"XP scaled with floor")
+	_assert(msrc.contains("p_reward_scale: float = 1.0"), "setup takes reward_scale")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("func receive_item(item_id: String, sell_value: int = -1)"),
+		"receive_item sell_value param")
+	var isrc := FileAccess.get_file_as_string("res://scripts/items/item_pickup.gd")
+	_assert(isrc.contains("var value_mult := 1.0"), "pickup keeps value_mult")
+	_assert(isrc.contains("receive_item\", item.id, item.sell_value"),
+		"claim passes scaled sell value")
