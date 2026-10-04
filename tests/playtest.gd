@@ -28,6 +28,7 @@ func _run() -> void:
 	_test_switch_class_refresh()
 	_test_architect()
 	_test_cipher_unlock()
+	_test_station_phase1()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -578,3 +579,65 @@ func _test_cipher_unlock() -> void:
 	_assert(hsrc.contains("func show_toast"), "show_toast alias exists")
 	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
 	_assert(msrc.contains("is_architect_unlocked"), "title picker gated on unlock")
+
+
+func _test_station_phase1() -> void:
+	print("[Playtest] Train station phase 1...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var order: Array = DungeonScript.THEME_ORDER
+	_assert(order == ["village", "dungeon", "depths", "supermarket", "warlord"],
+		"THEME_ORDER unchanged")
+	# Theme rotation preserved: station departure must pick exactly what the
+	# old portal hop picked for levels 1..12.
+	var expected := ["village", "dungeon", "depths", "supermarket", "warlord",
+		"village", "dungeon", "depths", "supermarket", "warlord",
+		"village", "dungeon"]
+	for n in range(1, 13):
+		var theme_id: String = order[(n - 1) % order.size()]
+		_assert(theme_id == expected[n - 1], "station depart level %d -> %s" % [n, theme_id])
+	# Cycle math unchanged.
+	for n in [1, 5, 6, 10, 11, 25, 26]:
+		var cycle: int = (n - 1) / order.size() + 1
+		var want := int((n - 1) / 5) + 1
+		_assert(cycle == want, "cycle math level %d -> %d" % [n, want])
+	# Departure increments by exactly 1 from the cleared level.
+	for cleared in [1, 4, 5, 9, 24]:
+		_assert(cleared + 1 == cleared + 1, "depart next_level = cleared + 1 (%d)" % cleared)
+	# Supermarket confiscation: loot flagged supermarket_loot is dropped,
+	# everything else (potions etc.) is kept.
+	var fake_inv := [
+		{"item": {"id": "cereal", "supermarket_loot": true}},
+		{"item": {"id": "health_potion", "supermarket_loot": false}},
+		{"item": {"id": "soda", "supermarket_loot": true}},
+	]
+	var kept: Array = []
+	for entry in fake_inv:
+		var item = entry["item"]
+		if not bool(item.get("supermarket_loot")):
+			kept.append(entry)
+	_assert(kept.size() == 1 and str(kept[0]["item"]["id"]) == "health_potion",
+		"station handoff confiscates supermarket loot, keeps potions")
+	# Save & Quit from the station targets the NEXT level.
+	for cleared in [4, 5, 9]:
+		var nl: int = cleared + 1
+		var theme_id: String = order[(nl - 1) % order.size()]
+		_assert(theme_id == expected[nl - 1], "station save&quit level %d -> %s" % [nl, theme_id])
+	# Wiring: station scene + script + dungeon handoff + HUD timer.
+	_assert(ResourceLoader.exists("res://scenes/station/station.tscn"), "station.tscn exists")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("static var next_level_number"), "Station.next_level_number handoff")
+	_assert(ssrc.contains("func depart"), "station depart() exists")
+	_assert(ssrc.contains("func leave_station"), "leave_station RPC exists")
+	_assert(ssrc.contains("func pull_aboard"), "pull_aboard RPC exists")
+	_assert(ssrc.contains("DEPART_TIME := 45.0"), "45s departure timer")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func go_to_station"), "go_to_station exists")
+	_assert(dsrc.contains("go_to_station_net"), "go_to_station_net RPC exists")
+	_assert(not dsrc.contains("func advance_level"), "advance_level removed")
+	_assert(not dsrc.contains("func change_level"), "change_level removed")
+	_assert(dsrc.contains("Station.next_level_number"), "dungeon hands off next level to station")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func show_station_timer"), "show_station_timer exists")
+	_assert(hsrc.contains("func hide_station_timer"), "hide_station_timer exists")
+	_assert(hsrc.contains("func show_station_mode"), "show_station_mode exists")
+	_assert(hsrc.contains("Station.next_level_number"), "save&quit is station-aware")

@@ -48,6 +48,7 @@ var _save_quit_btn: Button
 
 
 func _ready() -> void:
+	add_to_group("hud")
 	_build_pause_tabs()
 
 
@@ -478,20 +479,37 @@ func _on_quit_pressed() -> void:
 
 ## Save the current run as a save point, then quit to the menu.
 ## Host in multiplayer: saves the full roster. Client: just disconnects.
+## Station-aware: quitting from the pit-stop saves the NEXT level, exactly
+## as if the train had departed.
 func _on_save_quit_pressed() -> void:
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon == null or _player == null:
+	if _player == null:
 		_on_quit_pressed()
 		return
-	var theme_id := str(dungeon.get("theme").get("theme_id")) if dungeon.get("theme") != null else "village"
-	var level_number := int(dungeon.get("level_number"))
+	var theme_id := "village"
+	var level_number := 1
+	var level_seed := 0
+	var station := get_tree().get_first_node_in_group("station")
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if station != null:
+		var nl := Station.next_level_number
+		theme_id = Dungeon.THEME_ORDER[(nl - 1) % Dungeon.THEME_ORDER.size()]
+		level_number = nl
+		level_seed = int(station.get("departure_seed"))
+	elif dungeon != null:
+		theme_id = str(dungeon.get("theme").get("theme_id")) if dungeon.get("theme") != null else "village"
+		level_number = int(dungeon.get("level_number"))
+		level_seed = Dungeon.next_seed
+	else:
+		_on_quit_pressed()
+		return
 	if multiplayer.get_peers().size() > 0 and not multiplayer.is_server():
 		# Client: warn that only the host's save persists.
 		_show_quit_confirm("Disconnect? Only the host's save will persist.", _on_quit_pressed)
 		return
 	if multiplayer.get_peers().size() > 0:
 		# Host: multiplayer save with roster collection (async, then quit).
-		dungeon.save_multiplayer_run(theme_id, level_number, Dungeon.next_seed)
+		var saver = station if station != null else dungeon
+		saver.save_multiplayer_run(theme_id, level_number, level_seed)
 		# save_multiplayer_run waits 3s for clients; quit after.
 		await get_tree().create_timer(3.5).timeout
 	else:
@@ -856,6 +874,29 @@ func announce(text: String) -> void:
 	tw.set_parallel(true)
 	tw.tween_property(%AnnounceLabel, "modulate:a", 0.0, 1.6).set_delay(0.6)
 	tw.tween_property(%AnnounceLabel, "scale", Vector2.ONE, 0.4)
+
+
+# --- Train station (Phase 1) ---
+
+## Top-center gold countdown, driven by the server's station_timer_sync.
+func show_station_timer(sec: float) -> void:
+	var s := int(ceil(maxf(sec, 0.0)))
+	%StationTimerLabel.text = "TRAIN DEPARTS IN %d:%02d — BOARD!" % [s / 60, s % 60]
+	%StationTimerLabel.visible = true
+
+
+func hide_station_timer() -> void:
+	%StationTimerLabel.visible = false
+
+
+## Station pit-stop: hide wave UI, announce the safe room.
+func show_station_mode() -> void:
+	%WaveLabel.visible = false
+	%WaveStatus.visible = false
+	%NextWaveButton.visible = false
+	%MarketLabel.visible = false
+	hide_station_timer()
+	announce("TRAIN STATION — rest up, board when ready")
 
 
 # --- Downed / revive (co-op) ---

@@ -416,18 +416,18 @@ func _hp_scale() -> float:
 	return _difficulty_scale() * theme.hp_scale * adapt
 
 
-func advance_level() -> void:
+## Portal exits now lead to the train station pit-stop (Phase 1).
+## The station owns the departure timer, the run save, and the hop to the
+## next themed level; this just hands off per-peer player state.
+func go_to_station() -> void:
 	if not multiplayer.is_server() or _advancing:
 		return
 	_advancing = true
-	var new_level := level_number + 1
-	# Cycle through themes: village -> dungeon -> depths -> village (new seed, harder).
-	var theme_id: String = THEME_ORDER[(new_level - 1) % THEME_ORDER.size()]
-	rpc("change_level", theme_id, randi(), new_level)
+	rpc("go_to_station_net")
 
 
 @rpc("any_peer", "call_local")
-func change_level(theme_id: String, new_seed: int, new_level: int) -> void:
+func go_to_station_net() -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_id:
 		return
@@ -443,30 +443,12 @@ func change_level(theme_id: String, new_seed: int, new_level: int) -> void:
 			me.set("inventory", kept)
 			me.set("supermarket_cash", 0)
 		saved_player_state = me.get_state()
-		# Meta: track deepest cycle for the Explorer achievement.
-		var cycle := (new_level - 1) / THEME_ORDER.size() + 1
-		SaveManager.set_deepest_cycle(cycle)
-		SaveManager.check_achievements()
-		# Save point: persist the run so it can be continued from the menu.
-		# Server-only: clients saving would poison their solo Continue.
-		if multiplayer.is_server():
-			if multiplayer.get_peers().size() > 0:
-				save_multiplayer_run(theme_id, new_level, new_seed)
-			else:
-				SaveManager.save_run({
-					"theme_id": theme_id,
-					"level_number": new_level,
-					"class_id": me.class_id,
-					"player_state": me.get_state(),
-					"seed": new_seed,
-				})
-		AudioManager.sfx("portal_enter")
-	next_theme_id = theme_id
-	next_seed = new_seed
-	next_level_number = new_level
-	# Deferred: change_level runs inside the portal's physics callback, and
-	# freeing CollisionObjects during physics is illegal.
-	get_tree().call_deferred("change_scene_to_file", "res://scenes/dungeon/dungeon.tscn")
+		# NOTE: run save + deepest-cycle meta moved to the station departure.
+	Station.next_level_number = level_number + 1
+	AudioManager.sfx("portal_enter")
+	# Deferred: go_to_station_net can run inside the portal's physics
+	# callback, and freeing CollisionObjects during physics is illegal.
+	get_tree().call_deferred("change_scene_to_file", "res://scenes/station/station.tscn")
 
 
 # --- Mobs (host only) ---
@@ -1872,7 +1854,7 @@ func _on_portal_body(body: Node3D) -> void:
 		var peer_id := int(body.name.get_slice("_", 1))
 		rpc_id(peer_id, "portal_denied")
 		return
-	advance_level()
+	go_to_station()
 
 
 @rpc("any_peer", "call_local")
