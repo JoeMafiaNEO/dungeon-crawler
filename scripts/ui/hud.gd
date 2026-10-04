@@ -42,6 +42,9 @@ var _pause_tab := 0
 var _pause_tab_btns: Array[Button] = []
 ## Node names (under PauseVBox) belonging to each tab.
 var _pause_tab_members: Array = []
+## Action buttons moved outside the scroll area (stored refs avoid % lookup issues).
+var _class_btn: Button
+var _save_quit_btn: Button
 
 
 func _ready() -> void:
@@ -49,28 +52,30 @@ func _ready() -> void:
 
 
 ## Rework the pause panel into three tabs (Stats / Specialization / Collection).
-## Uses show/hide on the existing tscn nodes (no reparenting, preserving % names).
-## Action buttons stay always visible at the bottom.
+## Action buttons are moved outside the ScrollContainer, fixed at the bottom.
 func _build_pause_tabs() -> void:
 	var panel := %PausePanel as PanelContainer
+	# Idempotent: skip if already built (e.g. scene re-entered).
+	if panel.get_node_or_null("PauseMain") != null:
+		return
 	var scroll := panel.get_node("PauseScroll") as ScrollContainer
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	var vbox := scroll.get_node("PauseVBox") as VBoxContainer
-	# Define tab membership by node name.
-	_pause_tab_members = [
-		["HintLabel", "VolLabel", "MasterRow", "MusicRow", "SFXRow",
-			"StatPointsLabel", "DmgRow", "HpRow", "SpdRow", "AuraRow"],
-		["SpecLabel", "SpecList"],
-		["FamilyLabel", "FamilyPanel", "CollectionLabel", "CollectionLog"],
-	]
-	# Tab bar: insert at the top of the VBox, after the title/divider.
+	# Main layout: title, tabs, scroll (expanding), actions (fixed bottom).
+	var main := VBoxContainer.new()
+	main.name = "PauseMain"
+	main.add_theme_constant_override("separation", 6)
+	panel.add_child(main)
+	# Move title + divider to main.
+	for n in ["PausedLabel", "PauseDivider"]:
+		var c := vbox.get_node(n) as Control
+		c.reparent(main)
+	# Tab bar.
 	var tab_bar := HBoxContainer.new()
 	tab_bar.name = "PauseTabBar"
 	tab_bar.alignment = BoxContainer.ALIGNMENT_CENTER
 	tab_bar.add_theme_constant_override("separation", 4)
-	# Insert after PauseDivider (index 2: PausedLabel, PauseDivider, then tab bar).
-	vbox.add_child(tab_bar)
-	vbox.move_child(tab_bar, 2)
+	main.add_child(tab_bar)
 	var tab_names := ["Stats", "Specialization", "Collection"]
 	for i in tab_names.size():
 		var btn := Button.new()
@@ -80,8 +85,31 @@ func _build_pause_tabs() -> void:
 		_style_tab_button(btn, i == 0)
 		tab_bar.add_child(btn)
 		_pause_tab_btns.append(btn)
-	# Action buttons stay visible: ensure they're after all tab content.
-	# (They already are, at the end of the VBox.)
+	# Define tab membership.
+	_pause_tab_members = [
+		["HintLabel", "VolLabel", "MasterRow", "MusicRow", "SFXRow",
+			"StatPointsLabel", "DmgRow", "HpRow", "SpdRow", "AuraRow"],
+		["SpecLabel", "SpecList"],
+		["FamilyLabel", "FamilyPanel", "CollectionLabel", "CollectionLog"],
+	]
+	# Move the scroll into main (expanding).
+	scroll.reparent(main)
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# Action buttons: fixed at bottom, outside the scroll.
+	var actions := VBoxContainer.new()
+	actions.name = "PauseActions"
+	actions.add_theme_constant_override("separation", 4)
+	main.add_child(actions)
+	for nn in ["ResumeButton", "ClassButton", "QuitButton", "SaveQuitButton"]:
+		var b := vbox.get_node_or_null(nn) as Button
+		if b != null:
+			b.reparent(actions)
+			if nn == "ClassButton":
+				_class_btn = b
+			elif nn == "SaveQuitButton":
+				_save_quit_btn = b
+	# Remove the now-empty old VBox (scroll was moved, vbox is orphaned).
+	# Note: vbox is still a child of scroll; scroll was reparented with it.
 
 
 ## Gold-on-dark styling for the tab buttons; selected tab is highlighted.
@@ -110,13 +138,14 @@ func _on_pause_tab_pressed(idx: int) -> void:
 	_apply_pause_tab_visibility()
 	# Collection tab content is designed to fit; hide the scrollbar there.
 	# Stats/Spec may overflow on small screens, keep auto-scroll.
-	var scroll := %PausePanel.get_node("PauseScroll") as ScrollContainer
-	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED if idx == 2 else ScrollContainer.SCROLL_MODE_AUTO
+	var scroll := %PausePanel.get_node("PauseMain/PauseScroll") as ScrollContainer
+	if scroll != null:
+		scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED if idx == 2 else ScrollContainer.SCROLL_MODE_AUTO
 
 
-## Show only the current tab's nodes; action buttons always visible.
+## Show only the current tab's nodes; action buttons are outside the scroll.
 func _apply_pause_tab_visibility() -> void:
-	var scroll := %PausePanel.get_node("PauseScroll") as ScrollContainer
+	var scroll := %PausePanel.get_node("PauseMain/PauseScroll") as ScrollContainer
 	var vbox := scroll.get_node("PauseVBox") as VBoxContainer
 	for i in _pause_tab_members.size():
 		var visible := i == _pause_tab
@@ -251,14 +280,16 @@ func show_pause() -> void:
 	%TopRight.visible = false
 	_layout_pause()
 	# Class switching is solo-only.
-	%ClassButton.visible = multiplayer.get_peers().size() == 0
+	if _class_btn != null:
+		_class_btn.visible = multiplayer.get_peers().size() == 0
 	# Save & Quit label depends on host/client role.
-	if multiplayer.get_peers().size() == 0:
-		%SaveQuitButton.text = "Save & Quit to Menu"
-	elif multiplayer.is_server():
-		%SaveQuitButton.text = "Save & Quit (saves run)"
-	else:
-		%SaveQuitButton.text = "Disconnect (host holds the save)"
+	if _save_quit_btn != null:
+		if multiplayer.get_peers().size() == 0:
+			_save_quit_btn.text = "Save & Quit to Menu"
+		elif multiplayer.is_server():
+			_save_quit_btn.text = "Save & Quit (saves run)"
+		else:
+			_save_quit_btn.text = "Disconnect (host holds the save)"
 
 
 func hide_pause() -> void:

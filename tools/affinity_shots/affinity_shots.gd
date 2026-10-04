@@ -114,11 +114,10 @@ func _open_pause() -> void:
 
 
 func _scroll() -> ScrollContainer:
-	# Pause menu now uses tabs with a single ScrollContainer; content visibility
-	# is toggled per tab. Kept for compatibility.
+	# Pause menu now uses tabs; PauseScroll is under PauseMain.
 	if _hud == null:
 		return null
-	return _hud.get_node("PausePanel/PauseScroll") as ScrollContainer
+	return _hud.get_node("PausePanel/PauseMain/PauseScroll") as ScrollContainer
 
 
 func _select_tab(idx: int) -> void:
