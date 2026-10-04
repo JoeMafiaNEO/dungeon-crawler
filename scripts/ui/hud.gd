@@ -37,6 +37,94 @@ func _on_health_changed(hp: float, max_hp: float) -> void:
 var _hp_frac := 1.0
 var _vignette_t := 0.0
 
+## Pause menu tabs: 0=Stats, 1=Specialization, 2=Collection.
+var _pause_tab := 0
+var _pause_tab_btns: Array[Button] = []
+## Node names (under PauseVBox) belonging to each tab.
+var _pause_tab_members: Array = []
+
+
+func _ready() -> void:
+	_build_pause_tabs()
+
+
+## Rework the pause panel into three tabs (Stats / Specialization / Collection).
+## Uses show/hide on the existing tscn nodes (no reparenting, preserving % names).
+## Action buttons stay always visible at the bottom.
+func _build_pause_tabs() -> void:
+	var panel := %PausePanel as PanelContainer
+	var scroll := panel.get_node("PauseScroll") as ScrollContainer
+	var vbox := scroll.get_node("PauseVBox") as VBoxContainer
+	# Define tab membership by node name.
+	_pause_tab_members = [
+		["HintLabel", "VolLabel", "MasterRow", "MusicRow", "SFXRow",
+			"StatPointsLabel", "DmgRow", "HpRow", "SpdRow", "AuraRow"],
+		["SpecLabel", "SpecList"],
+		["FamilyLabel", "FamilyPanel", "CollectionLabel", "CollectionLog"],
+	]
+	# Tab bar: insert at the top of the VBox, after the title/divider.
+	var tab_bar := HBoxContainer.new()
+	tab_bar.name = "PauseTabBar"
+	tab_bar.alignment = BoxContainer.ALIGNMENT_CENTER
+	tab_bar.add_theme_constant_override("separation", 4)
+	# Insert after PauseDivider (index 2: PausedLabel, PauseDivider, then tab bar).
+	vbox.add_child(tab_bar)
+	vbox.move_child(tab_bar, 2)
+	var tab_names := ["Stats", "Specialization", "Collection"]
+	for i in tab_names.size():
+		var btn := Button.new()
+		btn.text = tab_names[i]
+		btn.toggle_mode = true
+		btn.pressed.connect(_on_pause_tab_pressed.bind(i))
+		_style_tab_button(btn, i == 0)
+		tab_bar.add_child(btn)
+		_pause_tab_btns.append(btn)
+	# Action buttons stay visible: ensure they're after all tab content.
+	# (They already are, at the end of the VBox.)
+
+
+## Gold-on-dark styling for the tab buttons; selected tab is highlighted.
+func _style_tab_button(btn: Button, selected: bool) -> void:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.25, 0.2, 0.08, 0.95) if selected else Color(0.08, 0.08, 0.1, 0.75)
+	sb.border_color = Color(0.8, 0.65, 0.25, 1.0)
+	sb.set_border_width_all(2 if selected else 1)
+	sb.set_corner_radius_all(4)
+	sb.content_margin_left = 12
+	sb.content_margin_right = 12
+	sb.content_margin_top = 6
+	sb.content_margin_bottom = 6
+	btn.add_theme_stylebox_override("normal", sb)
+	btn.add_theme_stylebox_override("hover", sb)
+	btn.add_theme_stylebox_override("pressed", sb)
+	btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if selected else Color(0.7, 0.7, 0.75))
+	btn.add_theme_font_size_override("font_size", 14)
+
+
+func _on_pause_tab_pressed(idx: int) -> void:
+	_pause_tab = idx
+	for i in _pause_tab_btns.size():
+		_pause_tab_btns[i].button_pressed = i == idx
+		_style_tab_button(_pause_tab_btns[i], i == idx)
+	_apply_pause_tab_visibility()
+
+
+## Show only the current tab's nodes; action buttons always visible.
+func _apply_pause_tab_visibility() -> void:
+	var vbox := %PausePanel.get_node("PauseScroll/PauseVBox") as VBoxContainer
+	for i in _pause_tab_members.size():
+		var visible := i == _pause_tab
+		for nn in _pause_tab_members[i]:
+			var c := vbox.get_node_or_null(nn) as Control
+			if c != null:
+				c.visible = visible
+
+
+## Programmatic tab selection (used by tools and external callers).
+func select_pause_tab(idx: int) -> void:
+	if idx >= 0 and idx < 3:
+		_on_pause_tab_pressed(idx)
+
 
 func _process(delta: float) -> void:
 	# Low-HP vignette: pulses red as health drops below 35%.
@@ -147,6 +235,9 @@ func show_pause() -> void:
 	is_paused = true
 	refresh_stats()
 	%PausePanel.visible = true
+	# Default to the Stats tab when the menu opens.
+	if _pause_tab_btns.size() == 3:
+		_on_pause_tab_pressed(0)
 	# Hide the top-right wave cluster so it doesn't peek out behind the panel.
 	%TopRight.visible = false
 	_layout_pause()

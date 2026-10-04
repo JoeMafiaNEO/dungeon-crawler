@@ -24,6 +24,7 @@ func _run() -> void:
 	_test_affinity_ui()
 	_test_affinity_save_roundtrip()
 	_test_specialization_level_gate()
+	_test_pause_tabs()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -374,3 +375,24 @@ func _test_specialization_level_gate() -> void:
 	_assert(hsrc.contains("btn.disabled = true"), "Specialize buttons disabled below 20")
 	_assert(hsrc.contains("Unlocks at level %d"), "Disabled buttons show unlock hint")
 	_assert(hsrc.contains("Specialization unlocks at level %d (currently %d)"), "Pause menu hint label")
+
+
+func _test_pause_tabs() -> void:
+	print("[Playtest] Pause tabs...")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func _build_pause_tabs"), "Tab builder exists")
+	_assert(hsrc.contains("func _on_pause_tab_pressed"), "Tab switch handler exists")
+	_assert(hsrc.contains("func select_pause_tab"), "Programmatic tab selection exists")
+	_assert(hsrc.contains('"Stats", "Specialization", "Collection"'), "Three tabs defined")
+	_assert(hsrc.contains("_apply_pause_tab_visibility"), "Tab visibility applied")
+	# Tab membership covers all pause content.
+	_assert(hsrc.contains('"SpecLabel", "SpecList"'), "Spec tab has spec list")
+	_assert(hsrc.contains('"FamilyLabel", "FamilyPanel"'), "Collection tab has family panel")
+	_assert(hsrc.contains('"DmgRow", "HpRow", "SpdRow", "AuraRow"'), "Stats tab has stat rows")
+	# Action buttons not in any tab (always visible).
+	_assert(not hsrc.contains('"ResumeButton"') or hsrc.contains('_pause_tab_members'), "Tab members defined")
+	# show_pause defaults to Stats tab.
+	_assert(hsrc.contains("_on_pause_tab_pressed(0)"), "Defaults to Stats tab")
+	# affinity_shots uses tab selection.
+	var tsrc := FileAccess.get_file_as_string("res://tools/affinity_shots/affinity_shots.gd")
+	_assert(tsrc.contains("select_pause_tab"), "Tool uses tab selection")
