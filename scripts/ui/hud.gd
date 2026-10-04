@@ -54,6 +54,7 @@ func _ready() -> void:
 func _build_pause_tabs() -> void:
 	var panel := %PausePanel as PanelContainer
 	var scroll := panel.get_node("PauseScroll") as ScrollContainer
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	var vbox := scroll.get_node("PauseVBox") as VBoxContainer
 	# Define tab membership by node name.
 	_pause_tab_members = [
@@ -517,7 +518,7 @@ func _refresh_collection_log() -> void:
 	var coll_all: Dictionary = _player.get("family_collection")
 	var grid := HBoxContainer.new()
 	grid.alignment = BoxContainer.ALIGNMENT_CENTER
-	grid.add_theme_constant_override("separation", 24)
+	grid.add_theme_constant_override("separation", 16)
 	%CollectionLog.add_child(grid)
 	var cols: Array = []
 	for i in 2:
