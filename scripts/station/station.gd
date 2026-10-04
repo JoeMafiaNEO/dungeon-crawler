@@ -43,6 +43,20 @@ const DRESSING_LAMPS := {
 	"warlord": Color(1.0, 0.55, 0.25),
 }
 
+## Embedded mode (issue #2 Phase 2): the station lives inside the dungeon's
+## annex hall as a child node instead of its own scene. The dungeon owns
+## players + HUD; the station only contributes content (train, board, vendor,
+## heal pad) and the vote flow. Set before add_child (i.e. before _ready).
+var embedded := false
+## Owning dungeon (embedded mode): player roster + departure hop target.
+var dungeon: Node = null
+## The annex shell built by StationAnnex (embedded mode): provides floor,
+## walls, roof, and the 4 lamp posts that apply_dressing tints.
+var annex: StationAnnex = null
+## Emitted (server) when the vote resolves in embedded mode. The dungeon
+## drives the Phase 3 ride + hop from here.
+signal departure_resolved(theme_id: String)
+
 static var next_level_number: int = 1
 
 var peer_classes := {} # int peer_id -> String class_id
@@ -56,6 +70,9 @@ var departure_seed := 0
 
 var _local_hud: CanvasLayer
 var _time_left := DEPART_TIME
+## Embedded mode: the 45s vote timer starts on the first board interaction,
+## not on ready (the hall is open from level start).
+var _timer_running := true
 var _departing := false
 var _last_sync_sec := -1
 var _ring: MeshInstance3D
@@ -79,9 +96,17 @@ func _ready() -> void:
 	if multiplayer.is_server():
 		departure_seed = randi()
 		_roll_vendor_stock()
-	_build_station()
+	if embedded:
+		# Annex hall content only: no own floor/environment, lamps, player
+		# spawning, or HUD — the dungeon and the annex shell provide those.
+		_timer_running = false
+		_build_station_embedded()
+	else:
+		_build_station()
 	# Dress for the rotation default; re-dressed when a vote resolves.
 	apply_dressing(Dungeon.THEME_ORDER[(next_level_number - 1) % Dungeon.THEME_ORDER.size()])
+	if embedded:
+		return
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	AudioManager.play_music("menu")
 	if multiplayer.is_server():
@@ -100,17 +125,18 @@ func _process(delta: float) -> void:
 		_ring.scale = Vector3(s, 1, s)
 	if not multiplayer.is_server() or _departing:
 		return
-	_time_left -= delta
+	if _timer_running:
+		_time_left -= delta
+		var sec := int(ceil(maxf(_time_left, 0.0)))
+		if sec != _last_sync_sec:
+			_last_sync_sec = sec
+			rpc("station_timer_sync", maxf(_time_left, 0.0))
+		if _time_left <= 0.0:
+			depart()
 	_heal_tick -= delta
 	if _heal_tick <= 0.0:
 		_heal_tick = HEAL_TICK
 		_process_heal_pad()
-	var sec := int(ceil(maxf(_time_left, 0.0)))
-	if sec != _last_sync_sec:
-		_last_sync_sec = sec
-		rpc("station_timer_sync", maxf(_time_left, 0.0))
-	if _time_left <= 0.0:
-		depart()
 
 
 ## Heal pad: every tick, living players on the pad get 15% max HP.
@@ -233,6 +259,11 @@ func record_vote(peer_id: int, theme_id: String, living_override: Array = []) ->
 	if not peer_id in living:
 		return {"ok": false, "reason": "not_living"}
 	votes[peer_id] = theme_id
+	if embedded and not _timer_running:
+		# First board interaction starts the 45s departure countdown.
+		_timer_running = true
+		_time_left = DEPART_TIME
+		_last_sync_sec = -1
 	return {"ok": true}
 
 
@@ -329,12 +360,20 @@ func station_timer_sync(time_left: float) -> void:
 
 ## Server-authoritative departure: resolve the destination, ride out with
 ## whistle/chug/fade (Phase 5), then save and hop levels.
-func depart() -> void:
+## Embedded mode (issue #2): resolve + re-dress, then hand off to the dungeon
+## via departure_resolved — the Phase 3 ride lives there, not here.
+## living_override lets tests drive the flow without a scene tree of players.
+func depart(living_override: Array = []) -> void:
 	if _departing or not multiplayer.is_server():
 		return
 	_departing = true
+	var living := living_override if not living_override.is_empty() else _living_peer_ids()
+	var theme_id := resolve_destination(votes, living, multiplayer.get_unique_id(), next_level_number)
+	if embedded:
+		apply_dressing(theme_id)
+		departure_resolved.emit(theme_id)
+		return
 	var new_level := next_level_number
-	var theme_id := resolve_destination(votes, _living_peer_ids(), multiplayer.get_unique_id(), new_level)
 	var seed := departure_seed
 	# Boarding spots inside the cars (server assigns, every peer moves its own).
 	var spots := {}
@@ -471,7 +510,13 @@ func _on_peer_disconnected(peer_id: int) -> void:
 
 
 func get_player_node(peer_id: int) -> Node:
-	return $Players.get_node_or_null("Player_%d" % peer_id)
+	# Embedded mode has no $Players of its own — the dungeon owns players.
+	if embedded and dungeon != null and dungeon.has_method("get_player_node"):
+		return dungeon.get_player_node(peer_id)
+	var holders := get_node_or_null("Players")
+	if holders == null:
+		return null
+	return holders.get_node_or_null("Player_%d" % peer_id)
 
 
 func _my_player() -> Player:
@@ -807,13 +852,136 @@ func _build_station() -> void:
 	add_child(players)
 
 
+## Annex-hall content layout (issue #2 Phase 2): train along the north side,
+## departures board facing the corridor entrance (+z), vendor east, heal pad
+## west. All coordinates are local to the station node, which the dungeon
+## places at the hall center. No floor/environment/lamps/Players of its own
+## — the annex shell and the dungeon provide those.
+func _build_station_embedded() -> void:
+	var dark := _mat(Color(0.16, 0.15, 0.17))
+	var steel := _mat(Color(0.35, 0.36, 0.40))
+	var wood := _mat(Color(0.45, 0.32, 0.20))
+	var wood_dark := _mat(Color(0.32, 0.22, 0.14))
+	var train_green := _mat(Color(0.10, 0.28, 0.16))
+	var win_glow := _mat(Color(1.0, 0.75, 0.35), Color(1.0, 0.65, 0.25), 2.5)
+	var lamp_glow := _mat(Color(1.0, 0.85, 0.55), Color(1.0, 0.75, 0.40), 3.0)
+	var heal_glow := _mat(Color(0.25, 0.95, 0.45), Color(0.20, 0.90, 0.40), 2.0)
+	var ring_gold := _mat(Color(1.0, 0.80, 0.30), Color(1.0, 0.70, 0.20), 1.8)
+
+	# Tracks: two steel rails along the north strip + wooden sleepers.
+	_box(self, Vector3(19, 0.14, 0.14), Vector3(-1.5, 0.10, -5.3), steel)
+	_box(self, Vector3(19, 0.14, 0.14), Vector3(-1.5, 0.10, -3.7), steel)
+	var sleepers := Node3D.new()
+	sleepers.name = "Sleepers"
+	add_child(sleepers)
+	for x in range(-11, 9, 2):
+		_box(sleepers, Vector3(0.5, 0.08, 3.4), Vector3(x, 0.05, -4.5), wood_dark)
+
+	# Train: engine + 2 cars, static.
+	var train := Node3D.new()
+	train.name = "Train"
+	add_child(train)
+	_box(train, Vector3(4.0, 2.2, 2.4), Vector3(-1, 1.45, -4.5), train_green)   # engine body
+	_box(train, Vector3(1.6, 1.1, 2.0), Vector3(-2.0, 3.05, -4.5), train_green)  # cabin
+	_cyl(train, 0.28, 0.34, 1.0, Vector3(0.3, 3.0, -4.5), dark)                   # chimney
+	_box(train, Vector3(0.9, 0.7, 0.1), Vector3(-1, 1.9, -5.72), win_glow)        # lit windows
+	_box(train, Vector3(0.9, 0.7, 0.1), Vector3(-1, 1.9, -3.28), win_glow)
+	_box(train, Vector3(0.5, 0.5, 0.1), Vector3(-2.0, 3.1, -5.68), win_glow)
+	for wx in [-2.4, -1.6, -0.4, 0.4]:
+		var wheel := _cyl(train, 0.42, 0.42, 0.18, Vector3(wx, 0.42, -4.5), dark)
+		wheel.rotation_degrees.x = 90.0
+	_box(train, Vector3(3.4, 2.2, 2.4), Vector3(-5.5, 1.45, -4.5), wood)           # car 1
+	_box(train, Vector3(3.4, 2.2, 2.4), Vector3(-9.5, 1.45, -4.5), wood)           # car 2
+	for cx in [-6.4, -5.5, -4.6, -10.4, -9.5, -8.6]:
+		_box(train, Vector3(0.7, 0.6, 0.1), Vector3(cx, 1.8, -5.72), win_glow)
+		_box(train, Vector3(0.7, 0.6, 0.1), Vector3(cx, 1.8, -3.28), win_glow)
+	_box(train, Vector3(0.6, 0.25, 0.25), Vector3(1.1, 1.1, -4.5), lamp_glow)    # headlamp
+
+	# Boarding zone: Area3D in front of the train doors + gold pulse ring.
+	var zone := Area3D.new()
+	zone.name = "BoardingZone"
+	zone.position = Vector3(-1, 1.0, -2.0)
+	var zcs := CollisionShape3D.new()
+	var zshape := BoxShape3D.new()
+	zshape.size = Vector3(5, 2.5, 3)
+	zcs.shape = zshape
+	zone.add_child(zcs)
+	add_child(zone)
+	_ring = MeshInstance3D.new()
+	var torus := TorusMesh.new()
+	torus.inner_radius = 2.2
+	torus.outer_radius = 2.5
+	torus.material = ring_gold
+	_ring.mesh = torus
+	_ring.position = Vector3(-1, 0.06, -2.0)
+	add_child(_ring)
+	var board_label := Label3D.new()
+	board_label.text = "BOARD HERE"
+	board_label.font_size = 96
+	board_label.modulate = Color(1.0, 0.85, 0.40)
+	board_label.outline_size = 12
+	board_label.position = Vector3(-1, 2.8, -2.0)
+	board_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(board_label)
+
+	# Heal pad (Phase 4): glowing green disc + REST sign + heal trigger.
+	_cyl(self, 2.0, 2.0, 0.10, Vector3(-9.5, 0.06, 3.5), heal_glow)
+	var rest_label := Label3D.new()
+	rest_label.text = "REST"
+	rest_label.font_size = 72
+	rest_label.modulate = Color(0.45, 1.0, 0.55)
+	rest_label.outline_size = 10
+	rest_label.position = Vector3(-9.5, 2.4, 3.5)
+	rest_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(rest_label)
+	var pad := Area3D.new()
+	pad.name = "HealPad"
+	pad.collision_layer = 0
+	pad.collision_mask = 1 # players (default layer 1)
+	pad.position = Vector3(-9.5, 1.0, 3.5)
+	var pcs := CollisionShape3D.new()
+	var pcyl := CylinderShape3D.new()
+	pcyl.radius = HEAL_RADIUS
+	pcyl.height = 3.0
+	pcs.shape = pcyl
+	pad.add_child(pcs)
+	add_child(pad)
+	_heal_pad = pad
+
+	# Vendor stall (Phase 4): E-interact opens the vendor panel.
+	var stall := VendorStallScript.new()
+	stall.name = "VendorStall"
+	stall.position = Vector3(10, 0, -0.5)
+	add_child(stall)
+
+	# Departure board (Phase 2): faces the corridor entrance (+z).
+	var board := DepartureBoardScript.new()
+	board.name = "DepartureBoard"
+	board.position = Vector3(7, 0, 4.2)
+	add_child(board)
+
+	# NOW BOARDING sign (Phase 5): big gold label above the train.
+	_boarding_sign = Label3D.new()
+	_boarding_sign.font_size = 84
+	_boarding_sign.modulate = Color(1.0, 0.82, 0.35)
+	_boarding_sign.outline_size = 12
+	_boarding_sign.position = Vector3(-1, 3.9, -3.6)
+	_boarding_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	add_child(_boarding_sign)
+
+	# Per-theme dressing props (Phase 5); only the active set is visible.
+	_build_dressing()
+
+
 ## Dress the station for a destination theme: tint the lamps, show that
 ## theme's prop set, set the NOW BOARDING sign. Unknown ids fall back to
 ## village. Called on load (rotation default) and again when a vote resolves.
 func apply_dressing(theme_id: String) -> void:
 	var tid := theme_id if theme_id in Dungeon.THEME_ORDER else "village"
 	var tint: Color = DRESSING_LAMPS.get(tid, Color.WHITE)
-	for lamp in _lamps:
+	# Embedded mode tints the annex shell's lamps; standalone tints its own.
+	var lamp_list: Array = annex.lamps if (embedded and annex != null) else _lamps
+	for lamp in lamp_list:
 		(lamp as OmniLight3D).light_color = tint
 	if _dressing != null:
 		for child in _dressing.get_children():
@@ -823,11 +991,20 @@ func apply_dressing(theme_id: String) -> void:
 
 
 ## Prop set builder: one Node3D per theme under Dressing. All procedural,
-## a few boxes each — no new textures.
+## a few boxes each — no new textures. Standalone keeps the old platform
+## coordinates; embedded uses hall coordinates (issue #2 Phase 2).
 func _build_dressing() -> void:
 	_dressing = Node3D.new()
 	_dressing.name = "Dressing"
 	add_child(_dressing)
+	if embedded:
+		_dressing_props_embedded()
+	else:
+		_dressing_props_standalone()
+
+
+## Standalone platform prop coordinates (legacy layout).
+func _dressing_props_standalone() -> void:
 	var hay := _mat(Color(0.85, 0.70, 0.40))
 	var leaf := _mat(Color(0.30, 0.55, 0.28))
 	var trunk_m := _mat(Color(0.40, 0.28, 0.16))
@@ -907,3 +1084,81 @@ func _build_dressing() -> void:
 	sw1.rotation_degrees.z = 28.0
 	var sw2 := _box(w, Vector3(0.10, 1.2, 0.10), Vector3(-4.5, 1.75, -6.25), steel_dark)
 	sw2.rotation_degrees.z = -28.0
+
+
+## Hall prop coordinates for embedded mode (issue #2 Phase 2): all props sit
+## on the hall floor (y=0) along the south strip and corners, clear of the
+## train (north strip), board, vendor, and heal pad.
+func _dressing_props_embedded() -> void:
+	var hay := _mat(Color(0.85, 0.70, 0.40))
+	var leaf := _mat(Color(0.30, 0.55, 0.28))
+	var trunk_m := _mat(Color(0.40, 0.28, 0.16))
+	var torch_tip := _mat(Color(1.0, 0.55, 0.15), Color(1.0, 0.45, 0.10), 3.0)
+	var chain_m := _mat(Color(0.18, 0.18, 0.20))
+	var rock := _mat(Color(0.30, 0.28, 0.34))
+	var crystal := _mat(Color(0.55, 0.30, 0.85), Color(0.45, 0.20, 0.80), 2.5)
+	var crate_r := _mat(Color(0.75, 0.25, 0.20))
+	var crate_b := _mat(Color(0.20, 0.40, 0.75))
+	var crate_y := _mat(Color(0.85, 0.75, 0.25))
+	var cart_m := _mat(Color(0.55, 0.58, 0.62))
+	var banner_m := _mat(Color(0.70, 0.12, 0.12))
+	var steel_dark := _mat(Color(0.25, 0.25, 0.28))
+
+	# village: hay bales + a low-poly tree (SE corner / SW corner).
+	var v := Node3D.new()
+	v.name = "village"
+	_dressing.add_child(v)
+	_box(v, Vector3(0.9, 0.9, 0.9), Vector3(10.8, 0.45, 5.8), hay)
+	_box(v, Vector3(0.9, 0.9, 0.9), Vector3(9.7, 0.45, 5.9), hay)
+	_box(v, Vector3(0.9, 0.9, 0.9), Vector3(10.3, 1.32, 5.8), hay)
+	_cyl(v, 0.18, 0.24, 1.6, Vector3(-11.0, 0.8, 5.8), trunk_m)
+	_box(v, Vector3(1.6, 1.4, 1.6), Vector3(-11.0, 2.2, 5.8), leaf)
+
+	# dungeon: torch posts flanking the south strip.
+	var d := Node3D.new()
+	d.name = "dungeon"
+	_dressing.add_child(d)
+	for tx in [11.0, -11.0]:
+		_box(d, Vector3(0.14, 1.8, 0.14), Vector3(tx, 0.9, 5.8), trunk_m)
+		_box(d, Vector3(0.30, 0.22, 0.30), Vector3(tx, 1.9, 5.8), torch_tip)
+
+	# depths: crystal clusters on rock bases (both south corners).
+	var de := Node3D.new()
+	de.name = "depths"
+	_dressing.add_child(de)
+	for cx in [11.0, -11.0]:
+		_box(de, Vector3(1.4, 0.5, 1.4), Vector3(cx, 0.25, 5.8), rock)
+		var c1 := _box(de, Vector3(0.35, 1.1, 0.35), Vector3(cx - 0.2, 1.0, 5.8), crystal)
+		c1.rotation.z = 0.18
+		var c2 := _box(de, Vector3(0.30, 0.8, 0.30), Vector3(cx + 0.3, 0.85, 5.6), crystal)
+		c2.rotation.z = -0.22
+
+	# supermarket: product crates + a shopping cart.
+	var s := Node3D.new()
+	s.name = "supermarket"
+	_dressing.add_child(s)
+	_box(s, Vector3(1.0, 1.0, 1.0), Vector3(11.0, 0.5, 5.8), crate_r)
+	_box(s, Vector3(1.0, 1.0, 1.0), Vector3(9.8, 0.5, 5.9), crate_b)
+	_box(s, Vector3(1.0, 1.0, 1.0), Vector3(10.5, 1.5, 5.8), crate_y)
+	_box(s, Vector3(1.2, 0.7, 0.8), Vector3(-10.5, 0.55, 5.5), cart_m)
+	for wx in [-10.85, -10.15]:
+		for wz in [5.25, 5.75]:
+			var wheel := _cyl(s, 0.12, 0.12, 0.08, Vector3(wx, 0.12, wz), chain_m)
+			wheel.rotation_degrees.x = 90.0
+	var handle := _box(s, Vector3(0.08, 0.08, 0.9), Vector3(-9.85, 1.0, 5.5), chain_m)
+	handle.rotation_degrees.z = -25.0
+
+	# warlord: war banners + a weapon rack.
+	var w := Node3D.new()
+	w.name = "warlord"
+	_dressing.add_child(w)
+	for bx in [11.3, -11.3]:
+		_box(w, Vector3(0.14, 2.8, 0.14), Vector3(bx, 1.4, 5.5), trunk_m)
+		_box(w, Vector3(0.80, 1.5, 0.06), Vector3(bx, 1.9, 5.5), banner_m)
+	_box(w, Vector3(0.14, 1.4, 0.14), Vector3(4.5, 0.7, -6.3), trunk_m)
+	_box(w, Vector3(0.14, 1.4, 0.14), Vector3(5.5, 0.7, -6.3), trunk_m)
+	_box(w, Vector3(1.3, 0.12, 0.12), Vector3(5.0, 1.3, -6.3), trunk_m)
+	var ews1 := _box(w, Vector3(0.10, 1.2, 0.10), Vector3(5.0, 0.75, -6.25), steel_dark)
+	ews1.rotation_degrees.z = 28.0
+	var ews2 := _box(w, Vector3(0.10, 1.2, 0.10), Vector3(5.0, 0.75, -6.25), steel_dark)
+	ews2.rotation_degrees.z = -28.0

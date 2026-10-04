@@ -36,6 +36,7 @@ func _run() -> void:
 	_test_station_mp_vote_flow()
 	_test_music_queued_pickup()
 	_test_station_annex()
+	_test_station_embedded()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -545,6 +546,97 @@ func _test_station_annex() -> void:
 	_assert(dsrc.contains("StationAnnex.plan(next_seed, _layout)"), "dungeon plans annex from seed")
 	_assert(dsrc.contains("StationAnnex.north_wall_segments"), "dungeon splits north wall")
 	_assert(dsrc.contains("StationAnnex.build(self, _annex_plan, _layout)"), "dungeon builds annex")
+
+	holder.queue_free()
+
+
+func _test_station_embedded() -> void:
+	print("[Playtest] Station embedded mode (issue #2 phase 2)...")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var StationScript: GDScript = load("res://scripts/station/station.gd")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+
+	# Build the annex shell, then instance the station the way the dungeon does.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var layout = ProcGenScript.generate(theme, 12345)
+	var plan: Dictionary = AnnexScript.plan(12345, layout)
+	var annex = AnnexScript.build(holder, plan, layout)
+	var st = StationScript.new()
+	st.name = "Station"
+	st.embedded = true
+	st.dungeon = holder
+	st.annex = annex
+	st.position = annex.hall_center()
+	holder.add_child(st) # _ready runs the embedded build
+
+	# 1. Content nodes exist as descendants.
+	for nname in ["Train", "DepartureBoard", "VendorStall", "HealPad", "BoardingZone", "Sleepers"]:
+		_assert(st.get_node_or_null(nname) != null, "embedded: %s built" % nname)
+	var sign = st.get("_boarding_sign")
+	_assert(sign != null and "NOW BOARDING" in str(sign.text),
+		"embedded: NOW BOARDING sign set")
+	var dressing = st.get_node_or_null("Dressing")
+	_assert(dressing != null and dressing.get_child_count() == 5,
+		"embedded: 5 dressing prop sets")
+	# Every content node sits inside the 24x14m hall footprint.
+	for nname in ["Train", "DepartureBoard", "VendorStall", "HealPad"]:
+		var n := st.get_node_or_null(nname) as Node3D
+		var lp: Vector3 = n.position
+		_assert(absf(lp.x) <= 12.0 and absf(lp.z) <= 7.0,
+			"embedded: %s inside hall footprint" % nname)
+
+	# 2. No own players / HUD in embedded mode (the dungeon owns those).
+	_assert(st.get_node_or_null("Players") == null, "embedded: no Players node")
+	_assert(st.find_children("*", "CanvasLayer", true, false).is_empty(),
+		"embedded: no HUD created")
+	_assert(st.get("_local_hud") == null, "embedded: no local hud var set")
+
+	# 3. Vote timer idle until the first board interaction, then runs.
+	_assert(not bool(st.get("_timer_running")), "embedded: timer idle before interaction")
+	var living := [10, 11, 12]
+	_assert(bool(st.record_vote(10, "dungeon", living)["ok"]),
+		"embedded: first vote recorded")
+	_assert(bool(st.get("_timer_running")), "embedded: timer starts on first vote")
+	_assert(float(st.get("_time_left")) == StationScript.DEPART_TIME,
+		"embedded: timer reset to full duration")
+
+	# 4. Majority resolve emits departure_resolved (server path).
+	var captured := []
+	st.departure_resolved.connect(func(tid): captured.append(tid))
+	st.votes = {10: "dungeon", 11: "dungeon"}
+	st.depart([10, 11, 12])
+	_assert(captured == ["dungeon"], "embedded: majority emits departure_resolved")
+
+	# 5. Host tie-break emits the host's pick (offline host id = 1).
+	var st2 = StationScript.new()
+	st2.embedded = true
+	st2.dungeon = holder
+	st2.annex = annex
+	holder.add_child(st2)
+	var captured2 := []
+	st2.departure_resolved.connect(func(tid): captured2.append(tid))
+	st2.votes = {1: "warlord", 11: "village"}
+	st2.depart([1, 11])
+	_assert(captured2 == ["warlord"], "embedded: tie -> host pick emitted")
+
+	# 6. Dressing tints the annex shell's lamps (not phantom own lamps).
+	st.apply_dressing("depths")
+	var tint: Color = StationScript.DRESSING_LAMPS["depths"]
+	_assert((annex.lamps[0] as OmniLight3D).light_color == tint,
+		"embedded: dressing tints annex lamps")
+	_assert((st.get("_lamps") as Array).is_empty(), "embedded: no own lamps built")
+
+	# 7. Dungeon wiring: embedded instance + departure handoff.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("station.embedded = true"),
+		"dungeon instances station in embedded mode")
+	_assert(dsrc.contains("departure_resolved.connect(_on_station_departure_resolved)"),
+		"dungeon connects departure_resolved")
+	_assert(dsrc.contains("func _on_station_departure_resolved"),
+		"dungeon has departure stub handler")
 
 	holder.queue_free()
 

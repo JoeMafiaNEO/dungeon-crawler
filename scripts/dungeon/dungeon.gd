@@ -1937,7 +1937,35 @@ func _build_arena_from_layout() -> void:
 	_build_props()
 	_build_torches()
 	StationAnnex.build(self, _annex_plan, _layout)
+	_build_station_annex_content()
 	spawn_points = _layout.player_spawns
+
+
+## Station annex content (issue #2 Phase 2): the station lives inside the
+## annex hall in embedded mode — no own players, HUD, or floor. The 45s vote
+## timer starts on the first board interaction; on resolve the station emits
+## departure_resolved and the dungeon drives the Phase 3 ride + hop.
+func _build_station_annex_content() -> void:
+	var annex := get_node_or_null("StationAnnex") as StationAnnex
+	if annex == null:
+		return
+	# Runtime load: station.gd references the Dungeon class, so a parse-time
+	# Station reference here would be a cyclic dependency.
+	var StationScript: GDScript = load("res://scripts/station/station.gd")
+	var station = StationScript.new()
+	station.name = "Station"
+	station.embedded = true
+	station.dungeon = self
+	station.annex = annex
+	station.position = annex.hall_center()
+	station.departure_resolved.connect(_on_station_departure_resolved)
+	add_child(station)
+
+
+## Station departure resolved in the annex (issue #2 Phase 2 stub).
+## Phase 3 implements the whistle/chug/fade ride and the hop to next_level.
+func _on_station_departure_resolved(theme_id: String) -> void:
+	print("[Dungeon] Station departure resolved: ", theme_id, " (Phase 3: ride + hop)")
 
 
 func _build_environment() -> void:
