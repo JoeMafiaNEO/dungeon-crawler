@@ -1471,6 +1471,9 @@ func switch_class(new_class: String) -> void:
 		_build_viewmodel()
 	_update_staff_glow()
 	_push_aura()
+	refresh_abilities()  # rebuild unlocked_abilities for the new class + HUD bar
+	if hud != null:
+		hud.set_level(level, self)  # refresh "Lv 1 Warrior" label
 
 
 # --- Affinity Families ---

@@ -96,14 +96,25 @@ func _find_player() -> void:
 
 
 func _setup_player() -> void:
+	var class_id := "mage"
+	var skill_id := "fireball"
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--class="):
+			class_id = arg.get_slice("=", 1)
+		elif arg.begins_with("--skill="):
+			skill_id = arg.get_slice("=", 1)
+	# Switch class if needed (tool boots as mage by default).
+	if String(_player.get("class_id")) != class_id:
+		_player.call("switch_class", class_id)
+		# switch_class resets level to 1; restore.
 	_player.set("level", 24)
 	_player.call("_recalc_stats")
 	_player.call("refresh_abilities")
-	_player.call("specialize", "fireball")
-	(_player.get("affinity") as Dictionary)["fireball"] = 60.0
-	_player.call("_check_family_milestones", "fireball")
+	_player.call("specialize", skill_id)
+	(_player.get("affinity") as Dictionary)[skill_id] = 60.0
+	_player.call("_check_family_milestones", skill_id)
 	_hud = _player.get("hud")
-	print("[AffinityShots] player ready: lv24 mage, specialized fireball @60")
+	print("[AffinityShots] player ready: lv24 %s, specialized %s @60" % [class_id, skill_id])
 
 
 func _open_pause() -> void:

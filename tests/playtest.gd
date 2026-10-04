@@ -25,6 +25,7 @@ func _run() -> void:
 	_test_affinity_save_roundtrip()
 	_test_specialization_level_gate()
 	_test_pause_tabs()
+	_test_switch_class_refresh()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -396,3 +397,14 @@ func _test_pause_tabs() -> void:
 	# affinity_shots uses tab selection.
 	var tsrc := FileAccess.get_file_as_string("res://tools/affinity_shots/affinity_shots.gd")
 	_assert(tsrc.contains("select_pause_tab"), "Tool uses tab selection")
+
+
+func _test_switch_class_refresh() -> void:
+	print("[Playtest] Switch class refresh...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	# switch_class rebuilds abilities and updates the level label.
+	_assert(psrc.contains("_push_aura()\n\trefresh_abilities()"), "switch_class calls refresh_abilities")
+	_assert(psrc.contains('hud.set_level(level, self)'), "switch_class updates level label")
+	# Player refresh_abilities rebuilds unlocked_abilities and refreshes HUD bar.
+	_assert(psrc.contains("unlocked_abilities = fresh"), "refresh_abilities rebuilds unlocked_abilities")
+	_assert(psrc.contains("hud.refresh_abilities(self)"), "refresh_abilities updates HUD bar")
