@@ -329,7 +329,7 @@ func _test_affinity_ui() -> void:
 	# Family panel.
 	_assert(hsrc.contains("func _refresh_family_panel"), "Family panel function exists")
 	_assert(hsrc.contains("%FamilyPanel"), "FamilyPanel node referenced")
-	_assert(hsrc.contains("reach 100 affinity"), "Signature silhouette until earned")
+	_assert(hsrc.contains("100 affinity"), "Signature silhouette until earned")
 	# Collection log.
 	_assert(hsrc.contains("func _refresh_collection_log"), "Collection log function exists")
 	_assert(hsrc.contains("%CollectionLog"), "CollectionLog node referenced")

@@ -107,17 +107,25 @@ func _on_pause_tab_pressed(idx: int) -> void:
 		_pause_tab_btns[i].button_pressed = i == idx
 		_style_tab_button(_pause_tab_btns[i], i == idx)
 	_apply_pause_tab_visibility()
+	# Collection tab content is designed to fit; hide the scrollbar there.
+	# Stats/Spec may overflow on small screens, keep auto-scroll.
+	var scroll := %PausePanel.get_node("PauseScroll") as ScrollContainer
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED if idx == 2 else ScrollContainer.SCROLL_MODE_AUTO
 
 
 ## Show only the current tab's nodes; action buttons always visible.
 func _apply_pause_tab_visibility() -> void:
-	var vbox := %PausePanel.get_node("PauseScroll/PauseVBox") as VBoxContainer
+	var scroll := %PausePanel.get_node("PauseScroll") as ScrollContainer
+	var vbox := scroll.get_node("PauseVBox") as VBoxContainer
 	for i in _pause_tab_members.size():
 		var visible := i == _pause_tab
 		for nn in _pause_tab_members[i]:
 			var c := vbox.get_node_or_null(nn) as Control
 			if c != null:
 				c.visible = visible
+	# Force the container to recalculate; hidden nodes must not reserve space.
+	vbox.queue_sort()
+	scroll.scroll_vertical = 0
 
 
 ## Programmatic tab selection (used by tools and external callers).
@@ -456,7 +464,7 @@ func _refresh_family_panel() -> void:
 	# Family name + affinity bar.
 	var title := Label.new()
 	title.text = "%s Family — %.0f/100" % [String(fam["name"]), aff]
-	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_font_size_override("font_size", 13)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	%FamilyPanel.add_child(title)
@@ -464,39 +472,42 @@ func _refresh_family_panel() -> void:
 	bar.min_value = 0.0
 	bar.max_value = 100.0
 	bar.value = aff
-	bar.custom_minimum_size = Vector2(220, 8)
+	bar.custom_minimum_size = Vector2(220, 6)
 	bar.show_percentage = false
 	%FamilyPanel.add_child(bar)
-	# Milestone pips with trait names.
+	# Milestone pips with trait names (compact: no descs, they show in tooltips).
 	var earned: Array = coll.get("traits", [])
 	for m in [25, 50, 75]:
 		var tdata: Dictionary = fam["traits"][m]
 		var tid := String(tdata["id"])
 		var row := Label.new()
 		if tid in earned:
-			row.text = "◆ %d — %s: %s" % [m, String(tdata["name"]), String(tdata["desc"])]
+			row.text = "◆%d %s" % [m, String(tdata["name"])]
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		else:
-			row.text = "◇ %d — %s (locked)" % [m, String(tdata["name"])]
+			row.text = "◇%d %s" % [m, String(tdata["name"])]
 			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
-		row.add_theme_font_size_override("font_size", 12)
+		row.tooltip_text = String(tdata["desc"])
+		row.add_theme_font_size_override("font_size", 11)
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		%FamilyPanel.add_child(row)
 	# Signature: name or silhouette.
 	var sig: Dictionary = fam["signature"]
 	var sig_row := Label.new()
 	if bool(coll.get("signature", false)):
-		sig_row.text = "◆ 100 — %s: %s" % [String(sig["name"]), String(sig["desc"])]
+		sig_row.text = "◆100 %s" % String(sig["name"])
+		sig_row.tooltip_text = String(sig["desc"])
 		sig_row.add_theme_color_override("font_color", Color(0.9, 0.6, 1.0))
 	else:
-		sig_row.text = "◇ 100 — ??? (reach 100 affinity)"
+		sig_row.text = "◇100 ???"
+		sig_row.tooltip_text = "Reach 100 affinity"
 		sig_row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
-	sig_row.add_theme_font_size_override("font_size", 12)
+	sig_row.add_theme_font_size_override("font_size", 11)
 	sig_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	%FamilyPanel.add_child(sig_row)
 
 
-## Refresh the collection log: one compact row per family.
+## Refresh the collection log: two-column compact grid of all families.
 func _refresh_collection_log() -> void:
 	for child in %CollectionLog.get_children():
 		child.queue_free()
@@ -504,6 +515,17 @@ func _refresh_collection_log() -> void:
 		return
 	var fams := Player.families()
 	var coll_all: Dictionary = _player.get("family_collection")
+	var grid := HBoxContainer.new()
+	grid.alignment = BoxContainer.ALIGNMENT_CENTER
+	grid.add_theme_constant_override("separation", 24)
+	%CollectionLog.add_child(grid)
+	var cols: Array = []
+	for i in 2:
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 1)
+		grid.add_child(vb)
+		cols.append(vb)
+	var idx := 0
 	for fid in fams:
 		var fam: Dictionary = fams[fid]
 		var coll: Dictionary = coll_all.get(fid, {"traits": [], "signature": false})
@@ -515,19 +537,25 @@ func _refresh_collection_log() -> void:
 			txt += "—"
 			row.add_theme_color_override("font_color", Color(0.45, 0.45, 0.5))
 		else:
-			var parts: Array = []
-			for tid in earned:
-				parts.append(tid)
-			if sig_done:
-				parts.append(String(fam["signature"]["id"]))
-			else:
-				parts.append("???")
-			txt += ", ".join(parts)
+			txt += "%d/3%s" % [earned.size(), " +★" if sig_done else ""]
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if sig_done else Color(0.8, 0.75, 0.55))
 		row.text = txt
+		row.tooltip_text = _collection_tooltip(fam, earned, sig_done)
 		row.add_theme_font_size_override("font_size", 11)
-		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		%CollectionLog.add_child(row)
+		(cols[idx % 2] as VBoxContainer).add_child(row)
+		idx += 1
+
+
+## Tooltip detail for a collection log row.
+func _collection_tooltip(fam: Dictionary, earned: Array, sig_done: bool) -> String:
+	var parts: Array = []
+	for tid in earned:
+		parts.append(tid)
+	if sig_done:
+		parts.append(String(fam["signature"]["id"]))
+	else:
+		parts.append("???")
+	return "%s: %s" % [String(fam["name"]), ", ".join(parts)]
 
 
 func _on_next_wave_pressed() -> void:
