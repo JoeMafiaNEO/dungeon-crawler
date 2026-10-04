@@ -38,6 +38,7 @@ func _run() -> void:
 	_test_station_annex()
 	_test_station_embedded()
 	_test_annex_departure()
+	_test_annex_forfeit()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -362,62 +363,83 @@ func _test_station_phase5() -> void:
 
 
 func _test_station_mp_vote_flow() -> void:
-	print("[Playtest] Station MP vote flow...")
+	print("[Playtest] Station MP vote flow (unanimous boarding)...")
 	var StationScript := load("res://scripts/station/station.gd")
 	# (a) 3 fake peers drive the same record path the cast_vote RPC uses.
 	var living := [10, 11, 12]
 	var st = StationScript.new()
+	st.embedded = true # depart() emits departure_resolved instead of riding
+	root.add_child(st)
 	_assert(bool(st.record_vote(10, "dungeon", living)["ok"]), "peer 10 vote recorded")
 	_assert(bool(st.record_vote(11, "dungeon", living)["ok"]), "peer 11 vote recorded")
 	_assert(st.votes == {10: "dungeon", 11: "dungeon"}, "votes dict holds both")
-	_assert(StationScript.resolve_destination(st.votes, living, 10, 2) == "dungeon",
-		"2/3 majority wins")
-	# (e) Vote change counts once (overwrite, not a second vote).
+	# Unanimity: 2/3 agree, the third dissents -> NO departure.
+	st.record_vote(12, "village", living)
+	_assert(StationScript.resolve_destination(st.votes, living) == "",
+		"split vote: no departure")
+	_assert(st._unanimous_theme(living) == "", "split vote: _unanimous_theme empty")
+	# All three agree -> departure resolves.
+	st.record_vote(12, "dungeon", living)
+	_assert(StationScript.resolve_destination(st.votes, living) == "dungeon",
+		"unanimous -> dungeon")
+	_assert(st._unanimous_theme(living) == "dungeon", "unanimous theme reported")
+	# Vote change breaking unanimity -> no departure again.
 	_assert(bool(st.record_vote(10, "village", living)["ok"]), "vote change accepted")
-	_assert(st.votes.size() == 2 and st.votes[10] == "village",
+	_assert(st.votes.size() == 3 and st.votes[10] == "village",
 		"vote change overwrites, counts once")
-	# (b) 1-1 tie with abstaining host -> first in THEME_ORDER.
-	var st2 = StationScript.new()
-	st2.record_vote(11, "warlord", living)
-	st2.record_vote(12, "village", living)
-	_assert(StationScript.resolve_destination(st2.votes, living, 10, 2) == "village",
-		"1-1 tie, host abstained -> THEME_ORDER order")
-	# (b) 1-1 tie -> host's pick wins (host = peer 10).
-	var st3 = StationScript.new()
-	st3.record_vote(10, "warlord", living)
-	st3.record_vote(11, "village", living)
-	_assert(StationScript.resolve_destination(st3.votes, living, 10, 2) == "warlord",
-		"1-1 tie -> host pick wins")
-	# (c) Timer-expiry path: partial votes resolve, non-voters excluded.
+	_assert(StationScript.resolve_destination(st.votes, living) == "",
+		"broken unanimity: no departure")
+	# Partial votes (a living player hasn't voted) -> no departure.
 	var st4 = StationScript.new()
 	st4.record_vote(12, "depths", living)
-	_assert(not st4._all_voted(living), "partial votes: not all voted")
-	_assert(StationScript.resolve_destination(st4.votes, living, 10, 3) == "depths",
-		"timer expiry: lone vote wins")
-	# (d) Zero votes -> rotation fallback.
+	_assert(StationScript.resolve_destination(st4.votes, living) == "",
+		"partial votes: no departure")
+	# Zero votes -> no departure (no rotation fallback anymore).
 	var st5 = StationScript.new()
-	_assert(StationScript.resolve_destination(st5.votes, living, 10, 4) == "supermarket",
-		"zero votes -> rotation fallback")
+	_assert(StationScript.resolve_destination(st5.votes, living) == "",
+		"zero votes: no departure")
+	_assert(StationScript.resolve_destination({}, []) == "",
+		"empty living roster: no departure")
 	# Rejections never touch the vote table.
 	_assert(not bool(st5.record_vote(10, "moon", living)["ok"]), "bad theme rejected")
 	_assert(not bool(st5.record_vote(99, "village", living)["ok"]), "non-living peer rejected")
 	_assert(st5.votes.is_empty(), "rejected votes not recorded")
+	# depart() refuses to emit without unanimity...
+	var captured := []
+	st.departure_resolved.connect(func(tid): captured.append(tid))
+	st.votes = {10: "dungeon", 11: "village"}
+	st.depart([10, 11])
+	_assert(captured.is_empty(), "split vote: depart() emits nothing")
+	# ...and emits exactly once on unanimity.
+	st.votes = {10: "dungeon", 11: "dungeon"}
+	st.depart([10, 11])
+	_assert(captured == ["dungeon"], "unanimous: depart() emits departure_resolved")
 	# sync_votes payload applies on the client path (no board in test tree).
 	root.add_child(st5)
 	st5.sync_votes({10: "village", 11: "dungeon"})
 	_assert(st5.votes == {10: "village", 11: "dungeon"}, "sync_votes payload applied")
 	st5.queue_free()
-	# Solo: single living peer, one vote -> all voted -> pick resolves.
+	# Solo: single living peer, one vote -> departs immediately.
 	var st6 = StationScript.new()
-	_assert(not st6._all_voted([10]), "solo: not voted yet")
+	_assert(StationScript.resolve_destination(st6.votes, [10]) == "",
+		"solo: no vote yet, no departure")
 	st6.record_vote(10, "depths", [10])
-	_assert(st6._all_voted([10]), "solo: single vote = all voted")
-	_assert(StationScript.resolve_destination(st6.votes, [10], 10, 3) == "depths",
+	_assert(StationScript.resolve_destination(st6.votes, [10]) == "depths",
 		"solo pick resolves to the vote")
-	# Wiring: the RPC stays thin and delegates to record_vote.
+	# Timer-expiry without unanimity resets the clock and keeps votes.
 	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("_time_left = DEPART_TIME"), "expiry resets the 45s timer")
+	_assert(ssrc.contains("vote_reset_notice"), "expiry notifies peers of the reset")
+	var rpos := ssrc.find("static func resolve_destination")
+	var rend := ssrc.find("\nstatic func ", rpos + 10)
+	var rbody := ssrc.substr(rpos, rend - rpos)
+	_assert(not rbody.contains("host"), "resolve_destination: no host override")
+	_assert(not rbody.contains("counts"), "resolve_destination: no majority counting")
+	_assert(not ssrc.contains("(next_level - 1) %"), "no rotation fallback left")
+	# Wiring: the RPC stays thin and delegates to record_vote.
 	_assert(ssrc.contains("func record_vote(peer_id"), "record_vote exists")
 	_assert(ssrc.contains("record_vote(sender, theme_id)"), "cast_vote delegates to record_vote")
+	st.queue_free()
 
 
 func _test_music_queued_pickup() -> void:
@@ -604,14 +626,17 @@ func _test_station_embedded() -> void:
 	_assert(float(st.get("_time_left")) == StationScript.DEPART_TIME,
 		"embedded: timer reset to full duration")
 
-	# 4. Majority resolve emits departure_resolved (server path).
+	# 4. Unanimous resolve emits departure_resolved (server path); split does not.
 	var captured := []
 	st.departure_resolved.connect(func(tid): captured.append(tid))
 	st.votes = {10: "dungeon", 11: "dungeon"}
 	st.depart([10, 11, 12])
-	_assert(captured == ["dungeon"], "embedded: majority emits departure_resolved")
+	_assert(captured.is_empty(), "embedded: partial votes emit nothing")
+	st.votes = {10: "dungeon", 11: "dungeon", 12: "dungeon"}
+	st.depart([10, 11, 12])
+	_assert(captured == ["dungeon"], "embedded: unanimous emits departure_resolved")
 
-	# 5. Host tie-break emits the host's pick (offline host id = 1).
+	# 5. Split vote never emits, even from the host's own pick.
 	var st2 = StationScript.new()
 	st2.embedded = true
 	st2.dungeon = holder
@@ -621,7 +646,7 @@ func _test_station_embedded() -> void:
 	st2.departure_resolved.connect(func(tid): captured2.append(tid))
 	st2.votes = {1: "warlord", 11: "village"}
 	st2.depart([1, 11])
-	_assert(captured2 == ["warlord"], "embedded: tie -> host pick emitted")
+	_assert(captured2.is_empty(), "embedded: split vote emits nothing (no host override)")
 
 	# 6. Dressing tints the annex shell's lamps (not phantom own lamps).
 	st.apply_dressing("depths")
@@ -709,6 +734,87 @@ func _test_annex_departure() -> void:
 	# 7. Boarding spots: helper exists, spots converted to global coords.
 	_assert(dsrc.contains("func _boarding_spots"), "departure: boarding spots helper")
 	_assert(dsrc.contains("to_global"), "departure: spots are global")
+
+
+func _test_annex_forfeit() -> void:
+	print("[Playtest] Annex forfeit system (issue #2 phase 4)...")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+
+	# 1. Snapshot captures progression; forfeit restores it exactly.
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p) # _ready: class data, starter kit, full HP
+	p.level = 5
+	p.xp = 120
+	p.xp_next = 200
+	p.stat_points = 3
+	p.bonus_damage = 4.0
+	p.supermarket_cash = 200
+	p.affinity = {"fireball": 37.5}
+	p.family_collection = {"fire": {"25": true}}
+	var potion = ItemDBNode.get_item("health_potion")
+	p.inventory.append({"item": potion, "count": 2})
+	p._recalc_stats()
+	var snap: Dictionary = p.get_state()
+	var snap_inv_size: int = p.inventory.size()
+	var snap_potions := 0
+	for e in p.inventory:
+		if str((e["item"] as Object).get("id")) == "health_potion":
+			snap_potions += int(e["count"])
+	# ...the level happens: gains, spends, hurts, dies.
+	p.level = 6
+	p.xp = 10
+	p.stat_points = 0
+	p.bonus_damage = 6.0
+	p.supermarket_cash = 350
+	p.affinity = {"fireball": 61.0}
+	p.inventory.append({"item": potion, "count": 1})
+	p._recalc_stats()
+	p.hp = 40.0
+	p.alive = false
+	p.apply_forfeit(snap)
+	_assert(p.level == 5, "forfeit: level restored")
+	_assert(p.xp == 120 and p.xp_next == 200, "forfeit: xp restored")
+	_assert(p.stat_points == 3, "forfeit: stat points restored")
+	_assert(p.bonus_damage == 4.0, "forfeit: bonus attributes restored")
+	_assert(p.supermarket_cash == 200, "forfeit: cash restored (net level gains undone)")
+	_assert(float(p.affinity.get("fireball", 0.0)) == 37.5, "forfeit: affinity restored")
+	_assert(bool((p.family_collection.get("fire", {}) as Dictionary).get("25", false)),
+		"forfeit: family collection restored")
+	_assert(p.inventory.size() == snap_inv_size, "forfeit: inventory entries restored")
+	var potions := 0
+	for e in p.inventory:
+		if str((e["item"] as Object).get("id")) == "health_potion":
+			potions += int(e["count"])
+	_assert(potions == snap_potions, "forfeit: in-level finds gone, entry items kept")
+	_assert(p.hp == 40.0, "forfeit: HP untouched (no heal)")
+	_assert(not p.alive, "forfeit: dead stays dead")
+	p.queue_free()
+
+	# 2. Dungeon wiring: snapshots, level-clear flag, forfeit on departure.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func _snapshot_entry"), "dungeon snapshots entry state")
+	_assert(dsrc.contains("_snapshot_entry(peer_id)"), "spawn takes the entry snapshot")
+	_assert(dsrc.contains("_snapshot_entry(sender)"), "mid-level join re-snapshots")
+	_assert(dsrc.contains("level_cleared = true"), "level clear sets the flag")
+	_assert(dsrc.contains("gains secured"), "level clear toasts gains secured")
+	_assert(dsrc.contains("func _apply_forfeits"), "forfeit applier exists")
+	_assert(dsrc.contains("apply_forfeit_net"), "forfeit reaches client-owned players")
+	var hpos := dsrc.find("func _on_station_departure_resolved")
+	var fpos := dsrc.find("_apply_forfeits()", hpos)
+	var rpos := dsrc.find("begin_annex_departure", hpos)
+	_assert(fpos != -1 and rpos != -1 and fpos < rpos,
+		"forfeit applied before the ride/save")
+	_assert(dsrc.contains("Left early"), "forfeit banner text")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("func apply_forfeit("), "player has apply_forfeit")
+	_assert(psrc.contains("alive = was_alive"), "forfeit preserves alive status")
+
+	# 3. Board posts the unanimous rule.
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("MUST AGREE"), "board shows the unanimity hint")
 
 
 func _test_cycle_scaling() -> void:
@@ -1195,29 +1301,24 @@ func _test_station_phase1() -> void:
 func _test_station_phase2() -> void:
 	print("[Playtest] Train station phase 2...")
 	var StationScript := load("res://scripts/station/station.gd")
-	# Majority wins.
+	# Unanimous boarding: every living player must vote the SAME destination.
 	_assert(StationScript.resolve_destination(
-		{10: "dungeon", 11: "dungeon", 12: "village"}, [10, 11, 12], 10, 2) == "dungeon",
-		"majority vote wins")
-	# Tie: host's voted theme wins.
+		{10: "dungeon", 11: "dungeon", 12: "dungeon"}, [10, 11, 12]) == "dungeon",
+		"unanimous vote resolves")
+	# Split vote -> no departure.
 	_assert(StationScript.resolve_destination(
-		{10: "dungeon", 11: "village"}, [10, 11], 10, 2) == "dungeon",
-		"tie broken by host vote")
-	# Tie: host abstained -> first tied theme in THEME_ORDER.
+		{10: "dungeon", 11: "dungeon", 12: "village"}, [10, 11, 12]) == "",
+		"split vote: no departure")
+	# Partial vote (a living player abstains) -> no departure.
 	_assert(StationScript.resolve_destination(
-		{11: "warlord", 12: "village"}, [10, 11, 12], 10, 2) == "village",
-		"tie with abstaining host -> THEME_ORDER order")
-	# No votes -> rotation fallback for levels 1..10.
-	var order := ["village", "dungeon", "depths", "supermarket", "warlord"]
-	var expected := ["village", "dungeon", "depths", "supermarket", "warlord",
-		"village", "dungeon", "depths", "supermarket", "warlord"]
-	for n in range(1, 11):
-		_assert(StationScript.resolve_destination({}, [10], 10, n) == expected[n - 1],
-			"no votes level %d -> rotation %s" % [n, expected[n - 1]])
-	# Non-voters excluded: 1 vote among 3 living players wins.
-	_assert(StationScript.resolve_destination(
-		{10: "depths"}, [10, 11, 12], 10, 3) == "depths",
-		"non-voters don't count")
+		{11: "warlord", 12: "village"}, [10, 11, 12]) == "",
+		"abstention: no departure")
+	# No votes -> no departure (no rotation fallback).
+	_assert(StationScript.resolve_destination({}, [10]) == "",
+		"no votes: no departure")
+	# Single living voter agreeing with themselves -> resolves.
+	_assert(StationScript.resolve_destination({10: "depths"}, [10]) == "depths",
+		"solo unanimity resolves")
 	# Recommended levels: informational, derived from cycle + theme index.
 	_assert(StationScript.recommended_level("village", 1) == 1, "rec village @ L1 = 1")
 	_assert(StationScript.recommended_level("depths", 3) == 3, "rec depths @ L3 = 3")

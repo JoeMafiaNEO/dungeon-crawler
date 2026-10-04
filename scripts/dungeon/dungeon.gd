@@ -121,6 +121,12 @@ var _boss: Mob = null
 var _portal_sealed := false
 var _keys_needed := 0
 var _keys_found := 0
+# --- Station annex forfeit (issue #2 Phase 4) ---
+## True once the level objective is complete (the condition that used to open
+## the portal). Departing before this forfeits the level's gains.
+var level_cleared := false
+## peer_id -> get_state() dict taken at spawn/join (server-side).
+var _entry_snapshots := {}
 
 
 func _ready() -> void:
@@ -252,6 +258,7 @@ func register_class(class_id: String) -> void:
 		var ps: Dictionary = roster_entry.get("player_state", {})
 		if not ps.is_empty():
 			node.apply_state(ps)
+			_snapshot_entry(sender)
 			rpc_id(sender, "apply_continued_state", ps)
 		# Warlord: reclaim their faction from AI control.
 		if is_warlord:
@@ -397,6 +404,18 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 		_local_hud.announce("NOW ARRIVING: " + theme.display_name,
 			Dungeon.arrival_tint(theme.theme_id))
 		AudioManager.sfx("train_brake")
+	if multiplayer.is_server():
+		# Forfeit snapshot (issue #2 Phase 4): taken after any continue-state
+		# restore above, so "entry" means what the player arrived with.
+		_snapshot_entry(peer_id)
+
+
+## Server-side: remember what a player looked like on level entry so an
+## early departure can forfeit exactly the level's gains.
+func _snapshot_entry(peer_id: int) -> void:
+	var node := get_player_node(peer_id)
+	if node != null and node.has_method("get_state"):
+		_entry_snapshots[peer_id] = node.get_state()
 
 
 @rpc("any_peer", "call_local")
@@ -1867,6 +1886,10 @@ func unseal_portal() -> void:
 	_apply_portal_visual()
 	AudioManager.sfx("unlock")
 	rpc("announce", "PORTAL UNSEALED! Get to the portal!")
+	# Station annex (issue #2 Phase 4): the level objective is complete —
+	# gains from this level are secured, no forfeit on departure.
+	level_cleared = true
+	rpc("announce", "Level cleared — gains secured.")
 
 
 func _make_portal_particles() -> GPUParticles3D:
@@ -1972,6 +1995,11 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	if not multiplayer.is_server() or _ride_running:
 		return
 	_ride_running = true
+	# Station annex (issue #2 Phase 4): leaving before the level is cleared
+	# forfeits everything gained in it. Restore first, then ride and save.
+	if not level_cleared:
+		_apply_forfeits()
+		rpc("announce", "Left early!\nLevel gains forfeited.")
 	var new_level := level_number + 1
 	var seed := randi()
 	rpc("begin_annex_departure", theme_id, _boarding_spots())
@@ -1996,6 +2024,25 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				"seed": seed,
 			})
 	rpc("hop_to_next_level", theme_id, seed, new_level)
+
+
+## Station annex (issue #2 Phase 4): server rolls every player back to
+## their level-entry snapshot. Each peer applies its own (the server can't
+## write fields on a client-owned player node directly); the forfeit RPCs go
+## out before the ride so the save 3.5s later captures the rolled-back state.
+func _apply_forfeits() -> void:
+	var holders := get_node_or_null("Players")
+	if holders == null:
+		return
+	for child in holders.get_children():
+		var pid := int(child.get_multiplayer_authority())
+		if not _entry_snapshots.has(pid) or not child.has_method("apply_forfeit"):
+			continue
+		var snap: Dictionary = _entry_snapshots[pid]
+		if pid == multiplayer.get_unique_id():
+			child.apply_forfeit(snap)
+		else:
+			child.rpc_id(pid, "apply_forfeit_net", snap)
 
 
 ## Boarding spots near the train doors (global), one per connected player.

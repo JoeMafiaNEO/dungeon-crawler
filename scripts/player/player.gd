@@ -2994,6 +2994,33 @@ func apply_state(s: Dictionary) -> void:
 		hud.refresh_stats()
 
 
+## Forfeit restore (Station Annex Phase 4): roll progression back to the
+## level-entry snapshot. HP and alive status are NEVER touched — a dead
+## player stays dead, a hurt player stays hurt.
+func apply_forfeit(s: Dictionary) -> void:
+	var keep_hp := hp
+	var was_alive := alive
+	apply_state(s)
+	# apply_state() full-heals and marks alive; restore the true vitals and
+	# refresh the HUD so the bars show the unhealed state.
+	hp = minf(keep_hp, max_hp)
+	alive = was_alive
+	health_changed.emit(hp, max_hp)
+	xp_changed.emit(xp, xp_next, level)
+	if hud != null:
+		hud.refresh_inventory(self)
+		hud.refresh_stats()
+
+
+## Server asks the owning peer to apply its forfeit (mirrors the heal pattern:
+## the server can't write fields on a client-owned player node directly).
+@rpc("any_peer", "call_local")
+func apply_forfeit_net(s: Dictionary) -> void:
+	if int(get_multiplayer_authority()) != multiplayer.get_unique_id():
+		return
+	apply_forfeit(s)
+
+
 @rpc("any_peer", "call_local", "unreliable")
 func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool) -> void:
 	if is_multiplayer_authority():

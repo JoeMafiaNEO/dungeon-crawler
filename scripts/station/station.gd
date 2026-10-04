@@ -132,7 +132,15 @@ func _process(delta: float) -> void:
 			_last_sync_sec = sec
 			rpc("station_timer_sync", maxf(_time_left, 0.0))
 		if _time_left <= 0.0:
-			depart()
+			if _unanimous_theme() != "":
+				depart()
+			else:
+				# No unanimity: the train waits. Reset the clock, keep the
+				# votes (players may change them), and try again.
+				_time_left = DEPART_TIME
+				_last_sync_sec = -1
+				rpc("station_timer_sync", DEPART_TIME)
+				rpc("vote_reset_notice")
 	_heal_tick -= delta
 	if _heal_tick <= 0.0:
 		_heal_tick = HEAL_TICK
@@ -190,48 +198,30 @@ func _living_peer_ids() -> Array:
 	return out
 
 
-## Every living player has cast a vote. living_override lets tests drive the
-## flow without a scene tree full of players.
-func _all_voted(living_override: Array = []) -> bool:
+## Unanimous destination, or "" when the living players don't all agree on
+## one. living_override lets tests drive the flow without a scene tree of
+## players.
+func _unanimous_theme(living_override: Array = []) -> String:
 	var living := living_override if not living_override.is_empty() else _living_peer_ids()
+	return resolve_destination(votes, living)
+
+
+## Destination resolution (static for testability). Departure requires EVERY
+## living player to vote for the SAME destination; anything else returns ""
+## (no departure — the timer resets and voting continues).
+static func resolve_destination(p_votes: Dictionary, living: Array) -> String:
 	if living.is_empty():
-		return false
+		return ""
+	var theme := ""
 	for pid in living:
-		if not votes.has(pid):
-			return false
-	return true
-
-
-## Destination resolution (static for testability). Non-voters don't count;
-## no votes -> theme rotation (today's behavior); ties -> host's pick, else
-## first tied theme in THEME_ORDER.
-static func resolve_destination(p_votes: Dictionary, living: Array, host_id: int, next_level: int) -> String:
-	var counts := {}
-	for pid in living:
-		if p_votes.has(pid):
-			var t := str(p_votes[pid])
-			counts[t] = int(counts.get(t, 0)) + 1
-	if counts.is_empty():
-		return Dungeon.THEME_ORDER[(next_level - 1) % Dungeon.THEME_ORDER.size()]
-	var best := ""
-	var best_n := 0
-	var tied: Array = []
-	for t in counts:
-		var n: int = counts[t]
-		if n > best_n:
-			best_n = n
-			best = str(t)
-			tied = [str(t)]
-		elif n == best_n:
-			tied.append(str(t))
-	if tied.size() == 1:
-		return best
-	if p_votes.has(host_id) and str(p_votes[host_id]) in tied:
-		return str(p_votes[host_id])
-	for t in Dungeon.THEME_ORDER:
-		if t in tied:
-			return str(t)
-	return best
+		if not p_votes.has(pid):
+			return ""
+		var t := str(p_votes[pid])
+		if theme == "":
+			theme = t
+		elif t != theme:
+			return ""
+	return theme
 
 
 ## Recommended level for a theme at the upcoming level: informational only.
@@ -279,7 +269,7 @@ func cast_vote(theme_id: String) -> void:
 	if not bool(res.get("ok", false)):
 		return
 	rpc("sync_votes", votes)
-	if not _departing and _all_voted():
+	if not _departing and _unanimous_theme() != "":
 		depart()
 
 
@@ -358,6 +348,15 @@ func station_timer_sync(time_left: float) -> void:
 		hud.show_station_timer(time_left)
 
 
+## Timer expired without unanimity: tell every peer the clock restarted and
+## the vote stays open.
+@rpc("any_peer", "call_local")
+func vote_reset_notice() -> void:
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("show_toast"):
+		hud.show_toast("No agreement — vote again.")
+
+
 ## Server-authoritative departure: resolve the destination, ride out with
 ## whistle/chug/fade (Phase 5), then save and hop levels.
 ## Embedded mode (issue #2): resolve + re-dress, then hand off to the dungeon
@@ -366,9 +365,11 @@ func station_timer_sync(time_left: float) -> void:
 func depart(living_override: Array = []) -> void:
 	if _departing or not multiplayer.is_server():
 		return
-	_departing = true
 	var living := living_override if not living_override.is_empty() else _living_peer_ids()
-	var theme_id := resolve_destination(votes, living, multiplayer.get_unique_id(), next_level_number)
+	var theme_id := resolve_destination(votes, living)
+	if theme_id == "":
+		return # No unanimity — the train doesn't leave.
+	_departing = true
 	if embedded:
 		apply_dressing(theme_id)
 		departure_resolved.emit(theme_id)

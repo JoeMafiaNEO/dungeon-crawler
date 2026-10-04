@@ -97,6 +97,16 @@ func _build() -> void:
 	light.omni_range = 7.0
 	light.position = Vector3(0, 2.4, 1.6)
 	add_child(light)
+	# Unanimous-boarding rule, posted on a plaque between the posts.
+	var hint := Label3D.new()
+	hint.text = "ALL LIVING PLAYERS MUST AGREE ON A DESTINATION"
+	hint.font_size = 36
+	hint.pixel_size = 0.0032
+	hint.modulate = Color(1.0, 0.82, 0.35)
+	hint.outline_size = 6
+	hint.outline_modulate = Color(0, 0, 0, 0.9)
+	hint.position = Vector3(0, 0.12, 0.10)
+	add_child(hint)
 
 
 func _build_row(tid: String, y: float, slate: Color, next_level: int) -> void:
