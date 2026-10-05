@@ -5,10 +5,10 @@ shader_type canvas_item;
 
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear_mipmap;
 
-uniform float scanline_strength : hint_range(0.0, 1.0) = 0.25;
-uniform float curvature : hint_range(0.0, 1.0) = 0.15;
-uniform float vignette_strength : hint_range(0.0, 1.0) = 0.35;
-uniform float aberration : hint_range(0.0, 1.0) = 0.5;
+uniform float scanline_strength : hint_range(0.0, 1.0) = 0.45;
+uniform float curvature : hint_range(0.0, 1.0) = 0.25;
+uniform float vignette_strength : hint_range(0.0, 1.0) = 0.50;
+uniform float aberration : hint_range(0.0, 1.0) = 0.75;
 
 vec2 curve_uv(vec2 uv) {
 	// Barrel distortion for CRT curvature.
