@@ -52,6 +52,26 @@ func _ready() -> void:
 	await _snap("saves_overwrite_modal.png")
 	_audit(menu, "OverwriteModal")
 	menu._on_overwrite_cancelled()
+	# Staging screen (issue #4 Phase 4): shows the continued slot + roster.
+	# No Steam lobby needed: drive the roster UI directly with a seeded roster.
+	# Re-seed the slot immediately before capture: the VM's user:// is shared
+	# with concurrent processes, so the seed-time write may have been clobbered.
+	var mp_roster := [
+		{"steam_id": 111, "player_name": "Host", "class_id": "mage",
+			"player_state": {"level": 6}},
+		{"steam_id": 222, "player_name": "Friend", "class_id": "rogue",
+			"player_state": {"level": 5}},
+	]
+	SaveManager.save_run({"theme_id": "warlord", "level_number": 4, "seed": 333,
+		"is_multiplayer": true, "class_id": "mage", "roster": mp_roster},
+		SaveManager.MODE_MP, 1)
+	Dungeon.continued_roster = mp_roster
+	NetworkManager.active_run_slot = 1
+	menu._on_staging_ready()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await _snap("saves_staging.png")
+	_audit(menu, "StagingPhase")
 	_restore()
 	print("[SavesShots] done; user:// restored")
 	get_tree().quit()
