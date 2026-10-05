@@ -62,6 +62,12 @@ func _ready() -> void:
 		await get_tree().create_timer(6.0).timeout
 		var cur := get_tree().current_scene
 		print("[BoardingShots] current_scene=", cur.name if cur != null else "null")
+	# The end-to-end ride runs the real solo save; remove it so later test
+	# runs (save roundtrips) see a clean user://.
+	for f in ["savegame.cfg", "solo_warrior.cfg", "solo_mage.cfg", "solo_rogue.cfg"]:
+		var p := "user://".path_join(f)
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
 	print("[BoardingShots] done")
 	get_tree().quit()
 
