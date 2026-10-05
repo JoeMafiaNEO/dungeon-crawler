@@ -39,6 +39,21 @@ func _ready() -> void:
 		push_error("[BoardingShots] no station found")
 		get_tree().quit()
 		return
+	# Annex establishing shot (Phase 5 validation): park the player in the
+	# hall facing the train (north, -z) before forcing the vote.
+	var _player0 := _find_player()
+	if _player0 != null:
+		_player0.global_position = (station as Node3D).global_transform * Vector3(3.0, 0.1, 2.5)
+		_player0.set("_yaw", 0.0)
+		_player0.rotation.y = 0.0
+		await get_tree().create_timer(1.0).timeout
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var _img0 := get_viewport().get_texture().get_image()
+		if _img0.save_png(_shot_dir + "/annex_train.png") == OK:
+			print("[BoardingShots] saved ", _shot_dir + "/annex_train.png")
+		else:
+			push_error("[BoardingShots] FAILED to save annex_train.png")
 	# Solo: one vote is unanimous -> ALL ABOARD.
 	station.record_vote(1, "dungeon", [1])
 	station.depart([1])
