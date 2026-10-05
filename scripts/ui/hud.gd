@@ -429,6 +429,9 @@ var _bounty_tick := 0.0
 var _last_warlord := false
 ## Warlord mode hides the objective cluster; the tracker hides with it.
 var _bounty_hide := false
+# Issue #62: tracks whether the boarding phase is active, so the wave
+# button stays hidden during ALL ABOARD.
+var _boarding_active := false
 
 
 ## Bounty panel: 3 fixed cards (name / target / reward / per-player progress
@@ -1443,10 +1446,18 @@ func set_wave(info: Dictionary) -> void:
 		return
 	# Host-only Next Wave button during intermission.
 	var is_host := multiplayer.is_server()
-	%NextWaveButton.visible = is_host and state == 0
+	# Issue #62: hide the wave button during boarding — it does nothing there.
+	%NextWaveButton.visible = is_host and state == 0 and not _boarding_active
 	match state:
 		0: # intermission
-			%WaveStatus.text = "Waiting for host..." if not is_host else "Press R to begin wave"
+			# Issue #60: the "Press R to begin wave" hint is redundant with the
+			# "START NEXT WAVE (R)" button for the host. Hide the hint text
+			# when the button is visible; clients still see "Waiting for host..."
+			if is_host:
+				%WaveStatus.visible = false
+			else:
+				%WaveStatus.visible = not is_warlord
+				%WaveStatus.text = "Waiting for host..."
 		1: # active
 			%WaveStatus.text = "Mobs left: %d" % int(info.get("mobs_left", 0))
 		_:
@@ -1520,6 +1531,7 @@ func show_station_timer(sec: float) -> void:
 
 func hide_station_timer() -> void:
 	%StationTimerLabel.visible = false
+	_boarding_active = false
 
 
 ## Boarding countdown (issue #3 Phase 2): ALL ABOARD window with the aboard
@@ -1528,6 +1540,9 @@ func show_boarding_timer(sec: float, aboard_count: int, living_count: int) -> vo
 	var s := int(ceil(maxf(sec, 0.0)))
 	%StationTimerLabel.text = "ALL ABOARD — TRAIN LEAVES IN %d:%02d (%d/%d)" % [s / 60, s % 60, aboard_count, living_count]
 	%StationTimerLabel.visible = true
+	# Issue #62: boarding started — hide the wave button immediately.
+	_boarding_active = true
+	%NextWaveButton.visible = false
 
 
 ## Ride status (issue #3 Phase 3): destination + arrival countdown. Reuses

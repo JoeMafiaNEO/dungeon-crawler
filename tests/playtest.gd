@@ -72,6 +72,7 @@ func _run() -> void:
 	_test_destination_popup_manual_only()
 	_test_bounty_popup_opens()
 	_test_collection_full_state_compact()
+	_test_wave_ui_dedupe_and_boarding_hide()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4590,3 +4591,19 @@ func _test_collection_full_state_compact() -> void:
 	_assert(hsrc.contains("_hide_redundant_collection_headers"),
 		"#37: redundant headers hide with content")
 	print("[Playtest] Collection tab compaction done")
+
+
+func _test_wave_ui_dedupe_and_boarding_hide() -> void:
+	print("[Playtest] wave UI dedupe + boarding hide (issues #60/#62)...")
+	# Static: #60 — host intermission must not show both the "Press R" hint
+	# text and the START NEXT WAVE button. #62 — the wave button must hide
+	# during boarding.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("_boarding_active"), "#62: boarding flag exists")
+	_assert(hsrc.contains("%NextWaveButton.visible = false"),
+		"#62: boarding hides wave button")
+	# #60: the hint text is hidden for host when button shows (no longer
+	# assigned as WaveStatus.text for the host).
+	_assert(not hsrc.contains('%WaveStatus.text = "Waiting for host..." if not is_host else "Press R to begin wave"'),
+		"#60: redundant Press R hint removed")
+	print("[Playtest] wave UI dedupe done")
