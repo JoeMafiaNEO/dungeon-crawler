@@ -29,12 +29,15 @@ func interact(player: Player) -> void:
 
 
 ## One-line row text (no tally). Stars mirror the old HUD panel exactly.
-static func row_base_text(theme_id: String, next_level: int) -> String:
+## Apex rows (issue #5) show 5 stars and Rec. Lv = party level + 5.
+static func row_base_text(theme_id: String, next_level: int, party_level: int = 0) -> String:
 	var name := str(Station.theme_display_name(theme_id)).to_upper()
 	var stars := str(Station.BOARD_STARS.get(theme_id, ""))
 	if theme_id == "supermarket":
 		stars += " $"
 	var rec := Station.recommended_level(theme_id, next_level)
+	if theme_id == "apex":
+		rec = party_level + 5
 	return "%s   %s   Rec. Lv %d" % [name, stars, rec]
 
 
@@ -83,12 +86,14 @@ func _build() -> void:
 	header.outline_size = 12
 	header.position = Vector3(0, 3.32, 0.10)
 	add_child(header)
-	# 5 clickable rows.
+	# 5 clickable rows. On apex cycles (issue #5) the warlord row becomes the
+	# APEX ARENA row — board_destinations() is the single source of truth.
 	var next_level := Station.next_level_number
+	var party_level := _party_level(next_level)
 	var y := 2.88
-	for theme_id in Dungeon.THEME_ORDER:
+	for theme_id in Dungeon.board_destinations(next_level):
 		var tid := str(theme_id)
-		_build_row(tid, y, slate, next_level)
+		_build_row(tid, y, slate, next_level, party_level)
 		y -= 0.54
 	# Faint gold light so it reads at dusk.
 	var light := OmniLight3D.new()
@@ -109,7 +114,21 @@ func _build() -> void:
 	add_child(hint)
 
 
-func _build_row(tid: String, y: float, slate: Color, next_level: int) -> void:
+## Party level for the apex row's "Rec. Lv = party level + 5" (issue #5):
+## average character level of the players in the scene, falling back to the
+## upcoming level number when no players exist yet (e.g. headless tests).
+func _party_level(next_level: int) -> int:
+	var total := 0
+	var count := 0
+	for p in get_tree().get_nodes_in_group("players"):
+		total += int(p.get("level"))
+		count += 1
+	if count == 0:
+		return next_level
+	return int(round(float(total) / float(count)))
+
+
+func _build_row(tid: String, y: float, slate: Color, next_level: int, party_level: int = 0) -> void:
 	# Per-row material so hover/vote highlights are independent.
 	var mat := _mat(slate)
 	var plate := _box(Vector3(ROW_W, ROW_H, 0.08), Vector3(0, y, 0.10), mat)
@@ -121,7 +140,7 @@ func _build_row(tid: String, y: float, slate: Color, next_level: int) -> void:
 	label.outline_modulate = Color(0, 0, 0, 0.9)
 	label.position = Vector3(0, y, 0.16)
 	add_child(label)
-	var base := row_base_text(tid, next_level)
+	var base := row_base_text(tid, next_level, party_level)
 	label.text = base + "  [0]"
 	# Gold "my vote" frame behind the plate, hidden until voted.
 	var frame := _box(Vector3(ROW_W + 0.14, ROW_H + 0.12, 0.05),

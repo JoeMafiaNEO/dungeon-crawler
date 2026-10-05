@@ -29,12 +29,59 @@ const THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket
 ## Danger model (Phase 3): base tier per theme × depth scaling.
 ## Single source of truth for mob HP/damage, XP, and loot sell values.
 ## Risk/reward: picking a harder destination pays more if you survive.
-const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4}
+const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4}
 const TIER_MULT := {1: 1.0, 2: 1.3, 3: 1.7, 4: 2.2}
+
+## Apex arena (issue #5): every 3rd cycle the warlord board row becomes the
+## APEX ARENA. The rotating apex boss hits harder than the base boss it is
+## cloned from; the arena picks the boss by cycle: 3->boar, 6->warden,
+## 9->horror, then repeating.
+const APEX_BOSS_IDS := ["apex_boar", "apex_warden", "apex_horror"]
+const APEX_HP_MULT := 2.5
+const APEX_DMG_MULT := 1.5
 
 
 static func danger_mult(theme_id: String, level_number: int) -> float:
 	return float(TIER_MULT[int(DANGER_TIERS.get(theme_id, 1))]) * pow(1.15, float(level_number - 1))
+
+
+## Apex cycle detection (issue #5 Phase 1): true on every 3rd cycle
+## (3, 6, 9...), when the warlord slot becomes the APEX ARENA.
+static func is_apex_cycle(cycle_number: int) -> bool:
+	return cycle_number >= 1 and cycle_number % 3 == 0
+
+
+## Apex boss rotation (issue #5): cycle 3 -> boar, 6 -> warden, 9 -> horror,
+## then repeating. Only meaningful on apex cycles.
+static func apex_boss_id(cycle_number: int) -> String:
+	var idx := int(cycle_number / 3 - 1) % APEX_BOSS_IDS.size()
+	return APEX_BOSS_IDS[idx]
+
+
+## Destinations offered on the departure board for the upcoming level: the
+## five themes, with warlord swapped for the APEX ARENA on apex cycles.
+static func board_destinations(next_level: int) -> Array[String]:
+	var out: Array[String] = []
+	var cycle := int((next_level - 1) / THEME_ORDER.size()) + 1
+	var apex := is_apex_cycle(cycle)
+	for tid in THEME_ORDER:
+		if apex and tid == "warlord":
+			out.append("apex")
+		else:
+			out.append(tid)
+	return out
+
+
+## Boss spawn scaling (issue #5): normal bosses get danger x host difficulty;
+## the apex boss multiplies HP x APEX_HP_MULT and damage x APEX_DMG_MULT on
+## top. Returns [hp_scale, dmg_scale].
+static func boss_spawn_scales(apex_mode: bool, danger: float, host_diff: float) -> Array:
+	var hp := danger * host_diff
+	var dmg := danger * host_diff
+	if apex_mode:
+		hp *= APEX_HP_MULT
+		dmg *= APEX_DMG_MULT
+	return [hp, dmg]
 
 
 ## Theme tint for the NOW ARRIVING banner (Phase 5; mirrors station lamps).
@@ -50,6 +97,8 @@ static func arrival_tint(theme_id: String) -> Color:
 			return Color(1.0, 1.0, 0.95)
 		"warlord":
 			return Color(1.0, 0.55, 0.25)
+		"apex":
+			return Color(1.0, 0.25, 0.2)
 	return Color.WHITE
 
 static var next_theme_id: String = "village"
@@ -85,6 +134,9 @@ var wave_state: WaveState = WaveState.INTERMISSION
 var is_supermarket := false
 # Warlord mode: AoE4-style RTS hybrid. No waves, no keys.
 var is_warlord := false
+# Apex arena (issue #5): boss arena replacing the warlord slot every 3rd cycle.
+# Normal wave flow; the level objective is killing the rotating apex boss.
+var is_apex := false
 var _rts_manager: RTSManager = null
 var _warlord_setup_pending := false
 var _construction_check_tick := 0.0
@@ -148,6 +200,11 @@ func _ready() -> void:
 		theme = theme.duplicate() as LevelTheme
 		theme.grid_size = mini(96, theme.grid_size + cycle * 40)
 		theme.puzzle_key_count = mini(8, theme.puzzle_key_count + cycle)
+	# Apex arena (issue #5 Phase 1): the boss rotates by cycle. Apex cycles
+	# are always >= 3, so the theme is already a duplicate here — safe to
+	# mutate without touching the .tres.
+	if theme.theme_id == "apex":
+		theme.boss_id = apex_boss_id(get_cycle_number())
 	_layout = ProcGen.generate(theme, next_seed)
 	_mob_mix_sorted = ProcGen.sorted_mob_mix(theme)
 	# AI Director only spawns mobs this theme allows.
@@ -181,6 +238,9 @@ func _ready() -> void:
 		if multiplayer.is_server():
 			# Defer RTS setup until players have spawned.
 			_warlord_setup_pending = true
+	# Apex arena (issue #5): normal waves, boss wave spawns the rotating apex
+	# boss; killing it clears the level (no keys).
+	is_apex = theme.theme_id == "apex"
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	if multiplayer.is_server():
 		var host_id := multiplayer.get_unique_id()
@@ -503,6 +563,7 @@ func _process(delta: float) -> void:
 			_process_supermarket(delta)
 		else:
 			_process_waves(delta)
+			_check_apex_boss_kill()
 	if _local_hud != null:
 		_local_hud.set_wave(wave_info)
 		if is_supermarket:
@@ -1376,13 +1437,30 @@ func _spawn_boss() -> void:
 		if d > best_d:
 			best_d = d
 			pos = Vector3(s.x, 0.5, s.z)
-	rpc("spawn_mob", _mob_id, theme.boss_id, pos, _danger_mult() * NetworkManager.host_difficulty, _danger_mult() * NetworkManager.host_difficulty, false, _danger_mult())
+	var scales: Array = boss_spawn_scales(is_apex, _danger_mult(), NetworkManager.host_difficulty)
+	rpc("spawn_mob", _mob_id, theme.boss_id, pos, scales[0], scales[1], false, _danger_mult())
+
+
+## Apex arena (issue #5 Phase 1): the level objective is killing the apex
+## boss — no keys. Server fires complete_level_objective once on boss death.
+func _check_apex_boss_kill() -> void:
+	if not is_apex or not multiplayer.is_server() or level_cleared:
+		return
+	if _boss == null:
+		return
+	if not is_instance_valid(_boss) or not bool(_boss.get("alive")):
+		rpc("complete_level_objective")
 
 
 func _wave_cleared() -> void:
 	if wave >= TOTAL_WAVES:
 		wave_state = WaveState.CLEARED
 		_shower_loot()
+		if is_apex:
+			# Apex arena (issue #5): no key hunt — the boss-death hook already
+			# cleared the level when the apex boss fell.
+			rpc("announce", "%s CLEARED!" % theme.display_name.to_upper())
+			return
 		# Keys spawn: the party must find every key to clear the level.
 		_keys_needed = theme.puzzle_key_count
 		_keys_found = 0

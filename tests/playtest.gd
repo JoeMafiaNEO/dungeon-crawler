@@ -45,6 +45,7 @@ func _run() -> void:
 	_test_ai_director()
 	_test_economy()
 	_test_trade_no_self_trade()
+	_test_apex_phase1()
 	_print_results()
 	quit()
 
@@ -301,18 +302,20 @@ func _test_station_phase5() -> void:
 	_assert(lamps["depths"] == Color(0.8, 0.4, 0.9), "depths lamp tint")
 	_assert(lamps["supermarket"] == Color(1.0, 1.0, 0.95), "supermarket lamp tint")
 	_assert(lamps["warlord"] == Color(1.0, 0.55, 0.25), "warlord lamp tint")
+	_assert(lamps["apex"] == Color(1.0, 0.25, 0.2), "apex lamp tint")
 
 	# --- apply_dressing: exactly one prop set visible; sign names the theme ---
 	var st = StationScript.new()
 	st._build_dressing()
-	for tid in ["village", "dungeon", "depths", "supermarket", "warlord"]:
+	for tid in ["village", "dungeon", "depths", "supermarket", "warlord", "apex"]:
 		st.apply_dressing(tid)
 		var vis: Array = []
 		for child in st._dressing.get_children():
 			if child.visible:
 				vis.append(str(child.name))
 		_assert(vis == [tid], "dressing shows only %s set" % tid)
-	_assert(st._dressing.get_child_count() == 5, "5 theme prop sets built")
+	_assert(st._dressing.get_child_count() == 6, "6 theme prop sets built (apex added)")
+	_assert(st._dressing.get_node_or_null("apex") != null, "apex dressing set built")
 	st.apply_dressing("bogus_theme")
 	var vis2: Array = []
 	for child in st._dressing.get_children():
@@ -607,8 +610,8 @@ func _test_station_embedded() -> void:
 	_assert(sign != null and "NOW BOARDING" in str(sign.text),
 		"embedded: NOW BOARDING sign set")
 	var dressing = st.get_node_or_null("Dressing")
-	_assert(dressing != null and dressing.get_child_count() == 5,
-		"embedded: 5 dressing prop sets")
+	_assert(dressing != null and dressing.get_child_count() == 6,
+		"embedded: 6 dressing prop sets (apex added)")
 	# Every content node sits inside the 24x14m hall footprint.
 	for nname in ["Train", "DepartureBoard", "VendorStall", "HealPad"]:
 		var n := st.get_node_or_null(nname) as Node3D
@@ -1626,3 +1629,91 @@ func _test_station_phase3() -> void:
 	_assert(isrc.contains("var value_mult := 1.0"), "pickup keeps value_mult")
 	_assert(isrc.contains("receive_item\", item.id, item.sell_value"),
 		"claim passes scaled sell value")
+
+
+func _test_apex_phase1() -> void:
+	print("[Playtest] Apex phase 1 (plumbing)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var StationScript := load("res://scripts/station/station.gd")
+	var BoardScript := load("res://scripts/station/departure_board.gd")
+	# Apex cycle detection: cycles 3/6/9/12 true, everything else false.
+	for c in [3, 6, 9, 12]:
+		_assert(DungeonScript.is_apex_cycle(c), "cycle %d is apex" % c)
+	for c in [0, 1, 2, 4, 5, 7, 8, 10, 11, 13]:
+		_assert(not DungeonScript.is_apex_cycle(c), "cycle %d is not apex" % c)
+	# Apex boss rotation: 3->boar, 6->warden, 9->horror, then repeating.
+	_assert(DungeonScript.apex_boss_id(3) == "apex_boar", "cycle 3 -> apex_boar")
+	_assert(DungeonScript.apex_boss_id(6) == "apex_warden", "cycle 6 -> apex_warden")
+	_assert(DungeonScript.apex_boss_id(9) == "apex_horror", "cycle 9 -> apex_horror")
+	_assert(DungeonScript.apex_boss_id(12) == "apex_boar", "cycle 12 -> apex_boar (rotates)")
+	_assert(DungeonScript.apex_boss_id(15) == "apex_warden", "cycle 15 -> apex_warden (rotates)")
+	# theme_apex.tres loads with arena params.
+	var theme: Resource = load("res://data/levels/theme_apex.tres")
+	_assert(theme != null, "theme_apex.tres loads")
+	_assert(str(theme.get("theme_id")) == "apex", "apex theme_id")
+	_assert(str(theme.get("display_name")) == "Apex Arena", "apex display name")
+	_assert(int(theme.get("puzzle_key_count")) == 0, "apex needs no keys")
+	_assert(not (theme.get("mob_mix") as Dictionary).is_empty(), "apex has a wave mob mix")
+	_assert(str(theme.get("boss_id")) == "apex_boar", "apex default boss_id (overridden per cycle)")
+	# The three apex boss data files: boss flags, titles, base stats copied
+	# from the matching bosses, 384px sprites reused.
+	var specs := {
+		"apex_boar": ["APEX BRISTLEBACK", "boss_boar"],
+		"apex_warden": ["APEX WARDEN", "boss_warden"],
+		"apex_horror": ["APEX MAW OF THE DEEP", "boss_horror"],
+	}
+	for aid in specs:
+		var data: Resource = load("res://data/mobs/%s.tres" % aid)
+		_assert(data != null, "mob %s loads" % aid)
+		if data == null:
+			continue
+		_assert(str(data.get("id")) == aid, "%s id" % aid)
+		_assert(bool(data.get("is_boss")), "%s is_boss" % aid)
+		_assert(str(data.get("boss_title")) == specs[aid][0], "%s boss_title" % aid)
+		_assert(not (data.get("frames") as Array).is_empty(), "%s reuses boss sprite" % aid)
+		var src: Resource = load("res://data/mobs/%s.tres" % specs[aid][1])
+		_assert(absf(float(data.get("health")) - float(src.get("health"))) < 0.001,
+			"%s base HP matches %s" % [aid, specs[aid][1]])
+		_assert(absf(float(data.get("damage")) - float(src.get("damage"))) < 0.001,
+			"%s base damage matches %s" % [aid, specs[aid][1]])
+	# Board destinations: warlord row becomes APEX ARENA on apex cycles only.
+	var d3: Array = DungeonScript.board_destinations(11) # cycle 3
+	_assert(d3.size() == 5, "board still has 5 rows on apex cycles")
+	_assert(d3.has("apex") and not d3.has("warlord"), "warlord -> apex swap (cycle 3)")
+	var d1: Array = DungeonScript.board_destinations(1) # cycle 1
+	_assert(d1.has("warlord") and not d1.has("apex"), "warlord row normal (cycle 1)")
+	var d4: Array = DungeonScript.board_destinations(16) # cycle 4
+	_assert(d4.has("warlord") and not d4.has("apex"), "warlord row normal (cycle 4)")
+	# Apex row text: name, 5 stars, Rec. Lv = party level + 5.
+	_assert(BoardScript.row_base_text("apex", 11, 30) == "APEX ARENA   ★★★★★   Rec. Lv 35",
+		"apex row text")
+	_assert(str(StationScript.BOARD_STARS.get("apex")) == "★★★★★", "apex 5 danger stars")
+	_assert((StationScript.DRESSING_LAMPS as Dictionary).has("apex"), "apex lamp tint set")
+	_assert(str(StationScript.theme_display_name("apex")) == "Apex Arena", "apex display name from tres")
+	# Danger model: apex uses reward tier 4 (warlord) for XP/loot scaling.
+	_assert(absf(DungeonScript.danger_mult("apex", 13) - 2.2 * pow(1.15, 12)) < 0.001,
+		"apex danger = tier 4")
+	_assert(DungeonScript.arrival_tint("apex") == Color(1.0, 0.25, 0.2), "apex arrival tint red")
+	# Boss spawn scaling through the real spawn-site helper.
+	var s_apex: Array = DungeonScript.boss_spawn_scales(true, 2.2, 1.0)
+	_assert(absf(s_apex[0] - 5.5) < 0.001 and absf(s_apex[1] - 3.3) < 0.001,
+		"apex scales: 2.5x HP, 1.5x dmg")
+	var s_norm: Array = DungeonScript.boss_spawn_scales(false, 2.2, 1.0)
+	_assert(absf(s_norm[0] - 2.2) < 0.001 and absf(s_norm[1] - 2.2) < 0.001,
+		"normal boss scales unchanged")
+	var s_diff: Array = DungeonScript.boss_spawn_scales(true, 1.0, 1.5)
+	_assert(absf(s_diff[0] - 3.75) < 0.001 and absf(s_diff[1] - 2.25) < 0.001,
+		"apex scales multiply host difficulty")
+	# Wiring: the real spawn path and the boss-death completion hook.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("theme.boss_id = apex_boss_id(get_cycle_number())"),
+		"dungeon picks rotating apex boss on load")
+	_assert(dsrc.contains("boss_spawn_scales(is_apex,"), "_spawn_boss uses apex scaling")
+	_assert(dsrc.contains("func _check_apex_boss_kill"), "apex boss-death hook exists")
+	_assert(dsrc.contains("_check_apex_boss_kill()"), "boss-death hook runs in _process")
+	_assert(dsrc.contains("if is_apex:"), "apex skips the key hunt")
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("Dungeon.board_destinations(next_level)"), "board rows from board_destinations")
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(stsrc.contains("Dungeon.board_destinations(next_level_number)"),
+		"votes validated against board destinations")

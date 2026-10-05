@@ -564,7 +564,10 @@ func _on_save_quit_pressed() -> void:
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if station != null:
 		var nl := Station.next_level_number
-		theme_id = Dungeon.THEME_ORDER[(nl - 1) % Dungeon.THEME_ORDER.size()]
+		# board_destinations() swaps warlord for the APEX ARENA on apex
+		# cycles (issue #5) so the saved next theme agrees with the board.
+		var dests := Dungeon.board_destinations(nl)
+		theme_id = dests[(nl - 1) % dests.size()]
 		level_number = nl
 		level_seed = int(station.get("departure_seed"))
 	elif dungeon != null:

@@ -32,6 +32,7 @@ var vendor_stock: Array = [] # [{id, price}]
 const BOARD_STARS := {
 	"village": "★☆☆☆", "dungeon": "★★☆☆", "depths": "★★★☆",
 	"supermarket": "★☆☆☆", "warlord": "★★★★",
+	"apex": "★★★★★",
 }
 
 ## Per-theme station dressing: platform lamp tint (Phase 5).
@@ -41,6 +42,7 @@ const DRESSING_LAMPS := {
 	"depths": Color(0.8, 0.4, 0.9),
 	"supermarket": Color(1.0, 1.0, 0.95),
 	"warlord": Color(1.0, 0.55, 0.25),
+	"apex": Color(1.0, 0.25, 0.2),
 }
 
 ## Owning dungeon: player roster + departure hop target.
@@ -98,7 +100,10 @@ func _ready() -> void:
 	_timer_running = false
 	_build_station_embedded()
 	# Dress for the rotation default; re-dressed when a vote resolves.
-	apply_dressing(Dungeon.THEME_ORDER[(next_level_number - 1) % Dungeon.THEME_ORDER.size()])
+	# board_destinations() swaps warlord for the APEX ARENA on apex cycles
+	# (issue #5), so the default dressing stays consistent with the board.
+	var dests := Dungeon.board_destinations(next_level_number)
+	apply_dressing(dests[(next_level_number - 1) % dests.size()])
 
 
 func _process(delta: float) -> void:
@@ -228,7 +233,9 @@ static func theme_display_name(theme_id: String) -> String:
 ## handles networking + the all-voted early departure. living_override lets
 ## tests drive the flow without a scene tree. Returns {"ok": bool, ...}.
 func record_vote(peer_id: int, theme_id: String, living_override: Array = []) -> Dictionary:
-	if not theme_id in Dungeon.THEME_ORDER:
+	# Votes must name a destination the board actually offers: on apex cycles
+	# (issue #5) warlord is swapped for the APEX ARENA.
+	if not theme_id in Dungeon.board_destinations(next_level_number):
 		return {"ok": false, "reason": "bad_theme"}
 	var living := living_override if not living_override.is_empty() else _living_peer_ids()
 	if not peer_id in living:
@@ -716,7 +723,9 @@ func _build_station_embedded() -> void:
 ## theme's prop set, set the NOW BOARDING sign. Unknown ids fall back to
 ## village. Called on load (rotation default) and again when a vote resolves.
 func apply_dressing(theme_id: String) -> void:
-	var tid := theme_id if theme_id in Dungeon.THEME_ORDER else "village"
+	# The apex arena (issue #5) is a board destination, not a THEME_ORDER
+	# entry — allow it explicitly. Unknown ids fall back to village.
+	var tid := theme_id if (theme_id in Dungeon.THEME_ORDER or theme_id == "apex") else "village"
 	var tint: Color = DRESSING_LAMPS.get(tid, Color.WHITE)
 	# The station lives in the annex hall: tint the annex shell's lamps.
 	var lamp_list: Array = annex.lamps if annex != null else _lamps
@@ -814,3 +823,16 @@ func _dressing_props_embedded() -> void:
 	ews1.rotation_degrees.z = 28.0
 	var ews2 := _box(w, Vector3(0.10, 1.2, 0.10), Vector3(5.0, 0.75, -6.25), steel_dark)
 	ews2.rotation_degrees.z = -28.0
+
+	# apex: crimson war banners + braziers flanking the south strip.
+	var a := Node3D.new()
+	a.name = "apex"
+	_dressing.add_child(a)
+	var ember := _mat(Color(1.0, 0.35, 0.1), Color(1.0, 0.3, 0.08), 2.5)
+	for bx in [11.3, -11.3]:
+		_box(a, Vector3(0.14, 2.8, 0.14), Vector3(bx, 1.4, 5.5), steel_dark)
+		_box(a, Vector3(0.80, 1.5, 0.06), Vector3(bx, 1.9, 5.5), banner_m)
+		# Brazier: iron bowl on a stand with an ember glow.
+		_cyl(a, 0.35, 0.25, 0.25, Vector3(bx * 0.85, 0.9, 5.6), steel_dark)
+		_box(a, Vector3(0.12, 0.9, 0.12), Vector3(bx * 0.85, 0.45, 5.6), steel_dark)
+		_box(a, Vector3(0.30, 0.18, 0.30), Vector3(bx * 0.85, 1.08, 5.6), ember)
