@@ -64,6 +64,8 @@ func _run() -> void:
 	_test_combo_phase1()
 	_test_combo_codex()
 	_test_bounty_phase2()
+	_test_leaderboard_phase1()
+	_test_echo_phase2()
 	_print_results()
 	quit()
 
@@ -3697,3 +3699,233 @@ func _find_bounty_cards(n: Node) -> Array:
 	for c in n.get_children():
 		out.append_array(_find_bounty_cards(c))
 	return out
+func _test_leaderboard_phase1() -> void:
+	print("[Playtest] leaderboards (issue #9 Phase 1)...")
+	# NOTE: playtest.gd is the -s entry point, compiled before autoload
+	# globals resolve; reach them via load() and /root lookups instead.
+	var LBScript = load("res://scripts/autoload/leaderboard.gd")
+	# Score formulas (pure statics).
+	_assert(LBScript.depth_score(1, 1) == 100001, "depth score c1l1")
+	_assert(LBScript.depth_score(2, 5) == 200005, "depth score c2l5")
+	_assert(LBScript.depth_score(2, 1) > LBScript.depth_score(1, 99),
+		"cycle dominates level in depth score")
+	_assert(LBScript.speed_score(125) == 125, "speed score passthrough")
+	_assert(LBScript.speed_score(-3) == 0, "speed score clamps negative")
+	_assert(LBScript.format_score(LBScript.BOARD_DEPTH, 200005) == "Cycle 2 · Lv 5",
+		"depth score formats")
+	_assert(LBScript.format_score(LBScript.BOARD_SPEED, 125) == "2:05",
+		"speed score formats as m:ss")
+	# Offline graceful skip: Steam is not initialized on this VM.
+	var sm: Node = root.get_node_or_null("SteamManager")
+	_assert(sm != null and not bool(sm.get("initialized")), "precondition: Steam offline")
+	var lb: Node = root.get_node_or_null("Leaderboard")
+	_assert(lb != null, "Leaderboard autoload exists")
+	_assert(not bool(lb.call("steam_available")), "leaderboard reports unavailable")
+	lb.call("ensure_boards")
+	lb.call("upload_daily", 2, 5, 125)
+	lb.call("upload_daily", 1, 3)
+	lb.call("fetch_top", LBScript.BOARD_DEPTH)
+	_assert((lb.get("_handles") as Dictionary).is_empty(), "no board handles without Steam")
+	_assert((lb.get("_pending_uploads") as Array).is_empty(), "no queued uploads without Steam")
+	_assert((lb.call("get_cached", LBScript.BOARD_DEPTH) as Array).is_empty(),
+		"empty cache without Steam")
+	# Panel: exactly 10 fixed rows per board, zero scroll containers.
+	var menu = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(menu)
+	menu._refresh_leaderboard_panel()
+	for path in ["DailyPhase/LeaderboardPanel/DepthCol/DepthRows",
+			"DailyPhase/LeaderboardPanel/SpeedCol/SpeedRows"]:
+		var rows: VBoxContainer = menu.get_node(path)
+		_assert(_live_children(rows).size() == LBScript.MAX_ENTRIES,
+			"%s has 10 fixed rows" % path.get_file())
+	var scrolls := []
+	_find_scroll_containers(menu.get_node("DailyPhase"), scrolls)
+	_assert(scrolls.is_empty(), "DailyPhase has no scroll containers")
+	# Seeded entries: player row highlighted, count stays fixed at 10.
+	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = [
+		{"rank": 1, "name": "Rival", "score": 300002, "is_player": false},
+		{"rank": 2, "name": "Me", "score": 200005, "is_player": true},
+	]
+	menu._refresh_leaderboard_panel()
+	var depth_rows: VBoxContainer = menu.get_node("DailyPhase/LeaderboardPanel/DepthCol/DepthRows")
+	_assert(_live_children(depth_rows).size() == 10, "row count stays 10 with entries")
+	var player_lbl: Label = null
+	for child in _live_children(depth_rows):
+		if child is Label and child.text.contains("Me"):
+			player_lbl = child
+	_assert(player_lbl != null, "player entry shown")
+	_assert(player_lbl.get_theme_color("font_color") == Color(1.0, 0.85, 0.3),
+		"player row highlighted gold")
+	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = []
+	# Race-my-best toggle (Phase 2): defaults off, flips the Dungeon static.
+	_assert(not bool(menu.get_node("DailyPhase/RaceEchoCheck").button_pressed),
+		"race echo toggle defaults off")
+	menu.get_node("DailyPhase/RaceEchoCheck").button_pressed = true
+	menu._on_race_echo_toggled(true)
+	var er2: Node = root.get_node_or_null("EchoRecorder")
+	_assert(bool(er2.get("race_echo")), "toggle sets EchoRecorder.race_echo")
+	menu._on_race_echo_toggled(false)
+	_assert(not bool(er2.get("race_echo")), "toggle clears EchoRecorder.race_echo")
+	menu.queue_free()
+	print("[Playtest] leaderboard phase 1 done")
+
+
+## Children not queued for deletion (queue_free is deferred to frame end).
+func _live_children(node: Node) -> Array:
+	var out: Array = []
+	for child in node.get_children():
+		if not child.is_queued_for_deletion():
+			out.append(child)
+	return out
+
+
+func _find_scroll_containers(node: Node, out: Array) -> void:
+	if node is ScrollContainer:
+		out.append(node)
+	for child in node.get_children():
+		_find_scroll_containers(child, out)
+
+
+func _test_echo_phase2() -> void:
+	print("[Playtest] echo record/playback (issue #9 Phase 2)...")
+	var ERScript = load("res://scripts/autoload/echo_recorder.gd")
+	var er: Node = root.get_node_or_null("EchoRecorder")
+	_assert(er != null, "EchoRecorder autoload exists")
+	_assert(not bool(er.get("is_recording")), "recorder idle by default")
+
+	# --- Sample encode/decode roundtrip ---
+	var buf := PackedByteArray()
+	ERScript.encode_sample(buf, 42, Vector3(12.345, 0.0, -67.89), 1.5708)
+	_assert(buf.size() == 12, "sample is 12 bytes")
+	var s: Dictionary = ERScript.decode_sample(buf, 0)
+	_assert(int(s["tick"]) == 42, "tick roundtrips")
+	_assert((s["pos"] as Vector3).distance_to(Vector3(12.345, 0.0, -67.89)) < 0.02,
+		"position roundtrips within 2cm")
+	_assert(absf(wrapf(float(s["yaw"]) - 1.5708, -PI, PI)) < 0.001,
+		"yaw roundtrips")
+	_assert(ERScript.decode_sample(buf, 5).is_empty(), "out-of-range decode is {}")
+
+	# --- File format: header, size bound, load roundtrip ---
+	# Simulate a 10-minute run: 6000 samples at 10Hz.
+	var big := PackedByteArray()
+	for i in 6000:
+		ERScript.encode_sample(big, i, Vector3(i * 0.01, 0, i * 0.02), float(i) * 0.001)
+	var events := [{"tick": 100, "ability_id": "fireball"}, {"tick": 5500, "ability_id": "meteor"}]
+	var data := {"date": "20261005", "seed": 987654, "samples": big,
+		"sample_count": 6000, "ability_events": events}
+	var path := "user://echoes/test_echo.dat"
+	_assert(bool(er.call("save_echo", data, path)), "echo saves")
+	var f := FileAccess.open(path, FileAccess.READ)
+	var fsize := f.get_length()
+	f.close()
+	# 25 header + 6000*12 samples + events ≈ 72KB. Bound well under 150KB.
+	_assert(fsize < 150 * 1024, "10-min echo under 150KB (was %d)" % fsize)
+	_assert(fsize > 60000, "10-min echo has substance (was %d)" % fsize)
+	var loaded: Dictionary = er.call("load_echo", path)
+	_assert(not loaded.is_empty(), "echo loads")
+	_assert(str(loaded["date"]) == "20261005", "date roundtrips")
+	_assert(int(loaded["seed"]) == 987654, "seed roundtrips")
+	_assert(int(loaded["sample_count"]) == 6000, "sample count roundtrips")
+	_assert((loaded["ability_events"] as Array).size() == 2, "ability events roundtrip")
+	_assert(str((loaded["ability_events"] as Array)[1]["ability_id"]) == "meteor",
+		"ability id roundtrips")
+	var ls0: Dictionary = ERScript.decode_sample(loaded["samples"], 0)
+	var ls5999: Dictionary = ERScript.decode_sample(loaded["samples"], 5999)
+	_assert(int(ls0["tick"]) == 0 and int(ls5999["tick"]) == 5999, "sample ticks survive")
+	# Corrupt/missing files fail clean, never crash.
+	_assert((er.call("load_echo", "user://echoes/does_not_exist.dat") as Dictionary).is_empty(),
+		"missing echo loads as {}")
+	var bad := FileAccess.open("user://echoes/bad.dat", FileAccess.WRITE)
+	bad.store_buffer(PackedByteArray([1, 2, 3, 4]))
+	bad.close()
+	_assert((er.call("load_echo", "user://echoes/bad.dat") as Dictionary).is_empty(),
+		"corrupt echo loads as {}")
+	DirAccess.remove_absolute("user://echoes/test_echo.dat")
+	DirAccess.remove_absolute("user://echoes/bad.dat")
+
+	# --- Recorder: 10Hz sampling, ability events, no RNG ---
+	# The recorder script must contain zero RNG calls (pure observation).
+	var rsrc := FileAccess.get_file_as_string("res://scripts/autoload/echo_recorder.gd")
+	for rng_call in ["randi(", "randf(", "randi_range(", "randf_range(", "RandomNumberGenerator", ".seed ="]:
+		_assert(not rsrc.contains(rng_call), "recorder has no RNG: %s" % rng_call)
+	# Live recording against a dummy player node.
+	var dummy := Node3D.new()
+	dummy.position = Vector3(3.0, 0.0, 4.0)
+	dummy.rotation.y = 0.75
+	root.add_child(dummy)
+	er.call("start_recording", dummy, "20261005", 12345)
+	_assert(bool(er.get("is_recording")), "recording starts")
+	er.call("record_ability", "fireball")
+	# Simulate 0.35s of _process → 3 samples at 10Hz.
+	er._process(0.35)
+	_assert(int(er.get("_sample_count")) == 3, "10Hz sampling (3 samples in 0.35s)")
+	er.call("record_ability", "")
+	_assert((er.get("_ability_events") as Array).size() == 1, "empty ability id ignored")
+	var rec: Dictionary = er.call("stop_recording")
+	_assert(not bool(er.get("is_recording")), "recording stops")
+	_assert(int(rec["sample_count"]) == 3, "stop returns samples")
+	_assert(str((rec["ability_events"] as Array)[0]["ability_id"]) == "fireball",
+		"ability event captured with tick")
+	var rs: Dictionary = ERScript.decode_sample(rec["samples"], 0)
+	_assert((rs["pos"] as Vector3).distance_to(Vector3(3.0, 0.0, 4.0)) < 0.02,
+		"recorded position matches player")
+	er.call("record_ability", "meteor")
+	_assert((er.get("_ability_events") as Array).is_empty(), "no-op when not recording")
+	dummy.queue_free()
+
+	# --- Ghost: visual-only, zero RNG, no collision ---
+	var gsrc := FileAccess.get_file_as_string("res://scripts/combat/echo_ghost.gd")
+	for rng_call in ["randi(", "randf(", "randi_range(", "randf_range(", "RandomNumberGenerator"]:
+		_assert(not gsrc.contains(rng_call), "ghost has no RNG: %s" % rng_call)
+	_assert(not gsrc.contains("CollisionShape3D.new"), "ghost has no collision shape")
+	_assert(not gsrc.contains("take_damage") and not gsrc.contains("deal_damage"),
+		"ghost deals/takes no damage")
+	var ghost := EchoGhost.new()
+	root.add_child(ghost)
+	# Ghost with no echo: start is a safe no-op.
+	ghost.start()
+	_assert(not ghost.is_playing(), "ghost won't play without echo data")
+	# Load the saved echo via data dict and race it.
+	var gbuf := PackedByteArray()
+	for i in 20:
+		ERScript.encode_sample(gbuf, i, Vector3(i * 1.0, 0, 0), 0.0)
+	_assert(ghost.load_echo_data({"samples": gbuf, "sample_count": 20}), "ghost loads echo")
+	ghost.start()
+	_assert(ghost.is_playing(), "ghost plays")
+	# Playback position matches recording within tolerance: at t=0.55s
+	# (sample 5.5) the ghost lerps between samples 5 and 6 → x ≈ 5.5.
+	for i in 11:
+		ghost._process(0.05)
+	_assert(absf(ghost.global_position.x - 5.5) < 0.05,
+		"playback interpolates (x=%.2f)" % ghost.global_position.x)
+	# Ghost never touches the dungeon RNG: seeded ProcGen is identical
+	# with and without a ghost racing alongside.
+	var theme = load("res://data/levels/theme_village.tres")
+	var layout_a := ProcGen.generate(theme, 424242)
+	# Race a ghost during the second generation.
+	var ghost2 := EchoGhost.new()
+	root.add_child(ghost2)
+	ghost2.load_echo_data({"samples": gbuf, "sample_count": 20})
+	ghost2.start()
+	for i in 30:
+		ghost2._process(0.016)
+	var layout_b := ProcGen.generate(theme, 424242)
+	_assert(layout_a.grid_size == layout_b.grid_size, "ghost: same grid size")
+	_assert(str(layout_a.mob_spawns) == str(layout_b.mob_spawns), "ghost: identical mob spawns")
+	ghost2.queue_free()
+	# Ghost reaches the end and stops cleanly.
+	for i in 50:
+		ghost._process(0.1)
+	_assert(not ghost.is_playing(), "ghost stops at end of echo")
+	ghost.queue_free()
+
+	# --- Wiring: player hooks, dungeon hooks, death save ---
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("_notify_echo_ability"), "player logs ability casts")
+	_assert(psrc.contains("stop_recording"), "death stops recording")
+	_assert(psrc.contains("save_echo"), "best run saves echo")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("start_recording"), "dungeon starts recording on daily")
+	_assert(dsrc.contains("_maybe_spawn_echo_ghost"), "dungeon spawns ghost when toggled")
+	_assert(dsrc.contains("_maybe_spawn_echo_ghost"), "ghost spawn hook exists")
+	print("[Playtest] echo phase 2 done")

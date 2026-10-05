@@ -497,6 +497,32 @@ func _next_spawn_point() -> Vector3:
 	return spawn_points[idx]
 
 
+## Echoes (issue #9 Phase 2): spawn the visual-only ghost if the player
+## toggled "Race my best echo" and a best echo exists for today.
+func _maybe_spawn_echo_ghost() -> void:
+	# Runtime lookup (not the EchoRecorder global): keeps dungeon.gd free of
+	# compile-time autoload dependencies that break -s script-mode loading.
+	var recorder: Node = get_tree().root.get_node_or_null("EchoRecorder")
+	var daily: Node = get_tree().root.get_node_or_null("DailyRun")
+	if recorder == null or daily == null:
+		return
+	if not bool(recorder.get("race_echo")):
+		return
+	var date_str: String = daily.call("get_today_string")
+	if not bool(recorder.call("has_echo_for_date", date_str)):
+		return
+	# Use load() not the EchoGhost class_name: avoids a global-class
+	# load-order cycle when station.gd pulls in dungeon.gd in -s mode.
+	var GhostScript: GDScript = load("res://scripts/combat/echo_ghost.gd")
+	var ghost: Node3D = GhostScript.new()
+	ghost.name = "EchoGhost"
+	add_child(ghost)
+	if ghost.call("load_echo", recorder.call("echo_path_for_date", date_str)):
+		ghost.call("start")
+	else:
+		ghost.queue_free()
+
+
 func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 	if get_player_node(peer_id) != null:
 		return
@@ -507,6 +533,14 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 	p.position = pos
 	$Players.add_child(p)
 	if peer_id == multiplayer.get_unique_id():
+		# Echoes (issue #9 Phase 2): start 10Hz recording on daily runs.
+		# Pure observation — the recorder never touches RNG or gameplay.
+		# Runtime autoload lookup: avoids compile-time dependencies.
+		var _rec: Node = get_tree().root.get_node_or_null("EchoRecorder")
+		var _daily: Node = get_tree().root.get_node_or_null("DailyRun")
+		if _rec != null and _daily != null and next_seed == int(_daily.call("get_today_seed")):
+			_rec.call("start_recording", p, _daily.call("get_today_string"), next_seed)
+			_maybe_spawn_echo_ghost()
 		if not saved_player_state.is_empty():
 			p.apply_state(saved_player_state)
 			saved_player_state = {}

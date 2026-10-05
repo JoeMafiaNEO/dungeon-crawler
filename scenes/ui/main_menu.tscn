@@ -150,6 +150,12 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Solo"
 
+[node name="DailyButton" type="Button" parent="ModePhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Daily Challenge"
+
 [node name="ModeBackButton" type="Button" parent="ModePhase"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -480,6 +486,79 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Back"
 
+[node name="DailyPhase" type="VBoxContainer" parent="."]
+unique_name_in_owner = true
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="DailyLabel" type="Label" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_alignment = 1
+text = "Daily Challenge"
+
+[node name="DailyInfo" type="Label" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_alignment = 1
+text = "Today's seed"
+
+[node name="DailyPlayButton" type="Button" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Start Daily Run"
+
+[node name="RaceEchoCheck" type="CheckBox" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Race my best echo"
+
+[node name="LeaderboardPanel" type="HBoxContainer" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+alignment = 1
+
+[node name="DepthCol" type="VBoxContainer" parent="DailyPhase/LeaderboardPanel"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DepthTitle" type="Label" parent="DailyPhase/LeaderboardPanel/DepthCol"]
+layout_mode = 2
+horizontal_alignment = 1
+text = "Deepest"
+
+[node name="DepthRows" type="VBoxContainer" parent="DailyPhase/LeaderboardPanel/DepthCol"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="SpeedCol" type="VBoxContainer" parent="DailyPhase/LeaderboardPanel"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="SpeedTitle" type="Label" parent="DailyPhase/LeaderboardPanel/SpeedCol"]
+layout_mode = 2
+horizontal_alignment = 1
+text = "Fastest Clear"
+
+[node name="SpeedRows" type="VBoxContainer" parent="DailyPhase/LeaderboardPanel/SpeedCol"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="DailyBackButton" type="Button" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Back"
+
 [node name="LobbyPanel" type="VBoxContainer" parent="."]
 unique_name_in_owner = true
 visible = false
@@ -529,6 +608,7 @@ text = "Leave"
 [connection signal="pressed" from="TitlePhase/TitleClassRow/TitleArchitectButton" to="." method="_on_architect_pressed"]
 [connection signal="pressed" from="ModePhase/MultiButton" to="." method="_on_multi_pressed"]
 [connection signal="pressed" from="ModePhase/SoloButton" to="." method="_on_solo_pressed"]
+[connection signal="pressed" from="ModePhase/DailyButton" to="." method="_on_daily_pressed"]
 [connection signal="pressed" from="ModePhase/ModeBackButton" to="." method="_on_mode_back_pressed"]
 [connection signal="pressed" from="MultiPhase/HostButton" to="." method="_on_host_pressed"]
 [connection signal="pressed" from="MultiPhase/JoinButton" to="." method="_on_join_pressed"]
@@ -554,3 +634,6 @@ text = "Leave"
 [connection signal="toggled" from="StagingPhase/StagingRow/OpenLobbyCheck" to="." method="_on_open_lobby_toggled"]
 [connection signal="pressed" from="StagingPhase/StartRunButton" to="." method="_on_start_run_pressed"]
 [connection signal="pressed" from="StagingPhase/StagingBackButton" to="." method="_on_staging_back_pressed"]
+[connection signal="pressed" from="DailyPhase/DailyPlayButton" to="." method="_on_daily_play_pressed"]
+[connection signal="toggled" from="DailyPhase/RaceEchoCheck" to="." method="_on_race_echo_toggled"]
+[connection signal="pressed" from="DailyPhase/DailyBackButton" to="." method="_on_daily_back_pressed"]

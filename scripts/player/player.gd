@@ -866,6 +866,8 @@ func _selected_ability_id() -> String:
 ## T/F: use the selected class ability (warrior totem / rogue trick).
 ## Mage casts via left-click instead.
 func _use_class_ability() -> void:
+	# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
+	_notify_echo_ability(_selected_ability_id())
 	if class_id == "warrior":
 		_place_totem()
 	elif class_id == "rogue":
@@ -1952,7 +1954,18 @@ func _damage_rts_targets(fwd: Vector3, from: int) -> void:
 			multiplayer.get_unique_id())
 
 
+
+## Echoes (issue #9 Phase 2): log an ability cast to the recorder.
+## Runtime autoload lookup avoids compile-time dependencies.
+func _notify_echo_ability(ability_id: String) -> void:
+	var rec: Node = get_tree().root.get_node_or_null("EchoRecorder")
+	if rec != null:
+		rec.call("record_ability", ability_id)
+
+
 func _cast_spell() -> void:
+	# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
+	_notify_echo_ability(_selected_ability_id())
 	match _selected_ability_id():
 		"frost":
 			AudioManager.sfx("frost_cast")
@@ -1983,6 +1996,8 @@ var _structure_seq := 0
 
 
 func _cast_architect_ability() -> void:
+	# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
+	_notify_echo_ability(_selected_ability_id())
 	match _selected_ability_id():
 		"sentry_turret", "bulwark_wall", "spike_trap", "keystone":
 			_place_structure(_selected_ability_id())
@@ -2852,7 +2867,20 @@ func die() -> void:
 		if Dungeon.next_seed == DailyRun.get_today_seed():
 			var stats := run_stats()
 			var score := int(stats.get("cycle", 1)) * 1000 + int(stats.get("level", 1)) * 10 + int(stats.get("kills", 0))
-			DailyRun.record_attempt(score)
+			# Echoes (issue #9 Phase 2): stop the 10Hz recording. If this is
+			# the player's best daily score, save the echo for ghost racing.
+			# Runtime autoload lookup avoids compile-time dependencies.
+			var _rec: Node = get_tree().root.get_node_or_null("EchoRecorder")
+			var _daily: Node = get_tree().root.get_node_or_null("DailyRun")
+			if _rec != null and _daily != null:
+				var echo_data: Dictionary = _rec.call("stop_recording")
+				var is_best := score > int(_daily.call("get_best_score"))
+				_daily.call("record_attempt", score)
+				if is_best and int(echo_data.get("sample_count", 0)) > 0:
+					_rec.call("save_echo", echo_data,
+						_rec.call("echo_path_for_date", _daily.call("get_today_string")))
+			else:
+				DailyRun.record_attempt(score)
 		SaveManager.clear_run(SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
 		if hud != null:
 			hud.show_death_screen(run_stats())
