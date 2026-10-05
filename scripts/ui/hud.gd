@@ -445,6 +445,76 @@ func show_bounty() -> void:
 	expiry.add_theme_font_size_override("font_size", 12)
 	expiry.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
 	vb.add_child(expiry)
+
+# --- Relic Vault (issue #6 Phase 2) ---
+
+var vault_open := false
+
+
+## Vault panel: 6 special cards (equip one per run) + a fixed trophy row.
+## Fixed card count → the layout cannot scroll. Reuses the cipher popup
+## shell (mouse visible, E/Esc closes).
+func show_vault() -> void:
+	if _player == null:
+		return
+	_build_vault_panel()
+	AudioManager.sfx("vault_open")
+
+
+func _build_vault_panel() -> void:
+	var vb := _cipher_panel()
+	var title := Label.new()
+	title.text = "RELIC VAULT"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.40))
+	vb.add_child(title)
+	var sub := Label.new()
+	sub.text = "Equip one special per run — effects apply immediately."
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.add_theme_font_size_override("font_size", 13)
+	sub.add_theme_color_override("font_color", Color(0.75, 0.75, 0.80))
+	vb.add_child(sub)
+	var cur := str(_player.get("equipped_special"))
+	var eq := Label.new()
+	if cur == "":
+		eq.text = "Equipped: none"
+	else:
+		var cur_data := SpecialData.get_special(cur)
+		eq.text = "Equipped: %s" % (cur_data.display_name if cur_data != null else cur)
+	eq.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	eq.add_theme_font_size_override("font_size", 14)
+	eq.add_theme_color_override("font_color", Color(0.60, 1.0, 0.65))
+	vb.add_child(eq)
+	var grid := GridContainer.new()
+	grid.name = "VaultGrid"
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	for sid in SpecialData.SPECIAL_IDS:
+		grid.add_child(_vault_card(sid))
+	vb.add_child(grid)
+	# Trophy row (visual only): apex trophies earned so far.
+	var trow := HBoxContainer.new()
+	trow.name = "TrophyRow"
+	trow.alignment = BoxContainer.ALIGNMENT_CENTER
+	trow.add_theme_constant_override("separation", 12)
+	var tlabel := Label.new()
+	tlabel.text = "TROPHIES"
+	tlabel.add_theme_font_size_override("font_size", 13)
+	tlabel.add_theme_color_override("font_color", Color(1.0, 0.85, 0.40))
+	trow.add_child(tlabel)
+	for sid in ["apex_boar_hide", "apex_horror_eye", "apex_warden_sigil"]:
+		var t := TextureRect.new()
+		var tdata := SpecialData.get_special(sid)
+		t.texture = tdata.icon if tdata != null else null
+		t.custom_minimum_size = Vector2(40, 40)
+		t.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		t.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		if not SpecialData.is_earned(sid):
+			t.modulate = Color(0.30, 0.30, 0.35)
+		trow.add_child(t)
+	vb.add_child(trow)
 	var close_hint := Label.new()
 	close_hint.text = "E / Esc — close"
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -468,6 +538,75 @@ func _refresh_bounty_tracker() -> void:
 			txt = BountyUI.tracker_text(bounties, progress)
 	_bounty_tracker.text = txt
 	_bounty_tracker.visible = not txt.is_empty()
+
+	vault_open = true
+
+
+func _vault_card(sid: String) -> Control:
+	var data := SpecialData.get_special(sid)
+	var earned := SpecialData.is_earned(sid)
+	var equipped := str(_player.get("equipped_special")) == sid
+	var card := PanelContainer.new()
+	card.name = "VaultCard_" + sid
+	card.custom_minimum_size = Vector2(230, 176)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 4)
+	card.add_child(vb)
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 8)
+	var icon := TextureRect.new()
+	icon.texture = data.icon
+	icon.custom_minimum_size = Vector2(48, 48)
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	top.add_child(icon)
+	var name_l := Label.new()
+	name_l.text = data.display_name
+	name_l.add_theme_font_size_override("font_size", 15)
+	name_l.add_theme_color_override("font_color", Color(1.0, 0.90, 0.60))
+	top.add_child(name_l)
+	vb.add_child(top)
+	var desc := Label.new()
+	if earned:
+		desc.text = data.description
+		desc.add_theme_color_override("font_color", Color(0.85, 0.85, 0.88))
+	else:
+		desc.text = "Locked — " + data.unlock_hint
+		desc.add_theme_color_override("font_color", Color(0.60, 0.60, 0.65))
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc.custom_minimum_size = Vector2(214, 44)
+	desc.add_theme_font_size_override("font_size", 12)
+	vb.add_child(desc)
+	var btn := Button.new()
+	if not earned:
+		btn.text = "LOCKED"
+		btn.disabled = true
+	elif equipped:
+		btn.text = "UNEQUIP"
+		btn.pressed.connect(_on_vault_unequip)
+	else:
+		btn.text = "EQUIP"
+		btn.pressed.connect(_on_vault_equip.bind(sid))
+	vb.add_child(btn)
+	if not earned:
+		card.modulate = Color(0.62, 0.62, 0.68)
+	return card
+
+
+func _on_vault_equip(sid: String) -> void:
+	if _player == null:
+		return
+	if SpecialData.equip(_player, sid):
+		AudioManager.sfx("relic_equip")
+		_build_vault_panel()
+
+
+func _on_vault_unequip() -> void:
+	if _player == null:
+		return
+	SpecialData.unequip(_player)
+	AudioManager.sfx("ui_click")
+	_build_vault_panel()
 
 
 # --- Mason's Cipher popups ---
@@ -517,13 +656,19 @@ func _open_cipher_popup(content: Control) -> void:
 
 
 func close_cipher_popup() -> void:
+	var was_vault := vault_open
 	if _cipher_popup != null and is_instance_valid(_cipher_popup):
 		_cipher_popup.queue_free()
 	_cipher_popup = null
 	vendor_open = false
 	bounty_open = false
+	if was_vault:
+		AudioManager.sfx("vault_close")
+	vault_open = false
 	_vendor_cash_label = null
 	cipher_popup_open = false
+	if was_vault:
+		AudioManager.sfx("vault_close")
 	if not is_paused:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -1023,6 +1168,19 @@ func _refresh_trophy_section() -> void:
 			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		label.add_theme_font_size_override("font_size", 11)
 		row.add_child(label)
+
+			if not earned:
+				icon.modulate = Color(0.25, 0.25, 0.3)
+			row.add_child(icon)
+			var label := Label.new()
+			if earned:
+				label.text = "%s — %s" % [sp.display_name, sp.effect_summary]
+				label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+			else:
+				label.text = "??? — %s" % sp.unlock_hint
+				label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+			label.add_theme_font_size_override("font_size", 11)
+			row.add_child(label)
 
 
 ## Architect Cipher section: collected fragments as raw cipher + shift hint

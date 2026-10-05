@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bvaultshots01"]
+
+[ext_resource type="Script" path="res://tools/vault_shots/vault_shots.gd" id="1"]
+
+[node name="VaultShots" type="Node"]
+script = ExtResource("1")

@@ -12,6 +12,7 @@ extends Node3D
 const DepartureBoardScript := preload("res://scripts/station/departure_board.gd")
 const VendorStallScript := preload("res://scripts/station/vendor_stall.gd")
 const BountyBoardScript := preload("res://scripts/station/bounty_board.gd")
+const RelicVaultScript := preload("res://scripts/station/relic_vault.gd")
 
 const DEPART_TIME := 45.0
 const HEAL_TICK := 0.5
@@ -706,6 +707,12 @@ func _build_station_embedded() -> void:
 	stall.name = "VendorStall"
 	stall.position = Vector3(10, 0, -0.5)
 	add_child(stall)
+
+	# Relic Vault locker (issue #6 Phase 2): E-interact opens the vault panel.
+	var vault := RelicVaultScript.new()
+	vault.name = "RelicVault"
+	vault.position = Vector3(-10, 0, -0.5)
+	add_child(vault)
 
 	# Departure board (Phase 2): faces the corridor entrance (+z).
 	var board := DepartureBoardScript.new()

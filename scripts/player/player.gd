@@ -2528,7 +2528,7 @@ func _update_pickup_prompt() -> void:
 func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board"]:
+	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:
@@ -3110,7 +3110,7 @@ func rpc_earn_special(special_id: String) -> void:
 		var data := SpecialData.get_special(special_id)
 		if data != null and hud != null:
 			hud.show_toast("SPECIAL EARNED: %s — %s" % [data.display_name, data.description])
-		AudioManager.sfx("unlock")
+		AudioManager.sfx("relic_pickup")
 
 
 ## Serialize run-persistent state so it survives procedural level transitions.

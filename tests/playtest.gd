@@ -58,6 +58,7 @@ func _run() -> void:
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
 	_test_specials_phase1()
+	_test_specials_phase2()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -67,6 +68,7 @@ func _run() -> void:
 	_test_leaderboard_phase1()
 	_test_echo_phase2()
 	_test_workshop_phase3()
+
 	_print_results()
 	quit()
 
@@ -3692,6 +3694,34 @@ func _has_scroll_container(n: Node) -> bool:
 	return false
 
 
+## Find a named descendant of the vault popup (cards, grid, trophy row).
+func _vault_find(hud: Node, node_name: String) -> Node:
+	var pop: Node = hud.get("_cipher_popup")
+	if pop == null:
+		return null
+	return pop.find_child(node_name, true, false)
+
+
+## Button text of a vault card (the last Button in its VBox).
+func _vault_card_button(card: Node) -> String:
+	for ch in card.find_children("*", "Button", true, false):
+		return (ch as Button).text
+	return ""
+
+
+## Press a vault card button by special id + expected label.
+func _vault_press(hud: Node, sid: String, label: String) -> bool:
+	var card := _vault_find(hud, "VaultCard_" + sid)
+	if card == null:
+		return false
+	for ch in card.find_children("*", "Button", true, false):
+		var b := ch as Button
+		if b.text == label and not b.disabled:
+			b.pressed.emit()
+			return true
+	return false
+
+
 ## Collect the 3 fixed bounty cards out of a panel subtree.
 func _find_bounty_cards(n: Node) -> Array:
 	var out := []
@@ -4022,3 +4052,135 @@ func _test_workshop_phase3() -> void:
 	_assert(scrolls.is_empty(), "DailyPhase still has no scroll containers")
 	menu.queue_free()
 	print("[Playtest] workshop phase 3 done")
+
+## True when no ScrollContainer exists anywhere under the vault popup.
+func _vault_no_scroll(hud: Node) -> bool:
+	var pop: Node = hud.get("_cipher_popup")
+	if pop == null:
+		return false
+	return pop.find_children("*", "ScrollContainer", true, false).is_empty()
+
+func _test_specials_phase2() -> void:
+	print("[Playtest] Specials phase 2 (vault locker + panel)...")
+	var mgr := root.get_node("SaveManager")
+	# Load at runtime (not via the class_name): a parse-time reference would
+	# force special_data.gd to compile before autoloads exist, breaking its
+	# bare SaveManager refs (same reason phase 1 uses load()).
+	var SD: GDScript = load("res://scripts/data/special_data.gd")
+	# Abort-safe profile backup (sidecar pattern): a runtime error aborts THIS
+	# function, so never delete the original before a restore succeeds.
+	var prof_path := "user://profile_local.cfg"
+	var prof_bak := prof_path + ".phase2bak"
+	if FileAccess.file_exists(prof_path):
+		_copy_file(prof_path, prof_bak)
+	elif FileAccess.file_exists(prof_bak):
+		_copy_file(prof_bak, prof_path) # self-heal after an aborted run
+	# Start from a clean profile for deterministic locked/earned states.
+	if FileAccess.file_exists(prof_path):
+		DirAccess.remove_absolute(prof_path)
+	mgr.call("load_game")
+	_assert(not SD.is_earned("greed_charm"), "clean profile: nothing earned")
+	var holder := Node3D.new() # -s mode has no current_scene; positional sfx needs one
+	root.add_child(holder)
+	current_scene = holder
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var pl = PlayerScene.instantiate()
+	pl.set("class_id", "warrior")
+	root.add_child(pl)
+	var HUDScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HUDScene.instantiate()
+	root.add_child(hud)
+	hud.call("setup", pl)
+
+	# Vault prop: group, prompt, locker face sprite + sign.
+	var VaultScript := load("res://scripts/station/relic_vault.gd")
+	var vault = VaultScript.new()
+	root.add_child(vault)
+	_assert(vault.is_in_group("vault_locker"), "vault prop in vault_locker group")
+	_assert(str(vault.call("prompt_text")) == "Open relic vault", "vault prompt text")
+	var face: Sprite3D = null
+	var sign: Label3D = null
+	for ch in vault.get_children():
+		if ch is Sprite3D:
+			face = ch
+		elif ch is Label3D:
+			sign = ch
+	_assert(face != null and face.texture != null, "vault locker face sprite present")
+	_assert(sign != null and sign.text == "RELIC VAULT", "vault sign reads RELIC VAULT")
+	# Player E-scan covers the group; station places the locker.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('"vault_locker"'), "player E-scan covers vault_locker")
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(stsrc.contains("RelicVault"), "station places the vault locker")
+
+	# E-interact opens the vault panel through the popup shell.
+	vault.call("interact", pl)
+	_assert(bool(hud.get("vault_open")), "E-interact opens the vault panel")
+	_assert(bool(hud.get("cipher_popup_open")), "vault panel uses the popup shell")
+	# Fixed six-card layout; everything locked on a clean profile.
+	var grid := _vault_find(hud, "VaultGrid")
+	_assert(grid != null and grid.get_child_count() == 6, "six special cards, fixed count")
+	for sid in SD.SPECIAL_IDS:
+		var card := _vault_find(hud, "VaultCard_" + sid)
+		_assert(card != null, "card present for " + sid)
+		_assert(_vault_card_button(card) == "LOCKED", "locked card shows LOCKED (" + sid + ")")
+		var desc_l := card.find_children("*", "Label", true, false)[1] as Label
+		_assert((desc_l as Label).text.begins_with("Locked"), "locked card shows unlock hint (" + sid + ")")
+	# Trophy row: 3 apex icons, dimmed while unearned.
+	var trow := _vault_find(hud, "TrophyRow")
+	_assert(trow != null, "trophy row present")
+	var trophies := trow.find_children("*", "TextureRect", true, false)
+	_assert(trophies.size() == 3, "fixed trophy row has 3 icons")
+	for t in trophies:
+		_assert((t as TextureRect).modulate.r < 0.5, "unearned trophy dimmed")
+	# Zero-scroll audit: no ScrollContainer and the panel fits a real screen.
+	# (Headless -s runs at a 64x64 viewport, so assert against 1280x720.)
+	_assert(_vault_no_scroll(hud), "vault panel has no ScrollContainer")
+	var panel_box := _vault_find(hud, "VaultGrid").get_parent().get_parent() as Control
+	var need: Vector2 = panel_box.get_combined_minimum_size()
+	_assert(need.x <= 1280.0 and need.y <= 720.0,
+		"vault panel fits on screen (%d x %d <= 1280 x 720)" % [need.x, need.y])
+
+	# Equip flow: earn two specials, equip one through the panel button.
+	_assert(SD.earn("greed_charm"), "earn greed_charm")
+	_assert(SD.earn("apex_boar_hide"), "earn apex trophy")
+	hud.call("show_vault")
+	_assert(_vault_press(hud, "greed_charm", "EQUIP"), "EQUIP button pressed")
+	_assert(str(pl.get("equipped_special")) == "greed_charm", "panel EQUIP equips the special")
+	# Equipped card now offers UNEQUIP; equip persists into departure saves.
+	_assert(_vault_card_button(_vault_find(hud, "VaultCard_greed_charm")) == "UNEQUIP",
+		"equipped card shows UNEQUIP")
+	var st: Dictionary = pl.call("get_state")
+	_assert(str(st.get("equipped_special", "")) == "greed_charm",
+		"equipped special survives get_state (departure save)")
+	# Trophy row: earned trophy lit, unearned still dimmed.
+	var trophies2 := (_vault_find(hud, "TrophyRow") as Node).find_children("*", "TextureRect", true, false)
+	_assert((trophies2[0] as TextureRect).modulate.r > 0.9, "earned trophy shown lit")
+	_assert((trophies2[1] as TextureRect).modulate.r < 0.5, "unearned trophy still dimmed")
+	# Equip replaces: equipping a second special swaps it in.
+	_assert(SD.earn("iron_resolve"), "earn iron_resolve")
+	hud.call("show_vault") # rebuild so the newly earned card offers EQUIP
+	_assert(_vault_press(hud, "iron_resolve", "EQUIP"), "EQUIP iron_resolve pressed")
+	_assert(str(pl.get("equipped_special")) == "iron_resolve", "second EQUIP replaces the first")
+	_assert(_vault_press(hud, "iron_resolve", "UNEQUIP"), "UNEQUIP pressed")
+	_assert(str(pl.get("equipped_special")) == "", "UNEQUIP clears the equipped special")
+	# Locked cards stay locked: no EQUIP path for unearned specials.
+	hud.call("show_vault")
+	_assert(not _vault_press(hud, "second_wind", "EQUIP"), "unearned special cannot be equipped")
+
+	# E/Esc closes the panel and clears the flag.
+	hud.call("close_cipher_popup")
+	_assert(not bool(hud.get("vault_open")), "closing the popup clears vault_open")
+
+	# Restore the profile.
+	if FileAccess.file_exists(prof_bak):
+		_copy_file(prof_bak, prof_path)
+		DirAccess.remove_absolute(prof_bak)
+	elif FileAccess.file_exists(prof_path):
+		DirAccess.remove_absolute(prof_path) # test-created only
+	mgr.call("load_game")
+	hud.queue_free()
+	pl.queue_free()
+	vault.queue_free()
+	holder.queue_free()
+## Stub dungeon for apex mechanic tests: records announces/spawns, returns a
