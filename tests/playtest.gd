@@ -48,6 +48,7 @@ func _run() -> void:
 	_test_train_interior()
 	_test_boarding_flow()
 	_test_train_ride()
+	_test_train_dressing()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -1609,6 +1610,64 @@ func _test_train_ride() -> void:
 	_assert(hsrc.contains("func show_ride_status"), "ride: HUD ride status")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains('"skip_lever"'), "ride: skip lever in player interact groups")
+
+
+func _test_train_dressing() -> void:
+	print("[Playtest] Train interior phase 4 (per-theme dressing)...")
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	var StationScript := load("res://scripts/station/station.gd")
+	var themes := ["village", "dungeon", "depths", "supermarket", "warlord", "apex"]
+	var car = InteriorScript.new()
+	car._build_car()
+	car._build_dressing()
+	# Dressing root: one prop set per theme + the destination placard.
+	_assert(car._dressing != null, "dress: dressing root built")
+	var props = car._dress_props
+	_assert(props != null, "dress: props container built")
+	var names := []
+	for c in props.get_children():
+		names.append(c.name)
+	for tid in themes:
+		_assert(tid in names, "dress: prop set for " + tid)
+	_assert(car._dest_sign != null, "dress: destination placard built")
+
+	# Per theme: lamps tinted, trim/seats recolored, only that prop set
+	# visible, placard names the destination.
+	for tid in themes:
+		car.apply_dressing(tid)
+		var tint: Color = StationScript.DRESSING_LAMPS[tid]
+		for omni in car._dress_lamps:
+			_assert((omni as OmniLight3D).light_color == tint,
+				"dress: lamp tinted for " + tid)
+		_assert(car._lamp_visual_mat.emission == tint, "dress: lamp glow tinted for " + tid)
+		var trim: Dictionary = InteriorScript.DRESSING_TRIM[tid]
+		_assert(car._wall_mat.albedo_color == trim["wall"], "dress: wall trim for " + tid)
+		_assert(car._seat_mat.albedo_color == trim["seat"], "dress: seat fabric for " + tid)
+		for c in props.get_children():
+			_assert(c.visible == (c.name == tid), "dress: only " + tid + " props visible")
+		var want := "NOW ARRIVING: " + str(StationScript.theme_display_name(tid)).to_upper()
+		_assert(car._dest_sign.text == want, "dress: placard names " + tid)
+
+	# Unknown theme falls back to village.
+	car.apply_dressing("nope")
+	_assert(car._dress_lamps[0].light_color == StationScript.DRESSING_LAMPS["village"],
+		"dress: unknown theme falls back to village lamps")
+	for c in props.get_children():
+		_assert(c.visible == (c.name == "village"), "dress: unknown theme shows village props")
+
+	# Idempotent: applying twice keeps the same state.
+	car.apply_dressing("depths")
+	var once: Color = car._wall_mat.albedo_color
+	car.apply_dressing("depths")
+	_assert(car._wall_mat.albedo_color == once, "dress: re-apply is idempotent")
+	car.free()
+
+	# Wiring (source): dressing happens on ride start, on every peer.
+	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	var rpos := isrc.find("func _apply_ride_started")
+	_assert(rpos > 0, "dress: ride-start hook exists")
+	_assert(isrc.substr(rpos, 400).contains("apply_dressing(ride_theme_id)"),
+		"dress: ride start applies destination dressing")
 
 
 func _test_boarding_flow() -> void:

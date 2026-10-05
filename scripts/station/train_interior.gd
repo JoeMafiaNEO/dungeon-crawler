@@ -41,10 +41,30 @@ const DOOR_W := 2.2
 const PlayerScene := preload("res://scenes/player/player.tscn")
 const HudScene := preload("res://scenes/ui/hud.tscn")
 
+## Per-theme car dressing (issue #3 Phase 4): lamp tints reuse the annex
+## palette (Station.DRESSING_LAMPS); wall/seat colors are car-specific.
+const DRESSING_TRIM := {
+	"village": {"wall": Color(0.45, 0.16, 0.14), "seat": Color(0.25, 0.45, 0.25)},
+	"dungeon": {"wall": Color(0.25, 0.28, 0.35), "seat": Color(0.15, 0.25, 0.45)},
+	"depths": {"wall": Color(0.25, 0.15, 0.30), "seat": Color(0.15, 0.45, 0.45)},
+	"supermarket": {"wall": Color(0.85, 0.82, 0.70), "seat": Color(0.70, 0.15, 0.15)},
+	"warlord": {"wall": Color(0.30, 0.22, 0.18), "seat": Color(0.50, 0.10, 0.10)},
+	"apex": {"wall": Color(0.25, 0.10, 0.10), "seat": Color(0.60, 0.08, 0.08)},
+}
+
 var _doors: Array = [] # sliding door panels (MeshInstance3D)
 var _doors_open := false
 var _door_tween: Tween = null
 var _local_hud: CanvasLayer = null
+# --- Per-theme dressing (issue #3 Phase 4) ---
+var _dressing: Node3D = null
+var _dress_props: Node3D = null # one child per theme id
+var _dest_sign: Label3D = null
+var _dress_tint := Color.WHITE # tints the window scenery as we slow
+var _dress_lamps: Array = [] # OmniLight3D
+var _lamp_visual_mat: StandardMaterial3D = null
+var _wall_mat: StandardMaterial3D = null
+var _seat_mat: StandardMaterial3D = null
 
 # --- Ride state (issue #3 Phase 3) ---
 var _riding := false
@@ -80,6 +100,7 @@ class SkipLever extends Node3D:
 
 func _ready() -> void:
 	_build_car()
+	_build_dressing()
 	_build_scenery()
 	_build_platform()
 	_build_skip_lever()
@@ -136,6 +157,7 @@ func ride_started(dest_name: String, seconds: float) -> void:
 func _apply_ride_started() -> void:
 	if _riding:
 		return
+	apply_dressing(ride_theme_id)
 	_riding = true
 	_ride_dest = ride_dest_name
 	_ride_left = ride_seconds
@@ -154,7 +176,10 @@ func _process(delta: float) -> void:
 	# Scenery: full speed until 8s out, eases to a stop by 3s out.
 	var f := _scenery_speed_factor(_ride_left)
 	for m in _scenery_mats:
-		(m as StandardMaterial3D).uv1_offset.x -= 0.9 * f * delta
+		var mat := m as StandardMaterial3D
+		mat.uv1_offset.x -= 0.9 * f * delta
+		# The passing world takes on the destination's palette as we slow.
+		mat.albedo_color = Color.WHITE.lerp(_dress_tint, 0.2 + 0.4 * (1.0 - f))
 	# Chug + rumble loop (one-shots re-triggered, like the departure ride).
 	_chug_timer -= delta
 	if _chug_timer <= 0.0:
@@ -552,6 +577,9 @@ func _build_car() -> void:
 		_solid(Vector3(12.0, 0.9, 0.15), Vector3(0, 1.1, side * 2.35), cushion, "BenchBack")
 
 	# Warm ceiling lamps.
+	_lamp_visual_mat = lamp_glow
+	_wall_mat = wall_red
+	_seat_mat = cushion
 	for lx in [-5.0, 0.0, 5.0]:
 		_visual(Vector3(0.8, 0.15, 0.8), Vector3(lx, WALL_H - 0.05, 0), lamp_glow, "CarLamp")
 		var omni := OmniLight3D.new()
@@ -560,6 +588,131 @@ func _build_car() -> void:
 		omni.light_energy = 1.2
 		omni.omni_range = 7.0
 		add_child(omni)
+		_dress_lamps.append(omni)
+
+
+## Per-theme car dressing (issue #3 Phase 4): one prop set per destination
+## theme under Dressing/Props (visibility toggled by apply_dressing) plus a
+## "NOW ARRIVING" placard above the rear door. All procedural — no textures.
+func _build_dressing() -> void:
+	_dressing = Node3D.new()
+	_dressing.name = "Dressing"
+	add_child(_dressing)
+	_dress_props = Node3D.new()
+	_dress_props.name = "Props"
+	_dressing.add_child(_dress_props)
+
+	var hay := _mat(Color(0.85, 0.70, 0.40))
+	var leaf := _mat(Color(0.30, 0.55, 0.28))
+	var trunk := _mat(Color(0.40, 0.28, 0.16))
+	var torch_tip := _mat(Color(1.0, 0.55, 0.15), Color(1.0, 0.45, 0.10), 3.0)
+	var chain := _mat(Color(0.18, 0.18, 0.20))
+	var rock := _mat(Color(0.30, 0.28, 0.34))
+	var crystal := _mat(Color(0.55, 0.30, 0.85), Color(0.45, 0.20, 0.80), 2.5)
+	var poster_r := _mat(Color(0.85, 0.25, 0.25))
+	var poster_b := _mat(Color(0.25, 0.45, 0.85))
+	var poster_y := _mat(Color(0.90, 0.80, 0.30))
+	var crate := _mat(Color(0.50, 0.36, 0.20))
+	var banner := _mat(Color(0.70, 0.12, 0.12))
+	var drape := _mat(Color(0.55, 0.05, 0.08))
+	var steel := _mat(Color(0.25, 0.25, 0.28))
+	var ember := _mat(Color(1.0, 0.35, 0.10), Color(1.0, 0.30, 0.08), 2.5)
+
+	# village: hay bales + a flower box on the bench (front corners).
+	var v := Node3D.new()
+	v.name = "village"
+	_dress_props.add_child(v)
+	_visual(Vector3(0.9, 0.9, 0.9), Vector3(7.0, 0.45, 1.7), hay, "", v)
+	_visual(Vector3(0.9, 0.9, 0.9), Vector3(7.0, 1.32, 1.7), hay, "", v)
+	_visual(Vector3(0.7, 0.35, 0.35), Vector3(-5.5, 0.85, 1.95), leaf, "", v)
+
+	# dungeon: torch sconces on the walls + hanging chains near the rear.
+	var d := Node3D.new()
+	d.name = "dungeon"
+	_dress_props.add_child(d)
+	for sx in [4.0, -4.0]:
+		for side in [-1.0, 1.0]:
+			_visual(Vector3(0.10, 0.50, 0.10), Vector3(sx, 2.00, side * 2.42), trunk, "", d)
+			_visual(Vector3(0.20, 0.15, 0.20), Vector3(sx, 2.32, side * 2.42), torch_tip, "", d)
+	for cx in [-7.0, -6.4]:
+		_visual(Vector3(0.06, 1.60, 0.06), Vector3(cx, 2.40, 1.70), chain, "", d)
+
+	# depths: glow-crystal clusters on rock bases (front corners).
+	var de := Node3D.new()
+	de.name = "depths"
+	_dress_props.add_child(de)
+	for cx in [7.0, -7.0]:
+		_visual(Vector3(0.8, 0.3, 0.8), Vector3(cx, 0.15, 1.70), rock, "", de)
+		var c1 := _visual(Vector3(0.28, 0.9, 0.28), Vector3(cx - 0.15, 0.70, 1.70), crystal, "", de)
+		c1.rotation.z = 0.18
+		var c2 := _visual(Vector3(0.24, 0.65, 0.24), Vector3(cx + 0.20, 0.60, 1.65), crystal, "", de)
+		c2.rotation.z = -0.22
+
+	# supermarket: poster boards on the walls + a product crate.
+	var s := Node3D.new()
+	s.name = "supermarket"
+	_dress_props.add_child(s)
+	_visual(Vector3(1.6, 1.0, 0.06), Vector3(-2.0, 1.90, 2.44), poster_r, "", s)
+	_visual(Vector3(1.6, 1.0, 0.06), Vector3(2.0, 1.90, -2.44), poster_b, "", s)
+	_visual(Vector3(1.6, 1.0, 0.06), Vector3(5.0, 1.90, 2.44), poster_y, "", s)
+	_visual(Vector3(0.8, 0.8, 0.8), Vector3(6.5, 0.40, -1.60), crate, "", s)
+
+	# warlord: war banners on the walls + a weapon rack near the front.
+	var w := Node3D.new()
+	w.name = "warlord"
+	_dress_props.add_child(w)
+	for bx in [3.0, -3.0]:
+		_visual(Vector3(0.14, 2.20, 0.14), Vector3(bx, 1.55, 2.42), trunk, "", w)
+		_visual(Vector3(0.80, 1.40, 0.06), Vector3(bx, 1.90, 2.42), banner, "", w)
+	_visual(Vector3(0.14, 1.40, 0.14), Vector3(6.60, 0.70, 0.0), trunk, "", w)
+	_visual(Vector3(0.14, 1.40, 0.14), Vector3(7.40, 0.70, 0.0), trunk, "", w)
+	_visual(Vector3(1.00, 0.12, 0.12), Vector3(7.00, 1.30, 0.0), trunk, "", w)
+
+	# apex: crimson drapes + a brazier with ember glow.
+	var a := Node3D.new()
+	a.name = "apex"
+	_dress_props.add_child(a)
+	for bx in [2.0, -2.0]:
+		_visual(Vector3(0.14, 2.20, 0.14), Vector3(bx, 1.55, -2.42), steel, "", a)
+		_visual(Vector3(0.90, 1.60, 0.08), Vector3(bx, 1.90, -2.42), drape, "", a)
+	_visual(Vector3(0.10, 0.80, 0.10), Vector3(5.50, 0.40, 1.60), steel, "", a)
+	_visual(Vector3(0.40, 0.15, 0.40), Vector3(5.50, 0.85, 1.60), steel, "", a)
+	_visual(Vector3(0.30, 0.12, 0.30), Vector3(5.50, 0.95, 1.60), ember, "", a)
+
+	# Destination placard above the rear door, facing into the car.
+	_dest_sign = Label3D.new()
+	_dest_sign.name = "DestSign"
+	_dest_sign.font_size = 64
+	_dest_sign.pixel_size = 0.008
+	_dest_sign.outline_size = 8
+	_dest_sign.position = Vector3(-7.85, 2.95, 0.0)
+	_dest_sign.rotation.y = PI * 0.5
+	_dressing.add_child(_dest_sign)
+
+
+## Dress the car for a destination theme: tint the lamps, wall trim and
+## seats, show that theme's prop set, set the NOW ARRIVING placard. Unknown
+## ids fall back to village. Called on ride start (all peers, via the
+## server-originated ride_started RPC) — one call path, no divergence.
+func apply_dressing(theme_id: String) -> void:
+	var tid := theme_id if (theme_id in Dungeon.THEME_ORDER or theme_id == "apex") else "village"
+	_dress_tint = Station.DRESSING_LAMPS.get(tid, Color.WHITE)
+	for omni in _dress_lamps:
+		(omni as OmniLight3D).light_color = _dress_tint
+	if _lamp_visual_mat != null:
+		_lamp_visual_mat.albedo_color = _dress_tint
+		_lamp_visual_mat.emission = _dress_tint
+	var trim: Dictionary = DRESSING_TRIM.get(tid, DRESSING_TRIM["village"])
+	if _wall_mat != null:
+		_wall_mat.albedo_color = trim["wall"]
+	if _seat_mat != null:
+		_seat_mat.albedo_color = trim["seat"]
+	if _dress_props != null:
+		for child in _dress_props.get_children():
+			child.visible = (child.name == tid)
+	if _dest_sign != null:
+		_dest_sign.text = "NOW ARRIVING: " + Station.theme_display_name(tid).to_upper()
+		_dest_sign.modulate = _dress_tint.lightened(0.4)
 
 
 ## Scrolling countryside outside the windows (issue #3 Phase 3): two long
@@ -646,6 +799,10 @@ func _build_platform() -> void:
 		_visual(Vector3(0.55, 0.28, 0.55), Vector3(lx, 2.75, 6.9), lamp, "", _platform_root)
 	# Destination sign, theme-tinted.
 	var tint: Color = Dungeon.arrival_tint(ride_theme_id)
+	# Platform lamps pick up the destination's dressing palette too.
+	var ptid := ride_theme_id if (ride_theme_id in Dungeon.THEME_ORDER or ride_theme_id == "apex") else "village"
+	var ptint: Color = Station.DRESSING_LAMPS.get(ptid, Color.WHITE)
+	lamp.emission = ptint
 	_visual(Vector3(0.16, 2.3, 0.16), Vector3(-1.7, 1.15, 6.4), post, "", _platform_root)
 	_visual(Vector3(0.16, 2.3, 0.16), Vector3(1.7, 1.15, 6.4), post, "", _platform_root)
 	_visual(Vector3(4.2, 1.0, 0.14), Vector3(0, 2.5, 6.4), post, "SignBoard", _platform_root)
@@ -669,7 +826,7 @@ func _build_platform() -> void:
 	_visual(Vector3(0.55, 0.28, 0.55), Vector3(-12.0, 2.75, 1.2), lamp, "", _platform_root)
 	var plight := OmniLight3D.new()
 	plight.position = Vector3(-12.0, 2.6, 1.2)
-	plight.light_color = Color(1.0, 0.85, 0.6)
+	plight.light_color = ptint.lightened(0.3)
 	plight.light_energy = 1.0
 	plight.omni_range = 6.0
 	_platform_root.add_child(plight)
