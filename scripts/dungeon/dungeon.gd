@@ -161,6 +161,9 @@ var mobs_to_spawn := 0
 # AI Director composition for the current wave: Array of {"type": String, "elite": bool}.
 var _wave_composition: Array = []
 var _director: Node = null
+## Bounty Board manager (issue #7): server generates the run's 3 bounties,
+## clients receive them via sync_bounties.
+var _bounty: BountySystem = null
 var wave_info := {"wave": 0, "total": TOTAL_WAVES, "level": 1, "theme_name": "", "state": 0, "time_left": 8.0, "mobs_left": 0, "keys_found": 0, "keys_needed": 0}
 
 var _layout: LevelLayout
@@ -218,6 +221,14 @@ func _ready() -> void:
 	_mob_mix_sorted = ProcGen.sorted_mob_mix(theme)
 	# AI Director only spawns mobs this theme allows.
 	_director.set_allowed_mobs(theme.mob_mix.keys())
+	# Bounty Board (issue #7 Phase 1): server generates the run's 3 bounties
+	# seeded by the level seed; every peer sees the same set.
+	if multiplayer.is_server():
+		_bounty = BountySystem.new()
+		_bounty.name = "BountySystem"
+		add_child(_bounty)
+		_bounty.setup_for_level(next_seed, theme.theme_id, theme.mob_mix, get_cycle_number())
+		rpc("sync_bounties", _bounty.bounties)
 	_load_mob_types()
 	_build_arena_from_layout()
 	AudioManager.play_music(next_theme_id)
@@ -324,6 +335,10 @@ func register_class(class_id: String) -> void:
 		var ps: Dictionary = roster_entry.get("player_state", {})
 		if not ps.is_empty():
 			node.apply_state(ps)
+			# Bounty Board (issue #7): the continued level runs fresh
+			# bounties — progress from the saved level does not carry over.
+			if _bounty != null:
+				node.set("bounty_progress", BountySystem.new_progress(_bounty.bounties))
 			_snapshot_entry(sender)
 			rpc_id(sender, "apply_continued_state", ps)
 		# Warlord: reclaim their faction from AI control.
@@ -402,6 +417,9 @@ func request_state() -> void:
 	# Warlord: sync RTS state for late joiners.
 	if is_warlord and _rts_manager != null:
 		sync_rts_state(sender)
+	# Bounty Board (issue #7): late joiners get the run's bounties too.
+	if _bounty != null:
+		rpc_id(sender, "sync_bounties", _bounty.bounties)
 
 
 ## Send full RTS state to a late-joining client.
@@ -482,6 +500,11 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 			Dungeon.arrival_tint(theme.theme_id))
 		AudioManager.sfx("train_brake")
 	if multiplayer.is_server():
+		# Bounty Board (issue #7): fresh progress for the new level, before
+		# the forfeit snapshot so entry state includes it.
+		var pnode := get_player_node(peer_id)
+		if pnode != null and _bounty != null:
+			pnode.set("bounty_progress", BountySystem.new_progress(_bounty.bounties))
 		# Forfeit snapshot (issue #2 Phase 4): taken after any continue-state
 		# restore above, so "entry" means what the player arrived with.
 		_snapshot_entry(peer_id)
@@ -1310,6 +1333,8 @@ func _sell_player_loot(player: Node) -> void:
 		market_earned_visit += total
 		SaveManager.add_cash_earned(total)
 		SaveManager.check_achievements()
+		# Bounty Board (issue #7): cash bounties progress on the sale total.
+		notify_bounty_checkout(sender, total)
 		player.rpc_id(sender, "on_sold", total)
 		_check_gate_unlock()
 
@@ -1859,6 +1884,8 @@ func complete_level_objective() -> void:
 	level_cleared = true
 	AudioManager.sfx("unlock")
 	rpc("announce", "Level cleared — gains secured.")
+	# Bounty Board (issue #7): surviving no_death bounties complete now.
+	_bounty_level_cleared()
 
 
 # --- Arena construction from the procedural layout ---
@@ -2320,6 +2347,115 @@ func notify_player_died() -> void:
 	# Defer one frame so the death flag settles.
 	await get_tree().process_frame
 	check_party_wipe()
+
+
+# --- Bounty Board hooks (issue #7 Phase 1) ---
+# All tracking is server-authoritative; progress lives on each player's
+# bounty_progress ({bounty_id: count}, -1 = failed) and syncs to clients
+# via sync_bounties + player snapshots.
+
+@rpc("any_peer", "call_local")
+func sync_bounties(bounty_list: Array) -> void:
+	if _bounty == null:
+		_bounty = BountySystem.new()
+		_bounty.name = "BountySystem"
+		add_child(_bounty)
+	_bounty.bounties = bounty_list
+	for p in get_tree().get_nodes_in_group("players"):
+		p.set("bounty_progress", BountySystem.new_progress(bounty_list))
+
+
+## Mob death hook (called from Mob._drop_and_reward, server only).
+func notify_bounty_kill(peer_id: int, mob_id: String, is_elite: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	if _bounty == null:
+		return
+	var node := get_player_node(peer_id)
+	if node == null:
+		return
+	var progress: Dictionary = node.get("bounty_progress")
+	var done: Array = BountySystem.record_kill(progress, _bounty.bounties, mob_id, is_elite)
+	node.set("bounty_progress", progress)
+	for b in done:
+		_pay_bounty(peer_id, b)
+
+
+## Player death hook: fails the dead player's no_death bounties only.
+## Clients route through the server; the server calls bounty_death_local.
+@rpc("any_peer", "call_local")
+func notify_bounty_death() -> void:
+	if not multiplayer.is_server():
+		return
+	var peer_id := multiplayer.get_remote_sender_id()
+	if peer_id <= 0:
+		return
+	_bounty_fail_no_death(peer_id)
+
+
+func bounty_death_local(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	_bounty_fail_no_death(peer_id)
+
+
+func _bounty_fail_no_death(peer_id: int) -> void:
+	if _bounty == null:
+		return
+	var node := get_player_node(peer_id)
+	if node == null:
+		return
+	var progress: Dictionary = node.get("bounty_progress")
+	BountySystem.record_death(progress, _bounty.bounties)
+	node.set("bounty_progress", progress)
+
+
+## Checkout hook: cash bounties progress on the sale total.
+func notify_bounty_checkout(peer_id: int, earned: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if _bounty == null or earned <= 0:
+		return
+	var node := get_player_node(peer_id)
+	if node == null:
+		return
+	var progress: Dictionary = node.get("bounty_progress")
+	var done: Array = BountySystem.record_checkout(progress, _bounty.bounties, earned)
+	node.set("bounty_progress", progress)
+	for b in done:
+		_pay_bounty(peer_id, b)
+
+
+## Level-clear hook: surviving no_death bounties complete and pay out.
+func _bounty_level_cleared() -> void:
+	if not multiplayer.is_server():
+		return
+	if _bounty == null:
+		return
+	for p in get_tree().get_nodes_in_group("players"):
+		var peer_id := int(p.get_multiplayer_authority())
+		var progress: Dictionary = p.get("bounty_progress")
+		var done: Array = BountySystem.record_level_cleared(progress, _bounty.bounties)
+		p.set("bounty_progress", progress)
+		for b in done:
+			_pay_bounty(peer_id, b)
+
+
+## Payout: toast + bonus cash and XP immediately (server grants), then
+## feed SaveManager.check_achievements() so bounties drive achievements.
+func _pay_bounty(peer_id: int, bounty: Dictionary) -> void:
+	var node := get_player_node(peer_id)
+	if node == null:
+		return
+	var cash := int(bounty["cash_reward"])
+	var xp := int(bounty["xp_reward"])
+	node.set("supermarket_cash", int(node.get("supermarket_cash")) + cash)
+	SaveManager.add_cash_earned(cash)
+	node.rpc_id(peer_id, "gain_xp", xp, false)
+	node.rpc_id(peer_id, "show_bounty_complete", str(bounty["name"]), cash, xp)
+	var new_unlocks: Array = SaveManager.check_achievements()
+	if not new_unlocks.is_empty():
+		node.rpc_id(peer_id, "show_achievement_unlock", new_unlocks)
 
 
 ## If all connected players are dead, the run is over: clear the save.

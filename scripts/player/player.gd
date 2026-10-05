@@ -47,6 +47,9 @@ var bonus_health := 0.0
 var bonus_speed := 0.0
 var bonus_aura := 0.0 # mage only: staff glow brightness per point
 var supermarket_cash := 0 # cash from selling supermarket loot
+## Bounty Board (issue #7): server-authoritative per-player progress,
+## {bounty_id: count} (-1 = failed). Synced via player snapshots.
+var bounty_progress := {}
 var alive := true
 var hud: CanvasLayer
 ## Downed (co-op only): not dead yet — a teammate can revive. Bleed out
@@ -2773,6 +2776,14 @@ func _do_death() -> void:
 ## with run stats (no auto-respawn). In co-op the party keeps playing, so
 ## the toast + 3s respawn path is kept.
 func die() -> void:
+	# Bounty Board (issue #7): a death fails this player's no_death bounty.
+	# Server-authoritative: clients route through the server.
+	var bdgn := get_tree().get_first_node_in_group("dungeon")
+	if bdgn != null and bdgn.has_method("bounty_death_local"):
+		if multiplayer.is_server():
+			bdgn.bounty_death_local(multiplayer.get_unique_id())
+		else:
+			bdgn.rpc_id(NetworkManager.server_id, "notify_bounty_death")
 	if multiplayer.get_peers().size() == 0:
 		# Solo run over: the save point is gone.
 		# Record daily attempt if this was today's seed.
@@ -2821,11 +2832,12 @@ func run_stats() -> Dictionary:
 
 
 @rpc("any_peer", "call_local")
-func gain_xp(amount: int) -> void:
+func gain_xp(amount: int, track_kill: bool = true) -> void:
 	if not is_multiplayer_authority():
 		return
 	xp += int(amount * xp_mult)
-	_register_kill()
+	if track_kill:
+		_register_kill()
 	var grew := false
 	var prev_level := level
 	while xp >= xp_next:
@@ -2957,6 +2969,7 @@ func get_state() -> Dictionary:
 		"run_kills": run_kills,
 		"run_damage_dealt": run_damage_dealt,
 		"supermarket_cash": supermarket_cash,
+		"bounty_progress": bounty_progress.duplicate(true),
 		"totem_charges": totem_charges,
 		"specialization": specialization,
 		"affinity": affinity.duplicate(true),
@@ -2978,6 +2991,7 @@ func apply_state(s: Dictionary) -> void:
 	run_kills = int(s.get("run_kills", 0))
 	run_damage_dealt = float(s.get("run_damage_dealt", 0.0))
 	supermarket_cash = int(s.get("supermarket_cash", 0))
+	bounty_progress = (s.get("bounty_progress", {}) as Dictionary).duplicate(true)
 	totem_charges = int(s.get("totem_charges", 0))
 	specialization = str(s.get("specialization", ""))
 	affinity = (s.get("affinity", {}) as Dictionary).duplicate(true)
@@ -3039,9 +3053,17 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool) -> void:
 	alive = alive_v
 
 
+## Bounty Board (issue #7): server-triggered completion toast.
 @rpc("any_peer", "call_local", "reliable")
-func show_achievement_unlock(achievement_ids: Array) -> void:
-	# Shows achievement unlock toasts.
+func show_bounty_complete(bounty_name: String, cash: int, xp: int) -> void:
+	if hud == null:
+		return
+	hud.show_toast("BOUNTY COMPLETE: %s (+$%d, +%d XP)" % [bounty_name, cash, xp])
+	AudioManager.sfx("unlock")
+
+
+@rpc("any_peer", "call_local", "reliable")
+func show_achievement_unlock(achievement_ids: Array) -> void:	# Shows achievement unlock toasts.
 	if hud == null:
 		return
 	for ach_id in achievement_ids:

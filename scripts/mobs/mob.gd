@@ -815,6 +815,9 @@ func _drop_and_reward(attacker: int) -> void:
 	if player_node != null:
 		# Danger model: XP scales with tier × depth (never less than 1).
 		player_node.rpc_id(attacker, "gain_xp", maxi(1, roundi(float(data.xp_reward) * reward_scale)))
+		# Bounty Board (issue #7): server-side kill tracking per player.
+		if multiplayer.is_server():
+			dungeon.notify_bounty_kill(attacker, data.id, is_elite)
 		# Affinity: marked target killed → +3 mark.
 		if is_marked():
 			player_node.rpc_id(attacker, "notify_mark_kill")

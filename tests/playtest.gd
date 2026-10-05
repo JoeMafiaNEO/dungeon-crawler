@@ -52,6 +52,7 @@ func _run() -> void:
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
 	_test_apex_mechanics()
+	_test_bounty_phase1()
 	_print_results()
 	quit()
 
@@ -2364,3 +2365,123 @@ func _test_apex_mechanics() -> void:
 	pspec.queue_free()
 	stub.queue_free()
 	holder.queue_free()
+
+
+func _test_bounty_phase1() -> void:
+	print("[Playtest] Bounty board phase 1 (core)...")
+	var BountyScript := load("res://scripts/systems/bounty.gd")
+	var village: Resource = load("res://data/levels/theme_village.tres")
+	var market: Resource = load("res://data/levels/theme_supermarket.tres")
+	var dungeon_theme: Resource = load("res://data/levels/theme_dungeon.tres")
+	var village_mix: Dictionary = village.get("mob_mix")
+	var market_mix: Dictionary = market.get("mob_mix")
+	var dungeon_mix: Dictionary = dungeon_theme.get("mob_mix")
+	var village_roster := ["slime", "goblin", "archer"]
+	# 1. Generation: 3 bounties, theme-roster filtering, sane rewards.
+	for seed in [1, 42, 777, 12345, 999999]:
+		var gen: Array = BountyScript.generate(seed, "village", village_mix, 1)
+		_assert(gen.size() == 3, "village seed %d: 3 bounties" % seed)
+		var seen := {}
+		for b in gen:
+			var kind := str(b["kind"])
+			_assert(kind in ["kill", "elite", "no_death", "cash"], "bounty kind valid (%s)" % kind)
+			_assert(not seen.has(str(b["id"])), "bounty ids unique")
+			seen[str(b["id"])] = true
+			_assert(int(b["target"]) > 0, "bounty target positive")
+			_assert(int(b["cash_reward"]) > 0, "bounty cash reward positive")
+			_assert(int(b["xp_reward"]) > 0, "bounty xp reward positive")
+			if kind == "kill" or kind == "elite":
+				_assert(str(b["mob_id"]) in village_roster,
+					"village %s bounty uses roster mob (%s)" % [kind, str(b["mob_id"])])
+				_assert(str(b["mob_id"]) != "cultist", "no cultist bounty on village")
+			_assert(kind != "cash", "no cash bounty outside supermarket")
+	# 2. Seeded determinism: same inputs -> identical bounties.
+	var det_a: Array = BountyScript.generate(424242, "dungeon", dungeon_mix, 2)
+	var det_b: Array = BountyScript.generate(424242, "dungeon", dungeon_mix, 2)
+	_assert(det_a == det_b, "same seed -> identical bounties")
+	var det_c: Array = BountyScript.generate(424243, "dungeon", dungeon_mix, 2)
+	_assert(det_a != det_c, "different seed -> different bounties")
+	# 3. Cash bounties only on supermarket.
+	var saw_cash := false
+	for seed in [5, 6, 7, 8, 9, 10, 11, 12]:
+		var mgen: Array = BountyScript.generate(seed, "supermarket", market_mix, 1)
+		_assert(mgen.size() == 3, "supermarket seed %d: 3 bounties" % seed)
+		for b in mgen:
+			if str(b["kind"]) == "cash":
+				saw_cash = true
+				_assert(int(b["target"]) >= 200, "cash bounty target sane")
+			if str(b["kind"]) == "kill" or str(b["kind"]) == "elite":
+				_assert(str(b["mob_id"]) in market_mix.keys(),
+					"supermarket bounty uses roster mob")
+	_assert(saw_cash, "supermarket rolls cash bounties")
+	# 4. Empty roster (warlord RTS map): no crash, falls back to no_death.
+	var wgen: Array = BountyScript.generate(7, "warlord", {}, 1)
+	_assert(wgen.size() == 1, "empty roster -> single fallback bounty")
+	_assert(str(wgen[0]["kind"]) == "no_death", "fallback is no_death")
+	# 5. Per-player independence (hand-built bounty set).
+	var bounties := [
+		{"id": "b1", "kind": "kill", "mob_id": "goblin", "target": 3,
+			"cash_reward": 50, "xp_reward": 30, "name": "T", "desc": "D"},
+		{"id": "b2", "kind": "no_death", "target": 1,
+			"cash_reward": 220, "xp_reward": 180, "name": "T", "desc": "D"},
+		{"id": "b3", "kind": "cash", "target": 200,
+			"cash_reward": 90, "xp_reward": 50, "name": "T", "desc": "D"},
+		{"id": "b4", "kind": "elite", "mob_id": "orc", "target": 2,
+			"cash_reward": 140, "xp_reward": 110, "name": "T", "desc": "D"},
+	]
+	var pa: Dictionary = BountyScript.new_progress(bounties)
+	var pb: Dictionary = BountyScript.new_progress(bounties)
+	_assert(pa.size() == 4 and int(pa["b1"]) == 0, "fresh progress starts at 0")
+	# Wrong mob / elite flag don't feed a kill bounty.
+	BountyScript.record_kill(pa, bounties, "slime", false)
+	_assert(int(pa["b1"]) == 0, "wrong mob id ignored")
+	BountyScript.record_kill(pa, bounties, "goblin", true)
+	_assert(int(pa["b1"]) == 0, "elite kill doesn't feed kill bounty")
+	# Completing the kill bounty pays once and only for that player.
+	var done: Array = []
+	for i in 3:
+		done = BountyScript.record_kill(pa, bounties, "goblin", false)
+	_assert(done.size() == 1 and str(done[0]["id"]) == "b1", "kill bounty completes at target")
+	_assert(int(pb["b1"]) == 0, "other player's kill progress untouched")
+	_assert(BountyScript.record_kill(pa, bounties, "goblin", false).is_empty(),
+		"completed bounty doesn't re-complete")
+	_assert(BountyScript.is_complete(pa, bounties[0]), "is_complete true after target")
+	# Elite bounties need elite kills of the right mob.
+	var pe: Dictionary = BountyScript.new_progress(bounties)
+	BountyScript.record_kill(pe, bounties, "orc", false)
+	_assert(int(pe["b4"]) == 0, "non-elite kill doesn't feed elite bounty")
+	var edone: Array = []
+	for i in 2:
+		edone = BountyScript.record_kill(pe, bounties, "orc", true)
+	_assert(edone.size() == 1 and str(edone[0]["id"]) == "b4", "elite bounty completes")
+	# Death fails only the dead player's no_death.
+	var failed_a: Array = BountyScript.record_death(pa, bounties)
+	_assert(failed_a.size() == 1 and str(failed_a[0]["id"]) == "b2", "death fails no_death")
+	_assert(BountyScript.is_failed(pa, bounties[1]), "failed flagged")
+	_assert(int(pb["b2"]) == 0, "other player's no_death survives")
+	_assert(not BountyScript.is_failed(pb, bounties[1]), "survivor not failed")
+	# Level clear completes the survivor's no_death, not the failed one.
+	var cleared_b: Array = BountyScript.record_level_cleared(pb, bounties)
+	_assert(cleared_b.size() == 1 and str(cleared_b[0]["id"]) == "b2",
+		"level clear completes surviving no_death")
+	_assert(BountyScript.record_level_cleared(pa, bounties).is_empty(),
+		"failed no_death stays failed on level clear")
+	# Cash bounty completes on cumulative checkout earnings.
+	var pd: Dictionary = BountyScript.new_progress(bounties)
+	_assert(BountyScript.record_checkout(pd, bounties, 120).is_empty(),
+		"partial checkout doesn't complete")
+	var cash_done: Array = BountyScript.record_checkout(pd, bounties, 100)
+	_assert(cash_done.size() == 1 and str(cash_done[0]["id"]) == "b3",
+		"checkout completes cash bounty")
+	# 6. Payout amounts: cycle scaling raises rewards, keeps structure.
+	var cyc1: Array = BountyScript.generate(99, "village", village_mix, 1)
+	var cyc3: Array = BountyScript.generate(99, "village", village_mix, 3)
+	_assert(str(cyc1[0]["kind"]) == str(cyc3[0]["kind"]), "cycle doesn't change picks")
+	_assert(int(cyc3[0]["cash_reward"]) > int(cyc1[0]["cash_reward"]),
+		"cycle scales cash rewards up")
+	_assert(int(cyc3[0]["xp_reward"]) > int(cyc1[0]["xp_reward"]),
+		"cycle scales xp rewards up")
+	# 7. new_progress covers every bounty id.
+	var cov: Dictionary = BountyScript.new_progress(cyc1)
+	for b in cyc1:
+		_assert(cov.has(str(b["id"])), "progress covers bounty %s" % str(b["id"]))
