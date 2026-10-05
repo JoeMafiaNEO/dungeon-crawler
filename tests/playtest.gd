@@ -3206,16 +3206,17 @@ func _test_combo_phase1() -> void:
 	_assert(absf(p2.hp - p2.max_hp * 0.7) < 0.01, "surge sim: team healed 20% max HP")
 
 	# --- Announce path is a safe no-op with no dungeon present.
-	# Redirect the SaveManager autoload to a scratch profile: announce now
-	# records codex discoveries (which save).
+	# Pin the SaveManager autoload to a scratch profile: announce now
+	# records codex discoveries (which save) without touching the real profile.
 	var _sm: Node = root.get_node("SaveManager")
-	var _orig_acct: String = _sm.get("_profile_account")
-	_sm.set("_profile_account", "test_combo")
+	_sm.set("_test_account_pin", "test_combo")
+	_sm.load_game()
 	ComboScript.announce_finisher(self, "orbital_strike")
 	_assert(true, "announce: no crash without dungeon")
 	ComboScript.announce_finisher(self, "bogus_id")
 	_assert(true, "announce: unknown id ignored")
-	_sm.set("_profile_account", _orig_acct)
+	_sm.set("_test_account_pin", "")
+	_sm.load_game()
 	if FileAccess.file_exists("user://profile_test_combo.cfg"):
 		DirAccess.remove_absolute("user://profile_test_combo.cfg")
 
@@ -3277,14 +3278,15 @@ func _test_combo_codex() -> void:
 
 	# --- SaveManager: discovery tracking (scratch account on a standalone instance).
 	var mgr = SaveScript.new()
-	mgr.set("_profile_account", "test_codex")
+	mgr.set("_test_account_pin", "test_codex")
+	mgr.load_game()
 	_assert(mgr.get_combos_discovered().is_empty(), "codex: starts undiscovered")
 	_assert(mgr.add_combo_discovered("orbital_strike"), "codex: first discovery returns true")
 	_assert(not mgr.add_combo_discovered("orbital_strike"), "codex: repeat returns false")
 	_assert(mgr.get_combos_discovered() == ["orbital_strike"], "codex: discovery recorded")
 	# Persistence roundtrip.
 	var mgr2 = SaveScript.new()
-	mgr2.set("_profile_account", "test_codex")
+	mgr2.set("_test_account_pin", "test_codex")
 	mgr2.load_game()
 	_assert(mgr2.get_combos_discovered() == ["orbital_strike"], "codex: discovery persists")
 	mgr.free()
@@ -3293,14 +3295,11 @@ func _test_combo_codex() -> void:
 		DirAccess.remove_absolute(scratch)
 
 	# --- Codex UI: 5 fixed rows, ??? for undiscovered, name for discovered.
-	# Drive the autoload (which the HUD reads) on the scratch account.
+	# Pin the autoload to the scratch profile: fresh seeded defaults in
+	# memory, real profile untouched (reloaded at the end of this section).
 	var sm: Node = root.get_node("SaveManager")
-	var orig_acct: String = sm.get("_profile_account")
-	sm.set("_profile_account", "test_codex")
-	# Clean in-memory state (the autoload may hold the real profile).
-	var prof: ConfigFile = sm.get("_profile")
-	var orig_found: Array = prof.get_value("meta", "combos_discovered", []).duplicate()
-	prof.set_value("meta", "combos_discovered", [])
+	sm.set("_test_account_pin", "test_codex")
+	sm.load_game()
 	_assert(sm.get_combos_discovered().is_empty(), "codex: autoload starts clean")
 	sm.add_combo_discovered("orbital_strike")
 	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
@@ -3346,8 +3345,9 @@ func _test_combo_codex() -> void:
 			found_name = true
 	_assert(found_name, "codex: discovered row shows name")
 	hud.queue_free()
-	sm.set("_profile_account", orig_acct)
-	sm.get("_profile").set_value("meta", "combos_discovered", orig_found)
+	# Unpin and reload the real profile so the autoload is exactly as before.
+	sm.set("_test_account_pin", "")
+	sm.load_game()
 	if FileAccess.file_exists(scratch):
 		DirAccess.remove_absolute(scratch)
 

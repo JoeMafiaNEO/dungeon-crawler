@@ -34,6 +34,11 @@ const SAVE_VERSION := 1
 
 var _profile := ConfigFile.new()
 var _profile_account := ""
+## Test hook: pin the profile account for scratch-profile tests. When set,
+## _resolve_account() returns the pin instead of the Steam/local account, so
+## load_game()/save_game() use user://profile_<pin>.cfg and never touch (or
+## get clobbered by) the real profile. Empty (default) = normal resolution.
+var _test_account_pin := ""
 var _settings := ConfigFile.new()
 ## Observability hook: cloud writes attempted (guard passed). Tests use this
 ## to prove no cloud call fires without Steam.
@@ -66,6 +71,8 @@ func _ready() -> void:
 ## is final by the time _ready runs. Everything works offline: local
 ## profile, local-only writes, zero errors.
 func _resolve_account() -> String:
+	if _test_account_pin != "":
+		return _test_account_pin
 	if SteamManager.initialized:
 		return str(SteamManager.steam_id)
 	return "local"
