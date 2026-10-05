@@ -484,6 +484,23 @@ static func train_brake() -> AudioStreamWAV:
 	]))
 
 
+# --- train interior (issue #3 Phase 1) ---
+
+static func train_door_open() -> AudioStreamWAV:
+	# Pneumatic sliding door: air hiss, then the metallic clunk of the latch.
+	return _wav(_mix([
+		_noise(0.45, 14.0, 0.55, 0.0, 0.65),
+		_tone(190.0, 120.0, 0.14, "square", 22.0, 0.35, 0.42),
+	]))
+
+static func train_door_close() -> AudioStreamWAV:
+	# Latch clunk first, then the hiss release as the seal sets.
+	return _wav(_mix([
+		_tone(210.0, 130.0, 0.14, "square", 22.0, 0.35, 0.0),
+		_noise(0.40, 14.0, 0.50, 0.12, 0.55),
+	]))
+
+
 # --- UI ---
 
 static func ui_click() -> AudioStreamWAV:

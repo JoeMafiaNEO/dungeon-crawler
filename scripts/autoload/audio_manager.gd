@@ -37,7 +37,8 @@ func _ready() -> void:
 			"barrage_cast", "blizzard_cast", "blizzard_loop", "shadow_step", "fan", "milestone",
 			"ui_click", "ui_hover", "ui_error", "ping",
 			"wind_gust", "drip", "rumble", "bird", "torch_crackle",
-			"train_whistle", "train_chug", "train_brake"]:
+			"train_whistle", "train_chug", "train_brake",
+			"train_door_open", "train_door_close"]:
 		_sfx_builders[b] = Callable(SoundSynth, b)
 	for i in POOL_SIZE:
 		var pl := AudioStreamPlayer.new()

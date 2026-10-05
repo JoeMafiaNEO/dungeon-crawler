@@ -39,6 +39,7 @@ func _run() -> void:
 	_test_station_embedded()
 	_test_annex_departure()
 	_test_annex_forfeit()
+	_test_train_interior()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -674,7 +675,7 @@ func _test_annex_departure() -> void:
 	_assert(dsrc.contains("if not multiplayer.is_server() or _ride_running:"),
 		"departure: server-only + re-entry guard")
 
-	# 2. Sequence order: ride rpc -> wait -> save -> hop rpc.
+	# 2. Sequence order: ride rpc -> wait -> save -> interior boarding rpc.
 	var h_start := dsrc.find("func _on_station_departure_resolved")
 	_assert(h_start > 0, "departure: handler found")
 	var h := dsrc.substr(h_start, 2600)
@@ -682,24 +683,39 @@ func _test_annex_departure() -> void:
 	var p_wait := h.find("create_timer(3.5)")
 	var p_save := h.find("save_multiplayer_run")
 	var p_solo := h.find("SaveManager.save_run")
-	var p_hop := h.find("hop_to_next_level")
+	var p_hop := h.find("board_train_interior")
 	_assert(p_ride > 0 and p_wait > 0 and p_save > 0 and p_hop > 0,
-		"departure: ride + wait + save + hop all present")
+		"departure: ride + wait + save + interior boarding all present")
 	_assert(p_ride < p_wait and p_wait < p_save and p_save < p_hop,
-		"departure: ride before wait before save before hop")
+		"departure: ride before wait before save before boarding")
 	_assert(p_solo > p_save, "departure: solo save fallback present")
 	_assert(h.contains("set_deepest_cycle"), "departure: cycle recorded at departure")
 	_assert(h.contains("check_achievements"), "departure: achievements checked")
 
-	# 3. Hop rpc: server-sender check, handoff statics, dungeon scene load.
-	var hop_start := dsrc.find("func hop_to_next_level")
-	_assert(hop_start > 0, "departure: hop rpc exists")
-	var hop := dsrc.substr(hop_start, 900)
-	_assert(hop.contains("Dungeon.next_theme_id = theme_id"), "hop: sets next theme")
-	_assert(hop.contains("Dungeon.next_seed = new_seed"), "hop: sets next seed")
-	_assert(hop.contains("Dungeon.next_level_number = new_level"), "hop: sets next level")
-	_assert(hop.contains("dungeon.tscn"), "hop: loads the dungeon scene")
-	_assert(hop.contains("NetworkManager.server_id"), "hop: server-sender check")
+	# 3. Interior boarding rpc: server-sender check, state capture (no wipe),
+	# handoff statics, passenger roster, interior scene load.
+	var hop_start := dsrc.find("func board_train_interior")
+	_assert(hop_start > 0, "departure: board_train_interior rpc exists")
+	_assert(not dsrc.contains("func hop_to_next_level"),
+		"departure: old direct hop rpc removed")
+	var hop := dsrc.substr(hop_start, 1500)
+	_assert(hop.contains("saved_player_state = me.get_state()"), "boarding: captures player state")
+	_assert(hop.contains("Dungeon.next_theme_id = theme_id"), "boarding: sets next theme")
+	_assert(hop.contains("Dungeon.next_seed = new_seed"), "boarding: sets next seed")
+	_assert(hop.contains("Dungeon.next_level_number = new_level"), "boarding: sets next level")
+	_assert(hop.contains("passenger_classes = classes"), "boarding: hands off the roster")
+	_assert(hop.contains("train_interior.tscn"), "boarding: loads the interior scene")
+	_assert(hop.contains("NetworkManager.server_id"), "boarding: server-sender check")
+
+	# 3b. Interior exit (leave_interior): server-sender check, state capture,
+	# dungeon scene load via the hop path.
+	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	var lv_start := isrc.find("func leave_interior")
+	_assert(lv_start > 0, "interior: leave_interior rpc exists")
+	var lv := isrc.substr(lv_start, 800)
+	_assert(lv.contains("NetworkManager.server_id"), "interior exit: server-sender check")
+	_assert(lv.contains("saved_player_state = me.get_state()"), "interior exit: captures player state")
+	_assert(lv.contains("dungeon.tscn"), "interior exit: loads the dungeon scene")
 
 	# 4. Ride rpc delegates to the station's local ride on all peers.
 	var ride_start := dsrc.find("func begin_annex_departure")
@@ -815,6 +831,67 @@ func _test_annex_forfeit() -> void:
 	# 3. Board posts the unanimous rule.
 	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
 	_assert(bsrc.contains("MUST AGREE"), "board shows the unanimity hint")
+
+
+func _test_train_interior() -> void:
+	print("[Playtest] Train interior phase 1 (car shell, doors, boarding)...")
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	_assert(InteriorScript != null, "interior: script loads")
+	var tscn: PackedScene = load("res://scenes/station/train_interior.tscn")
+	_assert(tscn != null, "interior: scene loads")
+
+	# Car shell: build without entering the tree (no network/HUD side effects).
+	var car = InteriorScript.new()
+	car._build_car()
+	_assert(car.get_node_or_null("CarFloor") != null, "interior: floor built")
+	_assert(car.get_node_or_null("WallNorth") != null, "interior: side walls built")
+	_assert(car.get_node_or_null("WallFront") != null, "interior: end wall built")
+	_assert(car.get_node_or_null("CarCeiling") != null, "interior: ceiling built")
+	_assert(car.get_node_or_null("BenchSeat") != null, "interior: benches built")
+	_assert(car.get_node_or_null("DoorBlocker") != null, "interior: doorway blocked")
+	# Collision: floor, walls, benches, blocker all have box shapes.
+	var shaped := 0
+	for n in car.find_children("*", "StaticBody3D", true, false):
+		for c in n.get_children():
+			if c is CollisionShape3D and (c as CollisionShape3D).shape is BoxShape3D:
+				shaped += 1
+				break
+	_assert(shaped >= 12, "interior: collision bodies with box shapes")
+	# Doors: two sliding panels, closed by default; state machine flips.
+	_assert(car._doors.size() == 2, "interior: two door panels")
+	_assert(not car._doors_open, "interior: doors start closed")
+	car.open_doors()
+	_assert(car._doors_open, "interior: open_doors flips state")
+	for d in car._doors:
+		_assert(is_equal_approx(d.position.z, float(d.get_meta("open_z"))),
+			"interior: open panels reach open_z")
+	car.open_doors() # idempotent
+	_assert(car._doors_open, "interior: open_doors idempotent")
+	car.close_doors()
+	_assert(not car._doors_open, "interior: close_doors flips state")
+	for d in car._doors:
+		_assert(is_equal_approx(d.position.z, float(d.get_meta("closed_z"))),
+			"interior: closed panels reach closed_z")
+	# Spawn points: 4, inside the car, above the floor.
+	var spots: Array = car.spawn_points()
+	_assert(spots.size() == 4, "interior: 4 spawn points")
+	for s in spots:
+		_assert(absf(s.x) < 8.0 and absf(s.z) < 2.5 and s.y >= 0.0,
+			"interior: spawn inside car bounds")
+	car.free()
+
+	# Door SFX builders exist and synthesize.
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	_assert(SoundScript.train_door_open() is AudioStreamWAV, "interior: door open sfx builds")
+	_assert(SoundScript.train_door_close() is AudioStreamWAV, "interior: door close sfx builds")
+
+	# Boarding hook wiring (source): departure boards the interior, not the dungeon.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var hpos := dsrc.find("func _on_station_departure_resolved")
+	_assert(hpos > 0, "interior: departure handler found")
+	var hblock := dsrc.substr(hpos, 2600)
+	_assert(hblock.contains('rpc("board_train_interior"'), "interior: departure rpcs boarding")
+	_assert(not hblock.contains("hop_to_next_level"), "interior: direct hop gone from departure")
 
 
 func _test_cycle_scaling() -> void:

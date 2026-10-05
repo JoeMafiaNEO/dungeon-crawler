@@ -7,6 +7,7 @@ extends Node3D
 ##
 ## Run handoff (set before change_scene_to_file):
 ##   next_theme_id / next_seed / next_level_number / saved_player_state
+##   TrainInterior.passenger_classes / ride_theme_id (train interior boarding)
 
 ## Multiplayer save: roster collection state.
 const SAVE_STATE_TIMEOUT := 3.0
@@ -1836,7 +1837,7 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				"player_state": me.get_state(),
 				"seed": seed,
 			})
-	rpc("hop_to_next_level", theme_id, seed, new_level)
+	rpc("board_train_interior", theme_id, seed, new_level, peer_classes)
 
 
 ## Station annex (issue #2 Phase 4): server rolls every player back to
@@ -1899,16 +1900,33 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 		station.play_departure_ride(theme_id, spots)
 
 
-## Level hop (all peers): set the handoff statics and load the next dungeon.
+## Train interior boarding (issue #3 Phase 1, all peers): capture each peer's
+## state locally (per peer — the server can't write a client-owned static),
+## set the handoff statics, and load the car scene. The interior's
+## leave_interior() hops to the next dungeon when the ride ends.
+##
+## The state capture also fixes a wipe the hop had since the station shipped
+## (issue #1): leave_station/hop_to_next_level never captured
+## saved_player_state, so every departure reset progression. The old
+## go_to_station_net/change_level handoff did capture it.
 @rpc("any_peer", "call_local")
-func hop_to_next_level(theme_id: String, new_seed: int, new_level: int) -> void:
+func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_id:
 		return
+	var me := _my_player()
+	if me != null:
+		saved_player_state = me.get_state()
 	Dungeon.next_theme_id = theme_id
 	Dungeon.next_seed = new_seed
 	Dungeon.next_level_number = new_level
-	get_tree().call_deferred("change_scene_to_file", "res://scenes/dungeon/dungeon.tscn")
+	# Runtime load: train_interior.gd references the Dungeon class, so a
+	# parse-time TrainInterior reference here would be a cyclic dependency
+	# (same pattern as the station.gd runtime load in _build_station_annex_content).
+	var InteriorScript: GDScript = load("res://scripts/station/train_interior.gd")
+	InteriorScript.passenger_classes = classes
+	InteriorScript.ride_theme_id = theme_id
+	get_tree().call_deferred("change_scene_to_file", "res://scenes/station/train_interior.tscn")
 
 
 func _build_environment() -> void:
