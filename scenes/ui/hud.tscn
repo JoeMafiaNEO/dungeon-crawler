@@ -638,6 +638,7 @@ anchor_bottom = 0.5
 offset_left = -200.0
 offset_top = -150.0
 offset_right = 200.0
+theme_override_styles/panel = SubResource("PanelDark")
 offset_bottom = 150.0
 
 [node name="DeathPanel" type="PanelContainer" parent="."]

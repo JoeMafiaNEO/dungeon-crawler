@@ -72,9 +72,9 @@ func _build_bounty_tracker() -> void:
 	_bounty_tracker.name = "BountyTracker"
 	_bounty_tracker.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_bounty_tracker.offset_left = -516.0
-	_bounty_tracker.offset_top = 130.0
+	_bounty_tracker.offset_top = 120.0
 	_bounty_tracker.offset_right = -16.0
-	_bounty_tracker.offset_bottom = 214.0
+	_bounty_tracker.offset_bottom = 204.0
 	_bounty_tracker.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_bounty_tracker.add_theme_font_size_override("font_size", 14)
 	_bounty_tracker.add_theme_color_override("font_color", Color(1.0, 0.88, 0.55))

@@ -424,10 +424,18 @@ func _refresh_solo_ui() -> void:
 ## Build one slot card row: slot label + summary (or a clean empty state) +
 ## actions. Occupied slots get Continue + New (New asks before overwriting);
 ## empty slots get a single New Run button.
-func _build_slot_card(mode: String, slot: int) -> HBoxContainer:
+func _build_slot_card(mode: String, slot: int) -> MarginContainer:
+	# Issue #35: wrap in MarginContainer so labels don't touch x=0,
+	# buttons aren't flush at edge, and the gold border isn't clipped.
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 16)
+	margin.add_theme_constant_override("margin_right", 16)
+	margin.add_theme_constant_override("margin_top", 6)
+	margin.add_theme_constant_override("margin_bottom", 6)
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 12)
+	margin.add_child(row)
 	var slot_lbl := Label.new()
 	slot_lbl.text = "Slot %d" % (slot + 1)
 	slot_lbl.custom_minimum_size = Vector2(64, 0)
@@ -457,7 +465,7 @@ func _build_slot_card(mode: String, slot: int) -> HBoxContainer:
 		new_btn.text = "New Run"
 		new_btn.pressed.connect(_on_slot_new_pressed.bind(mode, slot))
 		row.add_child(new_btn)
-	return row
+	return margin
 
 
 ## First empty slot for the mode, or -1 when all are occupied.
