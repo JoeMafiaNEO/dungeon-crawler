@@ -761,14 +761,14 @@ func _build_station_embedded() -> void:
 	add_child(bounty_board)
 
 	# NOW BOARDING sign (Phase 5): big gold label above the train.
+	# Issue #63: wide enough for full destination names (no truncation).
 	_boarding_sign = Label3D.new()
 	_boarding_sign.font_size = 84
+	_boarding_sign.width = 1200.0
 	_boarding_sign.modulate = Color(1.0, 0.82, 0.35)
 	_boarding_sign.outline_size = 12
 	_boarding_sign.position = Vector3(-1, 3.9, -3.6)
 	_boarding_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	# Issue #58: text was truncated ("NOW BOARDING: THE DU") — widen the label.
-	_boarding_sign.width = 1200.0
 	add_child(_boarding_sign)
 
 	# Per-theme dressing props (Phase 5); only the active set is visible.

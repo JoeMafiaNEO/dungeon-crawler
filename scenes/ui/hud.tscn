@@ -37,7 +37,7 @@ corner_radius_bottom_right = 3
 corner_radius_bottom_left = 3
 
 [sub_resource type="StyleBoxFlat" id="PanelDark"]
-bg_color = Color(0.07, 0.06, 0.09, 1.0)
+bg_color = Color(0.07, 0.06, 0.09, 0.92)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -157,9 +157,9 @@ horizontal_alignment = 2
 [node name="AnnounceLabel" type="Label" parent="."]
 unique_name_in_owner = true
 anchor_left = 0.5
-anchor_top = 0.35
+anchor_top = 0.22
 anchor_right = 0.5
-anchor_bottom = 0.35
+anchor_bottom = 0.22
 offset_left = -400.0
 offset_top = -60.0
 offset_right = 400.0
@@ -607,7 +607,7 @@ horizontal_alignment = 1
 [node name="CollectionLog" type="VBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_constants/separation = 1
+theme_override_constants/separation = 2
 alignment = 1
 
 [node name="ResumeButton" type="Button" parent="PausePanel/PauseScroll/PauseVBox"]
@@ -638,7 +638,6 @@ anchor_bottom = 0.5
 offset_left = -200.0
 offset_top = -150.0
 offset_right = 200.0
-theme_override_styles/panel = SubResource("PanelDark")
 offset_bottom = 150.0
 
 [node name="DeathPanel" type="PanelContainer" parent="."]
