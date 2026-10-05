@@ -3202,7 +3202,7 @@ func show_bounty_complete(bounty_name: String, cash: int, xp: int) -> void:
 	if hud == null:
 		return
 	hud.show_toast("BOUNTY COMPLETE: %s (+$%d, +%d XP)" % [bounty_name, cash, xp])
-	AudioManager.sfx("unlock")
+	AudioManager.sfx("bounty_complete")
 
 
 @rpc("any_peer", "call_local", "reliable")

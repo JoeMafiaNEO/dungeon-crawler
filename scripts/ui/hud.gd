@@ -429,6 +429,7 @@ func show_bounty() -> void:
 		return
 	var progress: Dictionary = _player.get("bounty_progress")
 	bounty_open = true
+	AudioManager.sfx("bounty_accept")
 	var vb := _cipher_panel()
 	var title := Label.new()
 	title.text = "Bounty Board"
