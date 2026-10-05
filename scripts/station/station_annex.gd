@@ -13,7 +13,7 @@ extends Node3D
 ## the warlord pass lands (Phase 2+) instead of hacking it here.
 
 const HALL_W := 24.0
-const HALL_D := 14.0
+const HALL_D := 18.0
 const HALL_H := 4.5
 const WALL_T := 1.0
 const CORRIDOR_W := 4.0
