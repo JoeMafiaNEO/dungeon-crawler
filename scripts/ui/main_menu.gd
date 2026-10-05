@@ -48,6 +48,7 @@ func _ready() -> void:
 	_refresh_solo_ui()
 	_build_confirm_modal()
 	_build_settings_panel()
+	_apply_saved_fullscreen()
 	# Mason's Cipher: the Architect stays hidden until unlocked.
 	%TitleArchitectButton.visible = SaveManager.is_architect_unlocked()
 	AudioManager.play_music("menu")
@@ -677,7 +678,31 @@ func _on_settings_vol_changed(value: float, key: String) -> void:
 
 
 func _on_settings_toggle_changed(pressed: bool, key: String) -> void:
-	SaveManager.set_profile_setting("settings", key, pressed)
+	# Issue #17 Phase 2: CRT and fullscreen apply immediately.
+	match key:
+		"crt_enabled":
+			if has_node("/root/CRTManager"):
+				get_node("/root/CRTManager").set_crt_enabled(pressed)
+			else:
+				SaveManager.set_profile_setting("settings", key, pressed)
+		"fullscreen":
+			_apply_fullscreen(pressed)
+		_:
+			SaveManager.set_profile_setting("settings", key, pressed)
+
+
+func _apply_fullscreen(enabled: bool) -> void:
+	SaveManager.set_profile_setting("settings", "fullscreen", enabled)
+	if enabled:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	else:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+
+
+func _apply_saved_fullscreen() -> void:
+	var fs := bool(SaveManager.get_profile_setting("settings", "fullscreen", false))
+	if fs:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
 
 func _on_settings_pressed() -> void:

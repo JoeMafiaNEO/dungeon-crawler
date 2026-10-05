@@ -1838,12 +1838,18 @@ func _process(delta: float) -> void:
 			_streak_timer -= delta
 			if _streak_timer <= 0.0:
 				_streak_kills = 0
-		if _camera != null and _shake > 0.0:
+		# Issue #17 Phase 2: screen shake gated by profile setting.
+		var shake_on := true
+		if has_node("/root/SaveManager"):
+			shake_on = bool(get_node("/root/SaveManager").get_profile_setting("settings", "shake_enabled", true))
+		if _camera != null and _shake > 0.0 and shake_on:
 			_shake -= delta
 			var s := _shake * 0.3
 			_camera.position = _cam_base + Vector3(randf_range(-s, s), randf_range(-s, s), 0.0)
 			if _shake <= 0.0:
 				_camera.position = _cam_base
+		elif _camera != null and not shake_on:
+			_camera.position = _cam_base
 		_ping_cd = maxf(0.0, _ping_cd - delta)
 		_check_buff_expiry()
 	else:

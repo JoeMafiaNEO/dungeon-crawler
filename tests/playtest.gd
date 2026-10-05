@@ -77,6 +77,7 @@ func _run() -> void:
 	_test_echo_phase2()
 	_test_workshop_phase3()
 	_test_settings_phase1()
+	_test_settings_phase2()
 
 	_print_results()
 	quit()
@@ -3741,6 +3742,33 @@ func _test_settings_phase1() -> void:
 	var panel_src := msrc.substr(msrc.find("func _build_settings_panel"))
 	panel_src = panel_src.substr(0, panel_src.find("\nfunc ", 1))
 	_assert(not panel_src.contains("ScrollContainer"), "settings panel: no ScrollContainer")
+
+
+func _test_settings_phase2() -> void:
+	print("[Playtest] Settings phase 2 (CRT/shake/fullscreen)...")
+	# CRT shader exists.
+	_assert(FileAccess.file_exists("res://assets/shaders/crt.gdshader"),
+		"CRT shader exists")
+	var shsrc := FileAccess.get_file_as_string("res://assets/shaders/crt.gdshader")
+	_assert(shsrc.contains("scanline") or shsrc.contains("scan"),
+		"CRT shader has scanlines")
+	_assert(shsrc.contains("vignette"), "CRT shader has vignette")
+	# CRTManager autoload.
+	_assert(FileAccess.file_exists("res://scripts/autoload/crt_manager.gd"),
+		"CRTManager exists")
+	var csrc := FileAccess.get_file_as_string("res://scripts/autoload/crt_manager.gd")
+	_assert(csrc.contains("set_crt_enabled"), "CRTManager has toggle API")
+	_assert(csrc.contains("crt_enabled"), "CRTManager reads profile setting")
+	var psrc := FileAccess.get_file_as_string("res://project.godot")
+	_assert(psrc.contains("CRTManager"), "CRTManager registered as autoload")
+	# Shake gate in player.gd.
+	var plsrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(plsrc.contains("shake_enabled"), "player gates shake on profile setting")
+	# Fullscreen in main_menu.gd.
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("_apply_fullscreen"), "fullscreen apply exists")
+	_assert(msrc.contains("WINDOW_MODE_FULLSCREEN"), "fullscreen uses DisplayServer")
+	_assert(msrc.contains("_apply_saved_fullscreen"), "fullscreen applied on boot")
 
 
 ## Recursive ScrollContainer audit for the zero-scroll rule.
