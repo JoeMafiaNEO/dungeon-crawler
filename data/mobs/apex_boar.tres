@@ -64,5 +64,6 @@ scale_mult = 2.2
 special_id = "charge"
 special_cooldown = 7.0
 special_damage_mult = 2.0
+apex_id = "enrage"
 loot_luck = 3.0
 bonus_drops = 1

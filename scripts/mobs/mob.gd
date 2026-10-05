@@ -50,6 +50,22 @@ var _pending_special := ""
 var _charge_t := 0.0
 var _charge_dir := Vector3.ZERO
 var _charge_hit: Array = []
+# --- Apex mechanics (issue #5 Phase 2; only active when data.apex_id != "") ---
+## Phaseshift untargetability: take_damage ignores all hits while true.
+var untargetable := false
+## Enrage (Bristleback): latched below 30% HP.
+var _enraged := false
+## Adds (Warden): HP gates that each summon 2 elite skeletons once.
+var _adds_gates := [0.66, 0.33]
+var _adds_fired := 0
+## Phaseshift (Horror): HP gates that each trigger a 2s untargetable teleport once.
+var _shift_gates := [0.75, 0.50, 0.25]
+var _shift_fired := 0
+var _phaseshift_t := 0.0
+## Fire trail (enrage charge): seconds until the next scorch decal drop.
+var _trail_tick := 0.0
+## Expanding shockwave rings (apex slam): [{radius, max_radius, speed, hit}].
+var _shockwaves: Array = []
 
 
 func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: float = 1.0, p_elite: bool = false, p_reward_scale: float = 1.0) -> void:
@@ -139,8 +155,8 @@ func _physics_process(delta: float) -> void:
 			_ranged_think(delta, to, dist)
 		elif dist > data.attack_range:
 			var dir := to / dist
-			velocity.x = dir.x * data.move_speed * _slow_mult
-			velocity.z = dir.z * data.move_speed * _slow_mult
+			velocity.x = dir.x * data.move_speed * _slow_mult * _move_speed_mult()
+			velocity.z = dir.z * data.move_speed * _slow_mult * _move_speed_mult()
 			_sprite.rotation.y = atan2(dir.x, dir.z)
 		else:
 			velocity.x = 0.0
@@ -232,6 +248,18 @@ var _strafe_t := 0.0
 ## Outgoing damage multiplier: Relentless makes bulwark-slowed mobs deal -10%.
 func _dmg_mult() -> float:
 	return 0.9 if bulwark_slow_t > 0.0 else 1.0
+
+
+## Apex enrage: +40% movement speed below 30% HP (Bristleback).
+func _move_speed_mult() -> float:
+	return 1.4 if _enraged else 1.0
+
+
+## Special cooldown: enraged apex Bristleback recharges in 4s instead of 7s.
+func _special_cooldown() -> float:
+	if _enraged:
+		return 4.0
+	return data.special_cooldown
 
 
 ## Ranged attackers hold their preferred distance: back off when crowded,
@@ -359,6 +387,19 @@ func apply_mark(duration: float, slow_mult: float = 1.0) -> void:
 
 ## Returns true while the boss is telegraphing or charging (normal AI paused).
 func _boss_think(delta: float) -> bool:
+	# Expanding shockwave rings keep moving even while the Warden telegraphs.
+	if not _shockwaves.is_empty():
+		_process_shockwaves(delta)
+	# Phaseshift window: the Horror holds still, untargetable, for 2s.
+	if _phaseshift_t > 0.0:
+		_phaseshift_t -= delta
+		velocity.x = 0.0
+		velocity.z = 0.0
+		if _phaseshift_t <= 0.0:
+			untargetable = false
+			_sprite.modulate.a = 1.0
+			rpc("phaseshift_end")
+		return true
 	if _telegraph > 0.0:
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -372,8 +413,14 @@ func _boss_think(delta: float) -> bool:
 		return true
 	if _charge_t > 0.0:
 		_charge_t -= delta
-		velocity.x = _charge_dir.x * data.move_speed * 4.5
-		velocity.z = _charge_dir.z * data.move_speed * 4.5
+		# Apex enrage: the charge leaves a 4s fire trail (visual scorch decals).
+		if data.apex_id == "enrage":
+			_trail_tick -= delta
+			if _trail_tick <= 0.0:
+				_trail_tick = 0.15
+				rpc("trail_scorch", global_position)
+		velocity.x = _charge_dir.x * data.move_speed * 4.5 * _move_speed_mult()
+		velocity.z = _charge_dir.z * data.move_speed * 4.5 * _move_speed_mult()
 		_check_charge_hits()
 		if _charge_t <= 0.0:
 			velocity.x = 0.0
@@ -403,7 +450,7 @@ func _begin_telegraph(special: String, duration: float) -> void:
 
 
 func _fire_special() -> void:
-	_special_cd = data.special_cooldown
+	_special_cd = _special_cooldown()
 	_sprite.modulate = Color.WHITE
 	_sprite.scale = _base_scale
 	match _pending_special:
@@ -415,6 +462,11 @@ func _fire_special() -> void:
 
 
 func _do_slam() -> void:
+	# Apex Warden: the slam's damage travels as an expanding shockwave ring
+	# instead of an instant AoE — dodge by getting clear of its path.
+	if data.apex_id == "adds":
+		_fire_shockwave()
+		return
 	rpc("slam_fx", global_position)
 	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
 	for n in get_tree().get_nodes_in_group("players"):
@@ -424,6 +476,84 @@ func _do_slam() -> void:
 		if global_position.distance_to(p.global_position) > 6.5:
 			continue
 		p.rpc_id(p.get_multiplayer_authority(), "take_damage", dmg, data.display_name)
+
+
+## Apex Warden shockwave: expanding ring, 7.5 m/s out to 9m, hitting each
+## player once as the ring passes them. Server-side damage, shared visual.
+func _fire_shockwave() -> void:
+	rpc("shockwave_fx", global_position)
+	_shockwaves.append({"radius": 1.0, "max_radius": 9.0, "speed": 7.5, "hit": []})
+
+
+func _process_shockwaves(delta: float) -> void:
+	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
+	var done: Array = []
+	for w in _shockwaves:
+		w["radius"] = float(w["radius"]) + float(w["speed"]) * delta
+		var hit: Array = w["hit"]
+		for n in get_tree().get_nodes_in_group("players"):
+			var p := n as Node3D
+			if p == null or p.get("alive") == false or n in hit:
+				continue
+			if global_position.distance_to(p.global_position) <= float(w["radius"]):
+				hit.append(n)
+				p.rpc_id(p.get_multiplayer_authority(), "take_damage", dmg, data.display_name)
+		if float(w["radius"]) >= float(w["max_radius"]):
+			done.append(w)
+	for w in done:
+		_shockwaves.erase(w)
+
+
+## Apex HP-gated triggers (issue #5 Phase 2). Server-side, called from
+## take_damage after a surviving hit. Each gate fires exactly once.
+func _check_apex_triggers() -> void:
+	if data.apex_id == "" or not alive:
+		return
+	var frac := hp / max_hp
+	match data.apex_id:
+		"enrage":
+			if not _enraged and frac <= 0.30:
+				_enraged = true
+				rpc("apex_enrage_fx", global_position)
+				var dungeon := get_tree().get_first_node_in_group("dungeon")
+				if dungeon != null:
+					dungeon.rpc("announce", "%s IS ENRAGED!" % data.boss_title.to_upper())
+		"adds":
+			while _adds_fired < _adds_gates.size() and frac <= _adds_gates[_adds_fired]:
+				_adds_fired += 1
+				_summon_apex_adds()
+		"phaseshift":
+			while _shift_fired < _shift_gates.size() and frac <= _shift_gates[_shift_fired]:
+				_shift_fired += 1
+				_do_phaseshift()
+
+
+## Apex Warden: each HP gate summons 2 elite skeletons beside the boss.
+func _summon_apex_adds() -> void:
+	# Untyped dungeon ref: the headless test swaps in a stub node.
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		return
+	rpc("summon_fx", global_position)
+	dungeon.rpc("announce", "%s CALLS ITS GUARD!" % data.boss_title.to_upper())
+	for i in 2:
+		var pos := global_position + Vector3(randf_range(-3.0, 3.0), 0.5, randf_range(-3.0, 3.0))
+		dungeon.server_spawn_mob("skeleton", pos, true)
+
+
+## Apex Horror: 2s untargetable + teleport to a random arena point.
+func _do_phaseshift() -> void:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		return
+	untargetable = true
+	_phaseshift_t = 2.0
+	_target = null
+	var dest: Vector3 = dungeon.random_arena_pos()
+	if dest != Vector3.INF:
+		global_position = Vector3(dest.x, 0.5, dest.z)
+	_sprite.modulate.a = 0.35
+	rpc("phaseshift_fx", global_position)
 
 
 func _do_charge() -> void:
@@ -455,20 +585,23 @@ func _check_charge_hits() -> void:
 
 
 func _do_summon() -> void:
-	_special_cd = data.special_cooldown
+	_special_cd = _special_cooldown()
 	var minions := 0
 	for m in get_tree().get_nodes_in_group("mobs"):
 		if m != self and not (m.get("data") as MobData).is_boss:
 			minions += 1
 	if minions >= 6:
 		return
-	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
+	# Untyped dungeon ref: the headless test swaps in a stub node.
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon == null:
 		return
 	rpc("summon_fx", global_position)
+	# Apex Horror: its cultists always spawn elite (summon_count is 4 in data).
+	var force_elite := data.apex_id == "phaseshift"
 	for i in data.summon_count:
 		var pos := global_position + Vector3(randf_range(-3.0, 3.0), 0.5, randf_range(-3.0, 3.0))
-		dungeon.server_spawn_mob(data.summon_id, pos)
+		dungeon.server_spawn_mob(data.summon_id, pos, force_elite)
 
 
 @rpc("any_peer", "call_local")
@@ -490,6 +623,66 @@ func charge_fx(pos: Vector3) -> void:
 	Effects.burst(get_parent(), pos + Vector3(0, 0.5, 0), Color(0.7, 0.6, 0.5), 16, 6.0)
 
 
+## Apex Bristleback enrage: drops a scorch decal while charging (4s fire trail).
+@rpc("any_peer", "call_local")
+func trail_scorch(pos: Vector3) -> void:
+	Effects.scorch(get_parent(), Vector3(pos.x, 0.06, pos.z), 1.4)
+
+
+## Apex Bristleback enrage announcement burst.
+@rpc("any_peer", "call_local")
+func apex_enrage_fx(pos: Vector3) -> void:
+	AudioManager.sfx("boss_roar", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(1.0, 0.25, 0.1), 40, 7.0)
+
+
+## Apex Warden shockwave: expanding ring visual, 1.1s out to 9m (matches
+## the server-side 7.5 m/s expansion). Damage is server-side only.
+@rpc("any_peer", "call_local")
+func shockwave_fx(pos: Vector3) -> void:
+	AudioManager.sfx("boss_slam", pos)
+	var parent := get_parent()
+	if parent == null:
+		return
+	var torus := TorusMesh.new()
+	torus.inner_radius = 0.85
+	torus.outer_radius = 1.0
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.5, 0.15, 0.9)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.4, 0.1)
+	mat.emission_energy_multiplier = 2.0
+	torus.material = mat
+	var mi := MeshInstance3D.new()
+	mi.mesh = torus
+	parent.add_child(mi)
+	mi.global_position = Vector3(pos.x, 0.35, pos.z)
+	var tw := mi.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(mi, "scale", Vector3(9, 1, 9), 1.1).set_trans(Tween.TRANS_LINEAR)
+	tw.tween_property(mat, "albedo_color:a", 0.0, 1.1)
+	tw.chain().tween_callback(mi.queue_free)
+
+
+## Apex Horror phaseshift: teleport burst + phased-out fade (clients apply it).
+@rpc("any_peer", "call_local")
+func phaseshift_fx(pos: Vector3) -> void:
+	AudioManager.sfx("wave_horn", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(0.6, 0.2, 0.9), 40, 7.0)
+	if not multiplayer.is_server():
+		global_position = pos
+		_sprite.modulate.a = 0.35
+
+
+## Apex Horror phaseshift end: restore full opacity (clients).
+@rpc("any_peer", "call_local")
+func phaseshift_end() -> void:
+	if not multiplayer.is_server():
+		_sprite.modulate.a = 1.0
+
+
 @rpc("any_peer", "call_local", "unreliable")
 func push_snapshot(pos: Vector3, hp_v: float, alive_v: bool) -> void:
 	_remote_pos = pos
@@ -505,6 +698,9 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3) -> void:
 	if not multiplayer.is_server():
 		return
 	if not alive:
+		return
+	# Phaseshift: the apex Horror is untargetable during its 2s window.
+	if untargetable:
 		return
 	# Marked targets take +50% damage.
 	if _mark_t > 0.0:
@@ -556,6 +752,8 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3) -> void:
 				for p in get_tree().get_nodes_in_group("players"):
 					if int(p.get_multiplayer_authority()) == attacker:
 						p.rpc_id(attacker, "show_achievement_unlock", new_unlocks)
+	if alive:
+		_check_apex_triggers()
 
 
 @rpc("any_peer", "call_local")

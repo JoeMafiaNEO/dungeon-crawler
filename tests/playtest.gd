@@ -20,7 +20,6 @@ func _run() -> void:
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
-	_test_legacy_migration()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -50,6 +49,7 @@ func _run() -> void:
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
+	_test_apex_mechanics()
 	_print_results()
 	quit()
 
@@ -367,146 +367,6 @@ func _test_save_collections() -> void:
 		pf.store_string(prof_backup)
 	elif FileAccess.file_exists(prof_path):
 		DirAccess.remove_absolute(prof_path)
-
-
-func _test_legacy_migration() -> void:
-	print("[Playtest] Legacy migration (issue #4 Phase 3)...")
-	var SaveScript = load("res://scripts/autoload/save_manager.gd")
-	var legacy_paths := ["user://solo_warrior.cfg", "user://solo_rogue.cfg",
-		"user://solo_mage.cfg", "user://solo_architect.cfg",
-		"user://run_save.cfg", "user://savegame.cfg"]
-	var slot_paths := []
-	for mode in ["solo", "mp"]:
-		for s in range(3):
-			slot_paths.append("user://runs/%s_%d.cfg" % [mode, s])
-	var prof_path := "user://profile_local.cfg"
-	# Back everything up.
-	var backups := {}
-	for sp in legacy_paths + slot_paths + [prof_path]:
-		if FileAccess.file_exists(sp):
-			backups[sp] = FileAccess.get_file_as_bytes(sp)
-			DirAccess.remove_absolute(sp)
-
-	# Legacy writer: the exact pre-slot format (run/data, stamped saved_at).
-	var write_legacy := func(path: String, data: Dictionary) -> void:
-		var cfg := ConfigFile.new()
-		cfg.set_value("run", "data", data)
-		cfg.save(path)
-	var legacy_run := func(class_id: String, theme: String, lvl: int, saved_at: String,
-			is_mp: bool) -> Dictionary:
-		var coll := {}
-		if class_id == "architect":
-			coll = {"fire": {"traits": ["kindled"], "signature": false}}
-		return {"class_id": class_id, "theme_id": theme, "level_number": lvl,
-			"is_multiplayer": is_mp, "saved_at": saved_at, "save_version": 1,
-			"player_state": {"level": lvl, "family_collection": coll}}
-
-	# --- Case A: synthetic tree, empty slots. 4 solo + old MP + old profile.
-	write_legacy.call("user://solo_warrior.cfg",
-		legacy_run.call("warrior", "village", 1, "2026-09-01T10:00:00", false))
-	write_legacy.call("user://solo_rogue.cfg",
-		legacy_run.call("rogue", "dungeon", 3, "2026-09-20T10:00:00", false))
-	write_legacy.call("user://solo_mage.cfg",
-		legacy_run.call("mage", "depths", 5, "2026-10-01T10:00:00", false))
-	write_legacy.call("user://solo_architect.cfg",
-		legacy_run.call("architect", "supermarket", 2, "2026-10-03T10:00:00", false))
-	var mp_legacy: Dictionary = legacy_run.call("mage", "warlord", 6, "2026-10-02T10:00:00", true)
-	mp_legacy["roster"] = [
-		{"steam_id": 111, "class_id": "mage", "is_host": true, "player_state": {"level": 6}},
-		{"steam_id": 222, "class_id": "rogue", "is_host": false, "player_state": {"level": 5}}]
-	write_legacy.call("user://run_save.cfg", mp_legacy)
-	var old_meta := ConfigFile.new()
-	old_meta.set_value("meta", "unlocked_items", ["void_blade"])
-	old_meta.set_value("meta", "unlocked_achievements", ["kill_100"])
-	old_meta.set_value("meta", "cipher_fragments", [0, 3])
-	old_meta.set_value("meta", "total_runs", 7)
-	old_meta.set_value("meta", "total_kills", 150)
-	old_meta.set_value("meta", "deepest_cycle", 2)
-	old_meta.set_value("meta", "total_cash_earned", 900)
-	old_meta.set_value("meta", "architect_unlocked", true)
-	old_meta.save("user://savegame.cfg")
-
-	var mgr = SaveScript.new()
-	mgr._migrate_legacy()
-	# Recency: newest -> slot 0.
-	_assert(str(mgr.load_run("solo", 0).get("class_id", "")) == "architect",
-		"newest legacy run -> solo slot 0")
-	_assert(str(mgr.load_run("solo", 0).get("saved_at", "")) == "2026-10-03T10:00:00",
-		"migration preserves the original saved_at")
-	_assert(str(mgr.load_run("solo", 1).get("class_id", "")) == "mage",
-		"second newest -> solo slot 1")
-	_assert(str(mgr.load_run("solo", 2).get("class_id", "")) == "rogue",
-		"third -> solo slot 2")
-	var solo_classes := []
-	for s in range(3):
-		solo_classes.append(str(mgr.load_run("solo", s).get("class_id", "")))
-	_assert(not solo_classes.has("warrior"), "oldest legacy left as overflow")
-	_assert(bool(mgr.load_run("mp", 0).get("is_multiplayer", false)),
-		"legacy MP run -> mp slot 0")
-	_assert((mgr.load_run("mp", 0).get("roster", []) as Array).size() == 2,
-		"migrated MP roster preserved")
-	# Nothing deleted, ever.
-	for lp in legacy_paths:
-		_assert(FileAccess.file_exists(lp), "legacy file not deleted: %s" % lp)
-	# Only the overflow is listed.
-	var leftover: Array = mgr.list_legacy_saves()
-	_assert(leftover.size() == 1 and str(leftover[0]["path"]) == "user://solo_warrior.cfg",
-		"overflow stays on disk and listed")
-	# Old profile meta merged in.
-	_assert("void_blade" in mgr.get_unlocked_items(), "legacy unlocks imported")
-	_assert(mgr.get_total_runs() == 7, "legacy total_runs imported")
-	_assert(mgr.get_total_kills() == 150, "legacy total_kills imported")
-	_assert(mgr.get_deepest_cycle() == 2, "legacy deepest_cycle imported")
-	_assert(mgr.get_total_cash_earned() == 900, "legacy cash imported")
-	_assert(mgr.get_unlocked_achievements() == ["kill_100"], "legacy achievements imported")
-	_assert(mgr.get_cipher_fragments() == [0, 3], "legacy cipher fragments imported")
-	_assert(mgr.is_architect_unlocked(), "legacy architect unlock imported")
-	# Migrated collections funnel into the profile (Phase 2).
-	_assert(mgr.load_collections("architect")
-		== {"fire": {"traits": ["kindled"], "signature": false}},
-		"migrated run collections funneled to profile")
-	# Idempotent: a second run changes nothing, and a cleared slot is never
-	# back-filled with a stale copy.
-	mgr.clear_run("solo", 0)
-	mgr._migrate_legacy()
-	_assert(not mgr.has_run("solo", 0), "cleared slot not resurrected")
-	_assert(mgr.list_legacy_saves().size() == 1, "still exactly one overflow")
-	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
-	mgr.free()
-
-	# --- Case B: occupied slots. Legacy files stay put and listed.
-	DirAccess.remove_absolute(prof_path)
-	for sp in slot_paths + legacy_paths:
-		if FileAccess.file_exists(sp):
-			DirAccess.remove_absolute(sp)
-	var mgr2 = SaveScript.new()
-	for s in range(3):
-		mgr2.save_run({"class_id": "mage", "level_number": 9}, "solo", s)
-		mgr2.save_run({"class_id": "mage", "level_number": 9, "roster": []}, "mp", s)
-	write_legacy.call("user://solo_warrior.cfg",
-		legacy_run.call("warrior", "village", 1, "2026-09-01T10:00:00", false))
-	write_legacy.call("user://solo_rogue.cfg",
-		legacy_run.call("rogue", "dungeon", 3, "2026-09-20T10:00:00", false))
-	write_legacy.call("user://run_save.cfg",
-		legacy_run.call("mage", "warlord", 6, "2026-10-02T10:00:00", true))
-	mgr2._migrate_legacy()
-	_assert(int(mgr2.load_run("solo", 0).get("level_number", 0)) == 9,
-		"occupied solo slot untouched")
-	_assert(int(mgr2.load_run("mp", 2).get("level_number", 0)) == 9,
-		"occupied mp slot untouched")
-	for lp in ["user://solo_warrior.cfg", "user://solo_rogue.cfg", "user://run_save.cfg"]:
-		_assert(FileAccess.file_exists(lp), "occupied case: legacy kept: %s" % lp)
-	_assert(mgr2.list_legacy_saves().size() == 3, "occupied case: overflow listed")
-	mgr2.free()
-
-	# Restore.
-	for sp in backups:
-		var f := FileAccess.open(sp, FileAccess.WRITE)
-		f.store_buffer(backups[sp])
-		f.close()
-	for sp in legacy_paths + slot_paths + [prof_path]:
-		if not backups.has(sp) and FileAccess.file_exists(sp):
-			DirAccess.remove_absolute(sp)
 
 
 func _test_station_phase4() -> void:
@@ -2080,3 +1940,183 @@ func _test_apex_phase1() -> void:
 	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
 	_assert(stsrc.contains("Dungeon.board_destinations(next_level_number)"),
 		"votes validated against board destinations")
+
+
+## Stub dungeon for apex mechanic tests: records announces/spawns, returns a
+## fixed arena point for phaseshift teleports. (The apex code paths use an
+## untyped dungeon ref so this stub can stand in for the real Dungeon.)
+class ApexDungeonStub extends Node:
+	var announces: Array = []
+	var spawns: Array = []
+
+	@rpc("any_peer", "call_local")
+	func announce(msg: String) -> void:
+		announces.append(msg)
+
+	func server_spawn_mob(type_id: String, pos: Vector3, force_elite: bool = false) -> void:
+		spawns.append([type_id, pos, force_elite])
+
+	func random_arena_pos() -> Vector3:
+		return Vector3(10, 0.5, 10)
+
+
+## Stub player for shockwave hit tests: records damage taken.
+class ApexPlayerStub extends Node3D:
+	var alive := true
+	var damage_taken := 0.0
+
+	@rpc("any_peer", "call_local")
+	func take_damage(amount: float, _attacker_name: String) -> void:
+		damage_taken += amount
+
+
+func _test_apex_mechanics() -> void:
+	print("[Playtest] Apex phase 2 mechanics (enrage/adds/phaseshift)...")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	_assert(MobScene != null, "apex2: mob scene loads")
+	# --- Data: apex_id set only on the three apex bosses.
+	_assert(str(load("res://data/mobs/apex_boar.tres").get("apex_id")) == "enrage",
+		"apex2: boar apex_id enrage")
+	_assert(str(load("res://data/mobs/apex_warden.tres").get("apex_id")) == "adds",
+		"apex2: warden apex_id adds")
+	_assert(str(load("res://data/mobs/apex_horror.tres").get("apex_id")) == "phaseshift",
+		"apex2: horror apex_id phaseshift")
+	_assert(int(load("res://data/mobs/apex_horror.tres").get("summon_count")) == 4,
+		"apex2: horror summon_count 4")
+	_assert(str(load("res://data/mobs/boss_boar.tres").get("apex_id")) == "",
+		"apex2: normal boar has no apex_id")
+	_assert(str(load("res://data/mobs/boss_warden.tres").get("apex_id")) == "",
+		"apex2: normal warden has no apex_id")
+	_assert(str(load("res://data/mobs/slime.tres").get("apex_id")) == "",
+		"apex2: normal slime has no apex_id")
+	# --- Fixtures: stub dungeon + a holder for scorch-decal counting.
+	var stub := ApexDungeonStub.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	# -s script mode has no current_scene; positional SFX needs one.
+	current_scene = holder
+
+	# --- Enrage (Apex Bristleback): below 30% HP -> +40% speed, 7s->4s cd.
+	var bdata: Resource = load("res://data/mobs/apex_boar.tres")
+	var boar = MobScene.instantiate()
+	boar.setup(1, bdata, 2.5, 1.5, false, 1.0)
+	holder.add_child(boar)
+	boar.take_damage(boar.get("max_hp") * 0.5, 1, Vector3.ZERO) # 50% left
+	_assert(not boar.get("_enraged"), "apex2: boar not enraged at 50%")
+	_assert(absf(boar._move_speed_mult() - 1.0) < 0.001, "apex2: speed normal above 30%")
+	boar.take_damage(boar.get("max_hp") * 0.25, 1, Vector3.ZERO) # 25% left
+	_assert(boar.get("_enraged"), "apex2: boar enrages below 30%")
+	_assert(absf(boar._move_speed_mult() - 1.4) < 0.001, "apex2: enrage +40% move speed")
+	_assert(absf(boar._special_cooldown() - 4.0) < 0.001, "apex2: enrage special cd 7s->4s")
+	_assert(stub.announces.size() == 1 and str(stub.announces[0]).contains("ENRAGED"),
+		"apex2: enrage announced")
+	# Fire trail: charging drops scorch decals (4s fire trail).
+	var decals_before := 0
+	for c in holder.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).mesh is CylinderMesh:
+			decals_before += 1
+	boar.set("_charge_t", 0.5)
+	boar.set("_trail_tick", 0.0)
+	boar._physics_process(0.2)
+	boar._physics_process(0.2)
+	var decals_after := 0
+	for c in holder.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).mesh is CylinderMesh:
+			decals_after += 1
+	_assert(decals_after - decals_before >= 2, "apex2: charge leaves fire-trail scorch decals")
+
+	# --- Adds (Apex Warden): 2 elite skeletons at 66% and 33%.
+	var wdata: Resource = load("res://data/mobs/apex_warden.tres")
+	var warden = MobScene.instantiate()
+	warden.setup(2, wdata, 2.5, 1.5, false, 1.0)
+	holder.add_child(warden)
+	warden.take_damage(warden.get("max_hp") * 0.30, 1, Vector3.ZERO) # 70% left
+	_assert(stub.spawns.is_empty(), "apex2: no adds above 66%")
+	warden.take_damage(warden.get("max_hp") * 0.10, 1, Vector3.ZERO) # 60% left
+	_assert(stub.spawns.size() == 2, "apex2: 2 skeletons summoned at 66% gate")
+	for s in stub.spawns:
+		_assert(s[0] == "skeleton" and s[2] == true, "apex2: warden adds are elite skeletons")
+	warden.take_damage(warden.get("max_hp") * 0.30, 1, Vector3.ZERO) # 30% left
+	_assert(stub.spawns.size() == 4, "apex2: 2 more skeletons at 33% gate")
+	warden.take_damage(warden.get("max_hp") * 0.10, 1, Vector3.ZERO) # 20% left
+	_assert(stub.spawns.size() == 4, "apex2: add gates fire once each")
+	# Shockwave: slam becomes an expanding ring; players are hit as it passes.
+	var pspec := ApexPlayerStub.new()
+	pspec.set_multiplayer_authority(1)
+	root.add_child(pspec)
+	pspec.add_to_group("players")
+	pspec.global_position = warden.global_position + Vector3(5, 0, 0)
+	warden._do_slam()
+	_assert(warden.get("_shockwaves").size() == 1, "apex2: slam fires a shockwave ring")
+	_assert(pspec.damage_taken == 0.0, "apex2: ring has not reached the player yet")
+	warden._boss_think(0.5) # ring out to ~4.75m
+	_assert(pspec.damage_taken == 0.0, "apex2: player at 5m not hit before the ring arrives")
+	warden._boss_think(0.5) # ring out to ~8.5m
+	_assert(pspec.damage_taken > 0.0, "apex2: player hit as the ring passes")
+	var dmg_once: float = pspec.damage_taken
+	warden._boss_think(0.5) # ring expires at 9m
+	_assert((warden.get("_shockwaves") as Array).is_empty(), "apex2: ring expires at max radius")
+	_assert(pspec.damage_taken == dmg_once, "apex2: each player hit once per ring")
+	pspec.global_position = Vector3(500, 0, 500)
+
+	# --- Phaseshift (Apex Horror): untargetable 2s + teleport at 75/50/25%.
+	var hdata: Resource = load("res://data/mobs/apex_horror.tres")
+	var horror = MobScene.instantiate()
+	horror.setup(3, hdata, 2.5, 1.5, false, 1.0)
+	holder.add_child(horror)
+	var start_pos: Vector3 = horror.global_position
+	horror.take_damage(horror.get("max_hp") * 0.20, 1, Vector3.ZERO) # 80% left
+	_assert(not horror.get("untargetable"), "apex2: no phaseshift above 75%")
+	horror.take_damage(horror.get("max_hp") * 0.10, 1, Vector3.ZERO) # 70% left
+	_assert(horror.get("untargetable"), "apex2: phaseshift triggers at 75%")
+	_assert(absf(float(horror.get("_phaseshift_t")) - 2.0) < 0.01,
+		"apex2: 2s untargetable window")
+	var hp_during: float = horror.get("hp")
+	horror.take_damage(500.0, 1, Vector3.ZERO)
+	_assert(absf(float(horror.get("hp")) - hp_during) < 0.001,
+		"apex2: no damage taken while untargetable")
+	_assert(horror.global_position.distance_to(start_pos) > 1.0,
+		"apex2: phaseshift teleports to a new arena point")
+	horror._boss_think(2.1)
+	_assert(not horror.get("untargetable"), "apex2: targetable again after the window")
+	horror.take_damage(horror.get("max_hp") * 0.25, 1, Vector3.ZERO) # 45% left
+	_assert(horror.get("untargetable"), "apex2: second phaseshift at 50% gate")
+	_assert(int(horror.get("_shift_fired")) == 2, "apex2: shift gates fire once each")
+	horror._boss_think(2.1)
+	# Horror summons: 4 elite cultists per summon special.
+	stub.spawns.clear()
+	horror._do_summon()
+	_assert(stub.spawns.size() == 4, "apex2: horror summons 4 cultists")
+	for s in stub.spawns:
+		_assert(s[0] == "cultist" and s[2] == true, "apex2: horror cultists are elite")
+
+	# --- Non-apex bosses never run apex mechanics.
+	var ndata: Resource = load("res://data/mobs/boss_boar.tres")
+	var normal = MobScene.instantiate()
+	normal.setup(4, ndata, 1.0, 1.0, false, 1.0)
+	holder.add_child(normal)
+	normal.take_damage(normal.get("max_hp") * 0.85, 1, Vector3.ZERO) # 15% left
+	_assert(not normal.get("_enraged"), "apex2: normal boar never enrages")
+	_assert(absf(normal._move_speed_mult() - 1.0) < 0.001, "apex2: normal speed unchanged")
+	_assert(absf(normal._special_cooldown() - float(ndata.get("special_cooldown"))) < 0.001,
+		"apex2: normal special cooldown unchanged")
+	_assert(int(normal.get("_adds_fired")) == 0, "apex2: normal boss never summons adds")
+	_assert(not normal.get("untargetable"), "apex2: normal boss never phaseshifts")
+	var wndata: Resource = load("res://data/mobs/boss_warden.tres")
+	var wnormal = MobScene.instantiate()
+	wnormal.setup(5, wndata, 1.0, 1.0, false, 1.0)
+	holder.add_child(wnormal)
+	wnormal._do_slam()
+	_assert((wnormal.get("_shockwaves") as Array).is_empty(),
+		"apex2: normal warden slam stays instant (no shockwave)")
+
+	boar.queue_free()
+	warden.queue_free()
+	horror.queue_free()
+	normal.queue_free()
+	wnormal.queue_free()
+	pspec.queue_free()
+	stub.queue_free()
+	holder.queue_free()

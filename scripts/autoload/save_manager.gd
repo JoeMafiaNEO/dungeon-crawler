@@ -40,23 +40,9 @@ var _settings := ConfigFile.new()
 var _cloud_write_count := 0
 
 
-# --- Legacy migration (issue #4 Phase 3) ---
-# Pre-slot saves: user://solo_<class>.cfg (warrior/rogue/mage/architect),
-# user://run_save.cfg (old MP slot), user://savegame.cfg (old profile meta).
-# Migration is COPY-only: legacy files are never deleted, so nothing can be
-# lost. Runs once per profile; migrated paths are recorded so overflow files
-# stay listed (and a later-freed slot is never back-filled with a stale copy).
-
-const LEGACY_SOLO_CLASSES: Array[String] = ["warrior", "rogue", "mage", "architect"]
-const LEGACY_SOLO_PATTERN := "user://solo_%s.cfg"
-const LEGACY_MP_PATH := "user://run_save.cfg"
-const LEGACY_PROFILE_PATH := "user://savegame.cfg"
-
-
 func _ready() -> void:
 	load_game()
 	load_settings()
-	_migrate_legacy()
 
 
 # --- Account profile ---
@@ -447,126 +433,6 @@ func _persist_one_collection(class_id: String, player_state: Variant) -> void:
 		save_collections(class_id, coll)
 
 
-## One-time import of pre-slot saves into the slot system. Solo legacy
-## files migrate newest-first into empty solo slots (slot 0 = most recent);
-## the old MP file goes to the first empty MP slot. Anything that fits
-## nowhere stays on disk as overflow and keeps showing up in
-## list_legacy_saves(). Legacy files are COPIED, never moved or deleted.
-func _migrate_legacy() -> void:
-	if bool(_profile.get_value("meta", "legacy_migrated", false)):
-		return
-	_migrate_legacy_meta()
-	var migrated: Array = _profile.get_value("meta", "legacy_migrated_paths", [])
-	var solos: Array = []
-	var mps: Array = []
-	for e in _legacy_entries():
-		if migrated.has(e["path"]):
-			continue
-		if e["mode"] == MODE_SOLO:
-			solos.append(e)
-		else:
-			mps.append(e)
-	# Newest first: the run the player touched last lands in slot 0.
-	solos.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return str(a["saved_at"]) > str(b["saved_at"]))
-	for e in solos:
-		var slot := _first_empty_slot(MODE_SOLO)
-		if slot < 0:
-			break  # overflow: stays on disk, still listed
-		var data: Dictionary = (e["run"] as Dictionary).duplicate(true)
-		data["class_id"] = e["class_id"]
-		save_run(data, MODE_SOLO, slot, true)
-		migrated.append(e["path"])
-	for e in mps:
-		var slot := _first_empty_slot(MODE_MP)
-		if slot < 0:
-			break
-		save_run((e["run"] as Dictionary).duplicate(true), MODE_MP, slot, true)
-		migrated.append(e["path"])
-	_profile.set_value("meta", "legacy_migrated", true)
-	_profile.set_value("meta", "legacy_migrated_paths", migrated)
-	save_game()
-
-
-## Legacy run files still on disk that were never migrated into a slot
-## (overflow, or slots were occupied at migration time). [{path, mode,
-## class_id, saved_at, run}]. Migrated files are not listed — their runs
-## already live in slots.
-func list_legacy_saves() -> Array:
-	var migrated: Array = _profile.get_value("meta", "legacy_migrated_paths", [])
-	var out: Array = []
-	for e in _legacy_entries():
-		if not migrated.has(e["path"]):
-			out.append(e)
-	return out
-
-
-## Every legacy run file on disk, regardless of migration state.
-func _legacy_entries() -> Array:
-	var out: Array = []
-	for cid in LEGACY_SOLO_CLASSES:
-		var path := LEGACY_SOLO_PATTERN % cid
-		if FileAccess.file_exists(path):
-			var run := _read_legacy_run(path)
-			if not run.is_empty():
-				out.append({"path": path, "mode": MODE_SOLO, "class_id": cid,
-					"saved_at": _legacy_saved_at(path, run), "run": run})
-	if FileAccess.file_exists(LEGACY_MP_PATH):
-		var mrun := _read_legacy_run(LEGACY_MP_PATH)
-		if not mrun.is_empty():
-			# Ancient single-slot era: a solo run could sit in run_save.cfg.
-			var mmode := MODE_MP if bool(mrun.get("is_multiplayer", true)) else MODE_SOLO
-			out.append({"path": LEGACY_MP_PATH, "mode": mmode,
-				"class_id": str(mrun.get("class_id", "warrior")),
-				"saved_at": _legacy_saved_at(LEGACY_MP_PATH, mrun), "run": mrun})
-	return out
-
-
-func _read_legacy_run(path: String) -> Dictionary:
-	var cfg := ConfigFile.new()
-	if cfg.load(path) != OK:
-		return {}
-	var data = cfg.get_value("run", "data", {})
-	return (data as Dictionary).duplicate(true) if data is Dictionary else {}
-
-
-## Recency for ordering: the stamped saved_at, else the file mtime.
-func _legacy_saved_at(path: String, run: Dictionary) -> String:
-	var stamped := str(run.get("saved_at", ""))
-	if stamped != "":
-		return stamped
-	return Time.get_datetime_string_from_unix_time(FileAccess.get_modified_time(path))
-
-
-func _first_empty_slot(mode: String) -> int:
-	for slot in range(MAX_SLOTS):
-		if not has_run(mode, slot):
-			return slot
-	return -1
-
-
-## One-time import of the pre-profile meta (user://savegame.cfg) into the
-## account profile. Merge-only: arrays union, counters take max, bools OR.
-## The legacy file is left on disk.
-func _migrate_legacy_meta() -> void:
-	if not FileAccess.file_exists(LEGACY_PROFILE_PATH):
-		return
-	var old := ConfigFile.new()
-	if old.load(LEGACY_PROFILE_PATH) != OK:
-		return
-	for key in ["unlocked_items", "unlocked_achievements", "cipher_fragments"]:
-		var union: Array = _profile.get_value("meta", key, [])
-		for v in old.get_value("meta", key, []):
-			if not union.has(v):
-				union.append(v)
-		_profile.set_value("meta", key, union)
-	for key in ["total_runs", "total_kills", "deepest_cycle", "total_cash_earned"]:
-		_profile.set_value("meta", key, maxi(int(_profile.get_value("meta", key, 0)),
-			int(old.get_value("meta", key, 0))))
-	if bool(old.get_value("meta", "architect_unlocked", false)):
-		_profile.set_value("meta", "architect_unlocked", true)
-
-
 # --- Run slots ---
 # user://runs/solo_0..2.cfg and user://runs/mp_0..2.cfg. Each slot file
 # stores one run dict + save_version + saved_at. Auto-saved on every level
@@ -585,17 +451,15 @@ func _slot_path(mode: String, slot: int) -> String:
 
 ## Save a run into a slot. Stamps saved_at + save_version and the mode's
 ## is_multiplayer flag. Atomic write (.tmp rename) + cloud write-through.
-## keep_saved_at (migration only): preserve an existing saved_at stamp
-## instead of re-stamping. Returns false when the slot is invalid.
-func save_run(run: Dictionary, mode: String, slot: int, keep_saved_at := false) -> bool:
+## Returns false when the slot is invalid.
+func save_run(run: Dictionary, mode: String, slot: int) -> bool:
 	var path := _slot_path(mode, slot)
 	if path == "":
 		return false
 	DirAccess.make_dir_recursive_absolute(RUNS_DIR)
 	var cfg := ConfigFile.new()
 	var data := run.duplicate(true)
-	if not keep_saved_at or str(data.get("saved_at", "")) == "":
-		data["saved_at"] = Time.get_datetime_string_from_system()
+	data["saved_at"] = Time.get_datetime_string_from_system()
 	data["save_version"] = SAVE_VERSION
 	data["is_multiplayer"] = (mode == MODE_MP)
 	cfg.set_value("run", "data", data)

@@ -70,5 +70,6 @@ scale_mult = 2.5
 special_id = "slam"
 special_cooldown = 8.0
 special_damage_mult = 2.0
+apex_id = "adds"
 loot_luck = 4.0
 bonus_drops = 2

@@ -1707,14 +1707,20 @@ func spawn_decoy(pos: Vector3, owner: int) -> void:
 	decoy.global_position = Vector3(pos.x, 0.05, pos.z)
 
 
-## Server-side helper for boss summons.
-func server_spawn_mob(type_id: String, pos: Vector3) -> void:
+## Server-side helper for boss summons. force_elite guarantees elite adds
+## (apex Warden/Horror mechanics); random 10% roll otherwise.
+func server_spawn_mob(type_id: String, pos: Vector3, force_elite: bool = false) -> void:
 	if not multiplayer.is_server():
 		return
 	_mob_id += 1
 	var data := _mob_data(type_id)
-	var elite := data != null and not data.is_boss and randf() < 0.10
+	var elite := data != null and not data.is_boss and (force_elite or randf() < 0.10)
 	rpc("spawn_mob", _mob_id, type_id, pos, _danger_mult() * NetworkManager.host_difficulty, _danger_mult() * NetworkManager.host_difficulty, elite, _danger_mult())
+
+
+## Random floor position in the arena (apex Horror phaseshift teleports).
+func random_arena_pos() -> Vector3:
+	return _random_floor_pos()
 
 
 func _mob_data(type_id: String) -> MobData:

@@ -36,3 +36,6 @@ extends Resource
 @export var special_damage_mult: float = 2.0
 @export var summon_id: String = ""
 @export var summon_count: int = 2
+## Apex mechanic id for apex-cycle bosses (issue #5): "", "enrage" (Bristleback),
+## "adds" (Warden), "phaseshift" (Horror). Empty for every non-apex mob/boss.
+@export var apex_id: String = ""
