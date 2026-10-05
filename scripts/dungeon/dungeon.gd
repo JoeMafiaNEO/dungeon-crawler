@@ -1926,6 +1926,9 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	var InteriorScript: GDScript = load("res://scripts/station/train_interior.gd")
 	InteriorScript.passenger_classes = classes
 	InteriorScript.ride_theme_id = theme_id
+	# Issue #3 Phase 2: boarding is over (all aboard or timer expiry) — the
+	# car doors stay closed + locked for the ride.
+	InteriorScript.doors_locked = true
 	get_tree().call_deferred("change_scene_to_file", "res://scenes/station/train_interior.tscn")
 
 

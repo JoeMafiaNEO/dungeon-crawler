@@ -988,6 +988,14 @@ func hide_station_timer() -> void:
 	%StationTimerLabel.visible = false
 
 
+## Boarding countdown (issue #3 Phase 2): ALL ABOARD window with the aboard
+## roster. Reuses the station timer label — no new UI chrome.
+func show_boarding_timer(sec: float, aboard_count: int, living_count: int) -> void:
+	var s := int(ceil(maxf(sec, 0.0)))
+	%StationTimerLabel.text = "ALL ABOARD — TRAIN LEAVES IN %d:%02d (%d/%d)" % [s / 60, s % 60, aboard_count, living_count]
+	%StationTimerLabel.visible = true
+
+
 # --- Downed / revive (co-op) ---
 
 func show_downed(seconds: float) -> void:

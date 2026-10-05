@@ -40,6 +40,7 @@ func _run() -> void:
 	_test_annex_departure()
 	_test_annex_forfeit()
 	_test_train_interior()
+	_test_boarding_flow()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -408,10 +409,17 @@ func _test_station_mp_vote_flow() -> void:
 	st.votes = {10: "dungeon", 11: "village"}
 	st.depart([10, 11])
 	_assert(captured.is_empty(), "split vote: depart() emits nothing")
-	# ...and emits exactly once on unanimity.
+	_assert(not st._boarding_active, "split vote: no boarding started")
+	# ...and on unanimity it enters ALL ABOARD (issue #3 Phase 2) instead of
+	# emitting directly; boarding completion emits departure_resolved.
 	st.votes = {10: "dungeon", 11: "dungeon"}
 	st.depart([10, 11])
-	_assert(captured == ["dungeon"], "unanimous: depart() emits departure_resolved")
+	_assert(captured.is_empty(), "unanimous: depart() starts boarding, emits nothing yet")
+	_assert(st._boarding_active, "unanimous: ALL ABOARD active")
+	_assert(st._boarding_theme == "dungeon", "boarding carries the voted theme")
+	st._finish_boarding([10, 11])
+	_assert(captured == ["dungeon"], "boarding complete: departure_resolved emitted")
+	_assert(st._boarding_locked, "boarding complete: train door locked")
 	# sync_votes payload applies on the client path (no board in test tree).
 	root.add_child(st5)
 	st5.sync_votes({10: "village", 11: "dungeon"})
@@ -623,7 +631,8 @@ func _test_station_embedded() -> void:
 	_assert(float(st.get("_time_left")) == StationScript.DEPART_TIME,
 		"embedded: timer reset to full duration")
 
-	# 4. Unanimous resolve emits departure_resolved (server path); split does not.
+	# 4. Unanimous resolve enters ALL ABOARD (issue #3 Phase 2); boarding
+	# completion emits departure_resolved (server path); split does not.
 	var captured := []
 	st.departure_resolved.connect(func(tid): captured.append(tid))
 	st.votes = {10: "dungeon", 11: "dungeon"}
@@ -631,7 +640,10 @@ func _test_station_embedded() -> void:
 	_assert(captured.is_empty(), "embedded: partial votes emit nothing")
 	st.votes = {10: "dungeon", 11: "dungeon", 12: "dungeon"}
 	st.depart([10, 11, 12])
-	_assert(captured == ["dungeon"], "embedded: unanimous emits departure_resolved")
+	_assert(captured.is_empty(), "embedded: unanimous starts boarding, emits nothing yet")
+	_assert(bool(st.get("_boarding_active")), "embedded: ALL ABOARD active")
+	st._finish_boarding([10, 11, 12])
+	_assert(captured == ["dungeon"], "embedded: boarding complete emits departure_resolved")
 
 	# 5. Split vote never emits, even from the host's own pick.
 	var st2 = StationScript.new()
@@ -892,6 +904,103 @@ func _test_train_interior() -> void:
 	var hblock := dsrc.substr(hpos, 2600)
 	_assert(hblock.contains('rpc("board_train_interior"'), "interior: departure rpcs boarding")
 	_assert(not hblock.contains("hop_to_next_level"), "interior: direct hop gone from departure")
+
+
+func _test_boarding_flow() -> void:
+	print("[Playtest] Boarding flow (issue #3 Phase 2: ALL ABOARD)...")
+	var StationScript := load("res://scripts/station/station.gd")
+	var living := [10, 11, 12]
+	var st = StationScript.new()
+	root.add_child(st)
+	var captured := []
+	st.departure_resolved.connect(func(tid): captured.append(tid))
+
+	# Boarding is idle before a unanimous vote resolves.
+	_assert(not st._boarding_active, "boarding: idle before depart")
+	_assert(not bool(st.record_boarding(10, living)["ok"]), "boarding: rejected while idle")
+
+	# Unanimous vote -> ALL ABOARD with a 45s timer, no departure yet.
+	st.votes = {10: "depths", 11: "depths", 12: "depths"}
+	st.depart(living)
+	_assert(st._boarding_active, "boarding: ALL ABOARD entered on depart")
+	_assert(st._boarding_time_left <= StationScript.BOARD_TIME, "boarding: 45s timer running")
+	_assert(not st._boarding_locked, "boarding: door unlocked while boarding")
+	_assert(st._boarding_theme == "depths", "boarding: carries the voted theme")
+	_assert(captured.is_empty(), "boarding: no departure_resolved yet")
+
+	# Walk-through boarding: one peer boards, still waiting on the rest.
+	_assert(bool(st.record_boarding(10, living)["ok"]), "boarding: peer 10 boards")
+	_assert(st.aboard == {10: true}, "boarding: roster tracks peer 10")
+	_assert(not st._all_aboard(living), "boarding: 1/3 not all aboard")
+	_assert(not bool(st.record_boarding(99, living)["ok"]), "boarding: non-living rejected")
+	_assert(bool(st.record_boarding(10, living)["ok"]), "boarding: re-board idempotent")
+
+	# Last player boards -> all aboard -> early departure, timer cancelled.
+	st.record_boarding(11, living)
+	st.record_boarding(12, living)
+	_assert(st._all_aboard(living), "boarding: 3/3 all aboard")
+	st._finish_boarding(living)
+	_assert(captured == ["depths"], "boarding: all-aboard emits departure_resolved")
+	_assert(not st._boarding_active, "boarding: timer cancelled after all aboard")
+	_assert(st._boarding_locked, "boarding: door locked after all aboard")
+	_assert(not bool(st.record_boarding(10, living)["ok"]), "boarding: locked door rejects")
+	st.queue_free()
+
+	# Timer expiry ends boarding and emits (stragglers ride via pull-aboard).
+	var st2 = StationScript.new()
+	root.add_child(st2)
+	var captured2 := []
+	st2.departure_resolved.connect(func(tid): captured2.append(tid))
+	st2.votes = {10: "village", 11: "village"}
+	st2.depart([10, 11])
+	st2._boarding_time_left = 0.01
+	st2._tick_boarding(0.02)
+	_assert(captured2 == ["village"], "boarding: expiry emits departure_resolved")
+	_assert(st2._boarding_locked, "boarding: door locked on expiry")
+	_assert(not st2._boarding_active, "boarding: timer stops on expiry")
+	st2.queue_free()
+
+	# Stragglers are marked aboard when boarding completes.
+	var st4 = StationScript.new()
+	root.add_child(st4)
+	st4.votes = {10: "village", 11: "village"}
+	st4.depart([10, 11])
+	st4.record_boarding(10, [10, 11])
+	st4._finish_boarding([10, 11])
+	_assert(st4.aboard.has(11), "boarding: straggler marked aboard on completion")
+	st4.queue_free()
+
+	# Solo: the single living player boarding ends the window immediately.
+	var st3 = StationScript.new()
+	root.add_child(st3)
+	var captured3 := []
+	st3.departure_resolved.connect(func(tid): captured3.append(tid))
+	st3.votes = {7: "dungeon"}
+	st3.depart([7])
+	st3.record_boarding(7, [7])
+	_assert(st3._all_aboard([7]), "boarding: solo 1/1 all aboard")
+	st3._finish_boarding([7])
+	_assert(captured3 == ["dungeon"], "boarding: solo departs on door entry")
+	st3.queue_free()
+
+	# The request_board RPC stays thin and delegates to record_boarding.
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("record_boarding(sender)"), "boarding: request_board delegates")
+	_assert(ssrc.contains("boarding_sync"), "boarding: roster sync rpc exists")
+	# Interior door lock: locked cars never open their doors.
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	InteriorScript.doors_locked = true
+	var car = InteriorScript.new()
+	car._build_car()
+	car.open_doors()
+	_assert(not car._doors_open, "interior: locked doors stay closed")
+	car.lock_doors()
+	_assert(InteriorScript.doors_locked, "interior: lock_doors sets the lock")
+	car.free()
+	InteriorScript.doors_locked = false
+	# Dungeon hands the lock to the interior on boarding.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("InteriorScript.doors_locked = true"), "boarding: dungeon locks car doors")
 
 
 func _test_cycle_scaling() -> void:

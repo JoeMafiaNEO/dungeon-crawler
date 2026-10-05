@@ -13,6 +13,9 @@ extends Node3D
 ## Handoff statics (set by the dungeon before change_scene_to_file).
 static var passenger_classes: Dictionary = {} # peer_id -> class_id
 static var ride_theme_id: String = "village" # destination theme (Phase 4 dressing)
+## Issue #3 Phase 2: the dungeon locks the car doors when boarding completes
+## (all aboard or timer expiry) — nobody re-opens them during the ride.
+static var doors_locked := false
 
 ## Placeholder ride length. The real ride sequence is a later phase.
 const RIDE_SECONDS := 6.0
@@ -36,7 +39,8 @@ func _ready() -> void:
 	_spawn_passengers()
 	if _local_hud != null:
 		_local_hud.fade_in(1.5)
-	open_doors()
+	if not doors_locked:
+		open_doors()
 	if multiplayer.is_server():
 		_run_ride()
 
@@ -66,9 +70,10 @@ func leave_interior() -> void:
 
 
 ## Sliding car doors (rear end). Tween when in the tree, snap otherwise
-## (lets tests drive the state machine without a scene tree).
+## (lets tests drive the state machine without a scene tree). Locked doors
+## (issue #3 Phase 2) never re-open during the ride.
 func open_doors() -> void:
-	if _doors_open:
+	if _doors_open or doors_locked:
 		return
 	_doors_open = true
 	AudioManager.sfx("train_door_open")
@@ -81,6 +86,12 @@ func close_doors() -> void:
 	_doors_open = false
 	AudioManager.sfx("train_door_close")
 	_animate_doors()
+
+
+## Lock the car for the ride: doors close and stay closed.
+func lock_doors() -> void:
+	doors_locked = true
+	close_doors()
 
 
 func _animate_doors() -> void:
