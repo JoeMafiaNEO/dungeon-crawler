@@ -1230,6 +1230,8 @@ func _refresh_family_panel() -> void:
 
 
 ## Refresh the collection log: two-column compact grid of all families.
+## Issue #55: full-progress state must fit 1080p with zero scroll — compact
+## fonts and tight separation throughout.
 func _refresh_collection_log() -> void:
 	for child in %CollectionLog.get_children():
 		child.queue_free()
@@ -1239,12 +1241,12 @@ func _refresh_collection_log() -> void:
 	var coll_all: Dictionary = _player.get("family_collection")
 	var grid := HBoxContainer.new()
 	grid.alignment = BoxContainer.ALIGNMENT_CENTER
-	grid.add_theme_constant_override("separation", 16)
+	grid.add_theme_constant_override("separation", 12)
 	%CollectionLog.add_child(grid)
 	var cols: Array = []
 	for i in 2:
 		var vb := VBoxContainer.new()
-		vb.add_theme_constant_override("separation", 1)
+		vb.add_theme_constant_override("separation", 0)
 		grid.add_child(vb)
 		cols.append(vb)
 	var idx := 0
@@ -1263,7 +1265,7 @@ func _refresh_collection_log() -> void:
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if sig_done else Color(0.8, 0.75, 0.55))
 		row.text = txt
 		row.tooltip_text = _collection_tooltip(fam, earned, sig_done)
-		row.add_theme_font_size_override("font_size", 11)
+		row.add_theme_font_size_override("font_size", 10)
 		(cols[idx % 2] as VBoxContainer).add_child(row)
 		idx += 1
 	_refresh_cipher_section()
@@ -1273,23 +1275,23 @@ func _refresh_collection_log() -> void:
 
 ## Apex trophies (issue #5 Phase 3): 3 fixed rows, one per apex boss.
 ## Earned rows show the relic icon in gold; locked rows show ??? + hint.
-## Fixed row count → layout cannot scroll.
+## Issue #55: compact (20px icons, font 10) so the full Collection fits 1080p.
 func _refresh_trophy_section() -> void:
 	var trophies: Array = SaveManager.get_apex_trophies()
 	var header := Label.new()
 	header.text = "Apex Trophies — %d/3" % trophies.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_font_size_override("font_size", 11)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	for apex_id in ["apex_boar", "apex_warden", "apex_horror"]:
 		var earned: bool = apex_id in trophies
 		var row := HBoxContainer.new()
 		row.alignment = BoxContainer.ALIGNMENT_CENTER
-		row.add_theme_constant_override("separation", 8)
+		row.add_theme_constant_override("separation", 6)
 		%CollectionLog.add_child(row)
 		var icon := TextureRect.new()
-		icon.custom_minimum_size = Vector2(24, 24)
+		icon.custom_minimum_size = Vector2(20, 20)
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		var sp := SpecialData.get_special(SpecialData.apex_special_for_boss(apex_id))
@@ -1305,19 +1307,20 @@ func _refresh_trophy_section() -> void:
 		else:
 			label.text = "??? — %s" % sp.unlock_hint
 			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
-		label.add_theme_font_size_override("font_size", 11)
+		label.add_theme_font_size_override("font_size", 10)
 		row.add_child(label)
 
 
 
 ## Architect Cipher section: collected fragments as raw cipher + shift hint
+## (never the solution). Issue #55: compact fonts for 1080p zero-scroll fit.
 ## (never the solution). Compact, at most 8 short rows.
 func _refresh_cipher_section() -> void:
 	var frags: Array = SaveManager.get_cipher_fragments()
 	var header := Label.new()
 	header.text = "Architect Cipher — %d/8" % frags.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_font_size_override("font_size", 11)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	var sorted := frags.duplicate()
@@ -1331,19 +1334,19 @@ func _refresh_cipher_section() -> void:
 		row.text = "%s. %s — the verse speaks of %s" % [
 			CipherPoems.roman(idx), str(p["cipher"]), CipherPoems.shift_word(int(p["shift"]))]
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_theme_font_size_override("font_size", 11)
+		row.add_theme_font_size_override("font_size", 10)
 		row.add_theme_color_override("font_color", Color(0.8, 0.75, 0.55))
 		%CollectionLog.add_child(row)
 
 
 ## Combo Finishers codex (issue #8 Phase 2): 5 fixed rows. Undiscovered
-## show "???" + hint, discovered show name + trigger. Compact, zero-scroll.
+## show "???" + hint, discovered show name + trigger. Issue #55: compact.
 func _refresh_combo_codex() -> void:
 	var found: Array = SaveManager.get_combos_discovered()
 	var header := Label.new()
 	header.text = "Combo Finishers — %d/5" % found.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_font_size_override("font_size", 11)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	for f in Combo.COMBO_FINISHERS:
@@ -1356,7 +1359,7 @@ func _refresh_combo_codex() -> void:
 			row.text = "◇ ??? — %s" % str(f["hint"])
 			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_theme_font_size_override("font_size", 11)
+		row.add_theme_font_size_override("font_size", 10)
 		%CollectionLog.add_child(row)
 
 
