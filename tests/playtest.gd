@@ -4297,6 +4297,10 @@ func _test_wave_stall_watchdog() -> void:
 	var mobs := Node3D.new()
 	mobs.name = "Mobs"
 	d.add_child(mobs)
+	# Mock theme so _push_wave_info doesn't nil-crash (test harness only).
+	var mock_theme := LevelTheme.new()
+	mock_theme.display_name = "Test"
+	d.set("theme", mock_theme)
 	# NOT added to tree: _mobs_alive() only needs the $Mobs child structure.
 	# (Adding to root would pollute the "dungeon" group for later tests.)
 	_assert(d.call("_mobs_alive") == 0, "no mobs -> 0 alive")
@@ -4437,6 +4441,10 @@ func _test_watchdog_resets_on_progress() -> void:
 	var mobs := Node3D.new()
 	mobs.name = "Mobs"
 	d.add_child(mobs)
+	# Mock theme so _push_wave_info doesn't nil-crash (test harness only).
+	var mock_theme := LevelTheme.new()
+	mock_theme.display_name = "Test"
+	d.set("theme", mock_theme)
 	d.set("mobs_to_spawn", 0)
 	d.set("wave_state", 1)  # ACTIVE
 	d.set("_wave_stall_t", 0.0)
