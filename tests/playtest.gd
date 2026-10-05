@@ -61,6 +61,7 @@ func _run() -> void:
 	_test_specials_phase2()
 	_test_wave_stall_watchdog()
 	_test_eagle_eye_warlord_hide()
+	_test_issue18_ui_fixes()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4245,3 +4246,16 @@ func _test_eagle_eye_warlord_hide() -> void:
 	_assert(hsrc.contains("warlord_now != _last_warlord"),
 		"HUD refreshes on Warlord change")
 	print("[Playtest] Eagle Eye Warlord hide done")
+
+
+func _test_issue18_ui_fixes() -> void:
+	print("[Playtest] issue #18 UI fixes...")
+	# Static: death screen hides the wave banner + prompt.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("%NextWaveButton.visible = false") and hsrc.contains("%WaveStatus.visible = false"),
+		"death screen hides wave banner and prompt")
+	# Static: staging row has spacing between toggle and button.
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
+	_assert(tsrc.contains('theme_override_constants/separation = 24'),
+		"staging row has 24px separation")
+	print("[Playtest] issue #18 UI fixes done")

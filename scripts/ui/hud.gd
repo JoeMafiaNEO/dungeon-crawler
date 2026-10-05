@@ -1411,6 +1411,11 @@ func show_death_screen(stats: Dictionary) -> void:
 	]
 	%DeathPanel.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# Issue #18: hide the wave-start banner + prompt behind the death panel.
+	# A dead player can't start a wave; the normal wave-info refresh restores
+	# them on respawn/continue.
+	%NextWaveButton.visible = false
+	%WaveStatus.visible = false
 
 
 func hide_death_screen() -> void:
