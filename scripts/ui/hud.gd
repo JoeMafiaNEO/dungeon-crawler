@@ -1437,9 +1437,9 @@ func announce(text: String, tint: Color = Color(1.0, 1.0, 1.0)) -> void:
 	# Issue #23/#46/#52: shrink-to-fit so wide banners don't overflow at 1920x1080.
 	# Pixel-accurate: measure the text width at 72pt, scale down to fit 1820px.
 	var font_size := 72
-	var font := %AnnounceLabel.get_theme_font("font")
+	var font: Font = %AnnounceLabel.get_theme_font("font")
 	if font != null:
-		var w72 := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 72).x
+		var w72: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 72).x
 		if w72 > 1820.0:
 			font_size = maxi(16, int(72.0 * 1820.0 / w72))
 	elif text.length() > 15:
