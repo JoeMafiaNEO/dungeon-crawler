@@ -191,6 +191,10 @@ var _wave_broadcast := 0.0
 ## with nothing left to spawn. Force-completes the wave if it stalls.
 var _wave_stall_t := 0.0
 const WAVE_STALL_TIMEOUT := 5.0
+## Issue #31: last seen alive count. The watchdog only fires when the count
+## is UNCHANGED for the full timeout (a true stall). Any decrease (a mob
+## died = progress) resets the timer.
+var _wave_last_alive := -1
 var _local_hud: CanvasLayer
 var _boss: Mob = null
 # --- Key objective ---
@@ -1520,19 +1524,26 @@ func _process_waves(delta: float) -> void:
 			# Issue #27: count ALIVE mobs, not raw $Mobs children — a lingering
 			# non-mob child (or dead mob awaiting free) must not stall the wave.
 			if mobs_to_spawn <= 0:
-				if _mobs_alive() == 0:
+				var alive_now := _mobs_alive()
+				if alive_now == 0:
 					_wave_stall_t = 0.0
+					_wave_last_alive = -1
 					_wave_cleared()
 				else:
-					# Watchdog: if the alive count never drops (stuck mob),
-					# force-complete after the timeout rather than stalling forever.
+					# Issue #31: only force-clear on a TRUE stall (count unchanged
+					# for the full timeout). Any decrease = progress, reset timer.
+					if alive_now < _wave_last_alive or _wave_last_alive < 0:
+						_wave_stall_t = 0.0
+					_wave_last_alive = alive_now
 					_wave_stall_t += delta
 					if _wave_stall_t >= WAVE_STALL_TIMEOUT:
-						push_warning("[Dungeon] Wave %d watchdog: %d 'alive' mobs for %.1fs, force-clearing" % [wave, _mobs_alive(), _wave_stall_t])
+						push_warning("[Dungeon] Wave %d watchdog: %d mobs stuck for %.1fs, force-clearing" % [wave, alive_now, _wave_stall_t])
 						_wave_stall_t = 0.0
+						_wave_last_alive = -1
 						_wave_cleared()
 			else:
 				_wave_stall_t = 0.0
+				_wave_last_alive = -1
 	_wave_broadcast -= delta
 	if _wave_broadcast <= 0.0:
 		_wave_broadcast = 0.25
@@ -1545,6 +1556,7 @@ func _start_wave() -> void:
 	wave_state = WaveState.ACTIVE
 	_spawn_tick = 0.5
 	_wave_stall_t = 0.0  # Issue #27: reset the stall watchdog.
+	_wave_last_alive = -1  # Issue #31: reset the stall-progress tracker.
 	if wave >= TOTAL_WAVES and theme.boss_id != "":
 		# Boss wave: the theme boss plus a small honor guard.
 		mobs_to_spawn = 4
