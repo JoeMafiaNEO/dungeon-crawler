@@ -60,6 +60,7 @@ func _run() -> void:
 	_test_specials_phase1()
 	_test_specials_phase2()
 	_test_wave_stall_watchdog()
+	_test_eagle_eye_warlord_hide()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4228,3 +4229,19 @@ func _test_wave_stall_watchdog() -> void:
 	d.free()
 	print("[Playtest] wave stall watchdog done")
 	print("[Playtest] wave stall watchdog done")
+
+
+func _test_eagle_eye_warlord_hide() -> void:
+	print("[Playtest] Eagle Eye Warlord hide (issue #19)...")
+	# Static: refresh_abilities skips eagle_eye in Warlord theme.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains('sid == "eagle_eye" and _is_warlord_theme()'),
+		"ability bar skips eagle_eye in Warlord")
+	_assert(hsrc.contains("func _is_warlord_theme()"),
+		"_is_warlord_theme helper exists")
+	# Static: HUD tracks Warlord state changes and refreshes.
+	_assert(hsrc.contains("_last_warlord"),
+		"HUD tracks Warlord state")
+	_assert(hsrc.contains("warlord_now != _last_warlord"),
+		"HUD refreshes on Warlord change")
+	print("[Playtest] Eagle Eye Warlord hide done")

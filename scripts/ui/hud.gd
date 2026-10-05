@@ -245,6 +245,13 @@ func _process(delta: float) -> void:
 	if _bounty_tick >= 0.5:
 		_bounty_tick = 0.0
 		_refresh_bounty_tracker()
+	# Issue #19: refresh ability bar when Warlord state changes
+	# (hide/show Eagle Eye slot).
+	var warlord_now := _is_warlord_theme()
+	if warlord_now != _last_warlord:
+		_last_warlord = warlord_now
+		if _player != null:
+			refresh_abilities(_player)
 	# Low-HP vignette: pulses red as health drops below 35%.
 	if _hp_frac < 0.35 and _player != null and _player.get("alive"):
 		_vignette_t += delta
@@ -413,6 +420,9 @@ func _on_vendor_buy(st: Node, item_id: String) -> void:
 var bounty_open := false
 var _bounty_tracker: Label = null
 var _bounty_tick := 0.0
+## Issue #19: tracks Warlord theme state to refresh the ability bar
+## (hide/show Eagle Eye) when entering/leaving Warlord.
+var _last_warlord := false
 ## Warlord mode hides the objective cluster; the tracker hides with it.
 var _bounty_hide := false
 
@@ -1439,6 +1449,11 @@ func refresh_abilities(p) -> void:
 	for i in p.unlocked_abilities.size():
 		var a: Dictionary = p.unlocked_abilities[i]
 		var sid := String(a["id"])
+		# Issue #19 (Jesse's call): Eagle Eye is a dead button in Warlord
+		# (no waves, no mobs, unreachable in command view). Hide the slot
+		# entirely while in the Warlord theme; it reappears on other levels.
+		if sid == "eagle_eye" and _is_warlord_theme():
+			continue
 		var spec := String(p.get("specialization"))
 		var is_spec := sid == spec and spec != ""
 		var fam := Player.family_of(sid)
@@ -1582,6 +1597,12 @@ func _wave_number() -> int:
 	if dungeon != null and "wave" in dungeon:
 		return int(dungeon.get("wave"))
 	return 0
+
+
+## Issue #19: true while the current level uses the Warlord theme.
+func _is_warlord_theme() -> bool:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	return dungeon != null and bool(dungeon.get("is_warlord"))
 
 # --- Boss bar ---
 
