@@ -803,6 +803,10 @@ func _test_annex_forfeit() -> void:
 	var rpos := dsrc.find("begin_annex_departure", hpos)
 	_assert(fpos != -1 and rpos != -1 and fpos < rpos,
 		"forfeit applied before the ride/save")
+	var hblock := dsrc.substr(hpos, 700)
+	_assert(hblock.contains("if not level_cleared:")
+		and hblock.find("_apply_forfeits()") > hblock.find("if not level_cleared:"),
+		"forfeit only when the level was not cleared")
 	_assert(dsrc.contains("Left early"), "forfeit banner text")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains("func apply_forfeit("), "player has apply_forfeit")
