@@ -21,10 +21,7 @@ void fragment() {
 	vec2 uv = curve_uv(SCREEN_UV);
 
 	// Outside the curved screen: black.
-	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-		COLOR = vec4(0.0, 0.0, 0.0, 1.0);
-		return;
-	}
+	bool outside = uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0;
 
 	// Chromatic aberration: sample RGB slightly offset.
 	float ab = aberration * 0.0015;
@@ -42,6 +39,9 @@ void fragment() {
 	vec2 vc = uv - 0.5;
 	float vig = 1.0 - dot(vc, vc) * vignette_strength * 2.0;
 	col.rgb *= clamp(vig, 0.0, 1.0);
+
+	// Black outside the curved area.
+	col.rgb = mix(col.rgb, vec3(0.0), float(outside));
 
 	COLOR = col;
 }
