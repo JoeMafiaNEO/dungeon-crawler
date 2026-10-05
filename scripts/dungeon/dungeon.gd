@@ -1658,13 +1658,16 @@ func announce(text: String) -> void:
 ## Combo Finisher banner (issue #8): gold banner + one shared thunderclap
 ## SFX. The server triggers this via RPC; every peer (call_local) shows the
 ## banner and hears the stinger locally, keeping the SFX budget sane.
+## is_new: first-ever trigger — also show a codex discovery toast.
 @rpc("any_peer", "call_local")
-func announce_combo(finisher_id: String) -> void:
+func announce_combo(finisher_id: String, is_new: bool = false) -> void:
 	var fin: Dictionary = Combo.finisher_by_id(finisher_id)
 	if fin.is_empty():
 		return
 	if _local_hud != null:
 		_local_hud.announce("%s!" % str(fin["name"]).to_upper(), Color(1.0, 0.85, 0.3))
+		if is_new:
+			_local_hud.show_toast("Codex updated: %s discovered!" % str(fin["name"]))
 	AudioManager.sfx("thunderclap")
 
 

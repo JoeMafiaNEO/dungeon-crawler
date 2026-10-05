@@ -58,6 +58,7 @@ func _run() -> void:
 	_test_apex_mechanics()
 	_test_bounty_phase1()
 	_test_combo_phase1()
+	_test_combo_codex()
 	_print_results()
 	quit()
 
@@ -3188,10 +3189,18 @@ func _test_combo_phase1() -> void:
 	_assert(absf(p2.hp - p2.max_hp * 0.7) < 0.01, "surge sim: team healed 20% max HP")
 
 	# --- Announce path is a safe no-op with no dungeon present.
+	# Redirect the SaveManager autoload to a scratch profile: announce now
+	# records codex discoveries (which save).
+	var _sm: Node = root.get_node("SaveManager")
+	var _orig_acct: String = _sm.get("_profile_account")
+	_sm.set("_profile_account", "test_combo")
 	ComboScript.announce_finisher(self, "orbital_strike")
 	_assert(true, "announce: no crash without dungeon")
 	ComboScript.announce_finisher(self, "bogus_id")
 	_assert(true, "announce: unknown id ignored")
+	_sm.set("_profile_account", _orig_acct)
+	if FileAccess.file_exists("user://profile_test_combo.cfg"):
+		DirAccess.remove_absolute("user://profile_test_combo.cfg")
 
 	# --- Solo switch_class keeps world state: totems, marks, veils persist.
 	var p3 = PlayerScene.instantiate()
@@ -3233,3 +3242,105 @@ func _test_combo_phase1() -> void:
 	_assert(mbsrc.contains("func is_slowed"), "mob: is_slowed accessor")
 	_assert(mbsrc.contains("func apply_blind"), "mob: apply_blind")
 	print("[Playtest] combo phase 1 done")
+
+
+func _test_combo_codex() -> void:
+	print("[Playtest] Combo codex phase 2 (issue #8)...")
+	var ComboScript := load("res://scripts/systems/combo.gd")
+	var SaveScript := load("res://scripts/autoload/save_manager.gd")
+	# Scratch profile only — never touch the real user:// profile.
+	var scratch := "user://profile_test_codex.cfg"
+	if FileAccess.file_exists(scratch):
+		DirAccess.remove_absolute(scratch)
+
+	# --- Registry: every finisher has a hint for undiscovered rows.
+	_assert(ComboScript.COMBO_FINISHERS.size() == 5, "codex: 5 registry rows")
+	for f in ComboScript.COMBO_FINISHERS:
+		_assert(str(f.get("hint", "")).length() > 10, "codex: hint for %s" % str(f["id"]))
+
+	# --- SaveManager: discovery tracking (scratch account on a standalone instance).
+	var mgr = SaveScript.new()
+	mgr.set("_profile_account", "test_codex")
+	_assert(mgr.get_combos_discovered().is_empty(), "codex: starts undiscovered")
+	_assert(mgr.add_combo_discovered("orbital_strike"), "codex: first discovery returns true")
+	_assert(not mgr.add_combo_discovered("orbital_strike"), "codex: repeat returns false")
+	_assert(mgr.get_combos_discovered() == ["orbital_strike"], "codex: discovery recorded")
+	# Persistence roundtrip.
+	var mgr2 = SaveScript.new()
+	mgr2.set("_profile_account", "test_codex")
+	mgr2.load_game()
+	_assert(mgr2.get_combos_discovered() == ["orbital_strike"], "codex: discovery persists")
+	mgr.free()
+	mgr2.free()
+	if FileAccess.file_exists(scratch):
+		DirAccess.remove_absolute(scratch)
+
+	# --- Codex UI: 5 fixed rows, ??? for undiscovered, name for discovered.
+	# Drive the autoload (which the HUD reads) on the scratch account.
+	var sm: Node = root.get_node("SaveManager")
+	var orig_acct: String = sm.get("_profile_account")
+	sm.set("_profile_account", "test_codex")
+	# Clean in-memory state (the autoload may hold the real profile).
+	var prof: ConfigFile = sm.get("_profile")
+	var orig_found: Array = prof.get_value("meta", "combos_discovered", []).duplicate()
+	prof.set_value("meta", "combos_discovered", [])
+	_assert(sm.get_combos_discovered().is_empty(), "codex: autoload starts clean")
+	sm.add_combo_discovered("orbital_strike")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	hud._refresh_combo_codex()
+	var log = hud.get_node("%CollectionLog")
+	var rows := 0
+	var unknowns := 0
+	var knowns := 0
+	for child in log.get_children():
+		if child is Label:
+			rows += 1
+			var t := str(child.text)
+			if t.begins_with("◇ ???"):
+				unknowns += 1
+			elif t.begins_with("◆"):
+				knowns += 1
+	# Header + 5 rows; 1 discovered (orbital_strike), 4 unknown.
+	_assert(rows == 6, "codex: header + 5 rows")
+	_assert(unknowns == 4, "codex: 4 undiscovered ??? rows")
+	_assert(knowns == 1, "codex: 1 discovered row")
+	# Discover another and refresh: row count stable, counts shift.
+	sm.add_combo_discovered("stormcall")
+	for child in log.get_children():
+		log.remove_child(child)
+		child.free()
+	hud._refresh_combo_codex()
+	unknowns = 0
+	knowns = 0
+	for child in log.get_children():
+		if child is Label:
+			var t := str(child.text)
+			if t.begins_with("◇ ???"):
+				unknowns += 1
+			elif t.begins_with("◆"):
+				knowns += 1
+	_assert(unknowns == 3 and knowns == 2, "codex: rows update on discovery")
+	# Discovered row shows the name and trigger.
+	var found_name := false
+	for child in log.get_children():
+		if child is Label and str(child.text).contains("Stormcall"):
+			found_name = true
+	_assert(found_name, "codex: discovered row shows name")
+	hud.queue_free()
+	sm.set("_profile_account", orig_acct)
+	sm.get("_profile").set_value("meta", "combos_discovered", orig_found)
+	if FileAccess.file_exists(scratch):
+		DirAccess.remove_absolute(scratch)
+
+	# --- Wiring: codex section hooked into the collection refresh.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func _refresh_combo_codex"), "hud: codex refresh exists")
+	_assert(hsrc.contains("_refresh_combo_codex()"), "hud: codex hooked into collection log")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/autoload/save_manager.gd")
+	_assert(ssrc.contains("func get_combos_discovered"), "save: get_combos_discovered")
+	_assert(ssrc.contains("func add_combo_discovered"), "save: add_combo_discovered")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("is_new"), "dungeon: announce_combo takes is_new")
+	print("[Playtest] combo codex phase 2 done")

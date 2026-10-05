@@ -88,6 +88,7 @@ func _seed_profile_defaults() -> void:
 	_profile.set_value("meta", "total_cash_earned", 0)
 	_profile.set_value("meta", "unlocked_achievements", [])
 	_profile.set_value("meta", "cipher_fragments", [])
+	_profile.set_value("meta", "combos_discovered", [])
 	_profile.set_value("meta", "architect_unlocked", false)
 	_profile.set_value("meta", "vault_specials", [])
 
@@ -368,6 +369,24 @@ func add_cipher_fragment(idx: int) -> bool:
 		return false
 	frags.append(idx)
 	_profile.set_value("meta", "cipher_fragments", frags)
+	save_game()
+	return true
+
+
+# --- Combo Finishers codex (issue #8, account-level meta) ---
+# Discovered finisher ids; permanent like achievements.
+
+func get_combos_discovered() -> Array:
+	return _profile.get_value("meta", "combos_discovered", [])
+
+
+## Record a finisher discovery. Returns true if newly discovered.
+func add_combo_discovered(finisher_id: String) -> bool:
+	var found: Array = get_combos_discovered()
+	if finisher_id in found:
+		return false
+	found.append(finisher_id)
+	_profile.set_value("meta", "combos_discovered", found)
 	save_game()
 	return true
 
