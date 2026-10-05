@@ -8,6 +8,10 @@ extends Node3D
 ## RNG stream — it only interpolates recorded positions.
 
 const GHOST_TEXTURE := "res://assets/sprites/ghosts/ghost_sample.png"
+# Issue #56: bare EchoRecorder autoload identifier doesn't resolve in -s
+# script mode (or --check-only). Load the script for static access; resolve
+# the autoload node at runtime for instance methods.
+const ERScript := preload("res://scripts/autoload/echo_recorder.gd")
 const GHOST_ALPHA := 0.45
 
 var _echo: Dictionary = {}
@@ -30,7 +34,13 @@ func _ready() -> void:
 
 
 func load_echo(path: String) -> bool:
-	_echo = EchoRecorder.load_echo(path)
+	var er := get_tree().root.get_node_or_null("EchoRecorder")
+	if er == null:
+		# No autoload (e.g. -s test mode): use a throwaway instance.
+		er = ERScript.new()
+	_echo = er.call("load_echo", path)
+	if er.get_parent() == null:
+		er.free()
 	return not _echo.is_empty()
 
 
@@ -69,10 +79,10 @@ func _process(delta: float) -> void:
 	if count == 0:
 		return
 	# Samples are 10Hz: tick t lives at t * 0.1 seconds.
-	var f := _clock / EchoRecorder.SAMPLE_INTERVAL
+	var f := _clock / ERScript.SAMPLE_INTERVAL
 	if f >= float(count - 1):
 		# Reached the end of the recording: hold the final pose.
-		var last := EchoRecorder.decode_sample(samples, count - 1)
+		var last := ERScript.decode_sample(samples, count - 1)
 		if not last.is_empty():
 			global_position = last["pos"]
 			rotation.y = last["yaw"]
@@ -80,8 +90,8 @@ func _process(delta: float) -> void:
 		return
 	var i0 := int(f)
 	var frac := f - float(i0)
-	var s0 := EchoRecorder.decode_sample(samples, i0)
-	var s1 := EchoRecorder.decode_sample(samples, i0 + 1)
+	var s0 := ERScript.decode_sample(samples, i0)
+	var s1 := ERScript.decode_sample(samples, i0 + 1)
 	if s0.is_empty() or s1.is_empty():
 		return
 	# Pure interpolation of recorded data. No RNG anywhere in this path.

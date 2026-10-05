@@ -3887,8 +3887,14 @@ func _test_leaderboard_phase1() -> void:
 	_assert(not bool(menu.get_node("DailyPhase/RaceEchoCheck").button_pressed),
 		"race echo toggle defaults off")
 	menu.get_node("DailyPhase/RaceEchoCheck").button_pressed = true
-	menu._on_race_echo_toggled(true)
+	# Issue #56: autoloads don't exist in -s mode — ensure an instance exists
+	# before the toggle touches the bare EchoRecorder identifier.
 	var er2: Node = root.get_node_or_null("EchoRecorder")
+	if er2 == null:
+		er2 = load("res://scripts/autoload/echo_recorder.gd").new()
+		er2.name = "EchoRecorder"
+		root.add_child(er2)
+	menu._on_race_echo_toggled(true)
 	_assert(bool(er2.get("race_echo")), "toggle sets EchoRecorder.race_echo")
 	menu._on_race_echo_toggled(false)
 	_assert(not bool(er2.get("race_echo")), "toggle clears EchoRecorder.race_echo")
@@ -3915,8 +3921,14 @@ func _find_scroll_containers(node: Node, out: Array) -> void:
 func _test_echo_phase2() -> void:
 	print("[Playtest] echo record/playback (issue #9 Phase 2)...")
 	var ERScript = load("res://scripts/autoload/echo_recorder.gd")
+	# Issue #56: autoloads don't exist in -s script mode. Use the script
+	# directly — create an instance if the autoload isn't in the tree.
 	var er: Node = root.get_node_or_null("EchoRecorder")
-	_assert(er != null, "EchoRecorder autoload exists")
+	if er == null:
+		er = ERScript.new()
+		er.name = "EchoRecorder"
+		root.add_child(er)
+	_assert(er != null, "EchoRecorder available")
 	_assert(not bool(er.get("is_recording")), "recorder idle by default")
 
 	# --- Sample encode/decode roundtrip ---
