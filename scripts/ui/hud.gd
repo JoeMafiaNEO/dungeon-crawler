@@ -1439,7 +1439,7 @@ func announce(text: String, tint: Color = Color(1.0, 1.0, 1.0)) -> void:
 	var font_size := 72
 	var font: Font = %AnnounceLabel.get_theme_font("font")
 	if font != null:
-		var w72: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 72).x
+		var w72 := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 72).x
 		if w72 > 1820.0:
 			font_size = maxi(16, int(72.0 * 1820.0 / w72))
 	elif text.length() > 15:
