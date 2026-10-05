@@ -434,10 +434,14 @@ func show_bounty() -> void:
 	var bnode := get_tree().get_first_node_in_group("bounty_system")
 	if bnode == null or _player == null:
 		return
+	# Issue #34 escalation: be defensive — a null bounties/progress must not
+	# silently abort the popup (GDScript runtime errors kill the function).
 	var bounties: Array = bnode.get("bounties")
-	if bounties.size() != 3:
+	if bounties == null or bounties.size() != 3:
 		return
 	var progress: Dictionary = _player.get("bounty_progress")
+	if progress == null:
+		progress = {}
 	bounty_open = true
 	AudioManager.sfx("bounty_accept")
 	var vb := _cipher_panel()
