@@ -522,6 +522,7 @@ func _build_vault_panel() -> void:
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 	vb.add_child(close_hint)
 	_open_cipher_popup(vb.get_parent() as Control)
+	vault_open = true
 
 
 ## Compact tracker: one short line per unsettled bounty, hidden when none
@@ -1169,18 +1170,6 @@ func _refresh_trophy_section() -> void:
 		label.add_theme_font_size_override("font_size", 11)
 		row.add_child(label)
 
-			if not earned:
-				icon.modulate = Color(0.25, 0.25, 0.3)
-			row.add_child(icon)
-			var label := Label.new()
-			if earned:
-				label.text = "%s — %s" % [sp.display_name, sp.effect_summary]
-				label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-			else:
-				label.text = "??? — %s" % sp.unlock_hint
-				label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
-			label.add_theme_font_size_override("font_size", 11)
-			row.add_child(label)
 
 
 ## Architect Cipher section: collected fragments as raw cipher + shift hint

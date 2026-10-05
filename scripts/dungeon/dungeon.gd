@@ -187,6 +187,10 @@ var _mob_id := 0
 var _pickup_id := 0
 var _spawn_tick := 0.0
 var _wave_broadcast := 0.0
+## Wave-clear watchdog (issue #27): seconds since the wave had no alive mobs
+## with nothing left to spawn. Force-completes the wave if it stalls.
+var _wave_stall_t := 0.0
+const WAVE_STALL_TIMEOUT := 5.0
 var _local_hud: CanvasLayer
 var _boss: Mob = null
 # --- Key objective ---
@@ -1513,8 +1517,22 @@ func _process_waves(delta: float) -> void:
 				var dmg_scale := _danger_mult() * NetworkManager.host_difficulty
 				var elite := bool(pick["elite"]) and not data.is_boss
 				rpc("spawn_mob", _mob_id, data.id, _random_mob_pos(), hp_scale, dmg_scale, elite, _danger_mult())
-			if mobs_to_spawn <= 0 and $Mobs.get_child_count() == 0:
-				_wave_cleared()
+			# Issue #27: count ALIVE mobs, not raw $Mobs children — a lingering
+			# non-mob child (or dead mob awaiting free) must not stall the wave.
+			if mobs_to_spawn <= 0:
+				if _mobs_alive() == 0:
+					_wave_stall_t = 0.0
+					_wave_cleared()
+				else:
+					# Watchdog: if the alive count never drops (stuck mob),
+					# force-complete after the timeout rather than stalling forever.
+					_wave_stall_t += delta
+					if _wave_stall_t >= WAVE_STALL_TIMEOUT:
+						push_warning("[Dungeon] Wave %d watchdog: %d 'alive' mobs for %.1fs, force-clearing" % [wave, _mobs_alive(), _wave_stall_t])
+						_wave_stall_t = 0.0
+						_wave_cleared()
+			else:
+				_wave_stall_t = 0.0
 	_wave_broadcast -= delta
 	if _wave_broadcast <= 0.0:
 		_wave_broadcast = 0.25
@@ -1526,6 +1544,7 @@ func _start_wave() -> void:
 	wave += 1
 	wave_state = WaveState.ACTIVE
 	_spawn_tick = 0.5
+	_wave_stall_t = 0.0  # Issue #27: reset the stall watchdog.
 	if wave >= TOTAL_WAVES and theme.boss_id != "":
 		# Boss wave: the theme boss plus a small honor guard.
 		mobs_to_spawn = 4

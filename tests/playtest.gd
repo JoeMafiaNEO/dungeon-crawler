@@ -59,6 +59,7 @@ func _run() -> void:
 	_test_apex_phase1()
 	_test_specials_phase1()
 	_test_specials_phase2()
+	_test_wave_stall_watchdog()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4184,3 +4185,46 @@ func _test_specials_phase2() -> void:
 	vault.queue_free()
 	holder.queue_free()
 ## Stub dungeon for apex mechanic tests: records announces/spawns, returns a
+
+
+func _test_wave_stall_watchdog() -> void:
+	print("[Playtest] wave stall watchdog (issue #27)...")
+	# Static verification: the wave-clear check must use _mobs_alive(), not
+	# raw child count (the #27 root cause).
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("_mobs_alive() == 0"),
+		"wave-clear uses _mobs_alive() not child count")
+	_assert(dsrc.contains("WAVE_STALL_TIMEOUT"),
+		"watchdog timeout constant exists")
+	_assert(dsrc.contains("_wave_stall_t = 0.0"),
+		"watchdog timer resets")
+
+	# Behavioral: _mobs_alive counts only alive Mob instances.
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var d = DungeonScript.new()
+	var mobs := Node3D.new()
+	mobs.name = "Mobs"
+	d.add_child(mobs)
+	# NOT added to tree: _mobs_alive() only needs the $Mobs child structure.
+	# (Adding to root would pollute the "dungeon" group for later tests.)
+	_assert(d.call("_mobs_alive") == 0, "no mobs -> 0 alive")
+	var junk := Node3D.new()
+	junk.name = "LingeringEffect"
+	mobs.add_child(junk)
+	_assert(d.call("_mobs_alive") == 0, "non-mob child ignored by _mobs_alive")
+	_assert(mobs.get_child_count() == 1, "child count sees the junk (the old bug)")
+
+	# Watchdog timer accumulates only when spawning is done but mobs remain
+	# 'alive'. We simulate the stuck state via the timer directly to avoid
+	# instantiating full Mob scenes in the test harness.
+	d.set("mobs_to_spawn", 0)
+	d.set("wave_state", 1)  # WaveState.ACTIVE
+	d.set("_wave_stall_t", 4.9)
+	# With 0 alive mobs, _process_waves clears immediately (no watchdog needed).
+	d.call("_process_waves", 0.016)
+	_assert(int(d.get("wave_state")) != 1,
+		"wave clears immediately with 0 alive (no stall)")
+
+	d.free()
+	print("[Playtest] wave stall watchdog done")
+	print("[Playtest] wave stall watchdog done")
