@@ -455,6 +455,8 @@ func show_bounty() -> void:
 	expiry.add_theme_font_size_override("font_size", 12)
 	expiry.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
 	vb.add_child(expiry)
+	# Issue #34: the panel was built but never opened — actually render it.
+	_open_cipher_popup(vb.get_parent() as Control)
 
 # --- Relic Vault (issue #6 Phase 2) ---
 

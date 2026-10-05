@@ -70,6 +70,7 @@ func _run() -> void:
 	_test_r_wave_start_chain()
 	_test_destination_popup_replaces_3d()
 	_test_destination_popup_manual_only()
+	_test_bounty_popup_opens()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4540,3 +4541,18 @@ func _test_destination_popup_manual_only() -> void:
 	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
 	_assert(bsrc.contains("open_destination_popup"), "#29: board.interact is the sole trigger")
 	print("[Playtest] destination popup manual-open only done")
+
+
+func _test_bounty_popup_opens() -> void:
+	print("[Playtest] bounty popup actually opens (issue #34)...")
+	# Static: show_bounty() must call _open_cipher_popup — the #34 bug was
+	# building the panel into a detached VBox without ever opening it.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	var idx := hsrc.find("func show_bounty()")
+	_assert(idx > 0, "#34: show_bounty exists")
+	# Find the next "func " after show_bounty to bound the function body.
+	var next_func := hsrc.find("\nfunc ", idx + 10)
+	_assert(next_func > idx, "#34: function boundary found")
+	var body := hsrc.substr(idx, next_func - idx)
+	_assert(body.contains("_open_cipher_popup"), "#34: show_bounty opens the popup")
+	print("[Playtest] bounty popup actually opens done")
