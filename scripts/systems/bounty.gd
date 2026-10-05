@@ -64,18 +64,34 @@ static func generate(level_seed: int, theme_id: String, mob_mix: Dictionary, cyc
 	# Slot 1: kill bounty, mob weighted by the theme's mix.
 	var mob_id := _weighted_pick(rng, mob_mix)
 	out.append(_make_kill(rng, cycle, mob_id, _bounty_id(level_seed, 0)))
+	var used_kinds := ["kill"]
+	var used_mobs := [mob_id]
 	# Slot 2: elite hunt or a flawless run.
 	if rng.randf() < 0.5:
 		out.append(_make_elite(rng, cycle, _weighted_pick(rng, mob_mix), _bounty_id(level_seed, 1)))
+		used_kinds.append("elite")
 	else:
 		out.append(_make_no_death(cycle, _bounty_id(level_seed, 1)))
+		used_kinds.append("no_death")
 	# Slot 3: supermarket gets the cash bounty, everyone else kill/no_death.
+	# Issue #44: dedup — never repeat a kind already used this level.
 	if theme_id == "supermarket":
 		out.append(_make_cash(rng, cycle, _bounty_id(level_seed, 2)))
-	elif rng.randf() < 0.5:
-		out.append(_make_kill(rng, cycle, _weighted_pick(rng, mob_mix), _bounty_id(level_seed, 2)))
-	else:
+	elif rng.randf() < 0.5 or "no_death" in used_kinds:
+		# Prefer kill; force it if no_death already used.
+		var m2 := _weighted_pick(rng, mob_mix)
+		# Avoid same-mob duplicate kill bounties when the roster allows it.
+		if m2 in used_mobs and roster.size() > 1:
+			for _i in range(8):
+				var alt := _weighted_pick(rng, mob_mix)
+				if not alt in used_mobs:
+					m2 = alt
+					break
+		out.append(_make_kill(rng, cycle, m2, _bounty_id(level_seed, 2)))
+	elif not "no_death" in used_kinds:
 		out.append(_make_no_death(cycle, _bounty_id(level_seed, 2)))
+	else:
+		out.append(_make_kill(rng, cycle, _weighted_pick(rng, mob_mix), _bounty_id(level_seed, 2)))
 	return out
 
 

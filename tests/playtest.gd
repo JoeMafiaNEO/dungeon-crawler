@@ -4400,8 +4400,8 @@ func _test_issue22_23_fixes() -> void:
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
 	_assert(hsrc.contains("Dungeon.THEME_ORDER.size()"),
 		"#22: cycle uses THEME_ORDER.size()")
-	_assert(hsrc.contains("font_size = maxi(36,"),
-		"#23: announce shrink-to-fit present")
+	_assert(hsrc.contains("font_size = maxi(24,"),
+		"#23/#46: announce shrink-to-fit present")
 	print("[Playtest] issues #22/#23 fixes done")
 
 
