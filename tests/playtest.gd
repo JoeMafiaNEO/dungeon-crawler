@@ -30,6 +30,7 @@ func _run() -> void:
 	_test_affinity_save_roundtrip()
 	_test_specialization_level_gate()
 	_test_pause_tabs()
+	_test_pause_stats_zero_scroll()
 	_test_switch_class_refresh()
 	_test_architect()
 	_test_cipher_unlock()
@@ -2078,7 +2079,7 @@ func _test_pause_tabs() -> void:
 	# Tab membership covers all pause content.
 	_assert(hsrc.contains('"SpecLabel", "SpecList"'), "Spec tab has spec list")
 	_assert(hsrc.contains('"FamilyLabel", "FamilyPanel"'), "Collection tab has family panel")
-	_assert(hsrc.contains('"DmgRow", "HpRow", "SpdRow", "AuraRow"'), "Stats tab has stat rows")
+	_assert(hsrc.contains('"StatPair1", "StatPair2"'), "Stats tab uses compact stat pairs")
 	# Action buttons not in any tab (always visible).
 	_assert(not hsrc.contains('"ResumeButton"') or hsrc.contains('_pause_tab_members'), "Tab members defined")
 	# show_pause defaults to Stats tab.
@@ -2086,6 +2087,19 @@ func _test_pause_tabs() -> void:
 	# affinity_shots uses tab selection.
 	var tsrc := FileAccess.get_file_as_string("res://tools/affinity_shots/affinity_shots.gd")
 	_assert(tsrc.contains("select_pause_tab"), "Tool uses tab selection")
+
+
+## Issue #16: Pause -> Stats tab must fit with zero scrolling (Jesse's hard rule).
+func _test_pause_stats_zero_scroll() -> void:
+	print("[Playtest] Pause stats zero-scroll...")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func _compact_stats_tab"), "Stats compaction builder exists")
+	_assert(hsrc.contains('"StatPair1"') and hsrc.contains('"StatPair2"'), "Stat rows paired into two columns")
+	_assert(hsrc.contains("SCROLL_MODE_AUTO if idx == 1"), "Scroll disabled for Stats tab, auto only for Spec")
+	# Scene defines the pairs so unique-name lookups (%DmgVal etc.) keep working.
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
+	_assert(tsrc.contains('name="StatPair1"'), "Scene defines StatPair1")
+	_assert(tsrc.contains('name="StatPair2"'), "Scene defines StatPair2")
 
 
 func _test_switch_class_refresh() -> void:

@@ -121,10 +121,14 @@ func _build_pause_tabs() -> void:
 		_style_tab_button(btn, i == 0)
 		tab_bar.add_child(btn)
 		_pause_tab_btns.append(btn)
+	# Compact the Stats tab so its content fits the pause panel with zero
+	# scrolling (Jesse's hard rule). Stat rows become two columns; hint
+	# text shrinks; spacing tightens.
+	_compact_stats_tab(vbox)
 	# Define tab membership.
 	_pause_tab_members = [
 		["HintLabel", "VolLabel", "MasterRow", "MusicRow", "SFXRow",
-			"StatPointsLabel", "DmgRow", "HpRow", "SpdRow", "AuraRow"],
+			"StatPointsLabel", "StatPair1", "StatPair2"],
 		["SpecLabel", "SpecList"],
 		["FamilyLabel", "FamilyPanel", "CollectionLabel", "CollectionLog"],
 	]
@@ -146,6 +150,37 @@ func _build_pause_tabs() -> void:
 				_save_quit_btn = b
 	# Remove the now-empty old VBox (scroll was moved, vbox is orphaned).
 	# Note: vbox is still a child of scroll; scroll was reparented with it.
+
+
+## Compact the Stats tab so its content fits the pause panel with zero
+## scrolling. Called once from _build_pause_tabs() (idempotent via the
+## early-return there). The two-column stat pairs (StatPair1/StatPair2)
+## live in the scene so unique-name lookups keep working; here we only
+## tighten spacing, shrink the title/divider/hint, and slim stat labels.
+func _compact_stats_tab(vbox: VBoxContainer) -> void:
+	vbox.add_theme_constant_override("separation", 6)
+	# Title + divider shrink slightly to give the scroll viewport more room.
+	var title := vbox.get_node_or_null("PausedLabel") as Label
+	if title != null:
+		title.add_theme_font_size_override("font_size", 30)
+	var div := vbox.get_node_or_null("PauseDivider") as TextureRect
+	if div != null:
+		div.custom_minimum_size = Vector2(0, 16)
+	# Shorter controls hint, smaller font — one line at panel width.
+	var hint := vbox.get_node_or_null("HintLabel") as Label
+	if hint != null:
+		hint.add_theme_font_size_override("font_size", 12)
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.text = "WASD move · Click attack · Shift dash · Q ability · G ping · R start wave"
+	# Slimmer stat labels so two columns fit the 480px panel.
+	for pn in ["StatPair1", "StatPair2"]:
+		var pair := vbox.get_node_or_null(pn) as HBoxContainer
+		if pair == null:
+			continue
+		for row in pair.get_children():
+			for c in (row as HBoxContainer).get_children():
+				if c is Label:
+					(c as Label).add_theme_font_size_override("font_size", 13)
 
 
 ## Gold-on-dark styling for the tab buttons; selected tab is highlighted.
@@ -172,11 +207,12 @@ func _on_pause_tab_pressed(idx: int) -> void:
 		_pause_tab_btns[i].button_pressed = i == idx
 		_style_tab_button(_pause_tab_btns[i], i == idx)
 	_apply_pause_tab_visibility()
-	# Collection tab content is designed to fit; hide the scrollbar there.
-	# Stats/Spec may overflow on small screens, keep auto-scroll.
+	# Stats and Collection tabs are designed to fit; scrolling hard-disabled
+	# (layouts that cannot scroll, not promises). Specialization keeps
+	# auto-scroll as a safety valve.
 	var scroll := %PausePanel.get_node("PauseMain/PauseScroll") as ScrollContainer
 	if scroll != null:
-		scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED if idx == 2 else ScrollContainer.SCROLL_MODE_AUTO
+		scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO if idx == 1 else ScrollContainer.SCROLL_MODE_DISABLED
 
 
 ## Show only the current tab's nodes; action buttons are outside the scroll.

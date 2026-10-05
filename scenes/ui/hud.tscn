@@ -481,84 +481,98 @@ layout_mode = 2
 text = "Stat points: 0"
 horizontal_alignment = 1
 
-[node name="DmgRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+[node name="StatPair1" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 16
+alignment = 1
+
+[node name="StatPair2" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+layout_mode = 2
+theme_override_constants/separation = 16
+alignment = 1
+
+[node name="DmgRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox/StatPair1"]
+size_flags_horizontal = 3
 layout_mode = 2
 theme_override_constants/separation = 8
 alignment = 1
 
-[node name="DmgDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/DmgRow"]
+[node name="DmgDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair1/DmgRow"]
 layout_mode = 2
 text = "Power (+2 dmg)"
 size_flags_horizontal = 3
 
-[node name="DmgVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/DmgRow"]
+[node name="DmgVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair1/DmgRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+0 dmg"
 
-[node name="DmgPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/DmgRow"]
+[node name="DmgPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/StatPair1/DmgRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+"
 
-[node name="HpRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+[node name="HpRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox/StatPair1"]
+size_flags_horizontal = 3
 layout_mode = 2
 theme_override_constants/separation = 8
 alignment = 1
 
-[node name="HpDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/HpRow"]
+[node name="HpDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair1/HpRow"]
 layout_mode = 2
 text = "Vitality (+12 hp)"
 size_flags_horizontal = 3
 
-[node name="HpVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/HpRow"]
+[node name="HpVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair1/HpRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+0 hp"
 
-[node name="HpPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/HpRow"]
+[node name="HpPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/StatPair1/HpRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+"
 
-[node name="SpdRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+[node name="SpdRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox/StatPair2"]
+size_flags_horizontal = 3
 layout_mode = 2
 theme_override_constants/separation = 8
 alignment = 1
 
-[node name="SpdDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/SpdRow"]
+[node name="SpdDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair2/SpdRow"]
 layout_mode = 2
 text = "Swiftness (+0.2 spd)"
 size_flags_horizontal = 3
 
-[node name="SpdVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/SpdRow"]
+[node name="SpdVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair2/SpdRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+0.0 spd"
 
-[node name="SpdPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/SpdRow"]
+[node name="SpdPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/StatPair2/SpdRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+"
 
-[node name="AuraRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox"]
+[node name="AuraRow" type="HBoxContainer" parent="PausePanel/PauseScroll/PauseVBox/StatPair2"]
+size_flags_horizontal = 3
 unique_name_in_owner = true
 visible = false
 layout_mode = 2
 theme_override_constants/separation = 8
 alignment = 1
 
-[node name="AuraDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/AuraRow"]
+[node name="AuraDesc" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair2/AuraRow"]
 layout_mode = 2
 text = "Aura (+staff glow)"
 size_flags_horizontal = 3
 
-[node name="AuraVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/AuraRow"]
+[node name="AuraVal" type="Label" parent="PausePanel/PauseScroll/PauseVBox/StatPair2/AuraRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+0 aura"
 
-[node name="AuraPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/AuraRow"]
+[node name="AuraPlus" type="Button" parent="PausePanel/PauseScroll/PauseVBox/StatPair2/AuraRow"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "+"
