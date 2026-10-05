@@ -259,6 +259,17 @@ func set_vault_specials(ids: Array) -> void:
 	save_game()
 
 
+## Settings (issue #17): per-section key/value store on the profile.
+## Used for client-local settings (volumes, CRT, shake, fullscreen).
+func set_profile_setting(section: String, key: String, value: Variant) -> void:
+	_profile.set_value(section, key, value)
+	save_game()
+
+
+func get_profile_setting(section: String, key: String, default: Variant) -> Variant:
+	return _profile.get_value(section, key, default)
+
+
 func add_run() -> void:
 	_profile.set_value("meta", "total_runs", get_total_runs() + 1)
 	save_game()

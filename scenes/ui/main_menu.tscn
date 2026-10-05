@@ -114,6 +114,12 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Start Game"
 
+[node name="SettingsButton" type="Button" parent="TitlePhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Settings"
+
 [node name="StatsLabel" type="Label" parent="TitlePhase"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -613,6 +619,7 @@ size_flags_horizontal = 4
 text = "Leave"
 
 [connection signal="pressed" from="TitlePhase/TitleStartButton" to="." method="_on_start_game_pressed"]
+[connection signal="pressed" from="TitlePhase/SettingsButton" to="." method="_on_settings_pressed"]
 [connection signal="pressed" from="TitlePhase/TitleClassRow/TitleWarriorButton" to="." method="_on_warrior_pressed"]
 [connection signal="pressed" from="TitlePhase/TitleClassRow/TitleRogueButton" to="." method="_on_rogue_pressed"]
 [connection signal="pressed" from="TitlePhase/TitleClassRow/TitleMageButton" to="." method="_on_mage_pressed"]

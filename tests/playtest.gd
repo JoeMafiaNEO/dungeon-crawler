@@ -76,6 +76,7 @@ func _run() -> void:
 	_test_leaderboard_phase1()
 	_test_echo_phase2()
 	_test_workshop_phase3()
+	_test_settings_phase1()
 
 	_print_results()
 	quit()
@@ -3688,6 +3689,58 @@ func _test_bounty_phase2() -> void:
 	_assert(ssrc.contains("BountyBoardScript.new()"), "bounty board prop placed")
 
 	holder.queue_free()
+
+
+func _test_settings_phase1() -> void:
+	print("[Playtest] Settings phase 1 (panel + persistence)...")
+	var SaveScript := load("res://scripts/autoload/save_manager.gd")
+	_assert(SaveScript != null, "save_manager.gd loads")
+
+	var mgr = SaveScript.new()
+	mgr.set("_test_account_pin", "settings_test")
+	mgr.load_game()
+	mgr.set_profile_setting("settings", "master_vol", 0.75)
+	mgr.set_profile_setting("settings", "crt_enabled", false)
+	mgr.set_profile_setting("settings", "shake_enabled", true)
+	_assert(float(mgr.get_profile_setting("settings", "master_vol", 1.0)) == 0.75,
+		"profile: master_vol roundtrips")
+	_assert(bool(mgr.get_profile_setting("settings", "crt_enabled", true)) == false,
+		"profile: crt_enabled roundtrips")
+	_assert(bool(mgr.get_profile_setting("settings", "shake_enabled", false)) == true,
+		"profile: shake_enabled roundtrips")
+	_assert(str(mgr.get_profile_setting("settings", "missing_key", "dflt")) == "dflt",
+		"profile: missing key returns default")
+	var mgr2 = SaveScript.new()
+	mgr2.set("_test_account_pin", "settings_test")
+	mgr2.load_game()
+	_assert(float(mgr2.get_profile_setting("settings", "master_vol", 1.0)) == 0.75,
+		"profile: master_vol persists to disk")
+	mgr.free()
+	mgr2.free()
+	var ppath := "user://profile_settings_test.cfg"
+	if FileAccess.file_exists(ppath):
+		DirAccess.remove_absolute(ppath)
+
+	var asrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	_assert(asrc.contains("set_profile_setting(\"settings\""), "audio saves volumes to profile")
+	_assert(asrc.contains("get_profile_setting(\"settings\""), "audio loads volumes from profile")
+	_assert(asrc.contains("CFG_PATH") and asrc.contains("migrat"),
+		"audio migrates legacy audio.cfg")
+
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
+	_assert(tsrc.contains('name="SettingsButton"'), "TitlePhase has Settings button")
+	_assert(tsrc.contains('_on_settings_pressed'), "Settings button wired")
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("func _build_settings_panel"), "settings panel builder exists")
+	_assert(msrc.contains("func _on_settings_pressed"), "settings open handler exists")
+	_assert(msrc.contains("set_master_vol") and msrc.contains("set_music_vol") and msrc.contains("set_sfx_vol"),
+		"sliders wire to AudioManager setters")
+	_assert(msrc.count("HSlider.new()") >= 1, "panel has volume sliders")
+	_assert(msrc.count("CheckButton.new()") >= 1, "panel has toggles")
+
+	var panel_src := msrc.substr(msrc.find("func _build_settings_panel"))
+	panel_src = panel_src.substr(0, panel_src.find("\nfunc ", 1))
+	_assert(not panel_src.contains("ScrollContainer"), "settings panel: no ScrollContainer")
 
 
 ## Recursive ScrollContainer audit for the zero-scroll rule.

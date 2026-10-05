@@ -12,6 +12,8 @@ var _confirm_overlay: Control
 var _confirm_msg: Label
 var _confirm_mode := ""
 var _confirm_slot := 0
+## Issue #17 settings panel state.
+var _settings_overlay: Control
 
 const CLASS_DESCS := {
 	"warrior": "Warrior — Tanky melee, totems and auras.",
@@ -45,6 +47,7 @@ func _ready() -> void:
 	_refresh_title_stats()
 	_refresh_solo_ui()
 	_build_confirm_modal()
+	_build_settings_panel()
 	# Mason's Cipher: the Architect stays hidden until unlocked.
 	%TitleArchitectButton.visible = SaveManager.is_architect_unlocked()
 	AudioManager.play_music("menu")
@@ -563,6 +566,123 @@ func _build_confirm_modal() -> void:
 	hb.add_child(no)
 	add_child(_confirm_overlay)
 	_style_buttons()
+
+
+## Issue #17 Phase 1: compact settings panel (modal). Fixed layout,
+## zero-scroll by construction. Sliders wire live to AudioManager;
+## toggles persist to the profile (CRT/shake/fullscreen applied in Phase 2).
+func _build_settings_panel() -> void:
+	_settings_overlay = Control.new()
+	_settings_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_settings_overlay.visible = false
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_settings_overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_settings_overlay.add_child(center)
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.07, 0.10, 0.98)
+	sb.border_color = Color(0.85, 0.70, 0.30)
+	sb.set_border_width_all(3)
+	sb.set_corner_radius_all(6)
+	sb.content_margin_left = 28
+	sb.content_margin_right = 28
+	sb.content_margin_top = 20
+	sb.content_margin_bottom = 20
+	panel.add_theme_stylebox_override("panel", sb)
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "Settings"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(title)
+	for spec in [["Master", "master_vol"], ["Music", "music_vol"], ["SFX", "sfx_vol"]]:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		var lab := Label.new()
+		lab.text = spec[0]
+		lab.custom_minimum_size = Vector2(70, 0)
+		row.add_child(lab)
+		var slider := HSlider.new()
+		slider.custom_minimum_size = Vector2(220, 0)
+		slider.min_value = 0
+		slider.max_value = 100
+		slider.step = 1
+		slider.value = _settings_vol_default(spec[1])
+		slider.value_changed.connect(_on_settings_vol_changed.bind(spec[1]))
+		row.add_child(slider)
+		var val := Label.new()
+		val.name = "Val_%s" % spec[1]
+		val.text = "%d" % int(slider.value)
+		val.custom_minimum_size = Vector2(40, 0)
+		row.add_child(val)
+		vb.add_child(row)
+	for spec in [["CRT filter", "crt_enabled", true], ["Screen shake", "shake_enabled", true], ["Fullscreen", "fullscreen", false]]:
+		var trow := HBoxContainer.new()
+		trow.add_theme_constant_override("separation", 12)
+		trow.alignment = BoxContainer.ALIGNMENT_CENTER
+		var tlab := Label.new()
+		tlab.text = spec[0]
+		tlab.custom_minimum_size = Vector2(150, 0)
+		trow.add_child(tlab)
+		var tog := CheckButton.new()
+		tog.button_pressed = _settings_toggle_default(spec[1], spec[2])
+		tog.toggled.connect(_on_settings_toggle_changed.bind(spec[1]))
+		trow.add_child(tog)
+		vb.add_child(trow)
+	var close := Button.new()
+	close.text = "Close"
+	close.pressed.connect(func() -> void: _settings_overlay.visible = false)
+	vb.add_child(close)
+	add_child(_settings_overlay)
+	_style_buttons()
+
+
+func _settings_vol_default(key: String) -> float:
+	match key:
+		"master_vol":
+			return float(SaveManager.get_profile_setting("settings", "master_vol", 1.0)) * 100.0
+		"music_vol":
+			return float(SaveManager.get_profile_setting("settings", "music_vol", 0.8)) * 100.0
+		"sfx_vol":
+			return float(SaveManager.get_profile_setting("settings", "sfx_vol", 1.0)) * 100.0
+	return 100.0
+
+
+func _settings_toggle_default(key: String, fallback: bool) -> bool:
+	return bool(SaveManager.get_profile_setting("settings", key, fallback))
+
+
+func _on_settings_vol_changed(value: float, key: String) -> void:
+	var v := value / 100.0
+	match key:
+		"master_vol":
+			AudioManager.set_master_vol(v)
+		"music_vol":
+			AudioManager.set_music_vol(v)
+		"sfx_vol":
+			AudioManager.set_sfx_vol(v)
+	if _settings_overlay != null:
+		var lab := _settings_overlay.find_child("Val_%s" % key, true, false) as Label
+		if lab != null:
+			lab.text = "%d" % int(value)
+
+
+func _on_settings_toggle_changed(pressed: bool, key: String) -> void:
+	SaveManager.set_profile_setting("settings", key, pressed)
+
+
+func _on_settings_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	_settings_overlay.visible = true
 
 
 func _show_overwrite_confirm(mode: String, slot: int) -> void:
