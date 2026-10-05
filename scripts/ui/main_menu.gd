@@ -186,7 +186,68 @@ func _on_daily_play_pressed() -> void:
 
 func _on_race_echo_toggled(pressed: bool) -> void:
 	EchoRecorder.race_echo = pressed
+	# Racing a downloaded Workshop echo overrides the local best; clearing
+	# the toggle resets to local-only.
+	if not pressed:
+		EchoRecorder.race_echo_path = ""
 	AudioManager.sfx("ui_click")
+
+
+# --- Workshop echo sharing (issue #9 Phase 3) ---
+
+func _on_top_echoes_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	if not WorkshopEcho.steam_available():
+		%DailyInfo.text = "Steam Workshop offline — cannot fetch top echoes."
+		return
+	%TopEchoesButton.disabled = true
+	%TopEchoesButton.text = "Fetching..."
+	WorkshopEcho.query_complete.connect(_on_workshop_query, CONNECT_ONE_SHOT)
+	WorkshopEcho.query_today_echoes()
+
+
+func _on_workshop_query(echoes: Array) -> void:
+	%TopEchoesButton.disabled = false
+	%TopEchoesButton.text = "Race top echoes"
+	for child in %TopEchoesList.get_children():
+		child.queue_free()
+	if echoes.is_empty():
+		var lbl := Label.new()
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lbl.text = "No shared echoes today — be the first!"
+		lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		%TopEchoesList.add_child(lbl)
+		return
+	for e in echoes:
+		var b := Button.new()
+		b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		b.text = "Race: %s" % str(e.get("title", "Echo"))
+		b.pressed.connect(_on_workshop_echo_chosen.bind(int(e.get("file_id", 0))))
+		%TopEchoesList.add_child(b)
+	_style_buttons()
+
+
+func _on_workshop_echo_chosen(file_id: int) -> void:
+	AudioManager.sfx("ui_click")
+	WorkshopEcho.download_complete.connect(_on_workshop_download, CONNECT_ONE_SHOT)
+	WorkshopEcho.download_echo(file_id)
+
+
+func _on_workshop_download(file_id: int, echo_path: String) -> void:
+	if echo_path.is_empty() or not FileAccess.file_exists(echo_path):
+		return
+	# Copy into our echoes dir so the ghost loader finds it.
+	var local := "user://echoes/workshop_%d.dat" % file_id
+	var src := FileAccess.open(echo_path, FileAccess.READ)
+	var dst := FileAccess.open(local, FileAccess.WRITE)
+	if src != null and dst != null:
+		dst.store_buffer(src.get_buffer(src.get_length()))
+		src.close()
+		dst.close()
+		EchoRecorder.race_echo_path = local
+		EchoRecorder.race_echo = true
+		%RaceEchoCheck.button_pressed = true
+		%DailyInfo.text = "Workshop echo ready — toggle 'Race my best echo' and start!"
 
 
 func _on_daily_back_pressed() -> void:

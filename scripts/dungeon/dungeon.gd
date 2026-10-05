@@ -497,8 +497,9 @@ func _next_spawn_point() -> Vector3:
 	return spawn_points[idx]
 
 
-## Echoes (issue #9 Phase 2): spawn the visual-only ghost if the player
-## toggled "Race my best echo" and a best echo exists for today.
+## Echoes (issue #9 Phase 2 + 3): spawn the visual-only ghost if the player
+## toggled "Race my best echo" and an echo exists. Phase 3: a downloaded
+## Workshop echo (race_echo_path) takes priority over the local best.
 func _maybe_spawn_echo_ghost() -> void:
 	# Runtime lookup (not the EchoRecorder global): keeps dungeon.gd free of
 	# compile-time autoload dependencies that break -s script-mode loading.
@@ -508,16 +509,22 @@ func _maybe_spawn_echo_ghost() -> void:
 		return
 	if not bool(recorder.get("race_echo")):
 		return
-	var date_str: String = daily.call("get_today_string")
-	if not bool(recorder.call("has_echo_for_date", date_str)):
-		return
+	var echo_path := ""
+	var dl_path := str(recorder.get("race_echo_path"))
+	if not dl_path.is_empty() and FileAccess.file_exists(dl_path):
+		echo_path = dl_path
+	else:
+		var date_str: String = daily.call("get_today_string")
+		if not bool(recorder.call("has_echo_for_date", date_str)):
+			return
+		echo_path = recorder.call("echo_path_for_date", date_str)
 	# Use load() not the EchoGhost class_name: avoids a global-class
 	# load-order cycle when station.gd pulls in dungeon.gd in -s mode.
 	var GhostScript: GDScript = load("res://scripts/combat/echo_ghost.gd")
 	var ghost: Node3D = GhostScript.new()
 	ghost.name = "EchoGhost"
 	add_child(ghost)
-	if ghost.call("load_echo", recorder.call("echo_path_for_date", date_str)):
+	if ghost.call("load_echo", echo_path):
 		ghost.call("start")
 	else:
 		ghost.queue_free()

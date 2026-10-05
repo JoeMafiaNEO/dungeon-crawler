@@ -66,6 +66,7 @@ func _run() -> void:
 	_test_bounty_phase2()
 	_test_leaderboard_phase1()
 	_test_echo_phase2()
+	_test_workshop_phase3()
 	_print_results()
 	quit()
 
@@ -3929,3 +3930,95 @@ func _test_echo_phase2() -> void:
 	_assert(dsrc.contains("_maybe_spawn_echo_ghost"), "dungeon spawns ghost when toggled")
 	_assert(dsrc.contains("_maybe_spawn_echo_ghost"), "ghost spawn hook exists")
 	print("[Playtest] echo phase 2 done")
+
+
+func _test_workshop_phase3() -> void:
+	print("[Playtest] workshop echo sharing (issue #9 Phase 3)...")
+	var WSScript = load("res://scripts/autoload/workshop_echo.gd")
+	var ws: Node = root.get_node_or_null("WorkshopEcho")
+	_assert(ws != null, "WorkshopEcho autoload exists")
+
+	# Tag format: "daily-echo-<YYYYMMDD>".
+	_assert(WSScript.tag_for_date("20261005") == "daily-echo-20261005",
+		"workshop tag format")
+	_assert(WSScript.tag_for_date("20261005").begins_with("daily-echo-"),
+		"tag has prefix")
+
+	# Offline guards: Steam is not initialized on this VM. All entry points
+	# must be silent no-ops (no crash, no signal, no pending state).
+	var sm: Node = root.get_node_or_null("SteamManager")
+	_assert(sm != null and not bool(sm.get("initialized")), "precondition: Steam offline")
+	_assert(not bool(ws.call("steam_available")), "workshop reports unavailable")
+	# upload_today_best with no echo file: no-op.
+	ws.call("upload_today_best")
+	_assert(str(ws.get("_pending_upload_date")).is_empty(), "no upload pending offline")
+	# Create a dummy echo file, then upload: still no-op offline, no crash.
+	var er: Node = root.get_node_or_null("EchoRecorder")
+	var buf := PackedByteArray()
+	var ERScript = load("res://scripts/autoload/echo_recorder.gd")
+	for i in 10:
+		ERScript.encode_sample(buf, i, Vector3(i, 0, 0), 0.0)
+	var dummy_data := {"date": "20261005", "seed": 1, "samples": buf,
+		"sample_count": 10, "ability_events": []}
+	_assert(bool(er.call("save_echo", dummy_data, "user://echoes/20261005.dat")),
+		"dummy echo saves")
+	ws.call("upload_today_best")
+	_assert(str(ws.get("_pending_upload_date")).is_empty(),
+		"upload is no-op offline even with echo file")
+	# query_today_echoes offline: emits empty array via signal.
+	var queried: Array = []
+	ws.connect("query_complete", func(echoes: Array): queried = echoes)
+	ws.call("query_today_echoes")
+	_assert(queried.is_empty(), "offline query returns empty")
+	# download_echo offline: no-op, no crash.
+	ws.call("download_echo", 12345)
+	# Signal methods exist and are connected (when Steam was available at _ready;
+	# offline they simply never fire).
+	_assert(ws.has_signal("upload_complete"), "upload_complete signal exists")
+	_assert(ws.has_signal("query_complete"), "query_complete signal exists")
+	_assert(ws.has_signal("download_complete"), "download_complete signal exists")
+
+	# Ghost races a "downloaded" echo: simulate the Workshop download by
+	# copying the file to the workshop_* path the UI uses.
+	var src := FileAccess.open("user://echoes/20261005.dat", FileAccess.READ)
+	var dst := FileAccess.open("user://echoes/workshop_999.dat", FileAccess.WRITE)
+	dst.store_buffer(src.get_buffer(src.get_length()))
+	src.close()
+	dst.close()
+	er.set("race_echo_path", "user://echoes/workshop_999.dat")
+	er.set("race_echo", true)
+	var ghost := EchoGhost.new()
+	root.add_child(ghost)
+	# The dungeon's _maybe_spawn_echo_ghost prioritizes race_echo_path;
+	# emulate its file-selection logic here.
+	var dl_path := str(er.get("race_echo_path"))
+	_assert(FileAccess.file_exists(dl_path), "downloaded echo file exists")
+	_assert(ghost.load_echo(dl_path), "ghost loads downloaded echo")
+	ghost.start()
+	_assert(ghost.is_playing(), "ghost races downloaded echo")
+	for i in 5:
+		ghost._process(0.05)
+	_assert(ghost.global_position.x > 0.0, "downloaded echo plays back")
+	ghost.queue_free()
+	er.set("race_echo_path", "")
+	er.set("race_echo", false)
+	DirAccess.remove_absolute("user://echoes/20261005.dat")
+	DirAccess.remove_absolute("user://echoes/workshop_999.dat")
+
+	# Wiring: player triggers upload on new best; menu has the UI.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("upload_today_best"), "player triggers workshop upload")
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("_on_top_echoes_pressed"), "menu has top-echoes handler")
+	_assert(msrc.contains("query_today_echoes"), "menu queries workshop")
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
+	_assert(tsrc.contains("TopEchoesButton"), "Daily phase has top-echoes button")
+	_assert(tsrc.contains("TopEchoesList"), "Daily phase has echoes list")
+	# Zero-scroll: the new button + list add no ScrollContainers.
+	var menu = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(menu)
+	var scrolls := []
+	_find_scroll_containers(menu.get_node("DailyPhase"), scrolls)
+	_assert(scrolls.is_empty(), "DailyPhase still has no scroll containers")
+	menu.queue_free()
+	print("[Playtest] workshop phase 3 done")

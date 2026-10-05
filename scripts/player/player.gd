@@ -2879,6 +2879,11 @@ func die() -> void:
 				if is_best and int(echo_data.get("sample_count", 0)) > 0:
 					_rec.call("save_echo", echo_data,
 						_rec.call("echo_path_for_date", _daily.call("get_today_string")))
+					# Phase 3: share the best echo to the Workshop (guarded,
+					# silent no-op offline).
+					var _ws: Node = get_tree().root.get_node_or_null("WorkshopEcho")
+					if _ws != null:
+						_ws.call("upload_today_best")
 			else:
 				DailyRun.record_attempt(score)
 		SaveManager.clear_run(SaveManager.MODE_SOLO, NetworkManager.active_run_slot)

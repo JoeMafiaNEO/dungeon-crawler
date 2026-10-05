@@ -522,6 +522,17 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Race my best echo"
 
+[node name="TopEchoesButton" type="Button" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Race top echoes"
+
+[node name="TopEchoesList" type="VBoxContainer" parent="DailyPhase"]
+unique_name_in_owner = true
+layout_mode = 2
+alignment = 1
+
 [node name="LeaderboardPanel" type="HBoxContainer" parent="DailyPhase"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -636,4 +647,5 @@ text = "Leave"
 [connection signal="pressed" from="StagingPhase/StagingBackButton" to="." method="_on_staging_back_pressed"]
 [connection signal="pressed" from="DailyPhase/DailyPlayButton" to="." method="_on_daily_play_pressed"]
 [connection signal="toggled" from="DailyPhase/RaceEchoCheck" to="." method="_on_race_echo_toggled"]
+[connection signal="pressed" from="DailyPhase/TopEchoesButton" to="." method="_on_top_echoes_pressed"]
 [connection signal="pressed" from="DailyPhase/DailyBackButton" to="." method="_on_daily_back_pressed"]

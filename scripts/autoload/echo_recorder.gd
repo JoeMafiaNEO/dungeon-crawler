@@ -26,6 +26,10 @@ var is_recording := false
 ## when true and a best echo exists, the dungeon spawns a visual-only ghost.
 var race_echo := false
 
+## Path to a downloaded Workshop echo to race (issue #9 Phase 3). When set,
+## the dungeon races this file instead of the local best echo.
+var race_echo_path := ""
+
 var _samples := PackedByteArray()
 var _sample_count := 0
 var _ability_events: Array = []  # Array of {tick:int, ability_id:String}
