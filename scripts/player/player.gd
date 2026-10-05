@@ -564,8 +564,8 @@ func _input(event: InputEvent) -> void:
 			# Cipher popup handles its own E/Esc; reading mode intercepts earlier.
 			if hud != null and (hud.cipher_popup_open or _reading_board != null):
 				return
-		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-			_try_pickup()
+			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
+				_try_pickup()
 		elif k.physical_keycode == KEY_SHIFT:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_dash()

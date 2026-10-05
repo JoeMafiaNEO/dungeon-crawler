@@ -4404,11 +4404,10 @@ func _test_e_interact_not_dead_code() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	var idx_return := psrc.find("if hud != null and (hud.cipher_popup_open or _reading_board != null):")
 	_assert(idx_return > 0, "#29: E guard found")
-	# Find the _try_pickup() after the guard; it must be at elif-body level
-	# (2 tabs), not inside the if (3 tabs).
 	# The 'if Input.mouse_mode' guarding _try_pickup must be at elif-body
-	# level (2 tabs). If it were nested inside the early-return if (3 tabs),
-	# _try_pickup would be dead code (the #29 bug).
+	# level (3 tabs) — a sibling of the early-return if, NOT nested inside it
+	# (4 tabs = dead code, the #29 bug), and NOT at 2 tabs (which breaks the
+	# elif chain and routes R/SHIFT/Q/etc into _try_pickup, the #32 bug).
 	var idx_guard := psrc.find("if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED", idx_return)
 	_assert(idx_guard > idx_return, "#29: mouse-mode guard present after E guard")
 	var before := psrc.substr(0, idx_guard)
@@ -4416,7 +4415,7 @@ func _test_e_interact_not_dead_code() -> void:
 	var indent := 0
 	while line_start + indent < psrc.length() and psrc[line_start + indent] == "\t":
 		indent += 1
-	_assert(indent == 2, "#29: E-interact guard at elif level (2 tabs), not dead code")
+	_assert(indent == 3, "#29/#32: E-interact guard at elif-body level (3 tabs)")
 	print("[Playtest] E-interact reachable done")
 
 
