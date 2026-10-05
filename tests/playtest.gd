@@ -3360,4 +3360,8 @@ func _test_combo_codex() -> void:
 	_assert(ssrc.contains("func add_combo_discovered"), "save: add_combo_discovered")
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	_assert(dsrc.contains("is_new"), "dungeon: announce_combo takes is_new")
+	var abody := dsrc.get_slice("func announce_combo", 1).get_slice("func _pick_mob_type", 0)
+	_assert(abody.contains('sfx("finisher_" + finisher_id)'), "dungeon: per-finisher fanfare SFX")
+	_assert(abody.contains('sfx("codex_discover")'), "dungeon: codex_discover sting on first discovery")
+	_assert(not abody.contains('sfx("thunderclap")'), "dungeon: shared thunderclap no longer fired for finishers")
 	print("[Playtest] combo codex phase 2 done")

@@ -1668,7 +1668,12 @@ func announce_combo(finisher_id: String, is_new: bool = false) -> void:
 		_local_hud.announce("%s!" % str(fin["name"]).to_upper(), Color(1.0, 0.85, 0.3))
 		if is_new:
 			_local_hud.show_toast("Codex updated: %s discovered!" % str(fin["name"]))
-	AudioManager.sfx("thunderclap")
+	# Per-finisher fanfare: the 5 distinct SFX supersede the old shared
+	# thunderclap (which stays registered as-is). First discovery also
+	# plays the codex_discover sting.
+	AudioManager.sfx("finisher_" + finisher_id)
+	if is_new:
+		AudioManager.sfx("codex_discover")
 
 
 func _pick_mob_type() -> MobData:
