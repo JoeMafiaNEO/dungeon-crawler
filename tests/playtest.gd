@@ -67,6 +67,7 @@ func _run() -> void:
 	_test_warlord_spawn_avoids_river()
 	_test_e_interact_not_dead_code()
 	_test_watchdog_resets_on_progress()
+	_test_r_wave_start_chain()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4450,3 +4451,32 @@ func _test_watchdog_resets_on_progress() -> void:
 		"#31: tracker updates each frame")
 	d.free()
 	print("[Playtest] watchdog resets on mob death done")
+
+
+
+func _test_r_wave_start_chain() -> void:
+	print("[Playtest] R wave-start chain (issue #32)...")
+	# Static: verify the R key handler, _try_start_wave, and request_next_wave
+	# chain is intact.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("KEY_R:"), "#32: R key handler exists")
+	_assert(psrc.contains("_try_start_wave()"), "#32: _try_start_wave called")
+	_assert(psrc.contains('rpc("request_next_wave")'), "#32: request_next_wave RPC sent")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func request_next_wave()"), "#32: request_next_wave exists")
+	_assert(dsrc.contains("wave_state == WaveState.INTERMISSION"), "#32: INTERMISSION gate exists")
+	# The wave-clear must set INTERMISSION (not get stuck in ACTIVE).
+	_assert(dsrc.contains("wave_state = WaveState.INTERMISSION"), "#32: _wave_cleared sets INTERMISSION")
+	# The wave-clear check must run every frame in ACTIVE (not nested inside
+	# the spawn-if, which would only run on spawn frames).
+	# Verify by checking the indentation: "if mobs_to_spawn <=" should be at
+	# 3 tabs (sibling of spawn-if), not 4 tabs (nested inside).
+	var idx := dsrc.find("if mobs_to_spawn <= 0:")
+	_assert(idx > 0, "#32: wave-clear check exists")
+	var before := dsrc.substr(0, idx)
+	var ls := before.rfind("\n") + 1
+	var indent := 0
+	while ls + indent < dsrc.length() and dsrc[ls + indent] == "\t":
+		indent += 1
+	_assert(indent == 3, "#32: wave-clear at ACTIVE level (3 tabs), runs every frame")
+	print("[Playtest] R wave-start chain done")
