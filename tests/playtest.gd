@@ -20,6 +20,7 @@ func _run() -> void:
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
+	_test_save_scratch_runs_dir()
 	_test_legacy_migration()
 	_test_mp_slots()
 	_test_saves_ui()
@@ -380,6 +381,53 @@ func _test_save_collections() -> void:
 		pf.store_string(prof_backup)
 	elif FileAccess.file_exists(prof_path):
 		DirAccess.remove_absolute(prof_path)
+
+
+func _test_save_scratch_runs_dir() -> void:
+	print("[Playtest] Scratch runs dir isolation (boarding driver hardening)...")
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var mgr = SaveScript.new()
+	var scratch := "user://runs_scratch_test"
+	# Ensure a clean slate; never touch real user://runs.
+	if DirAccess.dir_exists_absolute(scratch):
+		for f in DirAccess.get_files_at(scratch):
+			DirAccess.remove_absolute(scratch.path_join(f))
+		DirAccess.remove_absolute(scratch)
+	mgr.set("_test_runs_dir", scratch)
+	# Slot paths redirect into the scratch dir.
+	_assert(mgr._slot_path("solo", 0) == scratch + "/solo_0.cfg",
+		"scratch: slot path redirects")
+	_assert(mgr._slot_path("mp", 2) == scratch + "/mp_2.cfg",
+		"scratch: mp slot path redirects")
+	# save_run writes ONLY to the scratch dir.
+	var ok: bool = mgr.save_run({"theme_id": "village"}, "solo", 1)
+	_assert(ok, "scratch: save_run succeeds")
+	_assert(FileAccess.file_exists(scratch + "/solo_1.cfg"),
+		"scratch: run file lands in scratch dir")
+	_assert(not FileAccess.file_exists("user://runs/solo_1.cfg"),
+		"scratch: real slot untouched")
+	# load_run reads back through the redirect.
+	var back: Dictionary = mgr.load_run("solo", 1)
+	_assert(str(back.get("theme_id", "")) == "village",
+		"scratch: load_run roundtrips")
+	# list_runs sees the scratch file.
+	var listed: Array = mgr.list_runs("solo")
+	_assert(listed.size() == 1 and int(listed[0]["slot"]) == 1,
+		"scratch: list_runs sees scratch slot")
+	# Invalid modes/slots still rejected under the redirect.
+	_assert(mgr._slot_path("bogus", 0) == "", "scratch: bad mode rejected")
+	_assert(mgr._slot_path("solo", 9) == "", "scratch: bad slot rejected")
+	# Unpin restores the real path.
+	mgr.set("_test_runs_dir", "")
+	_assert(mgr._slot_path("solo", 0) == "user://runs/solo_0.cfg",
+		"scratch: unpin restores real path")
+	# Cleanup: remove the scratch dir and everything in it.
+	for f in DirAccess.get_files_at(scratch):
+		DirAccess.remove_absolute(scratch.path_join(f))
+	DirAccess.remove_absolute(scratch)
+	_assert(not DirAccess.dir_exists_absolute(scratch),
+		"scratch: dir cleaned up")
+	mgr.free()
 
 
 func _test_legacy_migration() -> void:

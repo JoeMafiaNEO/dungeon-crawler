@@ -5,10 +5,20 @@ extends Node
 ## screenshots the banner + boarding timer HUD.
 
 var _shot_dir := "/tmp/boarding_shots"
+## Scratch isolation: the E2E ride saves runs/profile data. These pins keep
+## every write on scratch files that we delete at the end. Real user:// saves
+## are NEVER touched.
+const SCRATCH_ACCOUNT := "boarding_shots"
+const SCRATCH_RUNS_DIR := "user://runs_scratch_boarding"
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# Pin SaveManager to scratch storage BEFORE anything can save.
+	SaveManager.set("_test_account_pin", SCRATCH_ACCOUNT)
+	SaveManager.set("_test_runs_dir", SCRATCH_RUNS_DIR)
+	SaveManager.load_game()
+	print("[BoardingShots] scratch profile: user://profile_%s.cfg" % SCRATCH_ACCOUNT)
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--shot-dir":
 			continue
@@ -77,14 +87,27 @@ func _ready() -> void:
 		await get_tree().create_timer(6.0).timeout
 		var cur := get_tree().current_scene
 		print("[BoardingShots] current_scene=", cur.name if cur != null else "null")
-	# The end-to-end ride runs the real solo save; remove it so later test
-	# runs (save roundtrips) see a clean user://.
-	for f in ["savegame.cfg", "solo_warrior.cfg", "solo_mage.cfg", "solo_rogue.cfg"]:
-		var p := "user://".path_join(f)
-		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(p)
+	# The end-to-end ride saved into the scratch profile + scratch runs dir.
+	# Remove ONLY those scratch files; real user:// saves were never touched.
+	_cleanup_scratch()
 	print("[BoardingShots] done")
 	get_tree().quit()
+
+
+## Unpin SaveManager, reload the real profile, and delete scratch files.
+func _cleanup_scratch() -> void:
+	SaveManager.set("_test_account_pin", "")
+	SaveManager.set("_test_runs_dir", "")
+	SaveManager.load_game()
+	var prof := "user://profile_%s.cfg" % SCRATCH_ACCOUNT
+	if FileAccess.file_exists(prof):
+		DirAccess.remove_absolute(prof)
+		print("[BoardingShots] removed scratch profile")
+	if DirAccess.dir_exists_absolute(SCRATCH_RUNS_DIR):
+		for f in DirAccess.get_files_at(SCRATCH_RUNS_DIR):
+			DirAccess.remove_absolute(SCRATCH_RUNS_DIR.path_join(f))
+		DirAccess.remove_absolute(SCRATCH_RUNS_DIR)
+		print("[BoardingShots] removed scratch runs dir")
 
 
 func _find_player() -> Node:

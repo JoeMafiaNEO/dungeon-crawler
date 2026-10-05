@@ -39,6 +39,11 @@ var _profile_account := ""
 ## load_game()/save_game() use user://profile_<pin>.cfg and never touch (or
 ## get clobbered by) the real profile. Empty (default) = normal resolution.
 var _test_account_pin := ""
+## Test hook: redirect run-slot storage to a scratch directory. When set,
+## _slot_path() builds paths under this dir instead of user://runs, so
+## save_run()/load_run()/clear_run() never touch real run slots. Empty
+## (default) = normal user://runs. Drivers must delete the scratch dir after.
+var _test_runs_dir := ""
 var _settings := ConfigFile.new()
 ## Observability hook: cloud writes attempted (guard passed). Tests use this
 ## to prove no cloud call fires without Steam.
@@ -211,7 +216,8 @@ func _cloud_fetch(local_path: String) -> void:
 
 
 func _saved_at_of(cfg: ConfigFile, local_path: String) -> String:
-	if local_path.begins_with(RUNS_DIR):
+	var runs_base := _test_runs_dir if _test_runs_dir != "" else RUNS_DIR
+	if local_path.begins_with(runs_base):
 		var data = cfg.get_value("run", "data", {})
 		return str(data.get("saved_at", "")) if data is Dictionary else ""
 	return str(cfg.get_value("meta", "saved_at", ""))
@@ -639,7 +645,8 @@ func _slot_path(mode: String, slot: int) -> String:
 	if slot < 0 or slot >= MAX_SLOTS:
 		push_error("[SaveManager] Slot out of range: %d" % slot)
 		return ""
-	return "%s/%s_%d.cfg" % [RUNS_DIR, mode, slot]
+	var base := _test_runs_dir if _test_runs_dir != "" else RUNS_DIR
+	return "%s/%s_%d.cfg" % [base, mode, slot]
 
 
 ## Save a run into a slot. Stamps saved_at + save_version and the mode's
@@ -650,7 +657,8 @@ func save_run(run: Dictionary, mode: String, slot: int, keep_saved_at := false) 
 	var path := _slot_path(mode, slot)
 	if path == "":
 		return false
-	DirAccess.make_dir_recursive_absolute(RUNS_DIR)
+	var runs_base := _test_runs_dir if _test_runs_dir != "" else RUNS_DIR
+	DirAccess.make_dir_recursive_absolute(runs_base)
 	var cfg := ConfigFile.new()
 	var data := run.duplicate(true)
 	if not keep_saved_at or str(data.get("saved_at", "")) == "":
