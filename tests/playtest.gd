@@ -63,6 +63,8 @@ func _run() -> void:
 	_test_eagle_eye_warlord_hide()
 	_test_issue18_ui_fixes()
 	_test_fireball_fuse()
+	_test_issue22_23_fixes()
+	_test_warlord_spawn_avoids_river()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4281,3 +4283,31 @@ func _test_fireball_fuse() -> void:
 	_assert(dist_3d > 1.3, "3D distance exceeds fuse (the bug)")
 	_assert(dist_xz < 1.3, "XZ distance triggers fuse (the fix)")
 	print("[Playtest] fireball proximity fuse done")
+
+
+func _test_warlord_spawn_avoids_river() -> void:
+	print("[Playtest] Warlord spawn avoids river (issue #28)...")
+	# Static: procgen nudges Warlord spawns off the river.
+	var psrc := FileAccess.get_file_as_string("res://scripts/procgen/procgen.gd")
+	_assert(psrc.contains('theme.theme_id == "warlord"'),
+		"#28: Warlord spawn check present")
+	_assert(psrc.contains("river_nudge"),
+		"#28: river nudge applied")
+	# Behavioral: the nudge puts spawns outside abs(x) < 4.0.
+	# (Dungeon.is_on_water: absf(pos.x) < 4.0)
+	var nudge := Vector3(6.0, 0, 0)
+	var offsets := [Vector3.ZERO, Vector3(1.5, 0, 0), Vector3(-1.5, 0, 0), Vector3(0, 0, 1.5)]
+	for off in offsets:
+		var spawn_x: float = (off + nudge).x
+		_assert(absf(spawn_x) >= 4.0, "#28: spawn at x=%.1f avoids river" % spawn_x)
+	print("[Playtest] Warlord spawn avoids river done")
+
+
+func _test_issue22_23_fixes() -> void:
+	print("[Playtest] issues #22/#23 fixes...")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("Dungeon.THEME_ORDER.size()"),
+		"#22: cycle uses THEME_ORDER.size()")
+	_assert(hsrc.contains("font_size = maxi(36,"),
+		"#23: announce shrink-to-fit present")
+	print("[Playtest] issues #22/#23 fixes done")

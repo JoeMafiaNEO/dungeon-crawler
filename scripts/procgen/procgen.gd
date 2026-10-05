@@ -40,7 +40,7 @@ static func generate(theme: LevelTheme, seed_value: int) -> LevelLayout:
 	_enforce_connectivity(layout)
 	_place_props(layout, theme, rng)
 	_place_torches(layout, theme, rng)
-	_place_spawns(layout, rng)
+	_place_spawns(layout, theme, rng)
 
 	return layout
 
@@ -321,13 +321,18 @@ static func _place_torches(layout: LevelLayout, theme: LevelTheme, rng: RandomNu
 
 # --- Spawns ---
 
-static func _place_spawns(layout: LevelLayout, rng: RandomNumberGenerator) -> void:
+static func _place_spawns(layout: LevelLayout, theme: LevelTheme, rng: RandomNumberGenerator) -> void:
 	var n := layout.grid_size
 	var center := layout.cell_to_world(n / 2, n / 2)
 	# Player spawns: center plus small offsets.
 	var offsets := [Vector3.ZERO, Vector3(1.5, 0, 0), Vector3(-1.5, 0, 0), Vector3(0, 0, 1.5)]
+	# Issue #28: Warlord's river runs down x=0 (abs(x) < 4.0). Nudge spawns
+	# off the water so players don't start standing in the river.
+	var river_nudge := Vector3.ZERO
+	if theme.theme_id == "warlord":
+		river_nudge = Vector3(6.0, 0, 0)
 	for k in mini(_PLAYER_SPAWN_COUNT, offsets.size()):
-		layout.player_spawns.append(center + offsets[k])
+		layout.player_spawns.append(center + offsets[k] + river_nudge)
 	# Mob spawns: random floor cells far from the center.
 	var placed := 0
 	var attempts := 0
