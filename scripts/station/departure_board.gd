@@ -183,6 +183,7 @@ func set_hover(theme_id: String) -> void:
 
 ## Persistent gold frame on the row the local player voted.
 func set_my_vote(theme_id: String) -> void:
+	AudioManager.sfx("vote_cast")
 	for tid in _rows:
 		(_rows[tid]["frame"] as MeshInstance3D).visible = (tid == theme_id)
 

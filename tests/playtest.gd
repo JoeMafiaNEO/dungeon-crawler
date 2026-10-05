@@ -46,6 +46,7 @@ func _run() -> void:
 	_test_annex_forfeit()
 	_test_train_interior()
 	_test_boarding_flow()
+	_test_train_ride()
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_economy()
@@ -1180,7 +1181,7 @@ func _test_annex_departure() -> void:
 	_assert(hop_start > 0, "departure: board_train_interior rpc exists")
 	_assert(not dsrc.contains("func hop_to_next_level"),
 		"departure: old direct hop rpc removed")
-	var hop := dsrc.substr(hop_start, 1500)
+	var hop := dsrc.substr(hop_start, 2200)
 	_assert(hop.contains("saved_player_state = me.get_state()"), "boarding: captures player state")
 	_assert(hop.contains("Dungeon.next_theme_id = theme_id"), "boarding: sets next theme")
 	_assert(hop.contains("Dungeon.next_seed = new_seed"), "boarding: sets next seed")
@@ -1189,15 +1190,15 @@ func _test_annex_departure() -> void:
 	_assert(hop.contains("train_interior.tscn"), "boarding: loads the interior scene")
 	_assert(hop.contains("NetworkManager.server_id"), "boarding: server-sender check")
 
-	# 3b. Interior exit (leave_interior): server-sender check, state capture,
-	# dungeon scene load via the hop path.
+	# 3b. Interior exit (do_disembark, issue #3 Phase 3): server-sender check,
+	# state capture, dungeon scene load via the background-loaded packed scene.
 	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
-	var lv_start := isrc.find("func leave_interior")
-	_assert(lv_start > 0, "interior: leave_interior rpc exists")
-	var lv := isrc.substr(lv_start, 800)
+	var lv_start := isrc.find("func do_disembark")
+	_assert(lv_start > 0, "interior: do_disembark rpc exists")
+	var lv := isrc.substr(lv_start, 900)
 	_assert(lv.contains("NetworkManager.server_id"), "interior exit: server-sender check")
 	_assert(lv.contains("saved_player_state = me.get_state()"), "interior exit: captures player state")
-	_assert(lv.contains("dungeon.tscn"), "interior exit: loads the dungeon scene")
+	_assert(lv.contains("dungeon.tscn") or lv.contains("DUNGEON_SCENE"), "interior exit: loads the dungeon scene")
 
 	# 4. Ride rpc delegates to the station's local ride on all peers.
 	var ride_start := dsrc.find("func begin_annex_departure")
@@ -1326,7 +1327,17 @@ func _test_train_interior() -> void:
 	var car = InteriorScript.new()
 	car._build_car()
 	_assert(car.get_node_or_null("CarFloor") != null, "interior: floor built")
-	_assert(car.get_node_or_null("WallNorth") != null, "interior: side walls built")
+	_assert(car.get_node_or_null("WallSillNorth") != null, "interior: window sills built")
+	_assert(car.find_children("WallSegNorth_*", "", true, false).size() == 5,
+		"interior: 5 north wall segments between windows")
+	_assert(car.find_children("WallSegSouth_*", "", true, false).size() == 5,
+		"interior: 5 south wall segments between windows")
+	# Window glass is transparent now (Phase 3): the scenery shows through.
+	var glass_node := car.get_node_or_null("WindowGlass_1_0") as MeshInstance3D
+	_assert(glass_node != null, "interior: window glass named")
+	var glass_mat := (glass_node.mesh as BoxMesh).material as StandardMaterial3D
+	_assert(glass_mat.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA,
+		"interior: window glass is transparent")
 	_assert(car.get_node_or_null("WallFront") != null, "interior: end wall built")
 	_assert(car.get_node_or_null("CarCeiling") != null, "interior: ceiling built")
 	_assert(car.get_node_or_null("BenchSeat") != null, "interior: benches built")
@@ -1374,6 +1385,110 @@ func _test_train_interior() -> void:
 	var hblock := dsrc.substr(hpos, 2600)
 	_assert(hblock.contains('rpc("board_train_interior"'), "interior: departure rpcs boarding")
 	_assert(not hblock.contains("hop_to_next_level"), "interior: direct hop gone from departure")
+
+
+func _test_train_ride() -> void:
+	print("[Playtest] Train ride phase 3 (25s ride, skip, arrival, disembark)...")
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	_assert(InteriorScript.RIDE_SECONDS == 25.0, "ride: 25s ride length")
+	_assert(InteriorScript.DISEMBARK_WINDOW == 20.0, "ride: 20s disembark window")
+
+	var car = InteriorScript.new()
+	car._build_car()
+	car._build_scenery()
+	car._build_platform()
+	car._build_skip_lever()
+	car._build_disembark_zone()
+
+	# Scenery: two unshaded scrolling planes, hidden until the ride starts.
+	_assert(car._scenery_root != null, "ride: scenery root built")
+	_assert(car._scenery_root.get_child_count() == 2, "ride: two scenery planes")
+	_assert(car._scenery_mats.size() == 2, "ride: two scrolling materials")
+	var smat: StandardMaterial3D = car._scenery_mats[0]
+	_assert(smat.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED, "ride: scenery unshaded")
+	_assert(smat.uv1_scale.x == 24.0, "ride: scenery texture tiled along the car")
+	_assert(not car._scenery_root.visible, "ride: scenery hidden until ride start")
+	# Scrolling actually moves the texture.
+	smat.uv1_offset.x = 0.0
+	car._riding = true
+	car._ride_left = 20.0
+	car._process(1.0)
+	_assert(smat.uv1_offset.x < 0.0, "ride: _process scrolls the scenery")
+
+	# Easing: full speed cruising, settled near arrival.
+	_assert(InteriorScript._scenery_speed_factor(10.0) == 1.0, "ride: full speed at 10s left")
+	_assert(is_equal_approx(InteriorScript._scenery_speed_factor(5.5), 0.5),
+		"ride: half speed at 5.5s left")
+	_assert(InteriorScript._scenery_speed_factor(3.0) == 0.0, "ride: settled at 3s left")
+	_assert(InteriorScript._scenery_speed_factor(0.0) == 0.0, "ride: settled at 0s left")
+	# Scenery stops scrolling once settled.
+	smat.uv1_offset.x = 0.0
+	car._ride_left = 2.0
+	car._process(1.0)
+	_assert(smat.uv1_offset.x == 0.0, "ride: no scroll once settled")
+	car._riding = false
+
+	# Skip lever: pure clock jump, never past arrival.
+	car._ride_left = 20.0
+	car._apply_skip()
+	_assert(car._ride_left == 2.0, "ride: skip jumps clock to 2s")
+	car._ride_left = 1.0
+	car._apply_skip()
+	_assert(car._ride_left == 1.0, "ride: skip never pushes past arrival")
+
+	# Skip lever prop: E-interact group, prompt, hidden until riding.
+	var lever = car.get_node_or_null("SkipLever")
+	_assert(lever != null and lever.is_in_group("skip_lever"), "ride: skip lever in interact group")
+	_assert(lever.prompt_text() == "Pull the skip lever", "ride: skip lever prompt")
+	_assert(not lever.visible, "ride: skip lever hidden until ride start")
+
+	# Arrival platform: hidden, destination sign names the theme.
+	_assert(car._platform_root != null, "ride: platform built")
+	_assert(not car._platform_root.visible, "ride: platform hidden until arrival")
+	var sign := car._platform_root.get_node_or_null("SignLabel") as Label3D
+	_assert(sign != null, "ride: platform sign exists")
+	_assert(sign.text == "VILLAGE OUTSKIRTS", "ride: sign names the destination (default village)")
+
+	# Disembark zone: present but dormant until arrival.
+	_assert(car._disembark_area != null, "ride: disembark zone built")
+	_assert(not car._disembark_area.monitoring, "ride: disembark zone off until arrival")
+	car.free()
+
+	# Wiring (source): background load, arrival beat, disembark hop.
+	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	_assert(isrc.contains("load_threaded_request(DUNGEON_SCENE)"), "ride: dungeon background-loaded")
+	_assert(not isrc.contains("func leave_interior"), "ride: placeholder leave_interior gone")
+	var apos := isrc.find("func begin_arrival")
+	_assert(apos > 0, "ride: begin_arrival exists")
+	var ablock := isrc.substr(apos, 1500)
+	_assert(ablock.contains('sfx("train_brake")'), "ride: brake screech at arrival")
+	_assert(ablock.contains("NOW ARRIVING: "), "ride: arrival banner in the car")
+	_assert(ablock.contains("open_doors()"), "ride: doors open at arrival")
+	_assert(ablock.contains("_platform_root.visible = true"), "ride: platform revealed")
+	_assert(ablock.contains("_door_blocker.queue_free()"), "ride: doorway unblocked")
+	var dpos := isrc.find("func do_disembark")
+	_assert(dpos > 0, "ride: do_disembark exists")
+	var dblock := isrc.substr(dpos, 1200)
+	_assert(dblock.contains("Dungeon.spawn_in_annex = true"), "ride: disembark flags annex spawn")
+	_assert(dblock.contains("Dungeon.arrived_by_train = true"), "ride: disembark flags train arrival")
+	_assert(dblock.contains("load_threaded_get(DUNGEON_SCENE)"), "ride: disembark uses preloaded scene")
+	_assert(dblock.contains("change_scene_to_packed"), "ride: disembark swaps to packed scene")
+	_assert(isrc.contains("func request_skip_ride"), "ride: skip lever RPC exists")
+	_assert(isrc.contains("func _run_disembark_window"), "ride: straggler fallback exists")
+
+	# Dungeon side (source): annex spawn + single arrival beat.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("static var spawn_in_annex"), "ride: dungeon spawn_in_annex static")
+	_assert(dsrc.contains("static var arrived_by_train"), "ride: dungeon arrived_by_train static")
+	_assert(dsrc.contains("func _annex_spawn_spots"), "ride: annex spawn spots helper")
+	_assert(dsrc.contains("if arrived_by_train:"), "ride: train arrival skips double brake/banner")
+	_assert(dsrc.contains("InteriorScript.ride_active = false"), "ride: fresh trip resets ride state")
+
+	# HUD + player wiring (source).
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func show_ride_status"), "ride: HUD ride status")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('"skip_lever"'), "ride: skip lever in player interact groups")
 
 
 func _test_boarding_flow() -> void:
@@ -1471,6 +1586,29 @@ func _test_boarding_flow() -> void:
 	# Dungeon hands the lock to the interior on boarding.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	_assert(dsrc.contains("InteriorScript.doors_locked = true"), "boarding: dungeon locks car doors")
+
+	# Boarding SFX triggers (sound audit): all_aboard on the banner,
+	# board_chime on a successful boarding, door_lock when boarding
+	# completes, countdown ticks in the final seconds, vote_cast on voting.
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	for sfx in ["all_aboard", "board_chime", "door_lock", "countdown_tick", "vote_cast"]:
+		_assert(SoundScript.call(sfx) is AudioStreamWAV, "boarding sfx builds: %s" % sfx)
+	var ab_pos := ssrc.find("func announce_boarding")
+	_assert(ab_pos > 0 and ssrc.substr(ab_pos, 300).contains('sfx("all_aboard")'),
+		"sfx: all_aboard in announce_boarding")
+	var rb_pos := ssrc.find("func request_board")
+	_assert(rb_pos > 0 and ssrc.substr(rb_pos, 700).contains('sfx("board_chime")'),
+		"sfx: board_chime on request_board success")
+	var fb_pos := ssrc.find("func _finish_boarding")
+	_assert(fb_pos > 0 and ssrc.substr(fb_pos, 700).contains('sfx("door_lock")'),
+		"sfx: door_lock in _finish_boarding")
+	var bs_pos := ssrc.find("func boarding_sync")
+	_assert(bs_pos > 0 and ssrc.substr(bs_pos, 600).contains('sfx("countdown_tick")'),
+		"sfx: countdown_tick in final boarding seconds")
+	var vsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	var sv_pos := vsrc.find("func set_my_vote")
+	_assert(sv_pos > 0 and vsrc.substr(sv_pos, 300).contains('sfx("vote_cast")'),
+		"sfx: vote_cast in set_my_vote")
 
 
 func _test_cycle_scaling() -> void:

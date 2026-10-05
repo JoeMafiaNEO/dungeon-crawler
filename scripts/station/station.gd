@@ -428,6 +428,7 @@ func request_board() -> void:
 	var res: Dictionary = record_boarding(sender)
 	if not bool(res.get("ok", false)):
 		return
+	AudioManager.sfx("board_chime")
 	var living := _living_peer_ids()
 	rpc("boarding_sync", maxf(_boarding_time_left, 0.0), aboard, living)
 	if _all_aboard(living):
@@ -445,6 +446,7 @@ func _finish_boarding(living_override: Array = []) -> void:
 		aboard[pid] = true # stragglers ride too — the pull-aboard moves them
 	_boarding_active = false
 	_boarding_locked = true
+	AudioManager.sfx("door_lock")
 	rpc("boarding_sync", 0.0, aboard, living)
 	rpc("boarding_locked")
 	departure_resolved.emit(_boarding_theme)
@@ -453,6 +455,7 @@ func _finish_boarding(living_override: Array = []) -> void:
 ## ALL ABOARD banner on every peer.
 @rpc("any_peer", "call_local")
 func announce_boarding() -> void:
+	AudioManager.sfx("all_aboard")
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("announce"):
 		hud.announce("ALL ABOARD!")
@@ -462,6 +465,9 @@ func announce_boarding() -> void:
 @rpc("any_peer", "call_local")
 func boarding_sync(time_left: float, aboard_now: Dictionary, living: Array) -> void:
 	aboard = aboard_now.duplicate()
+	# Final-seconds tick on every peer (driven by the server's per-second sync).
+	if time_left <= 5.0 and time_left > 0.0:
+		AudioManager.sfx("countdown_tick")
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("show_boarding_timer"):
 		hud.show_boarding_timer(time_left, aboard.size(), living.size())

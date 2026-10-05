@@ -999,6 +999,14 @@ func show_boarding_timer(sec: float, aboard_count: int, living_count: int) -> vo
 	%StationTimerLabel.visible = true
 
 
+## Ride status (issue #3 Phase 3): destination + arrival countdown. Reuses
+## the station timer label — no new UI chrome. Hide via hide_station_timer.
+func show_ride_status(title: String, sec: float) -> void:
+	var s := int(ceil(maxf(sec, 0.0)))
+	%StationTimerLabel.text = "%s — %d:%02d" % [title, s / 60, s % 60]
+	%StationTimerLabel.visible = true
+
+
 # --- Downed / revive (co-op) ---
 
 func show_downed(seconds: float) -> void:

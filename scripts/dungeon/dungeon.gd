@@ -114,6 +114,12 @@ static var next_theme_id: String = "village"
 static var next_seed: int = 12345
 static var next_level_number: int = 1
 static var saved_player_state: Dictionary = {}
+## Train interior (issue #3 Phase 3): set by the car's do_disembark before the
+## hop. The next dungeon spawns the party in its annex hall, and the
+## dungeon-entry arrival beat skips the brake + banner (the car already
+## played them at the platform) — the fade-in stays.
+static var spawn_in_annex := false
+static var arrived_by_train := false
 ## Roster from a continued multiplayer save (empty for fresh runs).
 static var continued_roster: Array = []
 ## Host toggle: allow strangers to join a continued run as fresh characters.
@@ -494,11 +500,16 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 		_local_hud = HudScene.instantiate()
 		add_child(_local_hud)
 		_local_hud.setup(p)
-		# Arrival (Phase 5): fade in from the train ride, dressed banner, brake.
+		# Arrival: fade in from the train ride. When stepping out of the car
+		# (issue #3 Phase 3) the platform already played the brake screech +
+		# NOW ARRIVING banner — the dungeon entry just fades in.
 		_local_hud.fade_in(1.5)
-		_local_hud.announce("NOW ARRIVING: " + theme.display_name,
-			Dungeon.arrival_tint(theme.theme_id))
-		AudioManager.sfx("train_brake")
+		if arrived_by_train:
+			arrived_by_train = false
+		else:
+			_local_hud.announce("NOW ARRIVING: " + theme.display_name,
+				Dungeon.arrival_tint(theme.theme_id))
+			AudioManager.sfx("train_brake")
 	if multiplayer.is_server():
 		# Bounty Board (issue #7): fresh progress for the new level, before
 		# the forfeit snapshot so entry state includes it.
@@ -1905,6 +1916,11 @@ func _build_arena_from_layout() -> void:
 	StationAnnex.build(self, _annex_plan, _layout)
 	_build_station_annex_content()
 	spawn_points = _layout.player_spawns
+	# Train disembark (issue #3 Phase 3): the party steps out of the car into
+	# the annex hall, so spawn there instead of the arena spawn points.
+	if spawn_in_annex:
+		spawn_in_annex = false
+		spawn_points = _annex_spawn_spots()
 
 
 ## Station annex content (issue #2 Phase 2): the station lives inside the
@@ -2063,10 +2079,26 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	var InteriorScript: GDScript = load("res://scripts/station/train_interior.gd")
 	InteriorScript.passenger_classes = classes
 	InteriorScript.ride_theme_id = theme_id
+	# Fresh trip: the interior's late-_ready ride check must not see a stale
+	# ride_active from the previous ride (issue #3 Phase 3).
+	InteriorScript.ride_active = false
 	# Issue #3 Phase 2: boarding is over (all aboard or timer expiry) — the
 	# car doors stay closed + locked for the ride.
 	InteriorScript.doors_locked = true
 	get_tree().call_deferred("change_scene_to_file", "res://scenes/station/train_interior.tscn")
+
+
+## Train disembark (issue #3 Phase 3): spawn spots in the annex hall, around
+## its center. The hall is 24x14m; these offsets stay well inside it.
+func _annex_spawn_spots() -> Array[Vector3]:
+	var spots: Array[Vector3] = []
+	var annex := get_node_or_null("StationAnnex")
+	var c := Vector3.ZERO
+	if annex != null and annex.has_method("hall_center"):
+		c = annex.hall_center()
+	for off in [Vector3(-3, 0.1, -2), Vector3(0, 0.1, -2), Vector3(3, 0.1, -2), Vector3(0, 0.1, 2)]:
+		spots.append(c + off)
+	return spots
 
 
 func _build_environment() -> void:
