@@ -96,23 +96,54 @@ func _impact() -> void:
 	if multiplayer.is_server():
 		var dungeon := get_tree().get_first_node_in_group("dungeon")
 		var caster: Player = null
-		if dungeon != null:
+		if dungeon != null and dungeon.has_method("get_player_node"):
 			caster = dungeon.get_player_node(owner_peer) as Player
 		# Conflagration: +25% blast radius.
 		var radius := BLAST_RADIUS
 		if caster != null and caster.has_trait("conflagration"):
 			radius *= 1.25
+		# Combo Finishers (issue #8): world-state detection before damage.
+		var mobs := get_tree().get_nodes_in_group("mobs")
+		var totems := get_tree().get_nodes_in_group("totems")
+		var players := get_tree().get_nodes_in_group("players")
+		var combo := Combo.check_meteor_impact(mobs, target, radius, totems, players)
+		var dmg := damage * float(combo["damage_mult"])
+		radius *= float(combo["radius_mult"])
 		var hit_any := false
-		for n in get_tree().get_nodes_in_group("mobs"):
+		var dead: Array = []
+		var hit: Array = []
+		for n in mobs:
 			var m := n as Mob
 			if m == null or not m.alive:
 				continue
 			if m.global_position.distance_to(target) < radius:
-				m.rpc_id(NetworkManager.server_id, "take_damage", damage, owner_peer, target)
+				var was_alive := m.alive
+				m.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, target)
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
-					m.apply_burn(3.0, damage * 0.3, owner_peer)
+					m.apply_burn(3.0, dmg * 0.3, owner_peer)
 				hit_any = true
+				hit.append(m)
+				if Combo.note_kill(m, was_alive):
+					dead.append(m)
+		# Smoke Bombard: meteor landed in a smoke veil. The bigger blast is
+		# already in radius; the blind is per-enemy cooldown gated. Announce
+		# only when at least one enemy is actually blinded.
+		var bombarded := false
+		if bool(combo["smoke_veil"]):
+			for hm in hit:
+				if Combo.smoke_blind_ok(hm):
+					(hm as Mob).apply_blind(Combo.SMOKE_BLIND_DURATION)
+					bombarded = true
+			if bombarded:
+				Combo.announce_finisher(get_tree(), "smoke_bombard")
+		# Reciprocity Surge: meteor killing blows inside a Reciprocity aura.
+		for dm in dead:
+			if Combo.check_meteor_kill(target, dm, totems):
+				Combo.apply_team_heal(get_tree())
+				Combo.announce_finisher(get_tree(), "reciprocity_surge")
+		for fid in combo["triggered"]:
+			Combo.announce_finisher(get_tree(), str(fid))
 		# Affinity: +8 if the impact hit at least one enemy (single grant).
 		if hit_any and caster != null:
 			caster.gain_affinity("meteor", 8.0)

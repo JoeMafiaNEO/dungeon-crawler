@@ -32,6 +32,8 @@ var is_elite := false
 ## Slow debuff (frost): _slow_t seconds remaining at _slow_mult speed.
 var _slow_t := 0.0
 var _slow_mult := 1.0
+## Smoke Bombard (combo finisher): blinded mobs miss 50% of attacks.
+var _blind_t := 0.0
 ## Shatter: slowed enemies take +25% damage (mage opens windows for team).
 var _shatter_t := 0.0
 ## Burn (wildfire trait): damage over time.
@@ -120,6 +122,9 @@ func _physics_process(delta: float) -> void:
 		if _slow_t <= 0.0:
 			_slow_mult = 1.0
 			_sprite.modulate = Color.WHITE
+	# Blind debuff ticks down (server-side).
+	if _blind_t > 0.0:
+		_blind_t -= delta
 	# Relentless marker ticks down alongside the slow.
 	if bulwark_slow_t > 0.0:
 		bulwark_slow_t -= delta
@@ -164,7 +169,9 @@ func _physics_process(delta: float) -> void:
 			_attack_cd -= delta
 			if _attack_cd <= 0.0:
 				_attack_cd = data.attack_cooldown
-				if _target.is_in_group("decoys"):
+				if _misses():
+					pass  # Blinded (Smoke Bombard): the swing misses.
+				elif _target.is_in_group("decoys"):
 					# Shadow decoy: direct damage, server-side (no RPC target).
 					_target.damage(data.damage * dmg_scale * _dmg_mult())
 				elif _target.is_in_group("structures"):
@@ -293,6 +300,8 @@ func _ranged_think(delta: float, to: Vector3, dist: float) -> void:
 
 
 func _fire_arrow(dir: Vector3) -> void:
+	if _misses():
+		return  # Blinded (Smoke Bombard): the shot goes wide.
 	var from := global_position + Vector3(0, 1.4, 0) + dir * 0.6
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null:
@@ -310,6 +319,23 @@ func apply_slow(duration: float, mult: float) -> void:
 	_shatter_t = maxf(_shatter_t, duration)
 	_sprite.modulate = Color(0.7, 0.85, 1.0)
 	rpc("slow_fx", duration, mult)
+
+
+## Frost-slowed right now (combo-finisher world state).
+func is_slowed() -> bool:
+	return _slow_t > 0.0
+
+
+## Applies blind (Smoke Bombard): the mob misses 50% of attacks while blind.
+func apply_blind(duration: float) -> void:
+	if not alive:
+		return
+	_blind_t = maxf(_blind_t, duration)
+
+
+## Blind miss roll, checked at each attack site (server-side).
+func _misses() -> bool:
+	return _blind_t > 0.0 and randf() < 0.5
 
 
 ## Applies a burn DoT (wildfire trait). Server-side; refreshes duration.
@@ -468,6 +494,8 @@ func _do_slam() -> void:
 		_fire_shockwave()
 		return
 	rpc("slam_fx", global_position)
+	if _misses():
+		return  # Blinded (Smoke Bombard): the slam misses.
 	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
 	for n in get_tree().get_nodes_in_group("players"):
 		var p := n as Node3D
@@ -571,6 +599,8 @@ func _do_charge() -> void:
 
 
 func _check_charge_hits() -> void:
+	if _misses():
+		return  # Blinded (Smoke Bombard): the charge misses.
 	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
 	for n in get_tree().get_nodes_in_group("players"):
 		if n in _charge_hit:

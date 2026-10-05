@@ -396,6 +396,17 @@ static func boss_slam() -> AudioStreamWAV:
 	]))
 
 
+static func thunderclap() -> AudioStreamWAV:
+	# Combo-finisher stinger (issue #8): sky-crack + rolling rumble. One
+	# shared SFX for all five finishers, keeps the SFX budget sane.
+	return _wav(_mix([
+		_tone(160.0, 40.0, 0.35, "saw", 26.0, 0.9),
+		_noise(0.18, 30.0, 1.0),
+		_tone(90.0, 32.0, 0.7, "sine", 18.0, 1.1, 0.08),
+		_noise(0.6, 9.0, 0.5, 0.12, 0.4),
+	]))
+
+
 static func boss_die() -> AudioStreamWAV:
 	# Epic death: descending roar + final boom.
 	return _wav(_mix([

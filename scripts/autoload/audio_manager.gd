@@ -41,7 +41,8 @@ func _ready() -> void:
 			"train_door_open", "train_door_close",
 			"all_aboard", "board_chime", "door_lock", "countdown_tick",
 			"vote_cast", "apex_announce", "apex_roar",
-			"cash_register", "holy_light", "holy_light_cast"]:
+			"cash_register", "holy_light", "holy_light_cast",
+			"thunderclap"]:
 		_sfx_builders[b] = Callable(SoundSynth, b)
 	for i in POOL_SIZE:
 		var pl := AudioStreamPlayer.new()

@@ -1625,6 +1625,19 @@ func announce(text: String) -> void:
 		AudioManager.sfx("wave_clear")
 
 
+## Combo Finisher banner (issue #8): gold banner + one shared thunderclap
+## SFX. The server triggers this via RPC; every peer (call_local) shows the
+## banner and hears the stinger locally, keeping the SFX budget sane.
+@rpc("any_peer", "call_local")
+func announce_combo(finisher_id: String) -> void:
+	var fin: Dictionary = Combo.finisher_by_id(finisher_id)
+	if fin.is_empty():
+		return
+	if _local_hud != null:
+		_local_hud.announce("%s!" % str(fin["name"]).to_upper(), Color(1.0, 0.85, 0.3))
+	AudioManager.sfx("thunderclap")
+
+
 func _pick_mob_type() -> MobData:
 	if mob_types.is_empty():
 		return null

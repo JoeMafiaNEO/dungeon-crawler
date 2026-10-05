@@ -55,6 +55,7 @@ func _run() -> void:
 	_test_apex_phase1()
 	_test_apex_mechanics()
 	_test_bounty_phase1()
+	_test_combo_phase1()
 	_print_results()
 	quit()
 
@@ -2741,3 +2742,227 @@ func _test_bounty_phase1() -> void:
 	var cov: Dictionary = BountyScript.new_progress(cyc1)
 	for b in cyc1:
 		_assert(cov.has(str(b["id"])), "progress covers bounty %s" % str(b["id"]))
+## Spawns a live slime mob at pos for combo tests (headless sim).
+func _combo_mob(MobScene: PackedScene, slime_data: Resource, pos: Vector3) -> Node:
+	var m = MobScene.instantiate()
+	m.setup(1, slime_data, 1.0, 1.0, false, 1.0)
+	m.position = pos
+	root.add_child(m)
+	return m
+
+
+func _test_combo_phase1() -> void:
+	print("[Playtest] Combo finishers phase 1 (issue #8)...")
+	# -s script mode has no current_scene; positional sfx() needs one.
+	var _combo_holder := Node3D.new()
+	root.add_child(_combo_holder)
+	current_scene = _combo_holder
+	var ComboScript := load("res://scripts/systems/combo.gd")
+	var TotemScript := load("res://scripts/combat/totem.gd")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var slime_data: Resource = load("res://data/mobs/slime.tres")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	ComboScript.reset_cooldowns()
+
+	# --- Registry: 5 finishers with the specced ids, names, triggers, effects.
+	_assert(ComboScript.COMBO_FINISHERS.size() == 5, "combo registry has 5 finishers")
+	var expected := {
+		"orbital_strike": ["Orbital Strike", "Meteor impacts a marked target", "+100% meteor damage, 2x blast radius"],
+		"stormcall": ["Stormcall", "Chain lightning cast while standing inside a War Horn aura", "Chains 6 targets, +25% damage"],
+		"shatter_cascade": ["Shatter Cascade", "Fan of Knives killing blow on a frost-slowed enemy", "Frost nova burst (3m, slow + damage)"],
+		"reciprocity_surge": ["Reciprocity Surge", "Meteor killing blow inside a Reciprocity aura", "Team heal burst (20% max HP, all living allies)"],
+		"smoke_bombard": ["Smoke Bombard", "Meteor impact inside smoke veil", "+50% blast radius, hit enemies blinded (miss chance, 4s)"],
+	}
+	for fid in expected:
+		var f: Dictionary = ComboScript.finisher_by_id(fid)
+		_assert(not f.is_empty(), "finisher %s registered" % fid)
+		_assert(str(f["name"]) == expected[fid][0], "finisher %s name" % fid)
+		_assert(str(f["trigger_desc"]) == expected[fid][1], "finisher %s trigger desc" % fid)
+		_assert(str(f["effect"]) == expected[fid][2], "finisher %s effect" % fid)
+	_assert(ComboScript.finisher_by_id("nope").is_empty(), "unknown finisher id -> empty dict")
+
+	# --- Orbital Strike: meteor impacts a marked target.
+	var m1 = _combo_mob(MobScene, slime_data, Vector3(2, 0, 0))
+	m1.apply_mark(10.0, 1.0)
+	_assert(m1.is_marked(), "test mob marked")
+	var r1: Dictionary = ComboScript.check_meteor_impact([m1], Vector3.ZERO, 4.5, [], [], 1000)
+	_assert(absf(float(r1["damage_mult"]) - 2.0) < 0.001, "orbital: +100% meteor damage")
+	_assert(absf(float(r1["radius_mult"]) - 2.0) < 0.001, "orbital: 2x blast radius")
+	_assert((r1["triggered"] as Array).has("orbital_strike"), "orbital: triggered on marked target")
+	# No mark -> no trigger.
+	var m2 = _combo_mob(MobScene, slime_data, Vector3(2, 0, 1))
+	var r2: Dictionary = ComboScript.check_meteor_impact([m2], Vector3.ZERO, 4.5, [], [], 2000)
+	_assert(not (r2["triggered"] as Array).has("orbital_strike"), "orbital: no trigger without mark")
+	_assert(absf(float(r2["damage_mult"]) - 1.0) < 0.001, "orbital: damage unchanged without mark")
+	# Marked but outside the blast -> no trigger.
+	var m1b = _combo_mob(MobScene, slime_data, Vector3(50, 0, 0))
+	m1b.apply_mark(10.0, 1.0)
+	var r2b: Dictionary = ComboScript.check_meteor_impact([m1b], Vector3.ZERO, 4.5, [], [], 2100)
+	_assert(not (r2b["triggered"] as Array).has("orbital_strike"), "orbital: no trigger outside blast")
+	# Cooldown blocks double-trigger on the same target.
+	var r3: Dictionary = ComboScript.check_meteor_impact([m1], Vector3.ZERO, 4.5, [], [], 1500)
+	_assert(not (r3["triggered"] as Array).has("orbital_strike"), "orbital: cooldown blocks double-trigger")
+	# After the 5s window it triggers again.
+	var r4: Dictionary = ComboScript.check_meteor_impact([m1], Vector3.ZERO, 4.5, [], [], 7000)
+	_assert((r4["triggered"] as Array).has("orbital_strike"), "orbital: triggers again after cooldown")
+
+	# --- Stormcall: chain lightning inside a War Horn aura.
+	var wt = TotemScript.new()
+	wt.setup("warhorn", 1, 1)
+	root.add_child(wt)
+	wt.global_position = Vector3.ZERO
+	_assert(absf(wt.aura_radius() - 6.0) < 0.001, "warhorn aura radius 6m")
+	var caster := Node3D.new()
+	root.add_child(caster)
+	caster.global_position = Vector3(1, 0, 0)
+	var s1: Dictionary = ComboScript.check_lightning_cast(caster.global_position, caster, [wt], m1, 1000)
+	_assert(bool(s1["triggered"]), "stormcall: triggered inside warhorn aura")
+	_assert(str(s1["id"]) == "stormcall", "stormcall: id")
+	_assert(int(s1["chain_targets"]) == 6, "stormcall: chains 6 targets")
+	_assert(absf(float(s1["damage_mult"]) - 1.25) < 0.001, "stormcall: +25% damage")
+	# Outside the aura -> no trigger.
+	var s2: Dictionary = ComboScript.check_lightning_cast(Vector3(50, 0, 50), caster, [wt], m1, 2000)
+	_assert(not bool(s2["triggered"]), "stormcall: no trigger outside aura")
+	# Cooldown is per-enemy: same target blocked, a different enemy still triggers.
+	var s3: Dictionary = ComboScript.check_lightning_cast(caster.global_position, caster, [wt], m1, 1500)
+	_assert(not bool(s3["triggered"]), "stormcall: cooldown blocks double-trigger on same enemy")
+	var s3b: Dictionary = ComboScript.check_lightning_cast(caster.global_position, caster, [wt], m2, 1600)
+	_assert(bool(s3b["triggered"]), "stormcall: per-enemy cooldown (other enemy triggers)")
+	var s3c: Dictionary = ComboScript.check_lightning_cast(caster.global_position, caster, [wt], m1, 7000)
+	_assert(bool(s3c["triggered"]), "stormcall: triggers again after cooldown")
+
+	# --- Shatter Cascade: fan killing blow on a frost-slowed enemy.
+	var m3 = _combo_mob(MobScene, slime_data, Vector3(3, 0, 0))
+	m3.apply_slow(5.0, 0.5)
+	_assert(m3.is_slowed(), "test mob frost-slowed")
+	_assert(ComboScript.check_fan_kill(m3, 1000), "shatter: triggers on slowed kill")
+	_assert(not ComboScript.check_fan_kill(m3, 1500), "shatter: cooldown blocks double-trigger")
+	_assert(ComboScript.check_fan_kill(m3, 7000), "shatter: triggers again after cooldown")
+	# No finisher chains: a mob already dead when the fan loop reaches it
+	# (e.g. killed by an earlier nova in the same cast) never retriggers.
+	var m4 = _combo_mob(MobScene, slime_data, Vector3(3, 0, 1))
+	m4.apply_slow(5.0, 0.5)
+	m4.alive = false
+	_assert(not ComboScript.note_kill(m4, false), "no chain: already-dead mob never retriggers")
+	var m4b = _combo_mob(MobScene, slime_data, Vector3(3, 0, 2))
+	m4b.alive = false
+	_assert(ComboScript.note_kill(m4b, true), "note_kill: live->dead is a kill")
+	_assert(not ComboScript.note_kill(m4b, false), "note_kill: dead->dead is not a kill")
+
+	# --- Reciprocity Surge: meteor killing blow inside a Reciprocity aura.
+	var rt = TotemScript.new()
+	rt.setup("reciprocity", 1, 1)
+	root.add_child(rt)
+	rt.global_position = Vector3.ZERO
+	var m5 = _combo_mob(MobScene, slime_data, Vector3(4, 0, 0))
+	_assert(ComboScript.check_meteor_kill(Vector3.ZERO, m5, [rt], 1000), "surge: triggers on meteor kill in aura")
+	_assert(not ComboScript.check_meteor_kill(Vector3(50, 0, 50), m5, [rt], 2000),
+		"surge: no trigger outside aura")
+	_assert(not ComboScript.check_meteor_kill(Vector3.ZERO, m5, [rt], 1500),
+		"surge: cooldown blocks double-trigger")
+
+	# --- Smoke Bombard: meteor impact inside smoke veil.
+	var p = PlayerScene.instantiate()
+	p.class_id = "rogue"
+	root.add_child(p)
+	p.global_position = Vector3.ZERO
+	p.stealthed = true
+	var m6 = _combo_mob(MobScene, slime_data, Vector3(2, 0, 2))
+	var b1: Dictionary = ComboScript.check_meteor_impact([m6], Vector3(1, 0, 0), 4.5, [], [p], 1000)
+	_assert(bool(b1["smoke_veil"]), "smoke: veil detected at impact")
+	_assert(absf(float(b1["radius_mult"]) - 1.5) < 0.001, "smoke: +50% blast radius")
+	_assert(not (b1["triggered"] as Array).has("orbital_strike"), "smoke: unmarked mob doesn't orbit")
+	_assert(ComboScript.smoke_blind_ok(m6, 1000), "smoke: blind applies to hit enemy")
+	_assert(not ComboScript.smoke_blind_ok(m6, 1500), "smoke: per-enemy cooldown blocks re-blind")
+	_assert(ComboScript.smoke_blind_ok(m6, 7000), "smoke: blind reapplies after cooldown")
+	var b2: Dictionary = ComboScript.check_meteor_impact([m6], Vector3(50, 0, 50), 4.5, [], [p], 2000)
+	_assert(not bool(b2["smoke_veil"]), "smoke: no veil far from impact")
+	_assert(absf(float(b2["radius_mult"]) - 1.0) < 0.001, "smoke: no radius bonus far from veil")
+	# Blind debuff lands on the mob.
+	m6.apply_blind(4.0)
+	_assert(float(m6.get("_blind_t")) > 0.0, "blind: timer set on mob")
+
+	# --- Headless sim: a real meteor impact on a marked target deals 2x.
+	ComboScript.reset_cooldowns()
+	var m7 = _combo_mob(MobScene, slime_data, Vector3(100, 0, 100))
+	m7.apply_mark(10.0, 1.0)
+	m7.hp = 9999.0
+	m7.max_hp = 9999.0
+	var hp_before: float = m7.hp
+	var MeteorScript := load("res://scripts/combat/meteor.gd")
+	var met = MeteorScript.new()
+	met.setup(Vector3(100, 0, 100), 40.0, 1)
+	root.add_child(met)
+	met._impact()
+	# 40 base * 2.0 orbital * 1.5 mark = 120.
+	_assert(absf((hp_before - m7.hp) - 120.0) < 0.01, "meteor sim: orbital strike doubles damage")
+
+	# --- Headless sim: frost nova slows + damages in 3m.
+	var m8 = _combo_mob(MobScene, slime_data, Vector3(200, 0, 200))
+	var m9 = _combo_mob(MobScene, slime_data, Vector3(201, 0, 200))
+	var hp8: float = m8.hp
+	var hp9: float = m9.hp
+	ComboScript.apply_frost_nova(self, Vector3(200, 0, 200), 25.0, 1)
+	_assert(m8.is_slowed() and m9.is_slowed(), "nova sim: slows enemies in 3m")
+	_assert(m8.hp < hp8 and m9.hp < hp9, "nova sim: damages enemies in 3m")
+	# Nova never runs finisher detection (no chains, by construction).
+	var csrc := FileAccess.get_file_as_string("res://scripts/systems/combo.gd")
+	var nova_body := csrc.get_slice("static func apply_frost_nova", 1).get_slice("static func", 0)
+	_assert(not nova_body.contains("check_"), "nova: no finisher detection inside effect")
+	var heal_body := csrc.get_slice("static func apply_team_heal", 1).get_slice("static func", 0)
+	_assert(not heal_body.contains("check_"), "team heal: no finisher detection inside effect")
+
+	# --- Headless sim: reciprocity surge heals the team 20% max HP.
+	var p2 = PlayerScene.instantiate()
+	p2.class_id = "warrior"
+	root.add_child(p2)
+	p2.hp = p2.max_hp * 0.5
+	ComboScript.apply_team_heal(self)
+	_assert(absf(p2.hp - p2.max_hp * 0.7) < 0.01, "surge sim: team healed 20% max HP")
+
+	# --- Announce path is a safe no-op with no dungeon present.
+	ComboScript.announce_finisher(self, "orbital_strike")
+	_assert(true, "announce: no crash without dungeon")
+	ComboScript.announce_finisher(self, "bogus_id")
+	_assert(true, "announce: unknown id ignored")
+
+	# --- Solo switch_class keeps world state: totems, marks, veils persist.
+	var p3 = PlayerScene.instantiate()
+	p3.class_id = "warrior"
+	root.add_child(p3)
+	var tt = TotemScript.new()
+	tt.setup("warhorn", 1, 1)
+	root.add_child(tt)
+	tt.global_position = Vector3(300, 0, 300)
+	var m10 = _combo_mob(MobScene, slime_data, Vector3(300, 0, 301))
+	m10.apply_mark(10.0, 1.0)
+	p3.stealthed = true
+	p3.switch_class("mage")
+	_assert(str(p3.class_id) == "mage", "switch: class changed")
+	_assert(is_instance_valid(tt) and tt.is_inside_tree(), "switch: totem persists")
+	_assert(m10.is_marked(), "switch: mark persists")
+	_assert(bool(p3.stealthed), "switch: veil persists")
+
+	# --- Wiring: hooks exist at the server code paths.
+	var msrc := FileAccess.get_file_as_string("res://scripts/combat/meteor.gd")
+	_assert(msrc.contains("Combo.check_meteor_impact"), "meteor: impact hook wired")
+	_assert(msrc.contains("Combo.check_meteor_kill"), "meteor: kill hook wired")
+	_assert(msrc.contains("Combo.note_kill"), "meteor: kill tracking wired")
+	_assert(msrc.contains("Combo.smoke_blind_ok"), "meteor: per-enemy blind gate wired")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("Combo.check_lightning_cast"), "player: lightning hook wired")
+	_assert(psrc.contains("Combo.check_fan_kill"), "player: fan kill hook wired")
+	_assert(psrc.contains("Combo.apply_frost_nova"), "player: nova effect wired")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func announce_combo"), "dungeon: announce_combo RPC exists")
+	_assert(dsrc.contains("Combo.finisher_by_id"), "dungeon: banner looks up registry")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/audio/sound_synth.gd")
+	_assert(ssrc.contains("static func thunderclap"), "thunderclap SFX synth exists")
+	var asrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	_assert(asrc.contains("\"thunderclap\""), "thunderclap SFX registered")
+	var tsrc := FileAccess.get_file_as_string("res://scripts/combat/totem.gd")
+	_assert(tsrc.contains("add_to_group(\"totems\")"), "totems registered in group")
+	var mbsrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(mbsrc.contains("func is_slowed"), "mob: is_slowed accessor")
+	_assert(mbsrc.contains("func apply_blind"), "mob: apply_blind")
+	print("[Playtest] combo phase 1 done")

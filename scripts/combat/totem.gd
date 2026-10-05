@@ -29,6 +29,7 @@ func setup(p_id: String, p_owner: int, p_rank: int = 1) -> void:
 
 
 func _ready() -> void:
+	add_to_group("totems")
 	# Wide Ward: +25% radius on Warden totems — scale the visual ring now.
 	var vis_r := _aura_radius()
 	# Totem pole: stacked stone/wood.
@@ -209,7 +210,7 @@ func _apply_aura() -> void:
 ## The placing player (server-side authoritative copy).
 func _caster() -> Player:
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon == null:
+	if dungeon == null or not dungeon.has_method("get_player_node"):
 		return null
 	return dungeon.get_player_node(owner_peer) as Player
 
@@ -232,6 +233,11 @@ func _aura_radius() -> float:
 	if caster != null and totem_id in ["reciprocity", "stoneskin"] and caster.has_trait("wide_ward"):
 		return RADIUS * 1.25
 	return RADIUS
+
+
+## Public aura radius for combo-finisher world-state checks (issue #8).
+func aura_radius() -> float:
+	return _aura_radius()
 
 
 func _rank_mult() -> float:

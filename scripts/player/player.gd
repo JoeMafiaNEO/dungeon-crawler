@@ -1067,9 +1067,18 @@ func _activate_fan() -> void:
 			if m == null or not m.alive:
 				continue
 			if m.global_position.distance_to(global_position) < fan_radius:
+				var was_alive := m.alive
+				var was_slowed := m.is_slowed()
 				m.rpc_id(NetworkManager.server_id, "take_damage", dmg, from, global_position)
 				# Affinity: +2 per enemy hit, max +8/cast.
 				gain_affinity_capped("fan", 2.0, m.get_instance_id(), cast_id, 8.0)
+				# Combo Finisher: Shatter Cascade (issue #8) -- Fan of Knives
+				# killing blow on a frost-slowed enemy: frost nova burst.
+				if Combo.note_kill(m, was_alive) and was_slowed and Combo.check_fan_kill(m):
+					Combo.apply_frost_nova(get_tree(), m.global_position, dmg, from)
+					Effects.burst(get_parent(), m.global_position + Vector3(0, 1.0, 0), Color(0.7, 0.9, 1.0), 30, 6.0)
+					AudioManager.sfx("frost_hit", m.global_position)
+					Combo.announce_finisher(get_tree(), "shatter_cascade")
 	else:
 		rpc("fan_fx", global_position)
 	if hud != null:
@@ -2167,6 +2176,14 @@ func _cast_chain_lightning() -> void:
 	var cast_id := "lightning_%d" % _cast_seq
 	# Arc Conduit: lightning chains +1 target.
 	var max_chains := 4 if has_trait("arc_conduit") else 3
+	# Combo Finisher: Stormcall (issue #8) -- cast while standing inside a
+	# War Horn damage aura: chains 6 targets, +25% damage. Per-enemy cooldown
+	# is keyed to the first chain target (current is already selected above).
+	var storm := Combo.check_lightning_cast(global_position, self, get_tree().get_nodes_in_group("totems"), current)
+	if bool(storm["triggered"]):
+		max_chains = int(storm["chain_targets"])
+		dmg *= float(storm["damage_mult"])
+		Combo.announce_finisher(get_tree(), "stormcall")
 	for i in max_chains:
 		if current == null:
 			break
