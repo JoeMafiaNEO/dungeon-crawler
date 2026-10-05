@@ -469,10 +469,6 @@ func announce_boarding() -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("announce"):
 		hud.announce("ALL ABOARD!")
-	# Issue #50: the destination popup must auto-close when the vote reaches
-	# unanimity — otherwise it stays open, dimmed, through ALL ABOARD.
-	if hud != null and hud.has_method("close_destination_popup"):
-		hud.close_destination_popup()
 
 
 ## Keep every peer's boarding HUD in sync: countdown + aboard roster.
@@ -771,6 +767,8 @@ func _build_station_embedded() -> void:
 	_boarding_sign.outline_size = 12
 	_boarding_sign.position = Vector3(-1, 3.9, -3.6)
 	_boarding_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	# Issue #58: text was truncated ("NOW BOARDING: THE DU") — widen the label.
+	_boarding_sign.width = 1200.0
 	add_child(_boarding_sign)
 
 	# Per-theme dressing props (Phase 5); only the active set is visible.

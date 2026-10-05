@@ -261,6 +261,10 @@ func _issue_order(screen_pos: Vector2) -> void:
 	for n in _selected:
 		if not is_instance_valid(n):
 			continue
+		# Issue #54: buildings don't have unit order RPCs — skip them.
+		# Right-click with a building selected should not fire unit RPCs.
+		if n.is_in_group("rts_buildings"):
+			continue
 		if target_unit:
 			if str(n.get("unit_type")) == "monk" and target_unit.is_in_group("rts_units"):
 				n.rpc_id(_server_id(), "order_convert", target_unit.get_path())
