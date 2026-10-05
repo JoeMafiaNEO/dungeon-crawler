@@ -89,6 +89,7 @@ func _seed_profile_defaults() -> void:
 	_profile.set_value("meta", "unlocked_achievements", [])
 	_profile.set_value("meta", "cipher_fragments", [])
 	_profile.set_value("meta", "architect_unlocked", false)
+	_profile.set_value("meta", "vault_specials", [])
 
 
 func load_game() -> void:
@@ -231,6 +232,17 @@ func unlock_item(item_id: String) -> bool:
 
 func is_item_unlocked(item_id: String) -> bool:
 	return item_id in get_unlocked_items()
+
+
+## Relic Vault (issue #6): earned special ids. Account-level, follows the
+## player across runs. Earned via SpecialData.earn().
+func get_vault_specials() -> Array:
+	return _profile.get_value("meta", "vault_specials", [])
+
+
+func set_vault_specials(ids: Array) -> void:
+	_profile.set_value("meta", "vault_specials", ids)
+	save_game()
 
 
 func add_run() -> void:

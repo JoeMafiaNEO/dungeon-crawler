@@ -47,6 +47,16 @@ var bonus_health := 0.0
 var bonus_speed := 0.0
 var bonus_aura := 0.0 # mage only: staff glow brightness per point
 var supermarket_cash := 0 # cash from selling supermarket loot
+## Relic Vault (issue #6): exactly one special equipped per run ("" = none).
+## Run-scoped, saved with the run, cleared on a new run.
+var equipped_special := ""
+## Iron Resolve earn tracking: consecutive deathless level clears this run.
+var no_death_streak := 0
+## Greed Charm: loot-sale cash multiplier (1.0 = none).
+var cash_mult := 1.0
+## Iron Resolve: armed 1-HP survival save (once per run).
+var second_wind_armed := false
+var second_wind_used := false
 ## Bounty Board (issue #7): server-authoritative per-player progress,
 ## {bounty_id: count} (-1 = failed). Synced via player snapshots.
 var bounty_progress := {}
@@ -165,7 +175,7 @@ func _ready() -> void:
 	_remote_pos = global_position
 	_give_starter_kit()
 	_build_aura_visual()
-	refresh_abilities()
+	_apply_equipped_special()
 	# Push initial aura so the team sees the glow from the start.
 	if is_multiplayer_authority() and class_id == "mage":
 		_push_aura.call_deferred()
@@ -782,9 +792,10 @@ func refresh_abilities() -> Dictionary:
 	var fresh: Array = []
 	for a in Player.class_abilities(class_id):
 		var unlocked := level >= int(a["unlock"])
-		# Holy Light unlocks at 20 Aura, not by level.
+		# Holy Light is a Relic Vault special (issue #6): granted only while
+		# equipped for the run, never by aura alone. Aura 20 EARNS it.
 		if a.has("aura_req"):
-			unlocked = bonus_aura >= float(a["aura_req"])
+			unlocked = equipped_special == "holy_light"
 		if unlocked:
 			fresh.append(a)
 			if not unlocked_abilities.any(func(x): return x["id"] == a["id"]):
@@ -2725,6 +2736,16 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	AudioManager.sfx("player_hurt")
 	if hud != null:
 		hud.flash_damage()
+	if hp <= 0.0 and second_wind_armed:
+		# Iron Resolve (issue #6): once per run, survive a killing blow at 1 HP.
+		hp = 1.0
+		second_wind_armed = false
+		second_wind_used = true
+		health_changed.emit(hp, max_hp)
+		if hud != null:
+			hud.show_toast("SECOND WIND! Iron Resolve holds you at 1 HP.")
+		AudioManager.sfx("unlock")
+		return
 	if hp <= 0.0:
 		_die()
 
@@ -2740,6 +2761,7 @@ func _die() -> void:
 func _enter_downed() -> void:
 	downed = true
 	alive = false
+	no_death_streak = 0 # Relic Vault (issue #6): going down breaks the streak.
 	_bleedout = REVIVE_WINDOW
 	_revive_channel = 0.0
 	died.emit()
@@ -2779,6 +2801,7 @@ func revive() -> void:
 func _do_death() -> void:
 	downed = false
 	alive = false
+	no_death_streak = 0 # Relic Vault (issue #6): dying breaks the streak.
 	died.emit()
 	AudioManager.sfx("player_die")
 	inventory.clear()
@@ -2950,9 +2973,11 @@ func spend_point(stat: String) -> bool:
 			bonus_aura += 1.0
 			_update_staff_glow()
 			_push_aura()
-			if bonus_aura >= 20.0 and hud != null:
-				hud.toast("Aura MAXED! Holy Light unlocked!")
-				AudioManager.sfx("ability_unlock")
+			if bonus_aura >= 20.0:
+				# Relic Vault (issue #6): 20 aura EARNS the Holy Light special
+				# into the account vault; the key-7 ability itself is granted
+				# only while it is equipped for the run.
+				SpecialData.earn_for(self, "holy_light")
 				refresh_abilities()
 		_:
 			return false
@@ -2964,6 +2989,63 @@ func spend_point(stat: String) -> bool:
 		hud.refresh_stats()
 		hud.refresh_loadout(self)
 	return true
+
+
+# --- Relic Vault specials (issue #6) ---
+# Condition-gated bonus rewards outside the level/affinity tracks. Exactly
+# one equipped per run; earn checks run server-side, grants land in the
+# earner's own account profile (never the host's).
+
+## Apply the run's equipped special: derived effects + Holy Light migration.
+## Called on spawn, on state restore, and on equip/unequip. Idempotent.
+func _apply_equipped_special() -> void:
+	# Migration: mages that invested 20 aura keep Holy Light via earn.
+	if class_id == "mage" and bonus_aura >= SpecialData.AURA_EARN_REQ:
+		SpecialData.earn_for(self, "holy_light")
+	# Derived effects reset first: unequipping or switching can never stack.
+	cash_mult = 1.0
+	second_wind_armed = false
+	match equipped_special:
+		"iron_resolve":
+			if not second_wind_used:
+				second_wind_armed = true
+		"greed_charm":
+			var charm := SpecialData.get_special("greed_charm")
+			if charm != null:
+				cash_mult = float(charm.effect_params.get("cash_mult", 1.25))
+		"holy_light":
+			pass # key-7 entry granted by refresh_abilities() below
+	refresh_abilities()
+
+
+## Level cleared without dying: bump the streak. Three in a row earns Iron Resolve.
+func bump_no_death_streak() -> void:
+	no_death_streak += 1
+	if no_death_streak >= SpecialData.IRON_RESOLVE_STREAK:
+		SpecialData.earn_for(self, "iron_resolve")
+
+
+## Server drives, owners apply: bump the streak on the player's own instance
+## so the saved state (solo + MP roster submit) carries it.
+@rpc("any_peer", "call_local")
+func rpc_level_cleared_streak() -> void:
+	if not is_multiplayer_authority():
+		return
+	bump_no_death_streak()
+
+
+## Grant a special into the earner's OWN account profile. Server-side earn
+## checks route here; the authority guard drops it everywhere but home.
+## Idempotent: toasts only on a genuinely new earn.
+@rpc("any_peer", "call_local")
+func rpc_earn_special(special_id: String) -> void:
+	if not is_multiplayer_authority():
+		return
+	if SpecialData.earn(special_id):
+		var data := SpecialData.get_special(special_id)
+		if data != null and hud != null:
+			hud.show_toast("SPECIAL EARNED: %s — %s" % [data.display_name, data.description])
+		AudioManager.sfx("unlock")
 
 
 ## Serialize run-persistent state so it survives procedural level transitions.
@@ -2992,6 +3074,11 @@ func get_state() -> Dictionary:
 		"specialization": specialization,
 		"affinity": affinity.duplicate(true),
 		"family_collection": family_collection.duplicate(true),
+		# Relic Vault (issue #6): equipped special + earn tracking.
+		"equipped_special": equipped_special,
+		"no_death_streak": no_death_streak,
+		"second_wind_armed": second_wind_armed,
+		"second_wind_used": second_wind_used,
 	}
 
 
@@ -3014,6 +3101,12 @@ func apply_state(s: Dictionary) -> void:
 	specialization = str(s.get("specialization", ""))
 	affinity = (s.get("affinity", {}) as Dictionary).duplicate(true)
 	family_collection = (s.get("family_collection", {}) as Dictionary).duplicate(true)
+	# Relic Vault (issue #6): equipped special + earn tracking.
+	equipped_special = str(s.get("equipped_special", ""))
+	no_death_streak = int(s.get("no_death_streak", 0))
+	second_wind_armed = bool(s.get("second_wind_armed", false))
+	second_wind_used = bool(s.get("second_wind_used", false))
+	_apply_equipped_special()
 	inventory.clear()
 	for e in s.get("inventory", []):
 		var item := ItemDB.get_item(str(e.get("id", "")))

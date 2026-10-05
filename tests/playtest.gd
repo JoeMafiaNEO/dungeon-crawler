@@ -53,6 +53,7 @@ func _run() -> void:
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
+	_test_specials_phase1()
 	_test_apex_mechanics()
 	_test_bounty_phase1()
 	_test_combo_phase1()
@@ -816,7 +817,7 @@ func _test_station_phase4() -> void:
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	_assert(not dsrc.contains('set("supermarket_cash", 0)'),
 		"cash no longer zeroed on station handoff")
-	_assert(dsrc.contains("market_earned_visit += total"),
+	_assert(dsrc.contains("market_earned_visit += payout"),
 		"sell adds to per-visit earnings")
 	_assert(dsrc.contains("market_earned_visit = 0"),
 		"earnings reset each supermarket visit")
@@ -2444,6 +2445,213 @@ func _test_apex_phase1() -> void:
 		"votes validated against board destinations")
 
 
+func _test_specials_phase1() -> void:
+	print("[Playtest] Relic Vault specials data layer (issue #6 phase 1)...")
+	var SD: GDScript = load("res://scripts/data/special_data.gd")
+	# 1. Registry: six specials load with fields, icons, and effect params.
+	var all: Array = SD.all()
+	_assert(all.size() == 6, "six specials registered")
+	var seen := {}
+	for d in all:
+		seen[str(d.get("id"))] = d
+	for sid in ["holy_light", "iron_resolve", "greed_charm",
+			"apex_boar_hide", "apex_horror_eye", "apex_warden_sigil"]:
+		_assert(seen.has(sid), "special %s registered" % sid)
+	var hl: Resource = seen["holy_light"]
+	_assert(str(hl.get("display_name")) == "Holy Light", "holy light display name")
+	_assert(hl.get("icon") != null, "holy light icon loads")
+	_assert(str(hl.get("unlock_hint")) != "", "holy light unlock hint")
+	_assert(float((hl.get("effect_params") as Dictionary).get("cooldown", 0.0)) == 20.0,
+		"holy light cooldown param")
+	_assert(str((hl.get("effect_params") as Dictionary).get("key", "")) == "7",
+		"holy light key param")
+	var charm: Resource = seen["greed_charm"]
+	_assert(float((charm.get("effect_params") as Dictionary).get("cash_mult", 0.0)) == 1.25,
+		"greed charm cash_mult param")
+	# Apex boss -> trophy mapping.
+	_assert(SD.apex_special_for_boss("apex_boar") == "apex_boar_hide", "apex boar -> boar hide")
+	_assert(SD.apex_special_for_boss("apex_horror") == "apex_horror_eye", "apex horror -> horror eye")
+	_assert(SD.apex_special_for_boss("apex_warden") == "apex_warden_sigil", "apex warden -> warden sigil")
+	_assert(SD.apex_special_for_boss("goblin") == "", "non-apex boss maps to nothing")
+	_assert(SD.AURA_EARN_REQ == 20, "aura earn requirement is 20")
+	_assert(SD.IRON_RESOLVE_STREAK == 3, "iron resolve streak is 3")
+	_assert(SD.GREED_CHARM_GOAL == 500, "greed charm goal is $500")
+	# Unknown-id guards.
+	_assert(SD.get_special("bogus") == null, "get_special unknown -> null")
+	_assert(not SD.is_earned("bogus"), "unknown special never earned")
+	_assert(not SD.earn("bogus"), "earn unknown id fails")
+
+	# 2. Vault persistence: earn is idempotent and survives a profile reload.
+	# Backup is abort-safe: the original is moved to a .phase6bak sidecar
+	# (never deleted), so a script error mid-test can't lose it — a later
+	# run self-heals from the sidecar.
+	var prof_path := "user://profile_local.cfg"
+	var prof_bak := "user://profile_local.cfg.phase6bak"
+	if not FileAccess.file_exists(prof_path) and FileAccess.file_exists(prof_bak):
+		_copy_file(prof_bak, prof_path) # previous run aborted mid-test
+		DirAccess.remove_absolute(prof_bak)
+	var prof_backup := PackedByteArray()
+	if FileAccess.file_exists(prof_path):
+		prof_backup = FileAccess.get_file_as_bytes(prof_path)
+		var bf := FileAccess.open(prof_bak, FileAccess.WRITE)
+		bf.store_buffer(prof_backup)
+		DirAccess.remove_absolute(prof_path)
+	var mgr: Node = root.get_node("SaveManager")
+	mgr.call("load_game") # fresh seeded profile
+	_assert(not SD.is_earned("iron_resolve"), "iron_resolve starts unearned")
+	_assert(not SD.is_earned("holy_light"), "holy_light starts unearned")
+
+	# 3. Player-level behavior on real player scenes. Run slots get the same
+	# abort-safe sidecar treatment: death paths clear the solo slot (die()).
+	var slot_backup := {}
+	var slot_baks := {}
+	for mode in ["solo", "mp"]:
+		for slot in range(3):
+			var p := "user://runs/%s_%d.cfg" % [mode, slot]
+			var b := "%s.phase6bak" % p
+			slot_baks[p] = b
+			if not FileAccess.file_exists(p) and FileAccess.file_exists(b):
+				_copy_file(b, p) # previous run aborted mid-test
+				DirAccess.remove_absolute(b)
+			if FileAccess.file_exists(p):
+				slot_backup[p] = FileAccess.get_file_as_bytes(p)
+				var bf2 := FileAccess.open(b, FileAccess.WRITE)
+				bf2.store_buffer(slot_backup[p])
+				DirAccess.remove_absolute(p)
+	var holder := Node3D.new() # -s mode has no current_scene; positional sfx needs one
+	root.add_child(holder)
+	current_scene = holder
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var has_hl := func(pl) -> bool:
+		return (pl.get("unlocked_abilities") as Array).any(func(x): return x["id"] == "holy_light")
+
+	# No-death streak: exactly 3 consecutive cleared levels earns Iron Resolve.
+	var streaker = PlayerScene.instantiate()
+	streaker.set("class_id", "rogue")
+	root.add_child(streaker)
+	streaker.call("bump_no_death_streak")
+	streaker.call("bump_no_death_streak")
+	_assert(int(streaker.get("no_death_streak")) == 2, "streak bumps to 2")
+	_assert(not SD.is_earned("iron_resolve"), "no earn before 3 consecutive clears")
+	streaker.call("bump_no_death_streak")
+	_assert(int(streaker.get("no_death_streak")) == 3, "streak bumps to 3")
+	_assert(SD.is_earned("iron_resolve"), "3rd consecutive clear earns Iron Resolve")
+	_assert(not SD.earn("iron_resolve"), "streak earn is idempotent")
+	# Death breaks the streak.
+	streaker.call("take_damage", 9999.0, "")
+	_assert(not bool(streaker.get("alive")), "lethal damage kills")
+	_assert(int(streaker.get("no_death_streak")) == 0, "death resets the streak")
+	# Earn persists across a profile reload.
+	mgr.call("load_game")
+	_assert(SD.is_earned("iron_resolve"), "earn persists across profile reload")
+	_assert((mgr.call("get_vault_specials") as Array) == ["iron_resolve"],
+		"vault_specials roundtrip")
+
+	# Holy Light migration: an aura-20 mage earns it on spawn, but the
+	# ability stays inactive unless equipped.
+	var mage = PlayerScene.instantiate()
+	mage.set("class_id", "mage")
+	mage.set("bonus_aura", 20.0)
+	root.add_child(mage)
+	_assert(SD.is_earned("holy_light"), "aura-20 mage earns Holy Light on spawn")
+	_assert(not has_hl.call(mage), "holy light NOT granted while unequipped")
+	_assert(SD.equip(mage, "holy_light"), "equip holy_light succeeds")
+	_assert(str(mage.get("equipped_special")) == "holy_light", "equipped_special set")
+	_assert(has_hl.call(mage), "holy light granted when equipped")
+	# One equipped max: equipping replaces, revoking the old ability.
+	_assert(SD.earn("greed_charm"), "greed_charm earn succeeds")
+	_assert(SD.equip(mage, "greed_charm"), "equip greed_charm succeeds")
+	_assert(str(mage.get("equipped_special")) == "greed_charm", "equip replaces previous choice")
+	_assert(not has_hl.call(mage), "holy light revoked after switching")
+	_assert(float(mage.get("cash_mult")) == 1.25, "greed charm cash_mult applies on equip")
+	_assert(not SD.equip(mage, "apex_boar_hide"), "cannot equip an unearned special")
+	SD.unequip(mage)
+	_assert(str(mage.get("equipped_special")) == "", "unequip clears equipped_special")
+	_assert(float(mage.get("cash_mult")) == 1.0, "unequip resets cash_mult")
+
+	# Second Wind: once per run, survive a killing blow at 1 HP.
+	var w = PlayerScene.instantiate()
+	w.set("class_id", "warrior")
+	root.add_child(w)
+	_assert(SD.equip(w, "iron_resolve"), "equip iron_resolve succeeds")
+	_assert(bool(w.get("second_wind_armed")), "second wind armed on equip")
+	w.set("hp", 10.0)
+	w.call("take_damage", 999.0, "")
+	_assert(bool(w.get("alive")) and float(w.get("hp")) == 1.0,
+		"second wind saves the killing blow at 1 HP")
+	_assert(bool(w.get("second_wind_used")) and not bool(w.get("second_wind_armed")),
+		"second wind consumed (once per run)")
+	w.call("take_damage", 999.0, "")
+	_assert(not bool(w.get("alive")), "second killing blow kills")
+	# Unequipping disarms an unused Second Wind.
+	var w2 = PlayerScene.instantiate()
+	w2.set("class_id", "warrior")
+	root.add_child(w2)
+	_assert(SD.equip(w2, "iron_resolve"), "equip iron_resolve on w2")
+	SD.unequip(w2)
+	_assert(not bool(w2.get("second_wind_armed")), "unequip disarms second wind")
+
+	# Run-state roundtrip: equipped special + streak + second-wind-used
+	# survive get_state/apply_state, and effects re-apply on restore.
+	SD.equip(w2, "greed_charm")
+	w2.set("no_death_streak", 2)
+	var st: Dictionary = w2.call("get_state")
+	_assert(str(st.get("equipped_special", "")) == "greed_charm", "state carries equipped_special")
+	_assert(int(st.get("no_death_streak", -1)) == 2, "state carries no_death_streak")
+	_assert(bool(st.get("second_wind_used", true)) == false, "state carries second_wind_used")
+	var w3 = PlayerScene.instantiate()
+	w3.set("class_id", "warrior")
+	root.add_child(w3)
+	w3.call("apply_state", st)
+	_assert(str(w3.get("equipped_special")) == "greed_charm", "restore keeps equipped_special")
+	_assert(float(w3.get("cash_mult")) == 1.25, "restore re-applies greed charm")
+
+	# 4. Dungeon-side math + wiring (source-level: no dungeon instance in -s mode).
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	_assert(DungeonScript.checkout_payout(400, 1.0) == 400, "checkout payout unchanged w/o charm")
+	_assert(DungeonScript.checkout_payout(400, 1.25) == 500, "checkout payout +25% with charm")
+	_assert(DungeonScript.checkout_payout(333, 1.25) == 416, "checkout payout rounds")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("SpecialData.earn_for(player, \"greed_charm\")"),
+		"checkout earns greed charm at $500 visit total")
+	_assert(dsrc.contains("p.rpc(\"rpc_level_cleared_streak\")"),
+		"cleared-level departure bumps the streak on living players")
+	_assert(dsrc.contains("SpecialData.earn_for(p, trophy)"),
+		"apex boss kill earns the party trophy special")
+	_assert(dsrc.contains("func sync_equipped_special"),
+		"server sync_equipped_special RPC exists")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("func rpc_earn_special"),
+		"profile-safe rpc_earn_special exists")
+	_assert(psrc.contains("func _apply_equipped_special"),
+		"player _apply_equipped_special exists")
+
+	# Restore profile + run slots, reset the autoload's in-memory profile.
+	# Abort-safe: the originals live in .phase6bak sidecars until now.
+	holder.queue_free()
+	if not prof_backup.is_empty():
+		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
+		pf.store_buffer(prof_backup)
+		if FileAccess.file_exists(prof_bak):
+			DirAccess.remove_absolute(prof_bak)
+	elif FileAccess.file_exists(prof_bak):
+		_copy_file(prof_bak, prof_path)
+		DirAccess.remove_absolute(prof_bak)
+	elif FileAccess.file_exists(prof_path):
+		DirAccess.remove_absolute(prof_path) # test-created only
+	for p in slot_backup.keys():
+		var f := FileAccess.open(p, FileAccess.WRITE)
+		f.store_buffer(slot_backup[p])
+		var b: String = slot_baks[p]
+		if FileAccess.file_exists(b):
+			DirAccess.remove_absolute(b)
+	mgr.call("load_game")
+
+
+## File copy helper for abort-safe test backups (no FileAccess.copy helper).
+func _copy_file(src: String, dst: String) -> void:
+	var f := FileAccess.open(dst, FileAccess.WRITE)
+	f.store_buffer(FileAccess.get_file_as_bytes(src))
 ## Stub dungeon for apex mechanic tests: records announces/spawns, returns a
 ## fixed arena point for phaseshift teleports. (The apex code paths use an
 ## untyped dungeon ref so this stub can stand in for the real Dungeon.)

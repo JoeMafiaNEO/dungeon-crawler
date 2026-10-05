@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/special_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/iron_resolve.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "iron_resolve"
+display_name = "Second Wind"
+description = "Once per run, survive a killing blow at 1 HP."
+icon = ExtResource("2")
+unlock_hint = "Clear 3 consecutive levels without dying in one run."
+effect_summary = "Arms a 1-HP survival save while equipped."
+effect_params = { "survive_hp": 1.0 }

@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/special_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/apex_boar_hide.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "apex_boar_hide"
+display_name = "Boar Hide"
+description = "+10% max HP."
+icon = ExtResource("2")
+unlock_hint = "Slay the Apex Bristleback (Cycle 3)."
+effect_summary = "Apex trophy passive while equipped."
+effect_params = { "max_hp_mult": 1.10 }

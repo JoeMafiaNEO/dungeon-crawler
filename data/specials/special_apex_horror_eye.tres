@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/special_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/apex_horror_eye.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "apex_horror_eye"
+display_name = "Horror Eye"
+description = "+20% pickup radius."
+icon = ExtResource("2")
+unlock_hint = "Slay the Apex Maw of the Deep (Cycle 9)."
+effect_summary = "Apex trophy passive while equipped."
+effect_params = { "pickup_mult": 1.20 }

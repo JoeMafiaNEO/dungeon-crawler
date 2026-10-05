@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/special_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/apex_warden_sigil.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "apex_warden_sigil"
+display_name = "Warden Sigil"
+description = "-15% ability cooldowns."
+icon = ExtResource("2")
+unlock_hint = "Slay the Apex Warden (Cycle 6)."
+effect_summary = "Apex trophy passive while equipped."
+effect_params = { "cooldown_mult": 0.85 }

@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/special_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/holy_light.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "holy_light"
+display_name = "Holy Light"
+description = "Lights up the whole map for 10s (20s cooldown)."
+icon = ExtResource("2")
+unlock_hint = "Invest 20 Aura points as a Mage."
+effect_summary = "Grants the key-7 Holy Light ability while equipped."
+effect_params = { "cooldown": 20.0, "duration": 10.0, "key": "7" }

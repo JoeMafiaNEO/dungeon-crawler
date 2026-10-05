@@ -1,0 +1,119 @@
+class_name SpecialData
+extends Resource
+## Data-driven special (Relic Vault, issue #6): condition-gated bonus
+## rewards that sit OUTSIDE the level-100 skill curve and affinity
+## families — never skill seven. Earned into the account-level profile
+## vault (vault_specials); exactly one may be equipped per run.
+
+@export var id: String = ""
+@export var display_name: String = ""
+@export var description: String = ""
+@export var icon: Texture2D
+@export var unlock_hint: String = ""
+@export var effect_summary: String = ""
+@export var effect_params: Dictionary = {}
+
+## All special ids, in vault display order.
+const SPECIAL_IDS: Array[String] = [
+	"holy_light",
+	"iron_resolve",
+	"greed_charm",
+	"apex_boar_hide",
+	"apex_horror_eye",
+	"apex_warden_sigil",
+]
+
+## Earn thresholds.
+const IRON_RESOLVE_STREAK := 3 ## consecutive deathless level clears
+const GREED_CHARM_GOAL := 500 ## single-visit checkout earnings ($)
+const AURA_EARN_REQ := 20.0 ## aura points that earn Holy Light
+
+## Apex boss mob id -> the special its kill earns.
+const APEX_BOSS_SPECIALS := {
+	"apex_boar": "apex_boar_hide",
+	"apex_horror": "apex_horror_eye",
+	"apex_warden": "apex_warden_sigil",
+}
+
+static var _cache: Dictionary = {}
+
+
+## All six specials, loaded once.
+static func all() -> Array:
+	if _cache.is_empty():
+		for sid in SPECIAL_IDS:
+			var d: SpecialData = load("res://data/specials/special_%s.tres" % sid)
+			if d != null:
+				_cache[sid] = d
+			else:
+				push_warning("[SpecialData] Missing special tres: %s" % sid)
+	var out: Array = []
+	for sid in SPECIAL_IDS:
+		if _cache.has(sid):
+			out.append(_cache[sid])
+	return out
+
+
+## The special's data, or null.
+static func get_special(special_id: String) -> SpecialData:
+	all()
+	return _cache.get(special_id)
+
+
+## The special id an apex boss kill earns, or "" for non-apex mobs.
+static func apex_special_for_boss(boss_id: String) -> String:
+	return str(APEX_BOSS_SPECIALS.get(boss_id, ""))
+
+
+## True when the id is in the account-level vault.
+static func is_earned(special_id: String) -> bool:
+	return special_id in SaveManager.get_vault_specials()
+
+
+## Earn a special into the account vault. Idempotent: returns true only
+## when newly earned. Writes through the profile (Steam Cloud included).
+static func earn(special_id: String) -> bool:
+	var data := get_special(special_id)
+	if data == null:
+		push_warning("[SpecialData] earn() unknown special: %s" % special_id)
+		return false
+	var earned: Array = SaveManager.get_vault_specials()
+	if special_id in earned:
+		return false
+	earned.append(special_id)
+	SaveManager.set_vault_specials(earned)
+	return true
+
+
+## Server-side earn check -> grant on the earning player's own instance,
+## so the write lands in THEIR account profile (not the host's) with the
+## "Special earned" toast. Safe to call from the server: the authority
+## guard drops it everywhere except the owner's peer.
+static func earn_for(player: Node, special_id: String) -> void:
+	if player == null:
+		return
+	player.rpc_id(int(player.get_multiplayer_authority()), "rpc_earn_special", special_id)
+
+
+## Equip a special for the run. Exactly one equipped max: equipping
+## replaces. Only earned specials can be equipped. Syncs to the server
+## copy so server-side effects (checkout sale) see it in multiplayer.
+static func equip(player: Node, special_id: String) -> bool:
+	if player == null or not is_earned(special_id):
+		return false
+	player.set("equipped_special", special_id)
+	player.call("_apply_equipped_special")
+	if not player.get_tree().get_multiplayer().is_server():
+		var dungeon := player.get_tree().get_first_node_in_group("dungeon")
+		if dungeon != null:
+			dungeon.rpc_id(NetworkManager.server_id, "sync_equipped_special",
+				int(player.get_multiplayer_authority()), special_id)
+	return true
+
+
+## Clear the run's equipped special.
+static func unequip(player: Node) -> void:
+	if player == null:
+		return
+	player.set("equipped_special", "")
+	player.call("_apply_equipped_special")

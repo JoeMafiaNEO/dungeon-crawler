@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/special_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/greed_charm.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "greed_charm"
+display_name = "Greed Charm"
+description = "+25% cash from loot sales."
+icon = ExtResource("2")
+unlock_hint = "Earn $500+ at the MegaMart checkout in a single visit."
+effect_summary = "Multiplies loot-sale cash while equipped."
+effect_params = { "cash_mult": 1.25 }

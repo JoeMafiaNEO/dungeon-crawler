@@ -316,6 +316,20 @@ func _load_mob_types() -> void:
 
 # --- Players ---
 
+## Relic Vault (issue #6): a client equipped a special mid-run — apply it
+## to the SERVER's copy of that player so checkout/cooldown math uses the
+## same choice. Server-only; the client's own copy applied it locally.
+@rpc("any_peer", "call_local")
+func sync_equipped_special(peer_id: int, special_id: String) -> void:
+	if not multiplayer.is_server():
+		return
+	for p in get_tree().get_nodes_in_group("players"):
+		if int(p.get_multiplayer_authority()) == peer_id:
+			p.set("equipped_special", special_id)
+			p.call("_apply_equipped_special")
+			return
+
+
 @rpc("any_peer", "call_local")
 func register_class(class_id: String) -> void:
 	if not multiplayer.is_server():
@@ -1340,14 +1354,25 @@ func _sell_player_loot(player: Node) -> void:
 			kept.append(entry)
 	if total > 0:
 		player.set("inventory", kept)
-		player.set("supermarket_cash", int(player.get("supermarket_cash")) + total)
-		market_earned_visit += total
-		SaveManager.add_cash_earned(total)
+		# Greed Charm (issue #6): +25% loot-sale cash while equipped.
+		var payout := checkout_payout(total, float(player.get("cash_mult")))
+		player.set("supermarket_cash", int(player.get("supermarket_cash")) + payout)
+		market_earned_visit += payout
+		SaveManager.add_cash_earned(payout)
 		SaveManager.check_achievements()
+		if market_earned_visit >= SpecialData.GREED_CHARM_GOAL:
+			SpecialData.earn_for(player, "greed_charm")
 		# Bounty Board (issue #7): cash bounties progress on the sale total.
-		notify_bounty_checkout(sender, total)
-		player.rpc_id(sender, "on_sold", total)
+		notify_bounty_checkout(sender, payout)
+		player.rpc_id(sender, "on_sold", payout)
 		_check_gate_unlock()
+
+
+## Relic Vault (issue #6): pure checkout math, static for testability. The
+## payout applies the seller's Greed Charm multiplier; the visit total the
+## $500 earn condition and gate check run against is the paid-out amount.
+static func checkout_payout(total: int, cash_mult: float) -> int:
+	return int(round(float(total) * cash_mult))
 
 
 func _check_gate_unlock() -> void:
@@ -1505,6 +1530,11 @@ func _check_apex_boss_kill() -> void:
 	if _boss == null:
 		return
 	if not is_instance_valid(_boss) or not bool(_boss.get("alive")):
+		# Relic Vault (issue #6): the party earns the apex trophy special.
+		var trophy := SpecialData.apex_special_for_boss(theme.boss_id)
+		if trophy != "":
+			for p in get_tree().get_nodes_in_group("players"):
+				SpecialData.earn_for(p, trophy)
 		rpc("complete_level_objective")
 
 
@@ -1974,6 +2004,13 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	if not level_cleared:
 		_apply_forfeits()
 		rpc("announce", "Left early!\nLevel gains forfeited.")
+	else:
+		# Relic Vault (issue #6): level cleared without dying — bump the
+		# no-death streak on every living player's OWN instance (call_local +
+		# authority guard) so the saved state carries it.
+		for p in get_tree().get_nodes_in_group("players"):
+			if bool(p.get("alive")):
+				p.rpc("rpc_level_cleared_streak")
 	var new_level := level_number + 1
 	var seed := randi()
 	rpc("begin_annex_departure", theme_id, _boarding_spots())
