@@ -63,6 +63,9 @@ static func apex_boss_id(cycle_number: int) -> String:
 
 ## Destinations offered on the departure board for the upcoming level: the
 ## five themes, with warlord swapped for the APEX ARENA on apex cycles.
+## The swap plays the apex_announce sting once per apex cycle (issue #5) —
+## not on every call, since vote validation re-queries this on each vote.
+static var _last_apex_announce_cycle := -1
 static func board_destinations(next_level: int) -> Array[String]:
 	var out: Array[String] = []
 	var cycle := int((next_level - 1) / THEME_ORDER.size()) + 1
@@ -72,6 +75,9 @@ static func board_destinations(next_level: int) -> Array[String]:
 			out.append("apex")
 		else:
 			out.append(tid)
+	if apex and _last_apex_announce_cycle != cycle:
+		_last_apex_announce_cycle = cycle
+		AudioManager.sfx("apex_announce")
 	return out
 
 
@@ -1605,7 +1611,7 @@ func spawn_mob(mob_id: int, type_id: String, pos: Vector3, hp_scale: float = 1.0
 		rpc("announce", "WARNING: %s" % data.boss_title)
 		if _local_hud != null:
 			_local_hud.show_boss_card(data.boss_title)
-		AudioManager.sfx("boss_roar", pos)
+		AudioManager.sfx("apex_roar" if is_apex else "boss_roar", pos)
 	elif elite and _local_hud != null:
 		_local_hud.toast("Elite %s appeared!" % data.display_name)
 
