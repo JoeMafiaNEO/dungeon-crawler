@@ -60,6 +60,7 @@ func _run() -> void:
 	_test_bounty_phase1()
 	_test_combo_phase1()
 	_test_combo_codex()
+	_test_leaderboard_phase1()
 	_print_results()
 	quit()
 
@@ -3365,3 +3366,88 @@ func _test_combo_codex() -> void:
 	_assert(abody.contains('sfx("codex_discover")'), "dungeon: codex_discover sting on first discovery")
 	_assert(not abody.contains('sfx("thunderclap")'), "dungeon: shared thunderclap no longer fired for finishers")
 	print("[Playtest] combo codex phase 2 done")
+
+
+func _test_leaderboard_phase1() -> void:
+	print("[Playtest] leaderboards (issue #9 Phase 1)...")
+	# NOTE: playtest.gd is the -s entry point, compiled before autoload
+	# globals resolve; reach them via load() and /root lookups instead.
+	var LBScript = load("res://scripts/autoload/leaderboard.gd")
+	# Score formulas (pure statics).
+	_assert(LBScript.depth_score(1, 1) == 100001, "depth score c1l1")
+	_assert(LBScript.depth_score(2, 5) == 200005, "depth score c2l5")
+	_assert(LBScript.depth_score(2, 1) > LBScript.depth_score(1, 99),
+		"cycle dominates level in depth score")
+	_assert(LBScript.speed_score(125) == 125, "speed score passthrough")
+	_assert(LBScript.speed_score(-3) == 0, "speed score clamps negative")
+	_assert(LBScript.format_score(LBScript.BOARD_DEPTH, 200005) == "Cycle 2 · Lv 5",
+		"depth score formats")
+	_assert(LBScript.format_score(LBScript.BOARD_SPEED, 125) == "2:05",
+		"speed score formats as m:ss")
+	# Offline graceful skip: Steam is not initialized on this VM.
+	var sm: Node = root.get_node_or_null("SteamManager")
+	_assert(sm != null and not bool(sm.get("initialized")), "precondition: Steam offline")
+	var lb: Node = root.get_node_or_null("Leaderboard")
+	_assert(lb != null, "Leaderboard autoload exists")
+	_assert(not bool(lb.call("steam_available")), "leaderboard reports unavailable")
+	lb.call("ensure_boards")
+	lb.call("upload_daily", 2, 5, 125)
+	lb.call("upload_daily", 1, 3)
+	lb.call("fetch_top", LBScript.BOARD_DEPTH)
+	_assert((lb.get("_handles") as Dictionary).is_empty(), "no board handles without Steam")
+	_assert((lb.get("_pending_uploads") as Array).is_empty(), "no queued uploads without Steam")
+	_assert((lb.call("get_cached", LBScript.BOARD_DEPTH) as Array).is_empty(),
+		"empty cache without Steam")
+	# Daily wiring: play_daily stamps timing; dungeon stamps Cycle-1 clear.
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("daily_start_msec"), "play_daily stamps daily start")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("daily_c1_clear_msec"), "dungeon stamps Cycle-1 clear")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("Leaderboard.upload_daily"), "daily end uploads scores")
+	# Panel: exactly 10 fixed rows per board, zero scroll containers.
+	var menu = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(menu)
+	menu._refresh_leaderboard_panel()
+	for path in ["DailyPhase/LeaderboardPanel/DepthCol/DepthRows",
+			"DailyPhase/LeaderboardPanel/SpeedCol/SpeedRows"]:
+		var rows: VBoxContainer = menu.get_node(path)
+		_assert(_live_children(rows).size() == LBScript.MAX_ENTRIES,
+			"%s has 10 fixed rows" % path.get_file())
+	var scrolls := []
+	_find_scroll_containers(menu.get_node("DailyPhase"), scrolls)
+	_assert(scrolls.is_empty(), "DailyPhase has no scroll containers")
+	# Seeded entries: player row highlighted, count stays fixed at 10.
+	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = [
+		{"rank": 1, "name": "Rival", "score": 300002, "is_player": false},
+		{"rank": 2, "name": "Me", "score": 200005, "is_player": true},
+	]
+	menu._refresh_leaderboard_panel()
+	var depth_rows: VBoxContainer = menu.get_node("DailyPhase/LeaderboardPanel/DepthCol/DepthRows")
+	_assert(_live_children(depth_rows).size() == 10, "row count stays 10 with entries")
+	var player_lbl: Label = null
+	for child in _live_children(depth_rows):
+		if child is Label and child.text.contains("Me"):
+			player_lbl = child
+	_assert(player_lbl != null, "player entry shown")
+	_assert(player_lbl.get_theme_color("font_color") == Color(1.0, 0.85, 0.3),
+		"player row highlighted gold")
+	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = []
+	menu.queue_free()
+	print("[Playtest] leaderboard phase 1 done")
+
+
+## Children not queued for deletion (queue_free is deferred to frame end).
+func _live_children(node: Node) -> Array:
+	var out: Array = []
+	for child in node.get_children():
+		if not child.is_queued_for_deletion():
+			out.append(child)
+	return out
+
+
+func _find_scroll_containers(node: Node, out: Array) -> void:
+	if node is ScrollContainer:
+		out.append(node)
+	for child in node.get_children():
+		_find_scroll_containers(child, out)

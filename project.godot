@@ -27,6 +27,7 @@ ItemDB="*res://scripts/autoload/item_db.gd"
 AudioManager="*res://scripts/autoload/audio_manager.gd"
 SaveManager="*res://scripts/autoload/save_manager.gd"
 DailyRun="*res://scripts/autoload/daily_run.gd"
+Leaderboard="*res://scripts/autoload/leaderboard.gd"
 
 [display]
 

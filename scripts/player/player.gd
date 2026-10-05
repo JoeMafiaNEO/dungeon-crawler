@@ -2832,6 +2832,12 @@ func die() -> void:
 			var stats := run_stats()
 			var score := int(stats.get("cycle", 1)) * 1000 + int(stats.get("level", 1)) * 10 + int(stats.get("kills", 0))
 			DailyRun.record_attempt(score)
+			# Issue #9 Phase 1: Steam leaderboards. Depth always uploads;
+			# speed uploads only on a full Cycle-1 clear. Skipped offline.
+			var clear_sec := -1
+			if Dungeon.daily_c1_clear_msec >= 0:
+				clear_sec = int((Dungeon.daily_c1_clear_msec - Dungeon.daily_start_msec) / 1000)
+			Leaderboard.upload_daily(int(stats.get("cycle", 1)), int(stats.get("level", 1)), clear_sec)
 		SaveManager.clear_run(SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
 		if hud != null:
 			hud.show_death_screen(run_stats())

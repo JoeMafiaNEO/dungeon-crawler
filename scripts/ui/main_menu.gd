@@ -23,7 +23,7 @@ const CLASS_DESCS := {
 
 func _ready() -> void:
 	_style_buttons()
-	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %StagingPhase]
+	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %StagingPhase, %DailyPhase]
 	if SteamManager.initialized:
 		%PersonaLabel.text = "Logged in as %s" % SteamManager.persona_name
 	else:
@@ -36,6 +36,8 @@ func _ready() -> void:
 	NetworkManager.connection_failed.connect(_on_connection_failed)
 	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
 	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
+	# Issue #9 Phase 1: refresh the leaderboard rows when downloads land.
+	Leaderboard.entries_updated.connect(_on_leaderboard_entries)
 	_select_class("warrior")
 	_select_difficulty(1.0)
 	_select_loot(1.0)
@@ -110,6 +112,76 @@ func _on_solo_pressed() -> void:
 func _on_mode_back_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	_show_phase("TitlePhase")
+
+
+# --- Daily phase (issue #9 Phase 1) ---
+
+func _on_daily_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	_refresh_daily_ui()
+	_show_phase("DailyPhase")
+
+
+## Populate the Daily phase: attempt info, play button state, leaderboard.
+func _refresh_daily_ui() -> void:
+	var attempted := DailyRun.has_attempted_today()
+	var best := DailyRun.get_best_score()
+	%DailyInfo.text = "Seed %d · %s\nLocal best: %d%s" % [
+		DailyRun.get_today_seed(),
+		"Attempt used — come back tomorrow" if attempted else "One attempt per day",
+		best,
+		"" if Leaderboard.steam_available() else " · Steam leaderboards offline",
+	]
+	%DailyPlayButton.disabled = attempted
+	%DailyPlayButton.tooltip_text = "Already attempted today" if attempted else "Start today's seeded run"
+	_refresh_leaderboard_panel()
+	_style_buttons()
+
+
+## Fill both boards with exactly MAX_ENTRIES fixed rows (no scrolling by
+## construction). Empty rows stay as dimmed placeholders; the player's own
+## row is highlighted gold.
+func _refresh_leaderboard_panel() -> void:
+	_fill_board_rows(%DepthRows, Leaderboard.BOARD_DEPTH)
+	_fill_board_rows(%SpeedRows, Leaderboard.BOARD_SPEED)
+
+
+func _fill_board_rows(rows_node: VBoxContainer, board_name: String) -> void:
+	for child in rows_node.get_children():
+		child.queue_free()
+	var entries: Array = Leaderboard.get_cached(board_name)
+	for i in range(Leaderboard.MAX_ENTRIES):
+		var lbl := Label.new()
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		if i < entries.size():
+			var e: Dictionary = entries[i]
+			lbl.text = "%d. %s — %s" % [
+				e.get("rank", i + 1), e.get("name", "?"),
+				Leaderboard.format_score(board_name, int(e.get("score", 0)))]
+			if bool(e.get("is_player", false)):
+				lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+			else:
+				lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
+		else:
+			lbl.text = "%d. —" % (i + 1)
+			lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		rows_node.add_child(lbl)
+
+
+func _on_leaderboard_entries(_board_name: String) -> void:
+	# Only repaint when the Daily phase is visible.
+	if %DailyPhase.visible:
+		_refresh_leaderboard_panel()
+
+
+func _on_daily_play_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	NetworkManager.play_daily()
+
+
+func _on_daily_back_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	_show_phase("ModePhase")
 
 
 # --- Multiplayer phase ---
