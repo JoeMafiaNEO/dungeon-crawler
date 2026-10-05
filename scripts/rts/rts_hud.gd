@@ -58,7 +58,10 @@ func _build_ui() -> void:
 	# Bottom hint (contextual: changes with command view).
 	_hint_label = Label.new()
 	_hint_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_hint_label.offset_top = -36.0
+	_hint_label.offset_bottom = -8.0
 	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_hint_label.add_theme_font_size_override("font_size", 14)
 	_hint_label.text = "TAB — Command View"
 	add_child(_hint_label)
