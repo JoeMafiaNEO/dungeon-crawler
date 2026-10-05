@@ -43,12 +43,13 @@ func _ready() -> void:
 
 # --- Hosting ---
 
-func host_lobby() -> void:
+## Host a fresh lobby in the given MP slot (issue #4 Phase 5).
+func host_lobby(slot: int = 0) -> void:
 	if not SteamManager.initialized:
 		connection_failed.emit("Steam isn't running. Open Steam, then try again.")
 		return
 	active_run_mode = SaveManager.MODE_MP
-	active_run_slot = 0
+	active_run_slot = slot
 	_reset_peer()
 	peer = SteamMultiplayerPeer.new()
 	if peer.create_host() != OK:
@@ -206,13 +207,14 @@ func leave_lobby() -> void:
 	server_id = 1
 
 
-func play_solo() -> void:
+## Start a fresh solo run in the given solo slot (issue #4 Phase 5).
+func play_solo(slot: int = 0) -> void:
 	leave_lobby()
 	is_host = true
 	host_difficulty = 1.0
 	host_loot_mult = 1.0
 	active_run_mode = SaveManager.MODE_SOLO
-	active_run_slot = 0
+	active_run_slot = slot
 	SaveManager.clear_run(active_run_mode, active_run_slot)
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = "village"

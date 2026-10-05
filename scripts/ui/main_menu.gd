@@ -4,6 +4,14 @@ extends Control
 var _lobbies: Array = []
 var _in_lobby := false
 var _phases: Array = []
+## Issue #4 Phase 5: which MP slot a fresh host targets (set by the slot
+## cards / Host Game button before HostPhase is shown).
+var _host_slot := 0
+## Overwrite-confirm modal state.
+var _confirm_overlay: Control
+var _confirm_msg: Label
+var _confirm_mode := ""
+var _confirm_slot := 0
 
 const CLASS_DESCS := {
 	"warrior": "Warrior — Tanky melee, totems and auras.",
@@ -34,6 +42,7 @@ func _ready() -> void:
 	_show_phase("TitlePhase")
 	_refresh_title_stats()
 	_refresh_solo_ui()
+	_build_confirm_modal()
 	# Mason's Cipher: the Architect stays hidden until unlocked.
 	%TitleArchitectButton.visible = SaveManager.is_architect_unlocked()
 	AudioManager.play_music("menu")
@@ -81,32 +90,20 @@ func _on_multi_pressed() -> void:
 	_show_phase("MultiPhase")
 
 
-## Show the multiplayer Continue if a compatible multiplayer save exists.
+## Show the multiplayer slot cards (issue #4 Phase 5): one card per MP slot
+## with its roster summary, per-slot Continue / New Run, and legacy rows.
 func _refresh_multi_ui() -> void:
-	var run := SaveManager.load_run(SaveManager.MODE_MP, 0)
-	if not run.is_empty() and bool(run.get("is_multiplayer", false)):
-		%ContinueMultiButton.visible = true
-		%ContinueMultiInfo.visible = true
-		%ContinueMultiInfo.text = SaveManager.run_summary(run)
-		if SaveManager.is_save_compatible(SaveManager.MODE_MP, 0):
-			%ContinueMultiButton.disabled = false
-			%ContinueMultiButton.tooltip_text = ""
-		else:
-			%ContinueMultiButton.disabled = true
-			%ContinueMultiButton.tooltip_text = "Save from an older version"
-	else:
-		%ContinueMultiButton.visible = false
-		%ContinueMultiInfo.visible = false
-
-
-func _on_continue_multi_pressed() -> void:
-	AudioManager.sfx("ui_click")
-	if not NetworkManager.continue_run(SaveManager.MODE_MP, 0):
-		_refresh_multi_ui()
+	for child in %MpSlotsList.get_children():
+		child.queue_free()
+	for slot in range(SaveManager.MAX_SLOTS):
+		%MpSlotsList.add_child(_build_slot_card(SaveManager.MODE_MP, slot))
+	_refresh_legacy_rows(%MpLegacyList, SaveManager.MODE_MP)
+	_style_buttons()
 
 
 func _on_solo_pressed() -> void:
 	AudioManager.sfx("ui_click")
+	_refresh_solo_ui()
 	_show_phase("SoloPhase")
 
 
@@ -119,6 +116,13 @@ func _on_mode_back_pressed() -> void:
 
 func _on_host_pressed() -> void:
 	AudioManager.sfx("ui_click")
+	# Issue #4 Phase 5: a fresh host targets the first empty MP slot.
+	var slot := _first_empty_slot(SaveManager.MODE_MP)
+	if slot == -1:
+		# Every MP slot is occupied: hosting fresh overwrites slot 1 — confirm.
+		_show_overwrite_confirm(SaveManager.MODE_MP, 0)
+		return
+	_host_slot = slot
 	# Initialize from the title selection (don't clobber); keep changeable.
 	_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
 	_show_phase("HostPhase")
@@ -223,7 +227,8 @@ func _on_loot_double_pressed() -> void:
 
 func _on_create_lobby_pressed() -> void:
 	AudioManager.sfx("ui_click")
-	NetworkManager.host_lobby()
+	# Issue #4 Phase 5: the lobby hosts into the slot chosen on the MP saves UI.
+	NetworkManager.host_lobby(_host_slot)
 
 
 func _on_host_back_pressed() -> void:
@@ -258,42 +263,188 @@ func _on_join_back_pressed() -> void:
 
 # --- Solo phase ---
 
-## Show slot saves. Each occupied slot gets a Continue row (Phase 5
-## redesigns this into slot cards; the mapping here is mechanical).
+## Show the solo slot cards (issue #4 Phase 5): one card per solo slot with
+## its run summary, per-slot Continue / New Run, and legacy overflow rows.
 func _refresh_solo_ui() -> void:
-	for child in %SavesList.get_children():
+	for child in %SoloSlotsList.get_children():
 		child.queue_free()
-	var saves := SaveManager.list_runs(SaveManager.MODE_SOLO)
-	%SavesLabel.visible = not saves.is_empty()
-	for entry in saves:
-		var slot := int(entry.get("slot", 0))
-		var run: Dictionary = entry.get("run", {})
-		var row := HBoxContainer.new()
-		row.alignment = BoxContainer.ALIGNMENT_CENTER
-		row.add_theme_constant_override("separation", 12)
+	for slot in range(SaveManager.MAX_SLOTS):
+		%SoloSlotsList.add_child(_build_slot_card(SaveManager.MODE_SOLO, slot))
+	_refresh_legacy_rows(%SoloLegacyList, SaveManager.MODE_SOLO)
+	_style_buttons()
+
+
+## Build one slot card row: slot label + summary (or a clean empty state) +
+## actions. Occupied slots get Continue + New (New asks before overwriting);
+## empty slots get a single New Run button.
+func _build_slot_card(mode: String, slot: int) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	var slot_lbl := Label.new()
+	slot_lbl.text = "Slot %d" % (slot + 1)
+	slot_lbl.custom_minimum_size = Vector2(64, 0)
+	row.add_child(slot_lbl)
+	var meta := Label.new()
+	meta.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	meta.clip_text = true
+	row.add_child(meta)
+	if SaveManager.has_run(mode, slot):
+		meta.text = SaveManager.run_summary(SaveManager.load_run(mode, slot))
+		var cont := Button.new()
+		cont.text = "Continue"
+		cont.pressed.connect(_on_slot_continue_pressed.bind(mode, slot))
+		if not SaveManager.is_save_compatible(mode, slot):
+			cont.disabled = true
+			cont.tooltip_text = "Save from an older version"
+		row.add_child(cont)
+		var new_btn := Button.new()
+		new_btn.text = "New"
+		new_btn.tooltip_text = "Start a new run in this slot (asks before overwriting)"
+		new_btn.pressed.connect(_on_slot_new_pressed.bind(mode, slot))
+		row.add_child(new_btn)
+	else:
+		meta.text = "Empty slot"
+		meta.modulate = Color(0.55, 0.55, 0.60)
+		var new_btn := Button.new()
+		new_btn.text = "New Run"
+		new_btn.pressed.connect(_on_slot_new_pressed.bind(mode, slot))
+		row.add_child(new_btn)
+	return row
+
+
+## First empty slot for the mode, or -1 when all are occupied.
+func _first_empty_slot(mode: String) -> int:
+	for slot in range(SaveManager.MAX_SLOTS):
+		if not SaveManager.has_run(mode, slot):
+			return slot
+	return -1
+
+
+## Legacy overflow rows: at most 2, only when unmigrated legacy saves exist
+## for this mode (issue #4 Phase 5).
+func _refresh_legacy_rows(list_node: VBoxContainer, mode: String) -> void:
+	for child in list_node.get_children():
+		child.queue_free()
+	var total := 0
+	var shown := 0
+	for entry in SaveManager.list_legacy_saves():
+		if str(entry.get("mode", "")) != mode:
+			continue
+		total += 1
+		if shown >= 2:
+			continue
+		shown += 1
 		var lbl := Label.new()
-		lbl.text = SaveManager.run_summary(run)
-		row.add_child(lbl)
-		var btn := Button.new()
-		btn.text = "Continue"
-		btn.pressed.connect(_on_continue_class_pressed.bind(slot))
-		if not SaveManager.is_save_compatible(SaveManager.MODE_SOLO, slot):
-			btn.disabled = true
-			btn.tooltip_text = "Save from an older version"
-		row.add_child(btn)
-		%SavesList.add_child(row)
+		lbl.text = "Legacy: %s · %s" % [
+			str(entry.get("path", "")).get_file(),
+			SaveManager.run_summary(entry.get("run", {})),
+		]
+		lbl.modulate = Color(0.65, 0.60, 0.50)
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		list_node.add_child(lbl)
+	if total > 2:
+		var more := Label.new()
+		more.text = "+%d more legacy saves on disk" % (total - 2)
+		more.modulate = Color(0.55, 0.52, 0.45)
+		more.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		list_node.add_child(more)
 
 
-func _on_new_game_pressed() -> void:
+func _on_slot_continue_pressed(mode: String, slot: int) -> void:
 	AudioManager.sfx("ui_click")
-	# Title class picker is the selection; skip ClassPhase.
-	NetworkManager.play_solo()
+	if not NetworkManager.continue_run(mode, slot):
+		if mode == SaveManager.MODE_SOLO:
+			_refresh_solo_ui()
+		else:
+			_refresh_multi_ui()
 
 
-func _on_continue_class_pressed(slot: int) -> void:
+func _on_slot_new_pressed(mode: String, slot: int) -> void:
 	AudioManager.sfx("ui_click")
-	if not NetworkManager.continue_run(SaveManager.MODE_SOLO, slot):
-		_refresh_solo_ui()
+	if SaveManager.has_run(mode, slot):
+		_show_overwrite_confirm(mode, slot)
+		return
+	if mode == SaveManager.MODE_MP:
+		_host_slot = slot
+		_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
+		_show_phase("HostPhase")
+	else:
+		NetworkManager.play_solo(slot)
+
+
+## Build the overwrite-confirm modal (issue #4 Phase 5): a dimmed overlay
+## with a compact dialog. Shown when a New Run targets an occupied slot.
+func _build_confirm_modal() -> void:
+	_confirm_overlay = Control.new()
+	_confirm_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_confirm_overlay.visible = false
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_confirm_overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_confirm_overlay.add_child(center)
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.07, 0.10, 0.98)
+	sb.border_color = Color(0.85, 0.70, 0.30)
+	sb.set_border_width_all(3)
+	sb.set_corner_radius_all(6)
+	sb.content_margin_left = 28
+	sb.content_margin_right = 28
+	sb.content_margin_top = 20
+	sb.content_margin_bottom = 20
+	panel.add_theme_stylebox_override("panel", sb)
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 16)
+	panel.add_child(vb)
+	_confirm_msg = Label.new()
+	_confirm_msg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_confirm_msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_confirm_msg.custom_minimum_size = Vector2(420, 0)
+	vb.add_child(_confirm_msg)
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	hb.add_theme_constant_override("separation", 16)
+	vb.add_child(hb)
+	var yes := Button.new()
+	yes.text = "Overwrite"
+	yes.pressed.connect(_on_overwrite_confirmed)
+	hb.add_child(yes)
+	var no := Button.new()
+	no.text = "Cancel"
+	no.pressed.connect(_on_overwrite_cancelled)
+	hb.add_child(no)
+	add_child(_confirm_overlay)
+	_style_buttons()
+
+
+func _show_overwrite_confirm(mode: String, slot: int) -> void:
+	_confirm_mode = mode
+	_confirm_slot = slot
+	var run := SaveManager.load_run(mode, slot)
+	_confirm_msg.text = "Slot %d already holds a saved run:\n%s\n\nStart a new run and overwrite it?" % [
+		slot + 1, SaveManager.run_summary(run)]
+	_confirm_overlay.visible = true
+
+
+func _on_overwrite_confirmed() -> void:
+	AudioManager.sfx("ui_click")
+	_confirm_overlay.visible = false
+	if _confirm_mode == SaveManager.MODE_MP:
+		_host_slot = _confirm_slot
+		_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
+		_show_phase("HostPhase")
+	else:
+		NetworkManager.play_solo(_confirm_slot)
+
+
+func _on_overwrite_cancelled() -> void:
+	AudioManager.sfx("ui_click")
+	_confirm_overlay.visible = false
 
 
 func _on_solo_back_pressed() -> void:

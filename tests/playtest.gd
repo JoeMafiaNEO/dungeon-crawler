@@ -22,6 +22,7 @@ func _run() -> void:
 	_test_save_collections()
 	_test_legacy_migration()
 	_test_mp_slots()
+	_test_saves_ui()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -595,6 +596,123 @@ func _test_mp_slots() -> void:
 		"leave_lobby clears stale continued roster")
 	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
 	_assert(msrc.contains("MP Slot %d"), "staging screen shows the slot")
+
+	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
+	mgr.free()
+
+	# Restore.
+	for sp in slot_paths:
+		if slot_backups.has(sp):
+			var f := FileAccess.open(sp, FileAccess.WRITE)
+			f.store_buffer(slot_backups[sp])
+			f.close()
+		elif FileAccess.file_exists(sp):
+			DirAccess.remove_absolute(sp)
+	if not prof_backup.is_empty():
+		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
+		pf.store_buffer(prof_backup)
+		pf.close()
+	elif FileAccess.file_exists(prof_path):
+		DirAccess.remove_absolute(prof_path)
+
+
+func _test_saves_ui() -> void:
+	print("[Playtest] Saves UI redesign (issue #4 Phase 5)...")
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var mgr = SaveScript.new()
+	# Back up all six slots and the local profile.
+	var prof_path := "user://profile_local.cfg"
+	var prof_backup := PackedByteArray()
+	if FileAccess.file_exists(prof_path):
+		prof_backup = FileAccess.get_file_as_bytes(prof_path)
+		DirAccess.remove_absolute(prof_path)
+	var slot_paths: Array = []
+	for mode in ["solo", "mp"]:
+		for slot in range(3):
+			slot_paths.append("user://runs/%s_%d.cfg" % [mode, slot])
+	var slot_backups := {}
+	for sp in slot_paths:
+		if FileAccess.file_exists(sp):
+			slot_backups[sp] = FileAccess.get_file_as_bytes(sp)
+			DirAccess.remove_absolute(sp)
+
+	# Card data model: occupied / empty / occupied across the three solo slots.
+	var solo0 := {"theme_id": "dungeon", "level_number": 3, "seed": 11,
+		"is_multiplayer": false, "class_id": "mage", "player_state": {"level": 12}}
+	var solo2 := {"theme_id": "village", "level_number": 1, "seed": 22,
+		"is_multiplayer": false, "class_id": "rogue", "player_state": {"level": 5}}
+	_assert(mgr.save_run(solo0, "solo", 0), "solo save slot 0")
+	_assert(mgr.save_run(solo2, "solo", 2), "solo save slot 2")
+	_assert(mgr.has_run("solo", 0) and not mgr.has_run("solo", 1)
+		and mgr.has_run("solo", 2), "card states: occupied/empty/occupied")
+	_assert(not mgr.run_summary(mgr.load_run("solo", 0)).is_empty(),
+		"occupied card has metadata")
+	_assert("Mage" in mgr.run_summary(mgr.load_run("solo", 0)),
+		"card metadata names the class")
+	# First-empty-slot logic (mirrors _first_empty_slot).
+	var first_empty := -1
+	for slot in range(3):
+		if not mgr.has_run("solo", slot):
+			first_empty = slot
+			break
+	_assert(first_empty == 1, "first empty solo slot is 1")
+	_assert(mgr.save_run(solo0, "solo", 1), "solo save slot 1")
+	first_empty = -1
+	for slot in range(3):
+		if not mgr.has_run("solo", slot):
+			first_empty = slot
+			break
+	_assert(first_empty == -1, "no empty slot when all full")
+
+	# MP card data: roster summary drives the card metadata.
+	var mp_run := {"theme_id": "warlord", "level_number": 4, "seed": 33,
+		"is_multiplayer": true, "class_id": "mage", "roster": [
+			{"steam_id": 111, "class_id": "mage", "player_state": {"level": 6}},
+			{"steam_id": 222, "class_id": "rogue", "player_state": {"level": 5}},
+		]}
+	_assert(mgr.save_run(mp_run, "mp", 1), "mp save slot 1")
+	var mp_summary: String = mgr.run_summary(mgr.load_run("mp", 1))
+	_assert("2 players" in mp_summary, "mp card metadata shows roster")
+
+	# Wiring: slot cards, per-slot actions, overwrite modal, legacy rows.
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("func _build_slot_card(mode: String, slot: int)"),
+		"slot card builder exists")
+	_assert(msrc.contains("%SoloSlotsList") and msrc.contains("%MpSlotsList"),
+		"both phases build slot cards")
+	_assert(msrc.contains("\"New Run\"") and msrc.contains("\"Continue\""),
+		"cards have New Run / Continue actions")
+	_assert(msrc.contains("func _first_empty_slot(mode: String) -> int"),
+		"first-empty-slot helper exists")
+	_assert(msrc.contains("func _show_overwrite_confirm(mode: String, slot: int)"),
+		"overwrite confirm exists")
+	_assert(msrc.contains("overwrite it?"), "modal asks before overwriting")
+	_assert(msrc.contains("NetworkManager.play_solo(_confirm_slot)"),
+		"confirmed solo overwrite starts in that slot")
+	_assert(msrc.contains("_host_slot = _confirm_slot"),
+		"confirmed mp overwrite targets that slot")
+	_assert(msrc.contains("NetworkManager.host_lobby(_host_slot)"),
+		"lobby hosts into the chosen slot")
+	_assert(msrc.contains("func _refresh_legacy_rows("),
+		"legacy overflow rows exist")
+	_assert(msrc.contains("shown >= 2"), "legacy rows capped at 2")
+	_assert(msrc.contains("more legacy saves on disk"), "legacy overflow counted")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("func play_solo(slot: int = 0)"),
+		"play_solo takes a slot")
+	_assert(nsrc.contains("func host_lobby(slot: int = 0)"),
+		"host_lobby takes a slot")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("play_solo(NetworkManager.active_run_slot)"),
+		"quick restart keeps the death slot")
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
+	for node_name in ["SoloSlotsList", "MpSlotsList", "SoloLegacyList", "MpLegacyList"]:
+		_assert(tsrc.contains("[node name=\"%s\"" % node_name),
+			"scene has " + node_name)
+	for gone in ["NewGameButton", "ContinueMultiButton", "ContinueMultiInfo",
+			"SavesLabel", "_on_new_game_pressed", "_on_continue_multi_pressed"]:
+		_assert(not tsrc.contains(gone) and not msrc.contains(gone),
+			"old save UI fully removed: " + gone)
 
 	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
 	mgr.free()

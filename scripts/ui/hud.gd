@@ -1062,7 +1062,8 @@ func _fmt_run_time(secs: int) -> String:
 
 func _on_quick_restart_pressed() -> void:
 	hide_death_screen()
-	NetworkManager.play_solo()
+	# Issue #4 Phase 5: restart in the slot the run died in, not slot 0.
+	NetworkManager.play_solo(NetworkManager.active_run_slot)
 
 
 func _on_death_menu_pressed() -> void:

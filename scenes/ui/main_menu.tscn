@@ -186,19 +186,17 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Join Game"
 
-[node name="ContinueMultiButton" type="Button" parent="MultiPhase"]
+[node name="MpSlotsList" type="VBoxContainer" parent="MultiPhase"]
 unique_name_in_owner = true
-visible = false
 layout_mode = 2
-size_flags_horizontal = 4
-text = "Continue Saved Run"
+theme_override_constants/separation = 6
+alignment = 1
 
-[node name="ContinueMultiInfo" type="Label" parent="MultiPhase"]
+[node name="MpLegacyList" type="VBoxContainer" parent="MultiPhase"]
 unique_name_in_owner = true
-visible = false
 layout_mode = 2
-text = ""
-horizontal_alignment = 1
+theme_override_constants/separation = 2
+alignment = 1
 
 [node name="MultiBackButton" type="Button" parent="MultiPhase"]
 unique_name_in_owner = true
@@ -400,22 +398,16 @@ theme_override_font_sizes/font_size = 32
 text = "Solo"
 horizontal_alignment = 1
 
-[node name="NewGameButton" type="Button" parent="SoloPhase"]
+[node name="SoloSlotsList" type="VBoxContainer" parent="SoloPhase"]
 unique_name_in_owner = true
 layout_mode = 2
-size_flags_horizontal = 4
-text = "Start New Game"
+theme_override_constants/separation = 6
+alignment = 1
 
-[node name="SavesLabel" type="Label" parent="SoloPhase"]
+[node name="SoloLegacyList" type="VBoxContainer" parent="SoloPhase"]
 unique_name_in_owner = true
 layout_mode = 2
-text = "Saved runs:"
-horizontal_alignment = 1
-
-[node name="SavesList" type="VBoxContainer" parent="SoloPhase"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 2
 alignment = 1
 
 [node name="SoloBackButton" type="Button" parent="SoloPhase"]
@@ -555,7 +547,6 @@ text = "Leave"
 [connection signal="pressed" from="JoinPhase/JoinRow/RefreshButton" to="." method="_on_refresh_pressed"]
 [connection signal="pressed" from="JoinPhase/JoinRow/JoinSelectedButton" to="." method="_on_join_selected_pressed"]
 [connection signal="pressed" from="JoinPhase/JoinBackButton" to="." method="_on_join_back_pressed"]
-[connection signal="pressed" from="SoloPhase/NewGameButton" to="." method="_on_new_game_pressed"]
 [connection signal="pressed" from="SoloPhase/SoloBackButton" to="." method="_on_solo_back_pressed"]
 [connection signal="pressed" from="LobbyPanel/StartButton" to="." method="_on_start_pressed"]
 [connection signal="pressed" from="LobbyPanel/LeaveButton" to="." method="_on_leave_pressed"]
@@ -563,4 +554,3 @@ text = "Leave"
 [connection signal="toggled" from="StagingPhase/StagingRow/OpenLobbyCheck" to="." method="_on_open_lobby_toggled"]
 [connection signal="pressed" from="StagingPhase/StartRunButton" to="." method="_on_start_run_pressed"]
 [connection signal="pressed" from="StagingPhase/StagingBackButton" to="." method="_on_staging_back_pressed"]
-[connection signal="pressed" from="MultiPhase/ContinueMultiButton" to="." method="_on_continue_multi_pressed"]
