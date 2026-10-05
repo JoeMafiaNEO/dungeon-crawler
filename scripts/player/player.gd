@@ -561,8 +561,8 @@ func _input(event: InputEvent) -> void:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_jump_queued = true
 		elif k.physical_keycode == KEY_E:
-			# Cipher popup handles its own E/Esc; reading mode intercepts earlier.
-			if hud != null and (hud.cipher_popup_open or _reading_board != null):
+			# Cipher/destination popups handle their own E/Esc; reading mode intercepts earlier.
+			if hud != null and (hud.cipher_popup_open or _reading_board != null or hud.get("dest_popup_open") == true):
 				return
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_pickup()

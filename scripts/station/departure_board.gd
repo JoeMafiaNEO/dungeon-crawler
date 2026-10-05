@@ -24,8 +24,22 @@ func prompt_text() -> String:
 
 
 func interact(player: Player) -> void:
-	if player.has_method("enter_reading"):
-		player.enter_reading(self)
+	# Issue #29: 3D reading-mode interaction replaced with a 2D popup menu.
+	# The board model stays as visual dressing; all voting goes through the HUD.
+	var hud := player.get("hud") as CanvasLayer
+	if hud == null:
+		hud = player.get_tree().get_first_node_in_group("hud")
+	if hud == null or not hud.has_method("open_destination_popup"):
+		return
+	var station := player.get_tree().get_first_node_in_group("station")
+	if station == null:
+		return
+	var next_level := 1
+	if station.get("next_level_number") != null:
+		next_level = int(station.get("next_level_number"))
+	var dests: Array = Dungeon.board_destinations(next_level)
+	hud.open_destination_popup(station, dests, next_level)
+	AudioManager.sfx("ui_click")
 
 
 ## One-line row text (no tally). Stars mirror the old HUD panel exactly.

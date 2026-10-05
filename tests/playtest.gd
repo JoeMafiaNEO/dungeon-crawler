@@ -68,6 +68,7 @@ func _run() -> void:
 	_test_e_interact_not_dead_code()
 	_test_watchdog_resets_on_progress()
 	_test_r_wave_start_chain()
+	_test_destination_popup_replaces_3d()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -2429,7 +2430,8 @@ func _test_station_phase2() -> void:
 	_assert(bsrc.contains("func row_base_text"), "row text builder exists")
 	_assert(bsrc.contains("collision_layer = 4"), "rows on dedicated physics layer 4")
 	_assert(bsrc.contains("input_ray_pickable = true"), "rows are ray-pickable")
-	_assert(bsrc.contains("enter_reading"), "interact enters reading mode")
+	# Issue #29 scope update: 3D reading-mode interaction replaced by 2D popup.
+	_assert(bsrc.contains("open_destination_popup"), "interact opens 2D destination popup")
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
 	_assert(not hsrc.contains("func show_departure_board"), "floating board panel removed")
 	_assert(not hsrc.contains("func close_departure_board"), "close_departure_board gone")
@@ -4402,7 +4404,7 @@ func _test_e_interact_not_dead_code() -> void:
 	# Static: the _try_pickup() call must NOT be nested inside the early-return
 	# guard. Regression for the indentation bug that made E do nothing.
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	var idx_return := psrc.find("if hud != null and (hud.cipher_popup_open or _reading_board != null):")
+	var idx_return := psrc.find("hud.cipher_popup_open or _reading_board != null")
 	_assert(idx_return > 0, "#29: E guard found")
 	# The 'if Input.mouse_mode' guarding _try_pickup must be at elif-body
 	# level (3 tabs) — a sibling of the early-return if, NOT nested inside it
@@ -4479,3 +4481,21 @@ func _test_r_wave_start_chain() -> void:
 		indent += 1
 	_assert(indent == 3, "#32: wave-clear at ACTIVE level (3 tabs), runs every frame")
 	print("[Playtest] R wave-start chain done")
+
+
+func _test_destination_popup_replaces_3d() -> void:
+	print("[Playtest] 2D destination popup (issue #29 scope update)...")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func open_destination_popup"), "#29: HUD has open_destination_popup")
+	_assert(hsrc.contains("func close_destination_popup"), "#29: HUD has close_destination_popup")
+	_assert(hsrc.contains("func refresh_destination_popup"), "#29: HUD has refresh_destination_popup")
+	_assert(hsrc.contains("dest_popup_open"), "#29: dest popup open flag exists")
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("open_destination_popup"), "#29: board.interact opens the 2D popup")
+	_assert(not bsrc.contains("enter_reading"), "#29: board no longer uses 3D reading mode")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('hud.get("dest_popup_open")'), "#29: E guarded while dest popup open")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("_poll_boarding_zone"), "#29: boarding zone poll fallback exists")
+	_assert(ssrc.contains("refresh_destination_popup"), "#29: sync_votes refreshes popup")
+	print("[Playtest] 2D destination popup done")

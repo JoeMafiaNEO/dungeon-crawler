@@ -628,6 +628,13 @@ var _cipher_grace := 0.0
 
 
 func _input(event: InputEvent) -> void:
+	if dest_popup_open and _cipher_grace <= 0.0:
+		if event is InputEventKey:
+			var dk := event as InputEventKey
+			if dk.pressed and not dk.echo and (dk.physical_keycode == KEY_E or dk.physical_keycode == KEY_ESCAPE):
+				close_destination_popup()
+				get_viewport().set_input_as_handled()
+				return
 	if not cipher_popup_open or _cipher_grace > 0.0:
 		return
 	if event is InputEventKey:
@@ -682,6 +689,125 @@ func close_cipher_popup() -> void:
 		AudioManager.sfx("vault_close")
 	if not is_paused:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## Destination board popup (issue #29): 2D menu replacing the 3D
+## walk-up-and-read interaction. Lists destinations, click to vote.
+## Voting/unanimous rules unchanged — only the surface changed.
+var dest_popup_open := false
+var _dest_popup: Control = null
+var _dest_list: VBoxContainer = null
+var _dest_station: Node = null
+var _dest_destinations: Array = []
+var _dest_next_level := 1
+
+
+func open_destination_popup(station: Node, destinations: Array, next_level: int) -> void:
+	close_destination_popup()
+	_cipher_grace = 0.3
+	dest_popup_open = true
+	_dest_station = station
+	_dest_destinations = destinations.duplicate()
+	_dest_next_level = next_level
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.55)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(bg)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(520, 0)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "SELECT DESTINATION"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(title)
+	var hint := Label.new()
+	hint.text = "Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes)"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 13)
+	hint.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	vb.add_child(hint)
+	_dest_list = VBoxContainer.new()
+	_dest_list.add_theme_constant_override("separation", 4)
+	vb.add_child(_dest_list)
+	center.add_child(panel)
+	root.add_child(center)
+	_dest_popup = root
+	add_child(root)
+	_refresh_destination_list()
+	AudioManager.sfx("ui_click")
+
+
+func close_destination_popup() -> void:
+	if _dest_popup != null and is_instance_valid(_dest_popup):
+		_dest_popup.queue_free()
+	_dest_popup = null
+	_dest_list = null
+	_dest_station = null
+	dest_popup_open = false
+	if not is_paused and not cipher_popup_open:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## Rebuild the destination buttons with current vote tallies.
+## Called on open and whenever sync_votes arrives.
+func refresh_destination_popup(votes: Dictionary, my_vote: String) -> void:
+	if not dest_popup_open:
+		return
+	_refresh_destination_list(votes, my_vote)
+
+
+func _refresh_destination_list(votes: Dictionary = {}, my_vote: String = "") -> void:
+	if _dest_list == null:
+		return
+	for c in _dest_list.get_children():
+		c.queue_free()
+	# Pull live votes from the station if not supplied.
+	if votes.is_empty() and _dest_station != null:
+		votes = _dest_station.get("votes") as Dictionary
+	# Count votes per destination.
+	var tallies := {}
+	for tid in _dest_destinations:
+		tallies[tid] = 0
+	for peer_id in votes:
+		var tid := str(votes[peer_id])
+		if tallies.has(tid):
+			tallies[tid] = int(tallies[tid]) + 1
+	for tid in _dest_destinations:
+		var btn := Button.new()
+		var row_text := DepartureBoard.row_base_text(tid, _dest_next_level)
+		var n := int(tallies.get(tid, 0))
+		var label := row_text
+		if n > 0:
+			label += "   [%d vote%s]" % [n, "" if n == 1 else "s"]
+		if tid == my_vote:
+			label = ">> " + label
+		btn.text = label
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.add_theme_font_size_override("font_size", 15)
+		if tid == my_vote:
+			btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		var theme_id: String = str(tid)
+		btn.pressed.connect(_on_destination_chosen.bind(theme_id))
+		_dest_list.add_child(btn)
+
+
+func _on_destination_chosen(theme_id: String) -> void:
+	if _dest_station == null or not is_instance_valid(_dest_station):
+		return
+	_dest_station.rpc("cast_vote", theme_id)
+	AudioManager.sfx("ui_click")
+	# Refresh to show my vote highlight; the server sync_votes will
+	# refresh again with the authoritative tallies.
+	_refresh_destination_list()
 
 
 ## Poem popup: verse + cipher + shift hint. Game keeps running.

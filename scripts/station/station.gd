@@ -113,6 +113,10 @@ func _process(delta: float) -> void:
 	if _ring != null:
 		var s := 1.0 + sin(Time.get_ticks_msec() / 300.0) * 0.04
 		_ring.scale = Vector3(s, 1, s)
+	# Issue #29: poll fallback for the BOARD HERE zone. The Area3D
+	# body_entered signal can miss (physics flake); if the local player is
+	# standing in the zone during ALL ABOARD, report them boarded.
+	_poll_boarding_zone()
 	if not multiplayer.is_server():
 		return
 	if _boarding_active:
@@ -276,6 +280,10 @@ func sync_votes(v: Dictionary) -> void:
 		board.set_tallies(votes)
 		if board.has_method("set_my_vote"):
 			board.set_my_vote(str(votes.get(multiplayer.get_unique_id(), "")))
+	# Issue #29: refresh the 2D popup tallies if it's open.
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("refresh_destination_popup"):
+		hud.refresh_destination_popup(votes, str(votes.get(multiplayer.get_unique_id(), "")))
 
 
 ## Vendor stock (Phase 4): 3 fixed potions + 3 rotating items.
@@ -496,6 +504,32 @@ func _on_boarding_zone_body_entered(body: Node3D) -> void:
 	if int(body.get_multiplayer_authority()) != multiplayer.get_unique_id():
 		return
 	rpc("request_board")
+
+
+## Issue #29: poll fallback for the BOARD HERE zone. Runs on every peer;
+## if the local player is inside the zone box during ALL ABOARD, report
+## them boarded (idempotent — record_boarding just sets aboard[peer]=true).
+func _poll_boarding_zone() -> void:
+	if _boarding_locked or not _boarding_active:
+		return
+	if _boarding_zone == null:
+		return
+	var my_id := multiplayer.get_unique_id()
+	# Already boarded? Skip the scan.
+	if aboard.get(my_id, false):
+		return
+	var center := _boarding_zone.global_position
+	var half := Vector3(2.5, 1.25, 1.5) # matches the 5x2.5x3 BoxShape3D
+	for p in get_tree().get_nodes_in_group("players"):
+		var body := p as Node3D
+		if body == null:
+			continue
+		if int(body.get_multiplayer_authority()) != my_id:
+			continue
+		var d: Vector3 = body.global_position - center
+		if absf(d.x) <= half.x and absf(d.y) <= half.y and absf(d.z) <= half.z:
+			rpc("request_board")
+			return
 
 
 ## Departure ride for the annex (issue #2 Phase 3): re-dress for the
