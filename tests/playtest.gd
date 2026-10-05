@@ -319,9 +319,9 @@ func _test_station_phase5() -> void:
 	_assert(vis2 == ["village"], "unknown theme falls back to village dressing")
 	st.free()
 
-	# --- NOW BOARDING sign text (built in _build_station) ---
+	# --- NOW BOARDING sign text (built in _build_station_embedded) ---
 	var st2 = StationScript.new()
-	st2._build_station()
+	st2._build_station_embedded()
 	st2.apply_dressing("depths")
 	_assert(st2._boarding_sign != null and "THE DEPTHS" in st2._boarding_sign.text,
 		"NOW BOARDING sign names the destination")
@@ -342,12 +342,10 @@ func _test_station_phase5() -> void:
 	_assert(hsrc.contains("func announce(text: String, tint: Color"),
 		"announce takes a theme tint")
 
-	# --- Departure ride wiring: whistle -> chug -> fade before the hop ---
+	# --- Departure ride wiring: whistle -> chug -> fade (dungeon-driven) ---
 	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
-	_assert(ssrc.contains("func begin_departure"), "begin_departure RPC exists")
-	_assert(ssrc.find('rpc("begin_departure"') < ssrc.find('rpc("leave_station"'),
-		"departure ride runs before the station hop")
-	_assert(ssrc.find("func begin_departure") < ssrc.find('sfx("train_whistle")'),
+	_assert(ssrc.contains("func play_departure_ride"), "play_departure_ride exists")
+	_assert(ssrc.find("func play_departure_ride") < ssrc.find('sfx("train_whistle")'),
 		"whistle sounds in the departure ride")
 	_assert(ssrc.contains('sfx("train_chug")'), "chug in departure ride")
 	_assert(ssrc.contains("fade_out(1.2)"), "fade_out(1.2) in departure ride")
@@ -368,7 +366,6 @@ func _test_station_mp_vote_flow() -> void:
 	# (a) 3 fake peers drive the same record path the cast_vote RPC uses.
 	var living := [10, 11, 12]
 	var st = StationScript.new()
-	st.embedded = true # depart() emits departure_resolved instead of riding
 	root.add_child(st)
 	_assert(bool(st.record_vote(10, "dungeon", living)["ok"]), "peer 10 vote recorded")
 	_assert(bool(st.record_vote(11, "dungeon", living)["ok"]), "peer 11 vote recorded")
@@ -589,7 +586,6 @@ func _test_station_embedded() -> void:
 	var annex = AnnexScript.build(holder, plan, layout)
 	var st = StationScript.new()
 	st.name = "Station"
-	st.embedded = true
 	st.dungeon = holder
 	st.annex = annex
 	st.position = annex.hall_center()
@@ -638,7 +634,6 @@ func _test_station_embedded() -> void:
 
 	# 5. Split vote never emits, even from the host's own pick.
 	var st2 = StationScript.new()
-	st2.embedded = true
 	st2.dungeon = holder
 	st2.annex = annex
 	holder.add_child(st2)
@@ -657,8 +652,8 @@ func _test_station_embedded() -> void:
 
 	# 7. Dungeon wiring: embedded instance + departure handoff.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("station.embedded = true"),
-		"dungeon instances station in embedded mode")
+	_assert(dsrc.contains("StationScript.next_level_number = level_number + 1"),
+		"dungeon hands off next level to the station instance")
 	_assert(dsrc.contains("departure_resolved.connect(_on_station_departure_resolved)"),
 		"dungeon connects departure_resolved")
 	_assert(dsrc.contains("func _on_station_departure_resolved"),
@@ -709,8 +704,9 @@ func _test_annex_departure() -> void:
 	# 4. Ride rpc delegates to the station's local ride on all peers.
 	var ride_start := dsrc.find("func begin_annex_departure")
 	_assert(ride_start > 0, "departure: ride rpc exists")
-	var ride := dsrc.substr(ride_start, 600)
+	var ride := dsrc.substr(ride_start, 1400)
 	_assert(ride.contains("play_departure_ride"), "ride rpc: delegates to station")
+	_assert(ride.contains("supermarket_loot"), "ride: confiscates supermarket loot on exit")
 
 	# 5. Station ride order: whistle -> pull aboard -> fade -> chug + rumble.
 	var pr_start := ssrc.find("func play_departure_ride")
@@ -1242,8 +1238,8 @@ func _test_station_phase1() -> void:
 	var order: Array = DungeonScript.THEME_ORDER
 	_assert(order == ["village", "dungeon", "depths", "supermarket", "warlord"],
 		"THEME_ORDER unchanged")
-	# Theme rotation preserved: station departure must pick exactly what the
-	# old portal hop picked for levels 1..12.
+	# Theme rotation preserved: annex departure must pick exactly what the
+	# old level hop picked for levels 1..12.
 	var expected := ["village", "dungeon", "depths", "supermarket", "warlord",
 		"village", "dungeon", "depths", "supermarket", "warlord",
 		"village", "dungeon"]
@@ -1271,30 +1267,38 @@ func _test_station_phase1() -> void:
 		if not bool(item.get("supermarket_loot")):
 			kept.append(entry)
 	_assert(kept.size() == 1 and str(kept[0]["item"]["id"]) == "health_potion",
-		"station handoff confiscates supermarket loot, keeps potions")
+		"annex departure confiscates supermarket loot, keeps potions")
 	# Save & Quit from the station targets the NEXT level.
 	for cleared in [4, 5, 9]:
 		var nl: int = cleared + 1
 		var theme_id: String = order[(nl - 1) % order.size()]
 		_assert(theme_id == expected[nl - 1], "station save&quit level %d -> %s" % [nl, theme_id])
-	# Wiring: station scene + script + dungeon handoff + HUD timer.
-	_assert(ResourceLoader.exists("res://scenes/station/station.tscn"), "station.tscn exists")
+	# Wiring: station script (embedded-only) + dungeon handoff + HUD timer.
+	# (Issue #2 Phase 5: the standalone station scene and the portal are gone.)
+	_assert(not ResourceLoader.exists("res://scenes/station/station.tscn"), "standalone station.tscn removed")
 	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
 	_assert(ssrc.contains("static var next_level_number"), "Station.next_level_number handoff")
 	_assert(ssrc.contains("func depart"), "station depart() exists")
-	_assert(ssrc.contains("func leave_station"), "leave_station RPC exists")
+	_assert(not ssrc.contains("func leave_station"), "leave_station RPC removed")
 	_assert(ssrc.contains("func pull_aboard"), "pull_aboard RPC exists")
 	_assert(ssrc.contains("DEPART_TIME := 45.0"), "45s departure timer")
+	_assert(not ssrc.contains("func _build_station("), "standalone _build_station removed")
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("func go_to_station"), "go_to_station exists")
-	_assert(dsrc.contains("go_to_station_net"), "go_to_station_net RPC exists")
+	_assert(not dsrc.contains("func go_to_station"), "go_to_station removed")
+	_assert(not dsrc.contains("\"go_to_station_net\""), "go_to_station_net RPC removed")
+	_assert(not dsrc.contains("func spawn_portal"), "spawn_portal removed")
+	_assert(not dsrc.contains("spawn_portal"), "no portal spawns anywhere")
+	_assert(not dsrc.contains("func unseal_portal"), "unseal_portal removed")
+	_assert(not dsrc.contains("func unlock_portal"), "unlock_portal removed")
+	_assert(not dsrc.contains("_portal_sealed"), "_portal_sealed state removed")
 	_assert(not dsrc.contains("func advance_level"), "advance_level removed")
 	_assert(not dsrc.contains("func change_level"), "change_level removed")
-	_assert(dsrc.contains("Station.next_level_number"), "dungeon hands off next level to station")
+	_assert(dsrc.contains("next_level_number = level_number + 1"), "dungeon hands off next level to station")
+	_assert(dsrc.contains("func complete_level_objective"), "level objective completion kept")
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
 	_assert(hsrc.contains("func show_station_timer"), "show_station_timer exists")
 	_assert(hsrc.contains("func hide_station_timer"), "hide_station_timer exists")
-	_assert(hsrc.contains("func show_station_mode"), "show_station_mode exists")
+	_assert(not hsrc.contains("func show_station_mode"), "show_station_mode removed")
 	_assert(hsrc.contains("Station.next_level_number"), "save&quit is station-aware")
 
 

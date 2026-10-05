@@ -988,16 +988,6 @@ func hide_station_timer() -> void:
 	%StationTimerLabel.visible = false
 
 
-## Station pit-stop: hide wave UI, announce the safe room.
-func show_station_mode() -> void:
-	%WaveLabel.visible = false
-	%WaveStatus.visible = false
-	%NextWaveButton.visible = false
-	%MarketLabel.visible = false
-	hide_station_timer()
-	announce("TRAIN STATION — rest up, board when ready")
-
-
 # --- Downed / revive (co-op) ---
 
 func show_downed(seconds: float) -> void:

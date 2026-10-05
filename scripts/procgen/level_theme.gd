@@ -50,8 +50,8 @@ extends Resource
 @export var boss_id: String = ""
 
 # --- Puzzle ---
-## After the final wave the portal spawns sealed; players must find this many
-## keys scattered in the level to unseal it.
+## After the final wave this many keys scatter in the level; finding them
+## all clears the level (secures the run's gains).
 @export var puzzle_key_count: int = 3
 ## When true, ProcGen carves a backrooms-style maze of rock walls (depths).
 @export var maze_walls: bool = false

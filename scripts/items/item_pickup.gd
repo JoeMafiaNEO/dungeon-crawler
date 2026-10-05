@@ -13,7 +13,8 @@ var claimed := false
 ## across late-joiner re-syncs so scaled drops keep their scaled price.
 var value_mult := 1.0
 ## Key mode: this pickup is a puzzle key, not inventory loot. The dungeon
-## counts it toward unsealing the portal. Set before _ready runs.
+## counts it toward the key objective (finding them all clears the level).
+## Set before _ready runs.
 var is_key := false
 
 var _t := 0.0

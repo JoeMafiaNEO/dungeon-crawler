@@ -449,24 +449,6 @@ static func footstep() -> AudioStreamWAV:
 	return _wav(_noise(0.09, 28.0, 0.16, 0.0, 0.9))
 
 
-# --- portal ---
-
-static func portal_open() -> AudioStreamWAV:
-	# Shimmering rise with tremolo-ish detune.
-	return _wav(_mix([
-		_tone(300.0, 1200.0, 1.0, "sine", 2.5, 0.6),
-		_tone(450.0, 1800.0, 1.0, "sine", 2.5, 0.4, 0.05),
-		_tone(600.0, 2400.0, 1.0, "tri", 3.0, 0.3, 0.1),
-	]))
-
-
-static func portal_enter() -> AudioStreamWAV:
-	return _wav(_mix([
-		_tone(800.0, 200.0, 0.5, "sine", 5.0, 0.7),
-		_tone(1200.0, 300.0, 0.5, "tri", 6.0, 0.4, 0.05),
-	]))
-
-
 # --- train (station Phase 5) ---
 
 static func train_whistle() -> AudioStreamWAV:

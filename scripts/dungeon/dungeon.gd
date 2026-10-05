@@ -114,16 +114,14 @@ var _pickup_id := 0
 var _spawn_tick := 0.0
 var _wave_broadcast := 0.0
 var _local_hud: CanvasLayer
-var _portal: Area3D
-var _advancing := false
 var _boss: Mob = null
-# --- Portal puzzle ---
-var _portal_sealed := false
+# --- Key objective ---
 var _keys_needed := 0
 var _keys_found := 0
 # --- Station annex forfeit (issue #2 Phase 4) ---
-## True once the level objective is complete (the condition that used to open
-## the portal). Departing before this forfeits the level's gains.
+## True once the level objective is complete (all keys found, warlord
+## victory, or market gate unlocked). Departing before this forfeits the
+## level's gains.
 var level_cleared := false
 ## peer_id -> get_state() dict taken at spawn/join (server-side).
 var _entry_snapshots := {}
@@ -166,22 +164,20 @@ func _ready() -> void:
 		market_cash_goal = 500 + mkt_cycle * 250
 		market_earned_visit = 0
 		wave_state = WaveState.CLEARED  # skip wave logic
-		# Spawn the gate (sealed) and checkout immediately.
+		# Spawn checkout, potion shop, and cipher lockbox immediately.
 		if multiplayer.is_server():
-			rpc("spawn_portal", _portal_pos(), true)
 			_spawn_checkout()
 			_spawn_potion_shop()
 			# Mason's Cipher: the lockbox sits near the checkout (any cycle).
-			rpc("spawn_cipher_lockbox", _portal_pos() + Vector3(9, 0, 0))
+			rpc("spawn_cipher_lockbox", _plaza_pos() + Vector3(9, 0, 0))
 	# Mason's Cipher: one parchment note per dungeon level.
 	if multiplayer.is_server() and not is_supermarket and not is_warlord:
 		rpc("spawn_cipher_plaque", _cipher_plaque_pos())
-	# Warlord mode: RTS hybrid. No waves, no keys. Portal sealed until victory.
+	# Warlord mode: RTS hybrid. No waves, no keys. Victory clears the level.
 	is_warlord = theme.theme_id == "warlord"
 	if is_warlord:
 		wave_state = WaveState.CLEARED  # skip wave logic
 		if multiplayer.is_server():
-			rpc("spawn_portal", _portal_pos(), true)
 			# Defer RTS setup until players have spawned.
 			_warlord_setup_pending = true
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -481,52 +477,15 @@ func _hp_scale() -> float:
 	return _danger_mult() * NetworkManager.host_difficulty * adapt
 
 
-## Portal exits now lead to the train station pit-stop (Phase 1).
-## The station owns the departure timer, the run save, and the hop to the
-## next themed level; this just hands off per-peer player state.
-func go_to_station() -> void:
-	if not multiplayer.is_server() or _advancing:
-		return
-	_advancing = true
-	rpc("go_to_station_net")
-
-
-@rpc("any_peer", "call_local")
-func go_to_station_net() -> void:
-	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_id:
-		return
-	var me := _my_player()
-	if me != null:
-		# Leaving the supermarket: confiscate supermarket loot (potions stay).
-		# Cash persists across the run now (Phase 4) — only loot is taken.
-		if theme != null and theme.theme_id == "supermarket":
-			var kept: Array = []
-			for entry in me.get("inventory"):
-				var item = entry["item"]
-				if not bool(item.get("supermarket_loot")):
-					kept.append(entry)
-			me.set("inventory", kept)
-		saved_player_state = me.get_state()
-		# NOTE: run save + deepest-cycle meta moved to the station departure.
-	Station.next_level_number = level_number + 1
-	AudioManager.sfx("portal_enter")
-	# Deferred: go_to_station_net can run inside the portal's physics
-	# callback, and freeing CollisionObjects during physics is illegal.
-	get_tree().call_deferred("change_scene_to_file", "res://scenes/station/station.tscn")
-
-
 # --- Mobs (host only) ---
 
 func _process(delta: float) -> void:
 	# Sim clock for the RTS economy (respawns etc.) — tracks time_scale.
 	sim_time += delta
-	# Torch flicker and portal spin run on every peer; pure ambience.
+	# Torch flicker runs on every peer; pure ambience.
 	var t := Time.get_ticks_msec() / 1000.0
 	for i in _torch_lights.size():
 		_torch_lights[i].light_energy = 1.4 + sin(t * 7.0 + float(i) * 2.1) * 0.18
-	if _portal != null and is_instance_valid(_portal):
-		_portal.rotate_y(delta * 1.5)
 	if multiplayer.is_server():
 		# Deferred warlord setup: wait for at least one player.
 		if _warlord_setup_pending and not get_tree().get_nodes_in_group("players").is_empty():
@@ -1016,9 +975,8 @@ func spawn_rts_node(res_type: String, pos: Vector3) -> void:
 
 
 func _on_warlord_winner(winner_faction: int) -> void:
-	rpc("announce", "VICTORY! The portal is open.")
-	# Unseal the portal.
-	rpc("unseal_portal")
+	rpc("announce", "VICTORY!")
+	rpc("complete_level_objective")
 
 
 ## Server-side: start construction of a building at a position.
@@ -1089,7 +1047,7 @@ func _spawn_building_local(faction_id: int, btype: String, pos: Vector3, civ_id:
 
 ## Checkout counter: walk through to auto-sell supermarket loot for cash.
 func _spawn_checkout() -> void:
-	var pos := _portal_pos() + Vector3(12, 0, 0)
+	var pos := _plaza_pos() + Vector3(12, 0, 0)
 	rpc("spawn_checkout", pos)
 
 
@@ -1152,7 +1110,7 @@ func _on_checkout_body(body: Node3D, checkout: Area3D) -> void:
 
 ## Potion shop: 3D counter with 3 buyable potions. E at a pedestal to buy.
 func _spawn_potion_shop() -> void:
-	var base := _portal_pos() + Vector3(-14, 0, 0)
+	var base := _plaza_pos() + Vector3(-14, 0, 0)
 	var potions := [
 		{"id": "health_potion", "price": 50, "color": Color(0.9, 0.2, 0.2), "label": "Health Potion\n$50"},
 		{"id": "swift_potion", "price": 75, "color": Color(0.2, 0.7, 1.0), "label": "Swift Potion\n$75"},
@@ -1275,35 +1233,21 @@ func _sell_player_loot(player: Node) -> void:
 
 
 func _check_gate_unlock() -> void:
-	if not is_supermarket or not _portal_sealed:
+	if not is_supermarket or level_cleared:
 		return
 	# Gate integrity: unlock on per-visit EARNINGS, not held cash. Cash is
 	# persistent (Phase 4), so a team-cash check would trivialize future gates
 	# and spending could re-lock this one. Earnings only grow.
+	# (Issue #2 Phase 5: the old sealed-portal gate is gone — reaching the
+	# earnings goal clears the level outright, securing the run's gains.)
 	if gate_unlocked(market_earned_visit, market_cash_goal):
-		_portal_sealed = false
-		rpc("unlock_portal")
 		rpc("announce", "GATE UNLOCKED!")
+		rpc("complete_level_objective")
 
 
 ## Static for testability: the gate opens on per-visit earnings.
 static func gate_unlocked(earned: int, goal: int) -> bool:
 	return earned >= goal
-
-
-@rpc("any_peer", "call_local")
-func unlock_portal() -> void:
-	_portal_sealed = false
-	# Update portal visual to unlocked (cyan).
-	if _portal != null and is_instance_valid(_portal):
-		var ring = _portal.get_node_or_null("Ring")
-		if ring != null:
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = Color(0.3, 0.9, 1.0)
-			mat.emission_enabled = true
-			mat.emission = Color(0.3, 0.9, 1.0)
-			mat.emission_energy_multiplier = 2.0
-			(ring as MeshInstance3D).material_override = mat
 
 
 func _random_floor_pos() -> Vector3:
@@ -1438,13 +1382,12 @@ func _wave_cleared() -> void:
 	if wave >= TOTAL_WAVES:
 		wave_state = WaveState.CLEARED
 		_shower_loot()
-		# The exit portal spawns SEALED: the party must find every key first.
+		# Keys spawn: the party must find every key to clear the level.
 		_keys_needed = theme.puzzle_key_count
 		_keys_found = 0
-		rpc("spawn_portal", _portal_pos(), true)
 		for spot in _key_spots():
 			rpc("spawn_key", spot)
-		rpc("announce", "%s CLEARED! The portal is SEALED -- find %d keys!" % [theme.display_name.to_upper(), _keys_needed])
+		rpc("announce", "%s CLEARED! Find %d keys to clear the level!" % [theme.display_name.to_upper(), _keys_needed])
 		rpc("update_key_count", 0, _keys_needed)
 	else:
 		wave_state = WaveState.INTERMISSION
@@ -1486,8 +1429,9 @@ func _shower_loot() -> void:
 		rpc("spawn_pickup", item_id, pos)
 
 
-func _portal_pos() -> Vector3:
-	# Away from the center so nobody trips it while grabbing loot.
+## Exit-plaza landmark: away from the center so checkout/shop/lockbox
+## don't crowd the loot shower.
+func _plaza_pos() -> Vector3:
 	if _layout.mob_spawns.is_empty():
 		return Vector3(0, 0, -8.0)
 	var pos: Vector3 = _layout.mob_spawns[randi() % _layout.mob_spawns.size()]
@@ -1739,7 +1683,7 @@ func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> voi
 	$Pickups.add_child(pickup)
 
 
-## Spawns a puzzle key. Keys never expire and count toward unsealing the portal.
+## Spawns a puzzle key. Keys never expire and count toward the key objective.
 @rpc("any_peer", "call_local")
 func spawn_key(pos: Vector3) -> void:
 	_pickup_id += 1
@@ -1780,85 +1724,7 @@ func _cipher_plaque_pos() -> Vector3:
 	return Vector3(p.x, 0.6, p.z)
 
 
-# --- Portal ---
-
-@rpc("any_peer", "call_local")
-func spawn_portal(pos: Vector3, sealed: bool) -> void:
-	if _portal != null and is_instance_valid(_portal):
-		return
-	AudioManager.sfx("portal_open", pos)
-	_portal_sealed = sealed
-	var root := Area3D.new()
-	root.name = "Portal"
-	root.position = pos
-	var col := CollisionShape3D.new()
-	var cyl := CylinderShape3D.new()
-	cyl.radius = 1.6
-	cyl.height = 3.0
-	col.shape = cyl
-	col.position.y = 1.5
-	root.add_child(col)
-	var ring := MeshInstance3D.new()
-	ring.name = "Ring"
-	var tm := TorusMesh.new()
-	tm.outer_radius = 1.4
-	tm.inner_radius = 1.1
-	tm.rings = 24
-	tm.ring_segments = 48
-	var pmat := StandardMaterial3D.new()
-	tm.material = pmat
-	ring.mesh = tm
-	ring.position.y = 1.5
-	ring.rotation_degrees.x = 90.0
-	root.add_child(ring)
-	var swirl := _make_portal_particles()
-	swirl.name = "Swirl"
-	swirl.position.y = 1.5
-	root.add_child(swirl)
-	var light := OmniLight3D.new()
-	light.name = "Glow"
-	light.omni_range = 9.0
-	light.position.y = 1.5
-	root.add_child(light)
-	root.body_entered.connect(_on_portal_body)
-	add_child(root)
-	_portal = root
-	_apply_portal_visual()
-
-
-## Colors the portal by seal state: chained red while sealed, cyan when open.
-func _apply_portal_visual() -> void:
-	if _portal == null or not is_instance_valid(_portal):
-		return
-	var ring := _portal.get_node_or_null("Ring") as MeshInstance3D
-	var swirl := _portal.get_node_or_null("Swirl") as GPUParticles3D
-	var light := _portal.get_node_or_null("Glow") as OmniLight3D
-	if _portal_sealed:
-		if ring != null:
-			var m := ring.mesh as TorusMesh
-			var pmat := m.material as StandardMaterial3D
-			pmat.albedo_color = Color(0.55, 0.12, 0.12)
-			pmat.emission_enabled = true
-			pmat.emission = Color(0.8, 0.15, 0.1)
-			pmat.emission_energy_multiplier = 1.2
-		if swirl != null:
-			swirl.emitting = false
-		if light != null:
-			light.light_color = Color(0.8, 0.2, 0.15)
-			light.light_energy = 1.0
-	else:
-		if ring != null:
-			var m := ring.mesh as TorusMesh
-			var pmat := m.material as StandardMaterial3D
-			pmat.albedo_color = Color(0.3, 0.9, 1.0)
-			pmat.emission_enabled = true
-			pmat.emission = Color(0.25, 0.8, 1.0)
-			pmat.emission_energy_multiplier = 2.5
-		if swirl != null:
-			swirl.emitting = true
-		if light != null:
-			light.light_color = Color(0.35, 0.85, 1.0)
-			light.light_energy = 2.0
+# --- Key objective ---
 
 
 ## Server-side: a key was claimed by a player.
@@ -1870,7 +1736,7 @@ func collect_key(claimer: int) -> void:
 	AudioManager.sfx("key")
 	rpc("update_key_count", _keys_found, _keys_needed)
 	if _keys_found >= _keys_needed:
-		rpc("unseal_portal")
+		rpc("complete_level_objective")
 
 
 @rpc("any_peer", "call_local")
@@ -1880,69 +1746,14 @@ func update_key_count(found: int, needed: int) -> void:
 	_push_wave_info()
 
 
+## The level objective is complete (all keys found, warlord victory, or
+## market gate unlocked): gains from this level are secured, no forfeit on
+## departure. (Issue #2 Phase 5: renamed from unseal_portal; the portal is gone.)
 @rpc("any_peer", "call_local")
-func unseal_portal() -> void:
-	_portal_sealed = false
-	_apply_portal_visual()
-	AudioManager.sfx("unlock")
-	rpc("announce", "PORTAL UNSEALED! Get to the portal!")
-	# Station annex (issue #2 Phase 4): the level objective is complete —
-	# gains from this level are secured, no forfeit on departure.
+func complete_level_objective() -> void:
 	level_cleared = true
+	AudioManager.sfx("unlock")
 	rpc("announce", "Level cleared — gains secured.")
-
-
-func _make_portal_particles() -> GPUParticles3D:
-	var parts := GPUParticles3D.new()
-	parts.amount = 40
-	parts.lifetime = 1.2
-	parts.emitting = true
-	var pm := ParticleProcessMaterial.new()
-	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_RING
-	pm.emission_ring_axis = Vector3(0, 0, 1)
-	pm.emission_ring_height = 0.0
-	pm.emission_ring_radius = 1.25
-	pm.emission_ring_inner_radius = 1.1
-	pm.direction = Vector3(0, 1, 0)
-	pm.spread = 12.0
-	pm.initial_velocity_min = 0.8
-	pm.initial_velocity_max = 1.6
-	pm.gravity = Vector3.ZERO
-	pm.scale_min = 0.06
-	pm.scale_max = 0.14
-	pm.color = Color(0.4, 0.9, 1.0)
-	parts.process_material = pm
-	var quad := QuadMesh.new()
-	quad.size = Vector2(0.12, 0.12)
-	var qmat := StandardMaterial3D.new()
-	qmat.albedo_color = Color(0.5, 0.95, 1.0)
-	qmat.emission_enabled = true
-	qmat.emission = Color(0.4, 0.9, 1.0)
-	qmat.emission_energy_multiplier = 2.0
-	qmat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	quad.material = qmat
-	parts.draw_pass_1 = quad
-	return parts
-
-
-func _on_portal_body(body: Node3D) -> void:
-	if not multiplayer.is_server():
-		return
-	if not body.is_in_group("players"):
-		return
-	if _portal_sealed:
-		# Nudge only the player who bumped into it.
-		var peer_id := int(body.name.get_slice("_", 1))
-		rpc_id(peer_id, "portal_denied")
-		return
-	go_to_station()
-
-
-@rpc("any_peer", "call_local")
-func portal_denied() -> void:
-	AudioManager.sfx("ui_error")
-	if _local_hud != null:
-		_local_hud.announce("Sealed! Find the remaining keys.")
 
 
 # --- Arena construction from the procedural layout ---
@@ -1977,10 +1788,12 @@ func _build_station_annex_content() -> void:
 	var StationScript: GDScript = load("res://scripts/station/station.gd")
 	var station = StationScript.new()
 	station.name = "Station"
-	station.embedded = true
 	station.dungeon = self
 	station.annex = annex
 	station.position = annex.hall_center()
+	# Handoff the departures board needs: recommended levels are computed
+	# against the upcoming level number (set before add_child / _ready).
+	StationScript.next_level_number = level_number + 1
 	station.departure_resolved.connect(_on_station_departure_resolved)
 	add_child(station)
 
@@ -2069,6 +1882,18 @@ func _boarding_spots() -> Dictionary:
 ## chug+rumble/fade locally.
 @rpc("any_peer", "call_local")
 func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
+	# Leaving the supermarket: confiscate supermarket loot (potions stay).
+	# Cash persists across the run — only loot is taken. Each peer strips
+	# its own player (moved here from the old go_to_station_net).
+	if theme != null and theme.theme_id == "supermarket":
+		var me := _my_player()
+		if me != null:
+			var kept: Array = []
+			for entry in me.get("inventory"):
+				var item = entry["item"]
+				if not bool(item.get("supermarket_loot")):
+					kept.append(entry)
+			me.set("inventory", kept)
 	var station := get_node_or_null("Station")
 	if station != null and station.has_method("play_departure_ride"):
 		station.play_departure_ride(theme_id, spots)

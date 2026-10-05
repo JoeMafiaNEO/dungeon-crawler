@@ -7,7 +7,7 @@ const HINTS := [
 	{"id": "pickup", "text": "Press E near glowing loot to pick it up.", "trigger": "near_loot"},
 	{"id": "inventory", "text": "Press I to open inventory. Click items to use them.", "trigger": "first_loot"},
 	{"id": "wave", "text": "Survive all waves. Host presses START NEXT WAVE.", "trigger": "wave1"},
-	{"id": "portal", "text": "Find keys to unlock the portal. Check the HUD for key count.", "trigger": "sealed_portal"},
+	{"id": "keys", "text": "Find keys to clear the level. Check the HUD for key count.", "trigger": "keys_remaining"},
 	{"id": "dash", "text": "Press Shift to dash (brief invincibility).", "trigger": "first_damage"},
 	{"id": "ping", "text": "Press G to ping a location for your team.", "trigger": "multiplayer"},
 ]
