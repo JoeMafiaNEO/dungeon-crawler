@@ -844,6 +844,7 @@ func _refresh_collection_log() -> void:
 		(cols[idx % 2] as VBoxContainer).add_child(row)
 		idx += 1
 	_refresh_cipher_section()
+	_refresh_combo_codex()
 
 
 ## Architect Cipher section: collected fragments as raw cipher + shift hint
@@ -869,6 +870,30 @@ func _refresh_cipher_section() -> void:
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		row.add_theme_font_size_override("font_size", 11)
 		row.add_theme_color_override("font_color", Color(0.8, 0.75, 0.55))
+		%CollectionLog.add_child(row)
+
+
+## Combo Finishers codex (issue #8 Phase 2): 5 fixed rows. Undiscovered
+## show "???" + hint, discovered show name + trigger. Compact, zero-scroll.
+func _refresh_combo_codex() -> void:
+	var found: Array = SaveManager.get_combos_discovered()
+	var header := Label.new()
+	header.text = "Combo Finishers — %d/5" % found.size()
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	%CollectionLog.add_child(header)
+	for f in Combo.COMBO_FINISHERS:
+		var fid := str(f["id"])
+		var row := Label.new()
+		if fid in found:
+			row.text = "◆ %s — %s" % [str(f["name"]), str(f["trigger_desc"])]
+			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		else:
+			row.text = "◇ ??? — %s" % str(f["hint"])
+			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		row.add_theme_font_size_override("font_size", 11)
 		%CollectionLog.add_child(row)
 
 
@@ -1336,3 +1361,4 @@ func _item_summary(item: ItemData) -> String:
 func set_command_view(on: bool) -> void:
 	%Crosshair.visible = not on
 	%AbilityBar.visible = not on
+

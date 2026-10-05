@@ -39,30 +39,35 @@ const COMBO_FINISHERS := [
 		"name": "Orbital Strike",
 		"trigger_desc": "Meteor impacts a marked target",
 		"effect": "+100% meteor damage, 2x blast radius",
+		"hint": "A marked foe, struck from the sky...",
 	},
 	{
 		"id": "stormcall",
 		"name": "Stormcall",
 		"trigger_desc": "Chain lightning cast while standing inside a War Horn aura",
 		"effect": "Chains 6 targets, +25% damage",
+		"hint": "Lightning, empowered by the war horn's call...",
 	},
 	{
 		"id": "shatter_cascade",
 		"name": "Shatter Cascade",
 		"trigger_desc": "Fan of Knives killing blow on a frost-slowed enemy",
 		"effect": "Frost nova burst (3m, slow + damage)",
+		"hint": "A frozen foe, shattered by a flurry of blades...",
 	},
 	{
 		"id": "reciprocity_surge",
 		"name": "Reciprocity Surge",
 		"trigger_desc": "Meteor killing blow inside a Reciprocity aura",
 		"effect": "Team heal burst (20% max HP, all living allies)",
+		"hint": "Death within the circle of reciprocity mends the party...",
 	},
 	{
 		"id": "smoke_bombard",
 		"name": "Smoke Bombard",
 		"trigger_desc": "Meteor impact inside smoke veil",
 		"effect": "+50% blast radius, hit enemies blinded (miss chance, 4s)",
+		"hint": "Fire falling through shadow blinds the enemy...",
 	},
 ]
 
@@ -267,8 +272,11 @@ static func apply_team_heal(tree: SceneTree) -> void:
 
 ## Banner + SFX for a triggered finisher. The dungeon RPC fans out to every
 ## peer (gold banner + shared thunderclap), so clients see it too.
+## Server-side: records the codex discovery (first trigger shows a toast).
 static func announce_finisher(tree: SceneTree, finisher_id: String) -> void:
+	var is_new := SaveManager.add_combo_discovered(finisher_id)
 	var dungeon := tree.get_first_node_in_group("dungeon")
 	if dungeon == null or not dungeon.has_method("announce_combo"):
 		return
-	dungeon.rpc("announce_combo", finisher_id)
+	dungeon.rpc("announce_combo", finisher_id, is_new)
+
