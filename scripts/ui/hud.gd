@@ -72,9 +72,9 @@ func _build_bounty_tracker() -> void:
 	_bounty_tracker.name = "BountyTracker"
 	_bounty_tracker.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_bounty_tracker.offset_left = -516.0
-	_bounty_tracker.offset_top = 120.0
+	_bounty_tracker.offset_top = 130.0
 	_bounty_tracker.offset_right = -16.0
-	_bounty_tracker.offset_bottom = 204.0
+	_bounty_tracker.offset_bottom = 214.0
 	_bounty_tracker.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_bounty_tracker.add_theme_font_size_override("font_size", 14)
 	_bounty_tracker.add_theme_color_override("font_color", Color(1.0, 0.88, 0.55))
@@ -434,14 +434,10 @@ func show_bounty() -> void:
 	var bnode := get_tree().get_first_node_in_group("bounty_system")
 	if bnode == null or _player == null:
 		return
-	# Issue #34 escalation: be defensive — a null bounties/progress must not
-	# silently abort the popup (GDScript runtime errors kill the function).
 	var bounties: Array = bnode.get("bounties")
-	if bounties == null or bounties.size() != 3:
+	if bounties.size() != 3:
 		return
 	var progress: Dictionary = _player.get("bounty_progress")
-	if progress == null:
-		progress = {}
 	bounty_open = true
 	AudioManager.sfx("bounty_accept")
 	var vb := _cipher_panel()
@@ -1438,11 +1434,17 @@ func announce(text: String, tint: Color = Color(1.0, 1.0, 1.0)) -> void:
 	%AnnounceLabel.text = text
 	%AnnounceLabel.modulate = Color(tint.r, tint.g, tint.b, 1.0)
 	%AnnounceLabel.scale = Vector2(1.25, 1.25)
-	# Issue #23: shrink-to-fit so wide banners don't overflow at 1920x1080.
-	# Issue #46: more aggressive — start at 15 chars, floor at 24pt.
+	# Issue #23/#46/#52: shrink-to-fit so wide banners don't overflow at 1920x1080.
+	# Pixel-accurate: measure the text width at 72pt, scale down to fit 1820px.
 	var font_size := 72
-	if text.length() > 15:
-		font_size = maxi(24, int(72.0 * 15.0 / text.length()))
+	var font := %AnnounceLabel.get_theme_font("font")
+	if font != null:
+		var w72 := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 72).x
+		if w72 > 1820.0:
+			font_size = maxi(16, int(72.0 * 1820.0 / w72))
+	elif text.length() > 15:
+		# Fallback if font not available: aggressive char-count shrink.
+		font_size = maxi(16, int(72.0 * 15.0 / text.length()))
 	%AnnounceLabel.add_theme_font_size_override("font_size", font_size)
 	var tw := create_tween()
 	tw.set_parallel(true)
