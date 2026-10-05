@@ -501,6 +501,72 @@ static func train_door_close() -> AudioStreamWAV:
 	]))
 
 
+# --- boarding + apex (issue #3 Phase 2, issue #5) ---
+
+static func all_aboard() -> AudioStreamWAV:
+	# Conductor's call: bright air-whistle in a long-short-long "ALL a-BOARD"
+	# cadence. Distinct from the departure train_whistle.
+	return _wav(_mix([
+		_tone(740.0, 735.0, 0.32, "sine", 2.2, 0.70),
+		_tone(747.0, 742.0, 0.32, "sine", 2.2, 0.40),
+		_tone(587.0, 583.0, 0.16, "sine", 2.2, 0.70, 0.34),
+		_tone(592.0, 588.0, 0.16, "sine", 2.2, 0.40, 0.34),
+		_tone(740.0, 730.0, 0.55, "sine", 2.2, 0.70, 0.52),
+		_tone(747.0, 737.0, 0.55, "sine", 2.2, 0.40, 0.52),
+	]))
+
+
+static func board_chime() -> AudioStreamWAV:
+	# Warm two-note chime as a player steps through the train door.
+	return _wav(_mix([
+		_tone(659.25, 659.25, 0.22, "sine", 9.0, 0.70),
+		_tone(880.0, 880.0, 0.30, "sine", 9.0, 0.60, 0.12),
+	]))
+
+
+static func door_lock() -> AudioStreamWAV:
+	# Heavy bolt: low thud, metallic slide, final clunk as the car seals.
+	return _wav(_mix([
+		_tone(120.0, 60.0, 0.18, "square", 20.0, 0.60),
+		_noise(0.25, 18.0, 0.45, 0.10, 0.45),
+		_tone(210.0, 130.0, 0.14, "square", 22.0, 0.50, 0.30),
+	]))
+
+
+static func countdown_tick() -> AudioStreamWAV:
+	# Short beep for the final seconds of the boarding/vote countdown.
+	return _wav(_tone(1250.0, 1250.0, 0.07, "square", 30.0, 0.45))
+
+
+static func vote_cast() -> AudioStreamWAV:
+	# Ballot blip: paper swish + confirm blip on the departure board.
+	return _wav(_mix([
+		_noise(0.09, 30.0, 0.50, 0.0, 0.35),
+		_tone(660.0, 660.0, 0.12, "sine", 18.0, 0.60, 0.08),
+	]))
+
+
+static func apex_announce() -> AudioStreamWAV:
+	# Arena horn fanfare: deep brass swell, root + fifth + octave hit, when the
+	# board swaps a row to APEX ARENA.
+	return _wav(_mix([
+		_tone(98.0, 96.0, 1.10, "saw", 2.6, 0.70),
+		_tone(147.0, 144.0, 1.10, "saw", 2.6, 0.55, 0.04),
+		_tone(196.0, 190.0, 0.90, "saw", 3.0, 0.50, 0.25),
+		_tone(49.0, 47.0, 1.20, "sine", 2.4, 0.90, 0.02),
+	]))
+
+
+static func apex_roar() -> AudioStreamWAV:
+	# Apex predator: boss_roar's bigger brother — lower, longer, sub-rumble bed.
+	return _wav(_mix([
+		_tone(70.0, 42.0, 1.10, "saw", 26.0, 0.90),
+		_tone(105.0, 63.0, 1.10, "saw", 22.0, 0.70, 0.06),
+		_tone(45.0, 30.0, 1.20, "sine", 30.0, 1.00, 0.08),
+		_noise(1.00, 6.0, 0.35, 0.05, 0.80),
+	]))
+
+
 # --- UI ---
 
 static func ui_click() -> AudioStreamWAV:

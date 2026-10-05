@@ -165,6 +165,24 @@ static func make_track(theme_id: String) -> AudioStreamWAV:
 				[[48, 51, 55, 60], [44, 48, 51, 56], [46, 50, 53, 58], [43, 47, 50, 55]],
 				[24, 20, 22, 19],
 				[60, 63, 65, 67, 70, 72], 6.0, "bell", 0.09, 303)
+		"supermarket":
+			# Bright muzak: C - G - Am - F, bouncy plucked melody, brisk pace.
+			return _render(
+				[[48, 52, 55, 60], [43, 47, 50, 55], [45, 48, 52, 57], [41, 45, 48, 53]],
+				[36, 31, 33, 29],
+				[76, 79, 81, 84, 81, 79, 76, 74], 2.5, "pluck", 0.0, 505)
+		"warlord":
+			# Martial war-pulse: Dm - Bb - Dm - A, driving low bass, horn calls.
+			return _render(
+				[[50, 53, 57, 62], [46, 50, 53, 58], [50, 53, 57, 62], [45, 49, 52, 57]],
+				[26, 22, 26, 21],
+				[62, 62, 65, 62, 69, 67, 65, 62], 3.0, "bell", 0.02, 606)
+		"apex":
+			# Epic arena: Em - C - G - D, heavy bells, deep wind bed.
+			return _render(
+				[[52, 55, 59, 64], [48, 52, 55, 60], [43, 47, 50, 55], [50, 54, 57, 62]],
+				[28, 24, 19, 26],
+				[64, 67, 71, 72, 71, 67, 64, 62], 5.0, "bell", 0.08, 707)
 		_:
 			# Menu: calm mystery, Am - F - C - G.
 			return _render(

@@ -37,6 +37,7 @@ func _run() -> void:
 	_test_station_phase5()
 	_test_station_mp_vote_flow()
 	_test_music_queued_pickup()
+	_test_audio_coverage()
 	_test_station_annex()
 	_test_station_embedded()
 	_test_annex_departure()
@@ -670,6 +671,34 @@ func _test_music_queued_pickup() -> void:
 	am._gen_busy = old_busy
 	am._queued_theme = old_queued
 	am._mus_theme = old_theme
+
+
+func _test_audio_coverage() -> void:
+	print("[Playtest] Audio: SFX coverage audit...")
+	# Sound Engineer audit (2026-10-04): every SFX the game requests must both
+	# synth a non-empty stream AND be registered in AudioManager's builder
+	# list — unregistered names are silently dropped by sfx().
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	# Previously silent: requested by gameplay (player.gd) but missing from
+	# the builder list — supermarket checkout + mage Holy Light made no sound.
+	for sfx in ["cash_register", "holy_light", "holy_light_cast"]:
+		var w: AudioStreamWAV = SoundScript.call(sfx)
+		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
+		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
+	# New: boarding flow (all_aboard banner, per-player chime, door lock,
+	# countdown beep, vote blip) + apex arena (announce fanfare, apex roar).
+	for sfx in ["all_aboard", "board_chime", "door_lock", "countdown_tick",
+			"vote_cast", "apex_announce", "apex_roar"]:
+		var w2: AudioStreamWAV = SoundScript.call(sfx)
+		_assert(w2 != null and w2.data.size() > 0, "synth builds %s" % sfx)
+		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
+	# Music: supermarket / warlord / apex now render their own themes instead
+	# of falling through to the menu default track.
+	var MusicScript := load("res://scripts/audio/music_gen.gd")
+	for theme in ["supermarket", "warlord", "apex"]:
+		var t: AudioStreamWAV = MusicScript.make_track(theme)
+		_assert(t != null and t.data.size() > 0, "music renders %s theme" % theme)
 
 
 func _test_station_annex() -> void:
