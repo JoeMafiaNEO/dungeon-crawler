@@ -69,6 +69,7 @@ func _run() -> void:
 	_test_watchdog_resets_on_progress()
 	_test_r_wave_start_chain()
 	_test_destination_popup_replaces_3d()
+	_test_destination_popup_manual_only()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4499,3 +4500,35 @@ func _test_destination_popup_replaces_3d() -> void:
 	_assert(ssrc.contains("_poll_boarding_zone"), "#29: boarding zone poll fallback exists")
 	_assert(ssrc.contains("refresh_destination_popup"), "#29: sync_votes refreshes popup")
 	print("[Playtest] 2D destination popup done")
+
+
+func _test_destination_popup_manual_only() -> void:
+	print("[Playtest] destination popup manual-open only (issue #29 refinement)...")
+	# Jesse's call: the 2D popup must ONLY open when the player walks up to
+	# the physical board and presses E. No proximity auto-open, no timers.
+	# The single call site must be DepartureBoard.interact().
+	var files := [
+		"res://scripts/station/station.gd",
+		"res://scripts/dungeon/dungeon.gd",
+		"res://scripts/player/player.gd",
+		"res://scripts/ui/hud.gd",
+	]
+	for f in files:
+		var src := FileAccess.get_file_as_string(f)
+		# Count call sites of open_destination_popup( — the definition itself
+		# lives in hud.gd, so allow exactly one occurrence there.
+		var count := 0
+		var idx := 0
+		while true:
+			idx = src.find("open_destination_popup(", idx)
+			if idx < 0:
+				break
+			count += 1
+			idx += 1
+		if f.ends_with("hud.gd"):
+			_assert(count == 1, "#29: only the def in hud.gd, no auto-open calls")
+		else:
+			_assert(count == 0, "#29: no auto-open call in %s" % f.get_file())
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("open_destination_popup"), "#29: board.interact is the sole trigger")
+	print("[Playtest] destination popup manual-open only done")
