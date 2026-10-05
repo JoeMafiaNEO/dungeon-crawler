@@ -207,6 +207,10 @@ func _on_pause_tab_pressed(idx: int) -> void:
 		_pause_tab_btns[i].button_pressed = i == idx
 		_style_tab_button(_pause_tab_btns[i], i == idx)
 	_apply_pause_tab_visibility()
+	# Issue #37 reopened: refresh the collection log on tab switch so the
+	# redundant headers hide when there's full progress content.
+	if idx == 2:
+		_refresh_collection_log()
 	# Stats and Collection tabs are designed to fit; scrolling hard-disabled
 	# (layouts that cannot scroll, not promises). Specialization keeps
 	# auto-scroll as a safety valve.
@@ -1265,12 +1269,32 @@ func _refresh_collection_log() -> void:
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if sig_done else Color(0.8, 0.75, 0.55))
 		row.text = txt
 		row.tooltip_text = _collection_tooltip(fam, earned, sig_done)
-		row.add_theme_font_size_override("font_size", 10)
+		row.add_theme_font_size_override("font_size", 9)
 		(cols[idx % 2] as VBoxContainer).add_child(row)
 		idx += 1
 	_refresh_cipher_section()
 	_refresh_combo_codex()
 	_refresh_trophy_section()
+	_hide_redundant_collection_headers()
+
+
+## Issue #37 reopened: hide redundant Collection headers when the log has
+## real content. Saves 3 rows (~54px) in the full-progress state.
+func _hide_redundant_collection_headers() -> void:
+	if _pause_tab != 2:
+		return
+	# Has content if any section has rows beyond the family grid.
+	var has_content := %CollectionLog.get_child_count() > 2
+	var scroll := %PausePanel.get_node("PauseMain/PauseScroll") as ScrollContainer
+	if scroll == null:
+		return
+	var vbox := scroll.get_node("PauseVBox") as VBoxContainer
+	if vbox == null:
+		return
+	for nn in ["FamilyLabel", "FamilyPanel", "CollectionLabel"]:
+		var ctl := vbox.get_node_or_null(nn) as Control
+		if ctl != null:
+			ctl.visible = not has_content
 
 
 ## Apex trophies (issue #5 Phase 3): 3 fixed rows, one per apex boss.
@@ -1281,7 +1305,7 @@ func _refresh_trophy_section() -> void:
 	var header := Label.new()
 	header.text = "Apex Trophies — %d/3" % trophies.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 11)
+	header.add_theme_font_size_override("font_size", 10)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	for apex_id in ["apex_boar", "apex_warden", "apex_horror"]:
@@ -1291,7 +1315,7 @@ func _refresh_trophy_section() -> void:
 		row.add_theme_constant_override("separation", 6)
 		%CollectionLog.add_child(row)
 		var icon := TextureRect.new()
-		icon.custom_minimum_size = Vector2(20, 20)
+		icon.custom_minimum_size = Vector2(16, 16)
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		var sp := SpecialData.get_special(SpecialData.apex_special_for_boss(apex_id))
@@ -1307,7 +1331,7 @@ func _refresh_trophy_section() -> void:
 		else:
 			label.text = "??? — %s" % sp.unlock_hint
 			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
-		label.add_theme_font_size_override("font_size", 10)
+		label.add_theme_font_size_override("font_size", 9)
 		row.add_child(label)
 
 
@@ -1320,7 +1344,7 @@ func _refresh_cipher_section() -> void:
 	var header := Label.new()
 	header.text = "Architect Cipher — %d/8" % frags.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 11)
+	header.add_theme_font_size_override("font_size", 10)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	var sorted := frags.duplicate()
@@ -1334,7 +1358,7 @@ func _refresh_cipher_section() -> void:
 		row.text = "%s. %s — the verse speaks of %s" % [
 			CipherPoems.roman(idx), str(p["cipher"]), CipherPoems.shift_word(int(p["shift"]))]
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_theme_font_size_override("font_size", 10)
+		row.add_theme_font_size_override("font_size", 9)
 		row.add_theme_color_override("font_color", Color(0.8, 0.75, 0.55))
 		%CollectionLog.add_child(row)
 
@@ -1346,7 +1370,7 @@ func _refresh_combo_codex() -> void:
 	var header := Label.new()
 	header.text = "Combo Finishers — %d/5" % found.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 11)
+	header.add_theme_font_size_override("font_size", 10)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	for f in Combo.COMBO_FINISHERS:
@@ -1359,7 +1383,7 @@ func _refresh_combo_codex() -> void:
 			row.text = "◇ ??? — %s" % str(f["hint"])
 			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_theme_font_size_override("font_size", 10)
+		row.add_theme_font_size_override("font_size", 9)
 		%CollectionLog.add_child(row)
 
 

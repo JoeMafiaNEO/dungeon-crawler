@@ -4573,16 +4573,20 @@ func _test_bounty_popup_opens() -> void:
 
 func _test_collection_full_state_compact() -> void:
 	print("[Playtest] Collection tab full-state compaction (issue #55)...")
-	# Static: all Collection sections must use compact fonts (<=11) so the
+	# Static: all Collection sections must use compact fonts (<=10) so the
 	# full-progress state (7 families + 3 trophies + 8 cipher + 5 combos)
 	# fits 1080p with zero scroll and the Quit buttons stay reachable.
+	# Issue #37 reopened: tightened further (9pt rows, 16px icons).
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	# Family rows: font 10
-	_assert(hsrc.contains('row.add_theme_font_size_override("font_size", 10)'),
+	# Family rows: font 9
+	_assert(hsrc.contains('row.add_theme_font_size_override("font_size", 9)'),
 		"#55: family rows compact")
-	# Trophy icons: 20px, labels font 10
-	_assert(hsrc.contains("Vector2(20, 20)"), "#55: trophy icons compact")
-	# Cipher + codex rows: font 10, headers font 11
-	_assert(hsrc.contains('header.add_theme_font_size_override("font_size", 11)'),
+	# Trophy icons: 16px, labels font 9
+	_assert(hsrc.contains("Vector2(16, 16)"), "#55: trophy icons compact")
+	# Cipher + codex rows: font 9, headers font 10
+	_assert(hsrc.contains('header.add_theme_font_size_override("font_size", 10)'),
 		"#55: section headers compact")
+	# Redundant headers hide when log has content
+	_assert(hsrc.contains("_hide_redundant_collection_headers"),
+		"#37: redundant headers hide with content")
 	print("[Playtest] Collection tab compaction done")
