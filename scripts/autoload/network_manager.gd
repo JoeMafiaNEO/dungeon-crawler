@@ -198,6 +198,9 @@ func leave_lobby() -> void:
 	lobby_id = 0
 	is_host = false
 	lobby_members.clear()
+	# Issue #4 Phase 4: a stale continued roster must never leak into the next
+	# session's rejoin matching (wrong slot's seats, phantom roster-lock).
+	Dungeon.continued_roster = []
 	_reset_peer()
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	server_id = 1

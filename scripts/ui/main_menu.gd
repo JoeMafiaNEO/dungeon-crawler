@@ -382,7 +382,8 @@ func _refresh_staging_roster() -> void:
 		child.queue_free()
 	var roster: Array = Dungeon.continued_roster
 	var run := SaveManager.load_run(SaveManager.MODE_MP, NetworkManager.active_run_slot)
-	%StagingInfo.text = SaveManager.run_summary(run)
+	# Issue #4 Phase 4: the staging screen names the slot being continued.
+	%StagingInfo.text = "MP Slot %d · %s" % [NetworkManager.active_run_slot + 1, SaveManager.run_summary(run)]
 	var joined := {}
 	for sid in NetworkManager.lobby_members:
 		joined[int(sid)] = true

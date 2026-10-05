@@ -14,6 +14,9 @@ const SAVE_STATE_TIMEOUT := 3.0
 var _save_roster: Array = []
 var _save_pending: Dictionary = {}
 var _save_base: Dictionary = {}
+## Slot index of the in-flight MP save (threaded through the save RPCs so a
+## stale client response can't land in the wrong slot's roster).
+var _save_slot := -1
 
 const PlayerScene := preload("res://scenes/player/player.tscn")
 const MobScene := preload("res://scenes/mobs/mob.tscn")
@@ -324,8 +327,14 @@ func register_class(class_id: String) -> void:
 
 ## Find a roster entry by Steam ID. Returns {} if not found.
 func _find_roster_entry(steam_id: int) -> Dictionary:
-	for entry in continued_roster:
-		if int(entry.get("steam_id", 0)) == steam_id:
+	return find_roster_entry(continued_roster, steam_id)
+
+
+## Static roster match: which saved seat does this Steam ID own? Pure so
+## tests can verify per-slot rejoin matching without a live dungeon.
+static func find_roster_entry(roster: Array, steam_id: int) -> Dictionary:
+	for entry in roster:
+		if entry is Dictionary and int(entry.get("steam_id", 0)) == steam_id:
 			return entry
 	return {}
 
@@ -2212,6 +2221,7 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	}
 	_save_roster.clear()
 	_save_pending.clear()
+	_save_slot = NetworkManager.active_run_slot
 	# Host's own state first.
 	var me := _my_player()
 	if me != null:
@@ -2222,7 +2232,7 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	if _save_pending.is_empty():
 		_write_multiplayer_save()
 		return
-	rpc("rpc_request_save_state")
+	rpc("rpc_request_save_state", _save_slot)
 	# 3s window, then write with whoever responded.
 	await get_tree().create_timer(SAVE_STATE_TIMEOUT).timeout
 	_mark_missing_disconnected()
@@ -2262,11 +2272,11 @@ func _write_multiplayer_save() -> void:
 	if not _save_roster.is_empty():
 		_save_base["class_id"] = _save_roster[0].get("class_id", "warrior")
 		_save_base["player_state"] = _save_roster[0].get("player_state", {})
-	SaveManager.save_run(_save_base, SaveManager.MODE_MP, NetworkManager.active_run_slot)
+	SaveManager.save_run(_save_base, SaveManager.MODE_MP, _save_slot)
 
 
 @rpc("any_peer", "call_local")
-func rpc_request_save_state() -> void:
+func rpc_request_save_state(slot_index: int) -> void:
 	if multiplayer.is_server():
 		return
 	var me := _my_player()
@@ -2280,13 +2290,16 @@ func rpc_request_save_state() -> void:
 		"rts_faction": -1,
 		"is_host": false,
 	}
-	rpc_id(1, "rpc_submit_save_state", state)
+	# Steam IDs are the peer IDs — never hardcode server peer 1.
+	rpc_id(NetworkManager.server_id, "rpc_submit_save_state", state, slot_index)
 
 
 @rpc("any_peer")
-func rpc_submit_save_state(state: Dictionary) -> void:
+func rpc_submit_save_state(state: Dictionary, slot_index: int) -> void:
 	if not multiplayer.is_server():
 		return
+	if slot_index != _save_slot:
+		return  # stale response from an earlier save; ignore
 	var sender := multiplayer.get_remote_sender_id()
 	if _save_pending.has(sender):
 		_save_pending.erase(sender)

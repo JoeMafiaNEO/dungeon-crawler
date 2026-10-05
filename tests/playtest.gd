@@ -21,6 +21,7 @@ func _run() -> void:
 	_test_save_profile()
 	_test_save_collections()
 	_test_legacy_migration()
+	_test_mp_slots()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -508,6 +509,108 @@ func _test_legacy_migration() -> void:
 	for sp in legacy_paths + slot_paths + [prof_path]:
 		if not backups.has(sp) and FileAccess.file_exists(sp):
 			DirAccess.remove_absolute(sp)
+
+
+func _test_mp_slots() -> void:
+	print("[Playtest] MP per-slot saves (issue #4 Phase 4)...")
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var mgr = SaveScript.new()
+	# Back up the mp slots and the local profile.
+	var prof_path := "user://profile_local.cfg"
+	var prof_backup := PackedByteArray()
+	if FileAccess.file_exists(prof_path):
+		prof_backup = FileAccess.get_file_as_bytes(prof_path)
+		DirAccess.remove_absolute(prof_path)
+	var slot_paths := ["user://runs/mp_0.cfg", "user://runs/mp_1.cfg", "user://runs/mp_2.cfg"]
+	var slot_backups := {}
+	for sp in slot_paths:
+		if FileAccess.file_exists(sp):
+			slot_backups[sp] = FileAccess.get_file_as_bytes(sp)
+			DirAccess.remove_absolute(sp)
+
+	# MP slot roundtrip with a roster.
+	var roster := [
+		{"steam_id": 111, "player_name": "Host", "class_id": "mage", "is_host": true,
+			"player_state": {"level": 6}},
+		{"steam_id": 222, "player_name": "Friend", "class_id": "rogue", "is_host": false,
+			"player_state": {"level": 5}},
+	]
+	var mp_run := {"theme_id": "warlord", "level_number": 4, "seed": 1234,
+		"is_multiplayer": true, "class_id": "mage", "roster": roster}
+	_assert(mgr.save_run(mp_run, "mp", 1), "mp save to slot 1")
+	var loaded: Dictionary = mgr.load_run("mp", 1)
+	_assert(bool(loaded.get("is_multiplayer", false)), "mp flag roundtrips")
+	var lroster: Array = loaded.get("roster", [])
+	_assert(lroster.size() == 2, "roster roundtrips")
+	_assert(int(lroster[0].get("steam_id", 0)) == 111
+		and int(lroster[1].get("steam_id", 0)) == 222, "roster steam IDs roundtrip")
+	_assert(str(lroster[1].get("class_id", "")) == "rogue", "roster classes roundtrip")
+	_assert(not mgr.has_run("mp", 0) and not mgr.has_run("mp", 2),
+		"saving one mp slot leaves the others empty")
+
+	# Wipe clears only the target slot (party-wipe semantics).
+	_assert(mgr.save_run(mp_run, "mp", 0), "mp save slot 0")
+	_assert(mgr.save_run(mp_run, "mp", 2), "mp save slot 2")
+	mgr.clear_run("mp", 1)
+	_assert(not mgr.has_run("mp", 1), "wiped slot cleared")
+	_assert(mgr.has_run("mp", 0) and mgr.has_run("mp", 2), "other slots survive wipe")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains(
+		"SaveManager.clear_run(SaveManager.MODE_MP, NetworkManager.active_run_slot)"),
+		"party wipe clears the active mp slot")
+
+	# Rejoin matching is per slot, by Steam ID (static; no live dungeon needed).
+	var slot0_roster := [
+		{"steam_id": 111, "class_id": "mage"},
+		{"steam_id": 222, "class_id": "rogue"},
+	]
+	var slot1_roster := [{"steam_id": 333, "class_id": "warrior"}]
+	_assert(str(DungeonScript.find_roster_entry(slot0_roster, 222).get("class_id", ""))
+		== "rogue", "rejoin matches seat by steam ID")
+	_assert(DungeonScript.find_roster_entry(slot0_roster, 999).is_empty(),
+		"stranger matches no seat")
+	_assert(DungeonScript.find_roster_entry(slot1_roster, 111).is_empty(),
+		"slot 1 roster doesn't seat slot 0's player")
+	_assert(str(DungeonScript.find_roster_entry(slot1_roster, 333).get("class_id", ""))
+		== "warrior", "slot 1 roster seats its own player")
+
+	# Wiring: slot_index threaded through the save RPCs, stale guarded,
+	# no hardcoded server peer, stale roster cleared, staging shows the slot.
+	_assert(dsrc.contains("func rpc_request_save_state(slot_index: int)"),
+		"rpc_request_save_state takes slot_index")
+	_assert(dsrc.contains("func rpc_submit_save_state(state: Dictionary, slot_index: int)"),
+		"rpc_submit_save_state takes slot_index")
+	_assert(dsrc.contains("rpc(\"rpc_request_save_state\", _save_slot)"),
+		"save request carries the slot")
+	_assert(dsrc.contains("if slot_index != _save_slot:"),
+		"stale submit ignored")
+	_assert(dsrc.contains("rpc_id(NetworkManager.server_id, \"rpc_submit_save_state\""),
+		"submit targets server_id")
+	_assert(not dsrc.contains("rpc_id(1,"), "no hardcoded server peer 1 in dungeon.gd")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("Dungeon.continued_roster = []"),
+		"leave_lobby clears stale continued roster")
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("MP Slot %d"), "staging screen shows the slot")
+
+	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
+	mgr.free()
+
+	# Restore.
+	for sp in slot_paths:
+		if slot_backups.has(sp):
+			var f := FileAccess.open(sp, FileAccess.WRITE)
+			f.store_buffer(slot_backups[sp])
+			f.close()
+		elif FileAccess.file_exists(sp):
+			DirAccess.remove_absolute(sp)
+	if not prof_backup.is_empty():
+		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
+		pf.store_buffer(prof_backup)
+		pf.close()
+	elif FileAccess.file_exists(prof_path):
+		DirAccess.remove_absolute(prof_path)
 
 
 func _test_station_phase4() -> void:
