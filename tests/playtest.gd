@@ -65,6 +65,7 @@ func _run() -> void:
 	_test_fireball_fuse()
 	_test_issue22_23_fixes()
 	_test_warlord_spawn_avoids_river()
+	_test_e_interact_not_dead_code()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4311,3 +4312,26 @@ func _test_issue22_23_fixes() -> void:
 	_assert(hsrc.contains("font_size = maxi(36,"),
 		"#23: announce shrink-to-fit present")
 	print("[Playtest] issues #22/#23 fixes done")
+
+
+func _test_e_interact_not_dead_code() -> void:
+	print("[Playtest] E-interact reachable (issue #29)...")
+	# Static: the _try_pickup() call must NOT be nested inside the early-return
+	# guard. Regression for the indentation bug that made E do nothing.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var idx_return := psrc.find("if hud != null and (hud.cipher_popup_open or _reading_board != null):")
+	_assert(idx_return > 0, "#29: E guard found")
+	# Find the _try_pickup() after the guard; it must be at elif-body level
+	# (2 tabs), not inside the if (3 tabs).
+	# The 'if Input.mouse_mode' guarding _try_pickup must be at elif-body
+	# level (2 tabs). If it were nested inside the early-return if (3 tabs),
+	# _try_pickup would be dead code (the #29 bug).
+	var idx_guard := psrc.find("if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED", idx_return)
+	_assert(idx_guard > idx_return, "#29: mouse-mode guard present after E guard")
+	var before := psrc.substr(0, idx_guard)
+	var line_start := before.rfind("\n") + 1
+	var indent := 0
+	while line_start + indent < psrc.length() and psrc[line_start + indent] == "\t":
+		indent += 1
+	_assert(indent == 2, "#29: E-interact guard at elif level (2 tabs), not dead code")
+	print("[Playtest] E-interact reachable done")
