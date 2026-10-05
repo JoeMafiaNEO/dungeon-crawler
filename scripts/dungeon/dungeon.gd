@@ -227,7 +227,10 @@ func _ready() -> void:
 	var cycle := (level_number - 1) / THEME_ORDER.size()
 	if cycle > 0:
 		theme = theme.duplicate() as LevelTheme
-		theme.grid_size = mini(96, theme.grid_size + cycle * 40)
+		# Issue #49: the apex arena is a fixed colosseum layout — exempt it
+		# from endless grid enlargement (96x96 hangs ProcGen for 5+ minutes).
+		if theme.theme_id != "apex":
+			theme.grid_size = mini(96, theme.grid_size + cycle * 40)
 		theme.puzzle_key_count = mini(8, theme.puzzle_key_count + cycle)
 	# Apex arena (issue #5 Phase 1): the boss rotates by cycle. Apex cycles
 	# are always >= 3, so the theme is already a duplicate here — safe to

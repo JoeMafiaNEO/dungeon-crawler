@@ -71,6 +71,7 @@ func _run() -> void:
 	_test_destination_popup_replaces_3d()
 	_test_destination_popup_manual_only()
 	_test_bounty_popup_opens()
+	_test_apex_exempt_from_grid_scaling()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4556,3 +4557,14 @@ func _test_bounty_popup_opens() -> void:
 	var body := hsrc.substr(idx, next_func - idx)
 	_assert(body.contains("_open_cipher_popup"), "#34: show_bounty opens the popup")
 	print("[Playtest] bounty popup actually opens done")
+
+
+func _test_apex_exempt_from_grid_scaling() -> void:
+	print("[Playtest] apex exempt from grid scaling (issue #49)...")
+	# Static: the cycle-scaling block must skip grid_size enlargement for apex.
+	# A 96x96 apex arena hangs ProcGen for 5+ minutes (soft-lock).
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains('theme.theme_id != "apex"'), "#49: apex exempt from grid scaling")
+	# The key scaling must still apply to apex (keys are fine).
+	_assert(dsrc.contains("puzzle_key_count"), "#49: key scaling untouched")
+	print("[Playtest] apex exempt from grid scaling done")
