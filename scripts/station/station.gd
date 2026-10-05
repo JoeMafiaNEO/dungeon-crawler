@@ -469,6 +469,10 @@ func announce_boarding() -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("announce"):
 		hud.announce("ALL ABOARD!")
+	# Issue #50: the destination popup must auto-close when the vote reaches
+	# unanimity — otherwise it stays open, dimmed, through ALL ABOARD.
+	if hud != null and hud.has_method("close_destination_popup"):
+		hud.close_destination_popup()
 
 
 ## Keep every peer's boarding HUD in sync: countdown + aboard roster.

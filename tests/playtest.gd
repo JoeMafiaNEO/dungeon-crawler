@@ -72,6 +72,7 @@ func _run() -> void:
 	_test_destination_popup_manual_only()
 	_test_bounty_popup_opens()
 	_test_apex_exempt_from_grid_scaling()
+	_test_dest_popup_autoclose_on_unanimous()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4568,3 +4569,12 @@ func _test_apex_exempt_from_grid_scaling() -> void:
 	# The key scaling must still apply to apex (keys are fine).
 	_assert(dsrc.contains("puzzle_key_count"), "#49: key scaling untouched")
 	print("[Playtest] apex exempt from grid scaling done")
+
+
+func _test_dest_popup_autoclose_on_unanimous() -> void:
+	print("[Playtest] dest popup auto-close on unanimous depart (issue #50)...")
+	# Static: announce_boarding() must close the destination popup so it
+	# doesn't linger dimmed through ALL ABOARD.
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("close_destination_popup"), "#50: announce_boarding closes dest popup")
+	print("[Playtest] dest popup auto-close done")
