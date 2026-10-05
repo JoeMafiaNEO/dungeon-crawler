@@ -578,6 +578,138 @@ static func apex_roar() -> AudioStreamWAV:
 	]))
 
 
+# --- relic vault (issue #6) ---
+
+static func relic_pickup() -> AudioStreamWAV:
+	# Special earned: shimmering chime arpeggio rising into a warm swell.
+	return _wav(_mix([
+		_tone(523.25, 523.25, 0.25, "sine", 8.0, 0.65),
+		_tone(659.25, 659.25, 0.25, "sine", 8.0, 0.65, 0.10),
+		_tone(783.99, 783.99, 0.35, "sine", 8.0, 0.65, 0.20),
+		_tone(1046.5, 1046.5, 0.50, "sine", 6.0, 0.55, 0.30),
+		_tone(261.6, 261.6, 0.70, "tri", 4.0, 0.40, 0.05),
+	]))
+
+
+static func vault_open() -> AudioStreamWAV:
+	# Gold-trimmed locker: heavy latch, old-hinge creak, inner shimmer.
+	return _wav(_mix([
+		_tone(150.0, 90.0, 0.12, "square", 24.0, 0.55),
+		_tone(320.0, 180.0, 0.35, "saw", 6.0, 0.30, 0.12),
+		_tone(1567.0, 1567.0, 0.30, "sine", 9.0, 0.35, 0.40),
+		_tone(2093.0, 2093.0, 0.30, "sine", 9.0, 0.25, 0.48),
+	]))
+
+
+static func vault_close() -> AudioStreamWAV:
+	# Locker seals: soft thunk + latch click.
+	return _wav(_mix([
+		_tone(180.0, 90.0, 0.14, "sine", 22.0, 0.70),
+		_tone(1200.0, 900.0, 0.06, "square", 30.0, 0.35, 0.12),
+	]))
+
+
+static func relic_equip() -> AudioStreamWAV:
+	# Equip confirmation: resonant lock-in chime, low + high in unison.
+	return _wav(_mix([
+		_tone(392.0, 392.0, 0.40, "tri", 7.0, 0.60),
+		_tone(784.0, 784.0, 0.40, "sine", 7.0, 0.50, 0.02),
+		_tone(98.0, 98.0, 0.30, "sine", 10.0, 0.55),
+	]))
+
+
+# --- bounty board (issue #7) ---
+
+static func bounty_accept() -> AudioStreamWAV:
+	# Parchment stamp: paper swish, stamp thud, confirm blip.
+	return _wav(_mix([
+		_noise(0.10, 28.0, 0.50, 0.0, 0.35),
+		_tone(140.0, 70.0, 0.12, "sine", 24.0, 0.70, 0.08),
+		_tone(880.0, 880.0, 0.12, "sine", 16.0, 0.55, 0.18),
+	]))
+
+
+static func bounty_complete() -> AudioStreamWAV:
+	# Bounty complete fanfare: triumphant brass-ish rising arpeggio.
+	return _wav(_mix([
+		_tone(392.0, 392.0, 0.22, "saw", 5.0, 0.55),
+		_tone(523.25, 523.25, 0.22, "saw", 5.0, 0.55, 0.14),
+		_tone(659.25, 659.25, 0.22, "saw", 5.0, 0.55, 0.28),
+		_tone(783.99, 783.99, 0.45, "saw", 4.0, 0.60, 0.42),
+		_tone(196.0, 196.0, 0.60, "sine", 4.0, 0.70),
+	]))
+
+
+static func bounty_toast() -> AudioStreamWAV:
+	# Soft bounty notification blip (progress updates, non-intrusive).
+	return _wav(_mix([
+		_tone(987.77, 987.77, 0.10, "sine", 14.0, 0.45),
+		_tone(1174.66, 1174.66, 0.14, "sine", 14.0, 0.40, 0.08),
+	]))
+
+
+# --- combo finishers (issue #8) ---
+
+static func finisher_orbital_strike() -> AudioStreamWAV:
+	# Orbital Strike: cosmic impact — deep boom + shimmering debris rain.
+	return _wav(_mix([
+		_tone(80.0, 28.0, 0.60, "sine", 14.0, 1.00),
+		_noise(0.50, 10.0, 0.60, 0.02, 0.50),
+		_tone(2093.0, 1568.0, 0.50, "sine", 7.0, 0.30, 0.15),
+		_tone(1568.0, 1175.0, 0.50, "sine", 7.0, 0.30, 0.25),
+	]))
+
+
+static func finisher_stormcall() -> AudioStreamWAV:
+	# Stormcall: thunder crack + electric sizzle.
+	return _wav(_mix([
+		_noise(0.15, 34.0, 1.00),
+		_tone(120.0, 40.0, 0.50, "saw", 16.0, 0.80, 0.05),
+		_noise(0.45, 8.0, 0.45, 0.15, 0.10),
+		_tone(2400.0, 1800.0, 0.30, "saw", 10.0, 0.25, 0.10),
+	]))
+
+
+static func finisher_shatter_cascade() -> AudioStreamWAV:
+	# Shatter Cascade: crystalline crash + frost sparkle.
+	return _wav(_mix([
+		_noise(0.25, 20.0, 0.70, 0.0, 0.05),
+		_tone(1760.0, 1760.0, 0.35, "sine", 9.0, 0.45, 0.05),
+		_tone(2217.0, 2217.0, 0.35, "sine", 9.0, 0.40, 0.10),
+		_tone(2637.0, 2637.0, 0.40, "sine", 9.0, 0.35, 0.15),
+		_tone(440.0, 220.0, 0.40, "tri", 8.0, 0.40, 0.02),
+	]))
+
+
+static func finisher_reciprocity_surge() -> AudioStreamWAV:
+	# Reciprocity Surge: warm rising major swell + heal shimmer.
+	return _wav(_mix([
+		_tone(261.6, 261.6, 0.50, "tri", 4.0, 0.55),
+		_tone(329.6, 329.6, 0.50, "tri", 4.0, 0.55, 0.10),
+		_tone(392.0, 392.0, 0.60, "tri", 4.0, 0.55, 0.20),
+		_tone(523.25, 523.25, 0.70, "sine", 5.0, 0.50, 0.30),
+		_tone(1046.5, 1318.5, 0.60, "sine", 6.0, 0.30, 0.25),
+	]))
+
+
+static func finisher_smoke_bombard() -> AudioStreamWAV:
+	# Smoke Bombard: muffled blast — low thump choked by a smoke hiss.
+	return _wav(_mix([
+		_tone(100.0, 45.0, 0.40, "sine", 16.0, 0.90),
+		_noise(0.60, 7.0, 0.55, 0.05, 0.75),
+		_tone(300.0, 150.0, 0.25, "square", 18.0, 0.35, 0.03),
+	]))
+
+
+static func codex_discover() -> AudioStreamWAV:
+	# Codex discovery: magical page-turn + bright chime.
+	return _wav(_mix([
+		_noise(0.12, 26.0, 0.45, 0.0, 0.30),
+		_tone(1318.5, 1318.5, 0.30, "sine", 8.0, 0.55, 0.12),
+		_tone(1568.0, 1568.0, 0.40, "sine", 8.0, 0.50, 0.22),
+	]))
+
+
 # --- UI ---
 
 static func ui_click() -> AudioStreamWAV:

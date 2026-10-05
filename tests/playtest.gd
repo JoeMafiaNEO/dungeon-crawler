@@ -41,6 +41,7 @@ func _run() -> void:
 	_test_station_mp_vote_flow()
 	_test_music_queued_pickup()
 	_test_audio_coverage()
+	_test_audio_new_features()
 	_test_station_annex()
 	_test_station_embedded()
 	_test_annex_departure()
@@ -1068,6 +1069,22 @@ func _test_audio_coverage() -> void:
 	for theme in ["supermarket", "warlord", "apex"]:
 		var t: AudioStreamWAV = MusicScript.make_track(theme)
 		_assert(t != null and t.data.size() > 0, "music renders %s theme" % theme)
+
+
+func _test_audio_new_features() -> void:
+	print("[Playtest] Audio: issue #6/#7/#8 SFX...")
+	# DM assignment (2026-10-04): Relic Vault, Bounty Board, Combo Finishers.
+	# Every new SFX must synth a non-empty stream and be registered.
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	for sfx in ["relic_pickup", "vault_open", "vault_close", "relic_equip",
+			"bounty_accept", "bounty_complete", "bounty_toast",
+			"finisher_orbital_strike", "finisher_stormcall",
+			"finisher_shatter_cascade", "finisher_reciprocity_surge",
+			"finisher_smoke_bombard", "codex_discover"]:
+		var w: AudioStreamWAV = SoundScript.call(sfx)
+		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
+		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
 
 
 func _test_station_annex() -> void:
