@@ -49,12 +49,12 @@ func _build_key_visual() -> void:
 	var packed := load(KEY_MODEL) as PackedScene
 	if packed != null:
 		var inst := packed.instantiate() as Node3D
+		_visual.add_child(inst)
 		var box := _measure(inst)
 		var max_d := maxf(box.size.x, maxf(box.size.y, box.size.z))
 		if max_d > 0.01:
 			inst.scale = Vector3.ONE * (0.9 / max_d)
 		inst.position.y -= box.position.y * inst.scale.x
-		_visual.add_child(inst)
 		$Sprite3D.visible = false
 	else:
 		$Sprite3D.texture = null
@@ -108,13 +108,13 @@ func _build_visual() -> void:
 		if packed != null:
 			inst = packed.instantiate() as Node3D
 	if inst != null:
+		_visual.add_child(inst)
 		var box := _measure(inst)
 		var max_d := maxf(box.size.x, maxf(box.size.y, box.size.z))
 		if max_d > 0.01:
 			inst.scale = Vector3.ONE * (0.8 / max_d)
 		# Sit the model upright on its base.
 		inst.position.y -= box.position.y * inst.scale.x
-		_visual.add_child(inst)
 		$Sprite3D.visible = false
 	elif item.icon != null:
 		$Sprite3D.texture = item.icon

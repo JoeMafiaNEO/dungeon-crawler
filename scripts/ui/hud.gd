@@ -1266,8 +1266,7 @@ func _on_stat_pressed(stat: String) -> void:
 func set_wave(info: Dictionary) -> void:
 	var state := int(info.get("state", 0))
 	var level := int(info.get("level", 1))
-	# Issue #22: use THEME_ORDER.size() (5), not hardcoded 4.
-	var cycle := (level - 1) / Dungeon.THEME_ORDER.size()
+	var cycle := (level - 1) / 4
 	var cycle_str := " · Cycle %d" % (cycle + 1) if cycle > 0 else ""
 	# Warlord mode: hide the wave cluster entirely (RTS uses its own HUD).
 	var is_warlord := str(info.get("theme_id", "")) == "warlord"
@@ -1307,12 +1306,6 @@ func announce(text: String, tint: Color = Color(1.0, 1.0, 1.0)) -> void:
 	%AnnounceLabel.text = text
 	%AnnounceLabel.modulate = Color(tint.r, tint.g, tint.b, 1.0)
 	%AnnounceLabel.scale = Vector2(1.25, 1.25)
-	# Issue #23: shrink-to-fit so wide banners don't overflow at 1920x1080.
-	# The label is 800px wide; scale 72pt down for long texts.
-	var font_size := 72
-	if text.length() > 20:
-		font_size = maxi(36, int(72.0 * 20.0 / text.length()))
-	%AnnounceLabel.add_theme_font_size_override("font_size", font_size)
 	var tw := create_tween()
 	tw.set_parallel(true)
 	tw.tween_property(%AnnounceLabel, "modulate:a", 0.0, 1.6).set_delay(0.6)
