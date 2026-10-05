@@ -62,6 +62,7 @@ func _run() -> void:
 	_test_wave_stall_watchdog()
 	_test_eagle_eye_warlord_hide()
 	_test_issue18_ui_fixes()
+	_test_fireball_fuse()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4259,3 +4260,24 @@ func _test_issue18_ui_fixes() -> void:
 	_assert(tsrc.contains('theme_override_constants/separation = 24'),
 		"staging row has 24px separation")
 	print("[Playtest] issue #18 UI fixes done")
+
+
+func _test_fireball_fuse() -> void:
+	print("[Playtest] fireball proximity fuse (issue #20)...")
+	# Static: fuse and AoE must use XZ distance, not 3D distance_to.
+	var fsrc := FileAccess.get_file_as_string("res://scripts/combat/fireball.gd")
+	_assert(fsrc.contains("Vector2(mob.global_position.x, mob.global_position.z)"),
+		"fireball fuse uses XZ distance")
+	# The old 3D fuse must be gone from the proximity check.
+	var fuse_section := fsrc.substr(fsrc.find("_physics_process"), fsrc.find("func _explode") - fsrc.find("_physics_process"))
+	_assert(not fuse_section.contains("mob.global_position.distance_to(global_position) < 1.3"),
+		"old 3D fuse removed")
+	# Behavioral: a level shot at 1.45m height over a mob at feet origin
+	# must be within fuse range via XZ (the #20 repro).
+	var mob_pos := Vector3(0, 0, 0)  # feet origin
+	var ball_pos := Vector3(0.5, 1.45, 0)  # level shot, 0.5m horizontal offset
+	var dist_3d := mob_pos.distance_to(ball_pos)
+	var dist_xz := Vector2(mob_pos.x, mob_pos.z).distance_to(Vector2(ball_pos.x, ball_pos.z))
+	_assert(dist_3d > 1.3, "3D distance exceeds fuse (the bug)")
+	_assert(dist_xz < 1.3, "XZ distance triggers fuse (the fix)")
+	print("[Playtest] fireball proximity fuse done")

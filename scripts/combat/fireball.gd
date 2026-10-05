@@ -75,7 +75,13 @@ func _physics_process(delta: float) -> void:
 			var mob := node as Mob
 			if mob == null or not mob.alive:
 				continue
-			if mob.global_position.distance_to(global_position) < 1.3:
+			# Issue #20: fuse on horizontal (XZ) distance. The fireball flies
+			# at ~1.45m height but mob origins are at feet (y≈0); 3D distance
+			# can never drop below 1.45m on a level shot, so level shots would
+			# never detonate. (Frost Shard already uses this pattern.)
+			var a := Vector2(mob.global_position.x, mob.global_position.z)
+			var b := Vector2(global_position.x, global_position.z)
+			if a.distance_to(b) < 1.3:
 				_explode()
 				return
 
@@ -99,7 +105,10 @@ func _explode() -> void:
 			var mob := node as Mob
 			if mob == null or not mob.alive:
 				continue
-			if mob.global_position.distance_to(global_position) < radius:
+			# Issue #20: XZ distance for the AoE as well — matches the fuse.
+			var ma := Vector2(mob.global_position.x, mob.global_position.z)
+			var mb := Vector2(global_position.x, global_position.z)
+			if ma.distance_to(mb) < radius:
 				mob.take_damage(damage, owner_peer, global_position)
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
