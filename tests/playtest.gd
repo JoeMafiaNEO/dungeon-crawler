@@ -71,6 +71,7 @@ func _run() -> void:
 	_test_destination_popup_replaces_3d()
 	_test_destination_popup_manual_only()
 	_test_bounty_popup_opens()
+	_test_collection_full_state_compact()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4556,3 +4557,20 @@ func _test_bounty_popup_opens() -> void:
 	var body := hsrc.substr(idx, next_func - idx)
 	_assert(body.contains("_open_cipher_popup"), "#34: show_bounty opens the popup")
 	print("[Playtest] bounty popup actually opens done")
+
+
+func _test_collection_full_state_compact() -> void:
+	print("[Playtest] Collection tab full-state compaction (issue #55)...")
+	# Static: all Collection sections must use compact fonts (<=11) so the
+	# full-progress state (7 families + 3 trophies + 8 cipher + 5 combos)
+	# fits 1080p with zero scroll and the Quit buttons stay reachable.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	# Family rows: font 10
+	_assert(hsrc.contains('row.add_theme_font_size_override("font_size", 10)'),
+		"#55: family rows compact")
+	# Trophy icons: 20px, labels font 10
+	_assert(hsrc.contains("Vector2(20, 20)"), "#55: trophy icons compact")
+	# Cipher + codex rows: font 10, headers font 11
+	_assert(hsrc.contains('header.add_theme_font_size_override("font_size", 11)'),
+		"#55: section headers compact")
+	print("[Playtest] Collection tab compaction done")
