@@ -20,6 +20,7 @@ func _run() -> void:
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
+	_test_legacy_migration()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -367,6 +368,146 @@ func _test_save_collections() -> void:
 		pf.store_string(prof_backup)
 	elif FileAccess.file_exists(prof_path):
 		DirAccess.remove_absolute(prof_path)
+
+
+func _test_legacy_migration() -> void:
+	print("[Playtest] Legacy migration (issue #4 Phase 3)...")
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var legacy_paths := ["user://solo_warrior.cfg", "user://solo_rogue.cfg",
+		"user://solo_mage.cfg", "user://solo_architect.cfg",
+		"user://run_save.cfg", "user://savegame.cfg"]
+	var slot_paths := []
+	for mode in ["solo", "mp"]:
+		for s in range(3):
+			slot_paths.append("user://runs/%s_%d.cfg" % [mode, s])
+	var prof_path := "user://profile_local.cfg"
+	# Back everything up.
+	var backups := {}
+	for sp in legacy_paths + slot_paths + [prof_path]:
+		if FileAccess.file_exists(sp):
+			backups[sp] = FileAccess.get_file_as_bytes(sp)
+			DirAccess.remove_absolute(sp)
+
+	# Legacy writer: the exact pre-slot format (run/data, stamped saved_at).
+	var write_legacy := func(path: String, data: Dictionary) -> void:
+		var cfg := ConfigFile.new()
+		cfg.set_value("run", "data", data)
+		cfg.save(path)
+	var legacy_run := func(class_id: String, theme: String, lvl: int, saved_at: String,
+			is_mp: bool) -> Dictionary:
+		var coll := {}
+		if class_id == "architect":
+			coll = {"fire": {"traits": ["kindled"], "signature": false}}
+		return {"class_id": class_id, "theme_id": theme, "level_number": lvl,
+			"is_multiplayer": is_mp, "saved_at": saved_at, "save_version": 1,
+			"player_state": {"level": lvl, "family_collection": coll}}
+
+	# --- Case A: synthetic tree, empty slots. 4 solo + old MP + old profile.
+	write_legacy.call("user://solo_warrior.cfg",
+		legacy_run.call("warrior", "village", 1, "2026-09-01T10:00:00", false))
+	write_legacy.call("user://solo_rogue.cfg",
+		legacy_run.call("rogue", "dungeon", 3, "2026-09-20T10:00:00", false))
+	write_legacy.call("user://solo_mage.cfg",
+		legacy_run.call("mage", "depths", 5, "2026-10-01T10:00:00", false))
+	write_legacy.call("user://solo_architect.cfg",
+		legacy_run.call("architect", "supermarket", 2, "2026-10-03T10:00:00", false))
+	var mp_legacy: Dictionary = legacy_run.call("mage", "warlord", 6, "2026-10-02T10:00:00", true)
+	mp_legacy["roster"] = [
+		{"steam_id": 111, "class_id": "mage", "is_host": true, "player_state": {"level": 6}},
+		{"steam_id": 222, "class_id": "rogue", "is_host": false, "player_state": {"level": 5}}]
+	write_legacy.call("user://run_save.cfg", mp_legacy)
+	var old_meta := ConfigFile.new()
+	old_meta.set_value("meta", "unlocked_items", ["void_blade"])
+	old_meta.set_value("meta", "unlocked_achievements", ["kill_100"])
+	old_meta.set_value("meta", "cipher_fragments", [0, 3])
+	old_meta.set_value("meta", "total_runs", 7)
+	old_meta.set_value("meta", "total_kills", 150)
+	old_meta.set_value("meta", "deepest_cycle", 2)
+	old_meta.set_value("meta", "total_cash_earned", 900)
+	old_meta.set_value("meta", "architect_unlocked", true)
+	old_meta.save("user://savegame.cfg")
+
+	var mgr = SaveScript.new()
+	mgr._migrate_legacy()
+	# Recency: newest -> slot 0.
+	_assert(str(mgr.load_run("solo", 0).get("class_id", "")) == "architect",
+		"newest legacy run -> solo slot 0")
+	_assert(str(mgr.load_run("solo", 0).get("saved_at", "")) == "2026-10-03T10:00:00",
+		"migration preserves the original saved_at")
+	_assert(str(mgr.load_run("solo", 1).get("class_id", "")) == "mage",
+		"second newest -> solo slot 1")
+	_assert(str(mgr.load_run("solo", 2).get("class_id", "")) == "rogue",
+		"third -> solo slot 2")
+	var solo_classes := []
+	for s in range(3):
+		solo_classes.append(str(mgr.load_run("solo", s).get("class_id", "")))
+	_assert(not solo_classes.has("warrior"), "oldest legacy left as overflow")
+	_assert(bool(mgr.load_run("mp", 0).get("is_multiplayer", false)),
+		"legacy MP run -> mp slot 0")
+	_assert((mgr.load_run("mp", 0).get("roster", []) as Array).size() == 2,
+		"migrated MP roster preserved")
+	# Nothing deleted, ever.
+	for lp in legacy_paths:
+		_assert(FileAccess.file_exists(lp), "legacy file not deleted: %s" % lp)
+	# Only the overflow is listed.
+	var leftover: Array = mgr.list_legacy_saves()
+	_assert(leftover.size() == 1 and str(leftover[0]["path"]) == "user://solo_warrior.cfg",
+		"overflow stays on disk and listed")
+	# Old profile meta merged in.
+	_assert("void_blade" in mgr.get_unlocked_items(), "legacy unlocks imported")
+	_assert(mgr.get_total_runs() == 7, "legacy total_runs imported")
+	_assert(mgr.get_total_kills() == 150, "legacy total_kills imported")
+	_assert(mgr.get_deepest_cycle() == 2, "legacy deepest_cycle imported")
+	_assert(mgr.get_total_cash_earned() == 900, "legacy cash imported")
+	_assert(mgr.get_unlocked_achievements() == ["kill_100"], "legacy achievements imported")
+	_assert(mgr.get_cipher_fragments() == [0, 3], "legacy cipher fragments imported")
+	_assert(mgr.is_architect_unlocked(), "legacy architect unlock imported")
+	# Migrated collections funnel into the profile (Phase 2).
+	_assert(mgr.load_collections("architect")
+		== {"fire": {"traits": ["kindled"], "signature": false}},
+		"migrated run collections funneled to profile")
+	# Idempotent: a second run changes nothing, and a cleared slot is never
+	# back-filled with a stale copy.
+	mgr.clear_run("solo", 0)
+	mgr._migrate_legacy()
+	_assert(not mgr.has_run("solo", 0), "cleared slot not resurrected")
+	_assert(mgr.list_legacy_saves().size() == 1, "still exactly one overflow")
+	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
+	mgr.free()
+
+	# --- Case B: occupied slots. Legacy files stay put and listed.
+	DirAccess.remove_absolute(prof_path)
+	for sp in slot_paths + legacy_paths:
+		if FileAccess.file_exists(sp):
+			DirAccess.remove_absolute(sp)
+	var mgr2 = SaveScript.new()
+	for s in range(3):
+		mgr2.save_run({"class_id": "mage", "level_number": 9}, "solo", s)
+		mgr2.save_run({"class_id": "mage", "level_number": 9, "roster": []}, "mp", s)
+	write_legacy.call("user://solo_warrior.cfg",
+		legacy_run.call("warrior", "village", 1, "2026-09-01T10:00:00", false))
+	write_legacy.call("user://solo_rogue.cfg",
+		legacy_run.call("rogue", "dungeon", 3, "2026-09-20T10:00:00", false))
+	write_legacy.call("user://run_save.cfg",
+		legacy_run.call("mage", "warlord", 6, "2026-10-02T10:00:00", true))
+	mgr2._migrate_legacy()
+	_assert(int(mgr2.load_run("solo", 0).get("level_number", 0)) == 9,
+		"occupied solo slot untouched")
+	_assert(int(mgr2.load_run("mp", 2).get("level_number", 0)) == 9,
+		"occupied mp slot untouched")
+	for lp in ["user://solo_warrior.cfg", "user://solo_rogue.cfg", "user://run_save.cfg"]:
+		_assert(FileAccess.file_exists(lp), "occupied case: legacy kept: %s" % lp)
+	_assert(mgr2.list_legacy_saves().size() == 3, "occupied case: overflow listed")
+	mgr2.free()
+
+	# Restore.
+	for sp in backups:
+		var f := FileAccess.open(sp, FileAccess.WRITE)
+		f.store_buffer(backups[sp])
+		f.close()
+	for sp in legacy_paths + slot_paths + [prof_path]:
+		if not backups.has(sp) and FileAccess.file_exists(sp):
+			DirAccess.remove_absolute(sp)
 
 
 func _test_station_phase4() -> void:
