@@ -169,7 +169,10 @@ var _wave_composition: Array = []
 var _director: Node = null
 ## Bounty Board manager (issue #7): server generates the run's 3 bounties,
 ## clients receive them via sync_bounties.
-var _bounty: BountySystem = null
+## Preloaded (not class_name) so this script compiles even when the global
+## class cache is stale on a fresh clone (Eng 5's false-positive red).
+const BountySys := preload("res://scripts/systems/bounty.gd")
+var _bounty: BountySys = null
 var wave_info := {"wave": 0, "total": TOTAL_WAVES, "level": 1, "theme_name": "", "state": 0, "time_left": 8.0, "mobs_left": 0, "keys_found": 0, "keys_needed": 0}
 
 var _layout: LevelLayout
@@ -230,8 +233,9 @@ func _ready() -> void:
 	# Bounty Board (issue #7 Phase 1): server generates the run's 3 bounties
 	# seeded by the level seed; every peer sees the same set.
 	if multiplayer.is_server():
-		_bounty = BountySystem.new()
+		_bounty = BountySys.new()
 		_bounty.name = "BountySystem"
+		_bounty.add_to_group("bounty_system")
 		add_child(_bounty)
 		_bounty.setup_for_level(next_seed, theme.theme_id, theme.mob_mix, get_cycle_number())
 		rpc("sync_bounties", _bounty.bounties)
@@ -358,7 +362,7 @@ func register_class(class_id: String) -> void:
 			# Bounty Board (issue #7): the continued level runs fresh
 			# bounties — progress from the saved level does not carry over.
 			if _bounty != null:
-				node.set("bounty_progress", BountySystem.new_progress(_bounty.bounties))
+				node.set("bounty_progress", BountySys.new_progress(_bounty.bounties))
 			_snapshot_entry(sender)
 			rpc_id(sender, "apply_continued_state", ps)
 		# Warlord: reclaim their faction from AI control.
@@ -529,7 +533,7 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 		# the forfeit snapshot so entry state includes it.
 		var pnode := get_player_node(peer_id)
 		if pnode != null and _bounty != null:
-			pnode.set("bounty_progress", BountySystem.new_progress(_bounty.bounties))
+			pnode.set("bounty_progress", BountySys.new_progress(_bounty.bounties))
 		# Forfeit snapshot (issue #2 Phase 4): taken after any continue-state
 		# restore above, so "entry" means what the player arrived with.
 		_snapshot_entry(peer_id)
@@ -2462,12 +2466,13 @@ func notify_player_died() -> void:
 @rpc("any_peer", "call_local")
 func sync_bounties(bounty_list: Array) -> void:
 	if _bounty == null:
-		_bounty = BountySystem.new()
+		_bounty = BountySys.new()
 		_bounty.name = "BountySystem"
+		_bounty.add_to_group("bounty_system")
 		add_child(_bounty)
 	_bounty.bounties = bounty_list
 	for p in get_tree().get_nodes_in_group("players"):
-		p.set("bounty_progress", BountySystem.new_progress(bounty_list))
+		p.set("bounty_progress", BountySys.new_progress(bounty_list))
 
 
 ## Mob death hook (called from Mob._drop_and_reward, server only).
@@ -2480,7 +2485,7 @@ func notify_bounty_kill(peer_id: int, mob_id: String, is_elite: bool) -> void:
 	if node == null:
 		return
 	var progress: Dictionary = node.get("bounty_progress")
-	var done: Array = BountySystem.record_kill(progress, _bounty.bounties, mob_id, is_elite)
+	var done: Array = BountySys.record_kill(progress, _bounty.bounties, mob_id, is_elite)
 	node.set("bounty_progress", progress)
 	for b in done:
 		_pay_bounty(peer_id, b)
@@ -2511,7 +2516,7 @@ func _bounty_fail_no_death(peer_id: int) -> void:
 	if node == null:
 		return
 	var progress: Dictionary = node.get("bounty_progress")
-	BountySystem.record_death(progress, _bounty.bounties)
+	BountySys.record_death(progress, _bounty.bounties)
 	node.set("bounty_progress", progress)
 
 
@@ -2525,7 +2530,7 @@ func notify_bounty_checkout(peer_id: int, earned: int) -> void:
 	if node == null:
 		return
 	var progress: Dictionary = node.get("bounty_progress")
-	var done: Array = BountySystem.record_checkout(progress, _bounty.bounties, earned)
+	var done: Array = BountySys.record_checkout(progress, _bounty.bounties, earned)
 	node.set("bounty_progress", progress)
 	for b in done:
 		_pay_bounty(peer_id, b)
@@ -2540,7 +2545,7 @@ func _bounty_level_cleared() -> void:
 	for p in get_tree().get_nodes_in_group("players"):
 		var peer_id := int(p.get_multiplayer_authority())
 		var progress: Dictionary = p.get("bounty_progress")
-		var done: Array = BountySystem.record_level_cleared(progress, _bounty.bounties)
+		var done: Array = BountySys.record_level_cleared(progress, _bounty.bounties)
 		p.set("bounty_progress", progress)
 		for b in done:
 			_pay_bounty(peer_id, b)

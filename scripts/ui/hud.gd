@@ -1,9 +1,18 @@
 extends CanvasLayer
 ## Player HUD: health, XP, level, equipment, crosshair, toasts, pause menu.
 
+## Preloaded (not class_name) so the bounty UI keeps working even when the
+## global class cache is stale on a fresh clone (issue #7 red-fix lesson).
+const BountySys := preload("res://scripts/systems/bounty.gd")
+const BountyUI := preload("res://scripts/ui/bounty_ui.gd")
+
 var is_paused := false
 
-var _player: Player
+## The local player. Untyped (Variant) so UI harnesses can drive the bounty
+## panel/tracker with a lightweight test double (a Dictionary with
+## bounty_progress) without needing the full Player script, which does not
+## compile in -s test mode (SteamManager autoload).
+var _player
 var _toast_tween: Tween
 
 
@@ -50,12 +59,38 @@ var _save_quit_btn: Button
 func _ready() -> void:
 	add_to_group("hud")
 	_build_pause_tabs()
+	_build_bounty_tracker()
+
+
+## Compact bounty tracker (issue #7 Phase 2): 2-3 short lines under the
+## TopRight objective cluster, auto-hides when no bounties are active.
+## Code-built (not in the tscn) so it works with bare-script harnesses too.
+func _build_bounty_tracker() -> void:
+	if _bounty_tracker != null:
+		return
+	_bounty_tracker = Label.new()
+	_bounty_tracker.name = "BountyTracker"
+	_bounty_tracker.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_bounty_tracker.offset_left = -516.0
+	_bounty_tracker.offset_top = 96.0
+	_bounty_tracker.offset_right = -16.0
+	_bounty_tracker.offset_bottom = 180.0
+	_bounty_tracker.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_bounty_tracker.add_theme_font_size_override("font_size", 14)
+	_bounty_tracker.add_theme_color_override("font_color", Color(1.0, 0.88, 0.55))
+	_bounty_tracker.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_bounty_tracker.add_theme_constant_override("outline_size", 4)
+	_bounty_tracker.visible = false
+	add_child(_bounty_tracker)
 
 
 ## Rework the pause panel into three tabs (Stats / Specialization / Collection).
 ## Action buttons are moved outside the ScrollContainer, fixed at the bottom.
 func _build_pause_tabs() -> void:
-	var panel := %PausePanel as PanelContainer
+	# Bare-script harnesses (no tscn) have no pause panel; skip cleanly.
+	var panel := get_node_or_null("%PausePanel") as PanelContainer
+	if panel == null:
+		return
 	# Idempotent: skip if already built (e.g. scene re-entered).
 	if panel.get_node_or_null("PauseMain") != null:
 		return
@@ -169,6 +204,11 @@ func _process(delta: float) -> void:
 	# Cipher popup input grace (don't let the opening keypress close it).
 	if _cipher_grace > 0.0:
 		_cipher_grace -= delta
+	# Bounty tracker (issue #7 Phase 2): refresh at 2 Hz from live data.
+	_bounty_tick += delta
+	if _bounty_tick >= 0.5:
+		_bounty_tick = 0.0
+		_refresh_bounty_tracker()
 	# Low-HP vignette: pulses red as health drops below 35%.
 	if _hp_frac < 0.35 and _player != null and _player.get("alive"):
 		_vignette_t += delta
@@ -332,6 +372,67 @@ func _on_vendor_buy(st: Node, item_id: String) -> void:
 	AudioManager.sfx("ui_click")
 
 
+# --- Bounty Board (issue #7 Phase 2) ---
+
+var bounty_open := false
+var _bounty_tracker: Label = null
+var _bounty_tick := 0.0
+## Warlord mode hides the objective cluster; the tracker hides with it.
+var _bounty_hide := false
+
+
+## Bounty panel: 3 fixed cards (name / target / reward / per-player progress
+## bar / claimed state). Fixed layout, no ScrollContainer — cannot scroll.
+## Reuses the cipher popup shell (mouse visible, E/Esc closes).
+func show_bounty() -> void:
+	var bnode := get_tree().get_first_node_in_group("bounty_system")
+	if bnode == null or _player == null:
+		return
+	var bounties: Array = bnode.get("bounties")
+	if bounties.size() != 3:
+		return
+	var progress: Dictionary = _player.get("bounty_progress")
+	bounty_open = true
+	var vb := _cipher_panel()
+	var title := Label.new()
+	title.text = "Bounty Board"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(title)
+	for b in bounties:
+		vb.add_child(BountyUI.make_card(b, progress))
+	var expiry := Label.new()
+	expiry.text = "Unclaimed bounties expire at departure."
+	expiry.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	expiry.add_theme_font_size_override("font_size", 12)
+	expiry.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
+	vb.add_child(expiry)
+	var close_hint := Label.new()
+	close_hint.text = "E / Esc — close"
+	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_hint.add_theme_font_size_override("font_size", 12)
+	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+	vb.add_child(close_hint)
+	_open_cipher_popup(vb.get_parent() as Control)
+
+
+## Compact tracker: one short line per unsettled bounty, hidden when none
+## are active (or in warlord mode, where the objective cluster is hidden).
+func _refresh_bounty_tracker() -> void:
+	if _bounty_tracker == null:
+		return
+	var txt := ""
+	if not _bounty_hide and _player != null:
+		var bnode := get_tree().get_first_node_in_group("bounty_system")
+		if bnode != null:
+			var bounties: Array = bnode.get("bounties")
+			var progress: Dictionary = _player.get("bounty_progress")
+			txt = BountyUI.tracker_text(bounties, progress)
+	_bounty_tracker.text = txt
+	_bounty_tracker.visible = not txt.is_empty()
+
+
 # --- Mason's Cipher popups ---
 
 var cipher_popup_open := false
@@ -383,6 +484,7 @@ func close_cipher_popup() -> void:
 		_cipher_popup.queue_free()
 	_cipher_popup = null
 	vendor_open = false
+	bounty_open = false
 	_vendor_cash_label = null
 	cipher_popup_open = false
 	if not is_paused:
@@ -721,7 +823,7 @@ func refresh_stats() -> void:
 	_refresh_spec_list()
 	_refresh_family_panel()
 	_refresh_collection_log()
-	var can := _player.stat_points > 0
+	var can: bool = _player.stat_points > 0
 	%DmgPlus.disabled = not can
 	%HpPlus.disabled = not can
 	%SpdPlus.disabled = not can
@@ -974,6 +1076,7 @@ func set_wave(info: Dictionary) -> void:
 	var cycle_str := " · Cycle %d" % (cycle + 1) if cycle > 0 else ""
 	# Warlord mode: hide the wave cluster entirely (RTS uses its own HUD).
 	var is_warlord := str(info.get("theme_id", "")) == "warlord"
+	_bounty_hide = is_warlord
 	%WaveLabel.visible = not is_warlord
 	%WaveStatus.visible = not is_warlord
 	%NextWaveButton.visible = false

@@ -11,6 +11,7 @@ extends Node3D
 
 const DepartureBoardScript := preload("res://scripts/station/departure_board.gd")
 const VendorStallScript := preload("res://scripts/station/vendor_stall.gd")
+const BountyBoardScript := preload("res://scripts/station/bounty_board.gd")
 
 const DEPART_TIME := 45.0
 const HEAL_TICK := 0.5
@@ -711,6 +712,12 @@ func _build_station_embedded() -> void:
 	board.name = "DepartureBoard"
 	board.position = Vector3(7, 0, 4.2)
 	add_child(board)
+
+	# Bounty board (issue #7 Phase 2): E-interact opens the bounty panel.
+	var bounty_board := BountyBoardScript.new()
+	bounty_board.name = "BountyBoard"
+	bounty_board.position = Vector3(3.2, 0, 4.2)
+	add_child(bounty_board)
 
 	# NOW BOARDING sign (Phase 5): big gold label above the train.
 	_boarding_sign = Label3D.new()

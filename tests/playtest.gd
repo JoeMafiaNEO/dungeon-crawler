@@ -61,6 +61,7 @@ func _run() -> void:
 	_test_bounty_phase1()
 	_test_combo_phase1()
 	_test_combo_codex()
+	_test_bounty_phase2()
 	_print_results()
 	quit()
 
@@ -3495,3 +3496,142 @@ func _test_apex_relics() -> void:
 	nmob.queue_free()
 	stub.queue_free()
 	holder.queue_free()
+
+
+func _test_bounty_phase2() -> void:
+	print("[Playtest] Bounty board phase 2 (prop + UI)...")
+	var BoardScript := load("res://scripts/station/bounty_board.gd")
+	var BountyUIScript := load("res://scripts/ui/bounty_ui.gd")
+	var BountyScript := load("res://scripts/systems/bounty.gd")
+	_assert(BoardScript != null, "bounty_board.gd loads")
+	_assert(BountyUIScript != null, "bounty_ui.gd loads (Player-free)")
+	_assert(BountyScript != null, "bounty.gd loads for bounty UI")
+
+	# 1. Prop builds standalone: group, prompt, SNES board face.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var bb = BoardScript.new()
+	bb.name = "BountyBoard"
+	holder.add_child(bb) # _ready builds
+	_assert(bb.is_in_group("bounty_board"), "prop in bounty_board group")
+	_assert(str(bb.prompt_text()) == "Check bounties", "prop prompt text")
+	_assert(bb.has_method("interact"), "prop interact exists")
+	var face := bb.get_node_or_null("BoardFace") as MeshInstance3D
+	_assert(face != null, "prop has BoardFace quad")
+	var face_tex: Texture2D = null
+	if face != null and face.mesh != null:
+		var fm := (face.mesh as QuadMesh).material as StandardMaterial3D
+		if fm != null:
+			face_tex = fm.albedo_texture
+	_assert(face_tex != null, "board face uses the SNES board art")
+
+	# 2. Deterministic bounty fixtures (mirrors what the server rolls).
+	var bounties: Array = [
+		{"id": "b1", "kind": "kill", "mob_id": "goblin", "target": 8,
+			"cash_reward": 50, "xp_reward": 30,
+			"name": "Slay 8 Goblins", "desc": "Defeat 8 Goblins this level."},
+		{"id": "b2", "kind": "no_death", "target": 1,
+			"cash_reward": 220, "xp_reward": 180,
+			"name": "Untouchable", "desc": "Clear the level without dying."},
+		{"id": "b3", "kind": "kill", "mob_id": "slime", "target": 15,
+			"cash_reward": 100, "xp_reward": 60,
+			"name": "Slay 15 Slimes", "desc": "Defeat 15 Slimes this level."},
+	]
+	var progress := {"b1": 3, "b2": -1, "b3": 15}
+
+	# 3. Cards: exactly 3 fixed cards with progress / FAILED / DONE states.
+	# (BountyUI is Player-free so it loads in -s mode where hud.gd can't.)
+	var cards: Array = []
+	for b in bounties:
+		cards.append(BountyUIScript.make_card(b, progress))
+	_assert(cards.size() == 3, "panel builds 3 fixed cards")
+	var card_names := []
+	var card_states := []
+	for card in cards:
+		card_names.append(str(card.get_child(0).get("text")))
+		var row := card.get_child(2) as HBoxContainer
+		card_states.append(str(row.get_child(1).get("text")))
+	_assert(card_names == ["Slay 8 Goblins", "Untouchable", "Slay 15 Slimes"],
+		"cards show the 3 bounty names")
+	_assert(card_states == ["3/8", "FAILED", "DONE"], "cards show progress/failed/done states")
+	var bar1 := (cards[0].get_child(2) as HBoxContainer).get_child(0) as ProgressBar
+	_assert(int(bar1.max_value) == 8 and int(bar1.value) == 3, "card 1 progress bar 3/8")
+	_assert(str(cards[0].get_child(3).get("text")).contains("$50"),
+		"card shows cash reward")
+	_assert(str(cards[0].get_child(3).get("text")).contains("30 XP"),
+		"card shows XP reward")
+
+	# 4. Zero-scroll: a panel assembled from the 3 cards has no ScrollContainer.
+	var mock_panel := VBoxContainer.new()
+	for card in cards:
+		var dup: VBoxContainer = (card as VBoxContainer).duplicate()
+		mock_panel.add_child(dup)
+	_assert(not _has_scroll_container(mock_panel), "bounty panel: no ScrollContainer (zero-scroll)")
+
+	# 5. Tracker text: one short line per unsettled bounty, "" when settled.
+	var txt := str(BountyUIScript.tracker_text(bounties, progress))
+	_assert(txt.contains("Slay 8 Goblins"), "tracker names the active bounty")
+	_assert(not txt.contains("Untouchable"), "tracker hides the failed bounty")
+	_assert(not txt.contains("Slay 15 Slimes"), "tracker hides the done bounty")
+	_assert(txt.split("\n").size() == 1, "tracker is one short line for one active bounty")
+	var txt_done := str(BountyUIScript.tracker_text(bounties, {"b1": 8, "b2": -1, "b3": 15}))
+	_assert(txt_done.is_empty(), "tracker auto-hides (empty text) when all bounties settled")
+
+	# 6. Wiring: hud.gd delegates to BountyUI (source-level; hud.gd itself
+	# can't instantiate in -s mode because it references Player).
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func show_bounty"), "show_bounty panel exists")
+	_assert(hsrc.contains("BountyUI.make_card"), "hud delegates card building to BountyUI")
+	_assert(hsrc.contains("BountyUI.tracker_text"), "hud delegates tracker text to BountyUI")
+	_assert(hsrc.contains("func _refresh_bounty_tracker"), "tracker refresh exists")
+	_assert(hsrc.contains("bounty_open = false"), "panel close clears bounty_open")
+
+	# 7. Embedded station: BountyBoard prop placed inside the hall.
+	var StationScript := load("res://scripts/station/station.gd")
+	var AnnexScript := load("res://scripts/station/station_annex.gd")
+	var ProcGenScript := load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	var layout = ProcGenScript.generate(theme, 12345)
+	var plan: Dictionary = AnnexScript.plan(12345, layout)
+	var annex = AnnexScript.build(holder, plan, layout)
+	var st = StationScript.new()
+	st.name = "Station"
+	st.dungeon = holder
+	st.annex = annex
+	holder.add_child(st) # _ready runs the embedded build
+	var bbn: Node = st.get_node_or_null("BountyBoard")
+	_assert(bbn != null, "embedded: BountyBoard built")
+	if bbn != null:
+		var lp: Vector3 = bbn.position
+		_assert(absf(lp.x) <= 12.0 and absf(lp.z) <= 7.0,
+			"embedded: BountyBoard inside hall footprint")
+
+	# 8. Wiring: E-scan group + station placement source checks.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('"bounty_board"'), "player E-scan includes bounty board")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("BountyBoardScript.new()"), "bounty board prop placed")
+
+	holder.queue_free()
+
+
+## Recursive ScrollContainer audit for the zero-scroll rule.
+func _has_scroll_container(n: Node) -> bool:
+	if n == null:
+		return false
+	if n is ScrollContainer:
+		return true
+	for c in n.get_children():
+		if _has_scroll_container(c):
+			return true
+	return false
+
+
+## Collect the 3 fixed bounty cards out of a panel subtree.
+func _find_bounty_cards(n: Node) -> Array:
+	var out := []
+	if n is VBoxContainer and str(n.name).begins_with("BountyCard_"):
+		out.append(n)
+	for c in n.get_children():
+		out.append_array(_find_bounty_cards(c))
+	return out

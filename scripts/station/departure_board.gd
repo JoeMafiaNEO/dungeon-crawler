@@ -121,7 +121,7 @@ func _party_level(next_level: int) -> int:
 	var total := 0
 	var count := 0
 	for p in get_tree().get_nodes_in_group("players"):
-		total += int(p.get("level"))
+		total += int(p.get("level") if p.get("level") != null else 1)
 		count += 1
 	if count == 0:
 		return next_level
