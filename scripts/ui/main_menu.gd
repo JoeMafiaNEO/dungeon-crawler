@@ -846,6 +846,7 @@ func _refresh_staging_roster() -> void:
 		if not joined.has(sid) and not bool(entry.get("is_host", false)):
 			var inv := Button.new()
 			inv.text = "Invite"
+			_style_one_button(inv) # Issue #36: match the menu button style.
 			inv.pressed.connect(_on_invite_player_pressed.bind(sid))
 			row.add_child(inv)
 		%RosterList.add_child(row)
@@ -911,11 +912,33 @@ func _on_connection_failed(reason: String) -> void:
 
 ## Apply pixel-art button textures to all menu buttons.
 func _style_buttons() -> void:
+	var boxes := _make_button_styleboxes()
+	if boxes.is_empty():
+		return
+	_apply_to_buttons(self, boxes[0], boxes[1], boxes[2])
+
+
+## Issue #36: style a single dynamically-created button (roster Invite
+## buttons are built after _style_buttons runs).
+func _style_one_button(b: Button) -> void:
+	var boxes := _make_button_styleboxes()
+	if boxes.is_empty():
+		return
+	b.add_theme_stylebox_override("normal", boxes[0])
+	b.add_theme_stylebox_override("hover", boxes[1])
+	b.add_theme_stylebox_override("pressed", boxes[2])
+	b.add_theme_stylebox_override("focus", boxes[1])
+	b.add_theme_stylebox_override("disabled", boxes[0])
+	b.add_theme_color_override("font_color", Color(0.95, 0.92, 0.85))
+	b.add_theme_color_override("font_hover_color", Color(1.0, 0.95, 0.7))
+
+
+func _make_button_styleboxes() -> Array:
 	var normal_tex := load("res://assets/sprites/menu/btn_normal.png") as Texture2D
 	var hover_tex := load("res://assets/sprites/menu/btn_hover.png") as Texture2D
 	var pressed_tex := load("res://assets/sprites/menu/btn_pressed.png") as Texture2D
 	if normal_tex == null:
-		return
+		return []
 	var normal := StyleBoxTexture.new()
 	normal.texture = normal_tex
 	normal.expand_margin_left = 8
@@ -930,7 +953,7 @@ func _style_buttons() -> void:
 	hover.texture = hover_tex
 	var pressed := normal.duplicate() as StyleBoxTexture
 	pressed.texture = pressed_tex
-	_apply_to_buttons(self, normal, hover, pressed)
+	return [normal, hover, pressed]
 
 
 func _apply_to_buttons(node: Node, normal: StyleBoxTexture, hover: StyleBoxTexture, pressed: StyleBoxTexture) -> void:

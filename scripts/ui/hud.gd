@@ -1263,7 +1263,7 @@ func _refresh_collection_log() -> void:
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if sig_done else Color(0.8, 0.75, 0.55))
 		row.text = txt
 		row.tooltip_text = _collection_tooltip(fam, earned, sig_done)
-		row.add_theme_font_size_override("font_size", 11)
+		row.add_theme_font_size_override("font_size", 10) # Issue #37: compact for 1080p
 		(cols[idx % 2] as VBoxContainer).add_child(row)
 		idx += 1
 	_refresh_cipher_section()
@@ -1279,17 +1279,17 @@ func _refresh_trophy_section() -> void:
 	var header := Label.new()
 	header.text = "Apex Trophies — %d/3" % trophies.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_font_size_override("font_size", 11) # Issue #37: compact
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	for apex_id in ["apex_boar", "apex_warden", "apex_horror"]:
 		var earned: bool = apex_id in trophies
 		var row := HBoxContainer.new()
 		row.alignment = BoxContainer.ALIGNMENT_CENTER
-		row.add_theme_constant_override("separation", 8)
+		row.add_theme_constant_override("separation", 6) # Issue #37: tighter
 		%CollectionLog.add_child(row)
 		var icon := TextureRect.new()
-		icon.custom_minimum_size = Vector2(24, 24)
+		icon.custom_minimum_size = Vector2(20, 20) # Issue #37: was 24
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		var sp := SpecialData.get_special(SpecialData.apex_special_for_boss(apex_id))
@@ -1317,7 +1317,7 @@ func _refresh_cipher_section() -> void:
 	var header := Label.new()
 	header.text = "Architect Cipher — %d/8" % frags.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_font_size_override("font_size", 11) # Issue #37: compact
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	var sorted := frags.duplicate()
@@ -1331,7 +1331,7 @@ func _refresh_cipher_section() -> void:
 		row.text = "%s. %s — the verse speaks of %s" % [
 			CipherPoems.roman(idx), str(p["cipher"]), CipherPoems.shift_word(int(p["shift"]))]
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_theme_font_size_override("font_size", 11)
+		row.add_theme_font_size_override("font_size", 10) # Issue #37: was 11
 		row.add_theme_color_override("font_color", Color(0.8, 0.75, 0.55))
 		%CollectionLog.add_child(row)
 
@@ -1343,7 +1343,7 @@ func _refresh_combo_codex() -> void:
 	var header := Label.new()
 	header.text = "Combo Finishers — %d/5" % found.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_font_size_override("font_size", 11) # Issue #37: compact
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	%CollectionLog.add_child(header)
 	for f in Combo.COMBO_FINISHERS:
@@ -1353,10 +1353,14 @@ func _refresh_combo_codex() -> void:
 			row.text = "◆ %s — %s" % [str(f["name"]), str(f["trigger_desc"])]
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		else:
-			row.text = "◇ ??? — %s" % str(f["hint"])
+			# Issue #37: truncate long hints so rows stay single-line at 1080p.
+			var hint := str(f["hint"])
+			if hint.length() > 52:
+				hint = hint.substr(0, 49) + "..."
+			row.text = "◇ ??? — %s" % hint
 			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_theme_font_size_override("font_size", 11)
+		row.add_theme_font_size_override("font_size", 10) # Issue #37: was 11
 		%CollectionLog.add_child(row)
 
 
