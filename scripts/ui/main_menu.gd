@@ -83,12 +83,12 @@ func _on_multi_pressed() -> void:
 
 ## Show the multiplayer Continue if a compatible multiplayer save exists.
 func _refresh_multi_ui() -> void:
-	var run := SaveManager.load_run("")
+	var run := SaveManager.load_run(SaveManager.MODE_MP, 0)
 	if not run.is_empty() and bool(run.get("is_multiplayer", false)):
 		%ContinueMultiButton.visible = true
 		%ContinueMultiInfo.visible = true
 		%ContinueMultiInfo.text = SaveManager.run_summary(run)
-		if SaveManager.is_save_compatible(""):
+		if SaveManager.is_save_compatible(SaveManager.MODE_MP, 0):
 			%ContinueMultiButton.disabled = false
 			%ContinueMultiButton.tooltip_text = ""
 		else:
@@ -101,7 +101,7 @@ func _refresh_multi_ui() -> void:
 
 func _on_continue_multi_pressed() -> void:
 	AudioManager.sfx("ui_click")
-	if not NetworkManager.continue_run(""):
+	if not NetworkManager.continue_run(SaveManager.MODE_MP, 0):
 		_refresh_multi_ui()
 
 
@@ -258,14 +258,15 @@ func _on_join_back_pressed() -> void:
 
 # --- Solo phase ---
 
-## Show per-class saves. Each class keeps its own run; swap freely.
+## Show slot saves. Each occupied slot gets a Continue row (Phase 5
+## redesigns this into slot cards; the mapping here is mechanical).
 func _refresh_solo_ui() -> void:
 	for child in %SavesList.get_children():
 		child.queue_free()
-	var saves := SaveManager.list_solo_saves()
+	var saves := SaveManager.list_runs(SaveManager.MODE_SOLO)
 	%SavesLabel.visible = not saves.is_empty()
 	for entry in saves:
-		var cid := str(entry.get("class_id", "warrior"))
+		var slot := int(entry.get("slot", 0))
 		var run: Dictionary = entry.get("run", {})
 		var row := HBoxContainer.new()
 		row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -275,8 +276,8 @@ func _refresh_solo_ui() -> void:
 		row.add_child(lbl)
 		var btn := Button.new()
 		btn.text = "Continue"
-		btn.pressed.connect(_on_continue_class_pressed.bind(cid))
-		if not SaveManager.is_save_compatible(cid):
+		btn.pressed.connect(_on_continue_class_pressed.bind(slot))
+		if not SaveManager.is_save_compatible(SaveManager.MODE_SOLO, slot):
 			btn.disabled = true
 			btn.tooltip_text = "Save from an older version"
 		row.add_child(btn)
@@ -289,9 +290,9 @@ func _on_new_game_pressed() -> void:
 	NetworkManager.play_solo()
 
 
-func _on_continue_class_pressed(class_id: String) -> void:
+func _on_continue_class_pressed(slot: int) -> void:
 	AudioManager.sfx("ui_click")
-	if not NetworkManager.continue_run(class_id):
+	if not NetworkManager.continue_run(SaveManager.MODE_SOLO, slot):
 		_refresh_solo_ui()
 
 
@@ -380,8 +381,8 @@ func _refresh_staging_roster() -> void:
 	for child in %RosterList.get_children():
 		child.queue_free()
 	var roster: Array = Dungeon.continued_roster
-	var run := SaveManager.load_run()
-	%StagingInfo.text = SaveManager.run_summary()
+	var run := SaveManager.load_run(SaveManager.MODE_MP, NetworkManager.active_run_slot)
+	%StagingInfo.text = SaveManager.run_summary(run)
 	var joined := {}
 	for sid in NetworkManager.lobby_members:
 		joined[int(sid)] = true

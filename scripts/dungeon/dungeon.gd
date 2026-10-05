@@ -1914,7 +1914,7 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				"class_id": me.class_id,
 				"player_state": me.get_state(),
 				"seed": seed,
-			})
+			}, SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
 	rpc("board_train_interior", theme_id, seed, new_level, peer_classes)
 
 
@@ -2245,7 +2245,7 @@ func _write_multiplayer_save() -> void:
 	if not _save_roster.is_empty():
 		_save_base["class_id"] = _save_roster[0].get("class_id", "warrior")
 		_save_base["player_state"] = _save_roster[0].get("player_state", {})
-	SaveManager.save_run(_save_base)
+	SaveManager.save_run(_save_base, SaveManager.MODE_MP, NetworkManager.active_run_slot)
 
 
 @rpc("any_peer", "call_local")
@@ -2302,5 +2302,5 @@ func check_party_wipe() -> void:
 		if p != null and connected.has(p.get_multiplayer_authority()):
 			if bool(p.get("alive")):
 				return  # someone's still standing
-	SaveManager.clear_run()
+	SaveManager.clear_run(SaveManager.MODE_MP, NetworkManager.active_run_slot)
 	rpc("announce", "Party wiped! The run has been erased.")

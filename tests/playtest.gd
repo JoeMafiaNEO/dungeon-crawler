@@ -18,6 +18,7 @@ func _run() -> void:
 	_test_rts_costs()
 	_test_rts_production()
 	_test_save_roundtrip()
+	_test_save_profile()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -114,40 +115,60 @@ func _test_rts_production() -> void:
 
 
 func _test_save_roundtrip() -> void:
-	print("[Playtest] Save roundtrip...")
-	# Exercise the real SaveManager code path (atomic save + load).
-	var mgr = load("res://scripts/autoload/save_manager.gd").new()
-	# Back up any real run save so the test doesn't clobber it.
+	print("[Playtest] Save roundtrip (slots)...")
+	# Exercise the real SaveManager slot code path (atomic save + load).
+	var SaveScript := load("res://scripts/autoload/save_manager.gd")
+	var mgr = SaveScript.new()
+	# Back up real slot files + profile so the test can't clobber them.
 	var backup := {}
-	var real_path := "user://run_save.cfg"
-	if FileAccess.file_exists(real_path):
-		var bcfg := ConfigFile.new()
-		if bcfg.load(real_path) == OK:
-			backup = bcfg.get_value("run", "data", {})
-	mgr.clear_run("mage")
+	for mode in ["solo", "mp"]:
+		for slot in range(3):
+			var p := "user://runs/%s_%d.cfg" % [mode, slot]
+			if FileAccess.file_exists(p):
+				backup[p] = FileAccess.get_file_as_bytes(p)
+				DirAccess.remove_absolute(p)
+	var prof_path := "user://profile_local.cfg"
+	var prof_backup := PackedByteArray()
+	if FileAccess.file_exists(prof_path):
+		prof_backup = FileAccess.get_file_as_bytes(prof_path)
+		DirAccess.remove_absolute(prof_path)
+	# Slot roundtrip.
 	var run := {
 		"level": 9, "class_id": "mage", "theme_id": "dungeon",
 		"level_number": 2, "cycle": 1, "seed": 12345,
 		"stats": {"str": 5, "vit": 3},
 	}
-	mgr.save_run(run)
-	_assert(mgr.has_run("mage"), "SaveManager reports run exists after save")
-	var loaded: Dictionary = mgr.load_run("mage")
-	_assert(int(loaded.get("level", 0)) == 9, "SaveManager preserves level")
-	_assert(str(loaded.get("class_id", "")) == "mage", "SaveManager preserves class")
-	_assert(str(loaded.get("theme_id", "")) == "dungeon", "SaveManager preserves theme")
-	_assert(int(loaded.get("cycle", 0)) == 1, "SaveManager preserves cycle")
-	_assert(str(loaded.get("saved_at", "")) != "", "SaveManager stamps saved_at")
-	var summary: String = mgr.run_summary("mage")
-	_assert(str(summary) != "", "run_summary non-empty for saved run")
-	# Per-class isolation: warrior slot is empty.
-	_assert(not mgr.has_run("warrior"), "Per-class saves are isolated")
-	var saves: Array = mgr.list_solo_saves()
-	_assert(saves.size() == 1, "list_solo_saves finds the mage save")
-	# Multiplayer save format.
+	_assert(mgr.save_run(run, "solo", 0), "save_run accepts a valid slot")
+	_assert(mgr.has_run("solo", 0), "has_run true after save")
+	var loaded: Dictionary = mgr.load_run("solo", 0)
+	_assert(int(loaded.get("level", 0)) == 9, "slot preserves level")
+	_assert(str(loaded.get("class_id", "")) == "mage", "slot preserves class")
+	_assert(str(loaded.get("theme_id", "")) == "dungeon", "slot preserves theme")
+	_assert(int(loaded.get("cycle", 0)) == 1, "slot preserves cycle")
+	_assert(str(loaded.get("saved_at", "")) != "", "slot stamps saved_at")
+	_assert(int(loaded.get("save_version", 0)) == mgr.SAVE_VERSION, "slot stamps save_version")
+	_assert(not bool(loaded.get("is_multiplayer", true)), "solo slot not flagged multiplayer")
+	var summary: String = mgr.run_summary(loaded)
+	_assert(summary != "", "run_summary non-empty for saved run")
+	_assert("Mage" in summary, "summary names the class")
+	# Slot isolation: a slot-0 save never touches slot 1 or the mp slots.
+	_assert(not mgr.has_run("solo", 1), "solo slot 1 untouched")
+	_assert(not mgr.has_run("solo", 2), "solo slot 2 untouched")
+	_assert(not mgr.has_run("mp", 0), "mp slot 0 untouched")
+	var saves: Array = mgr.list_runs("solo")
+	_assert(saves.size() == 1 and int(saves[0].get("slot", -1)) == 0,
+		"list_runs finds the solo save in slot 0")
+	# Out-of-range slots rejected.
+	_assert(not mgr.save_run(run, "solo", 3), "slot 3 rejected")
+	_assert(not mgr.save_run(run, "solo", -1), "slot -1 rejected")
+	_assert(not mgr.save_run(run, "bogus", 0), "bad mode rejected")
+	_assert(mgr.load_run("solo", 3).is_empty(), "load invalid slot -> {}")
+	_assert(not mgr.has_run("mp", 9), "has_run invalid slot false")
+	_assert(not mgr.is_save_compatible("solo", 1), "empty slot not compatible")
+	# MP slot roundtrip with roster.
 	var mp_run := {
 		"theme_id": "dungeon", "level_number": 2, "seed": 999,
-		"is_multiplayer": true, "host_difficulty": 1.5, "host_loot_mult": 2.0,
+		"host_difficulty": 1.5, "host_loot_mult": 2.0,
 		"lobby": {"max_players": 4, "lobby_name": "Test"},
 		"roster": [
 			{"steam_id": 111, "player_name": "Host", "class_id": "warrior",
@@ -156,23 +177,78 @@ func _test_save_roundtrip() -> void:
 			 "player_state": {"level": 3}, "rts_faction": 1, "is_host": false},
 		],
 	}
-	mgr.save_run(mp_run)
-	var mp_loaded: Dictionary = mgr.load_run()
-	_assert(bool(mp_loaded.get("is_multiplayer", false)), "Multiplayer flag preserved")
-	_assert(int(mp_loaded.get("save_version", 0)) == mgr.SAVE_VERSION, "Save version stamped")
-	_assert(float(mp_loaded.get("host_difficulty", 0.0)) == 1.5, "Host difficulty preserved")
-	_assert(mp_loaded.get("roster", []).size() == 2, "Roster preserved")
-	_assert(mgr.is_save_compatible(), "Save compatibility check passes")
-	var mp_summary: String = mgr.run_summary("")
-	_assert("2 players" in mp_summary, "Multiplayer summary shows player count")
-	mgr.clear_run("")
-	_assert(not mgr.has_run(""), "clear_run removes the multiplayer run")
-	mgr.clear_run("mage")
-	_assert(not mgr.has_run("mage"), "clear_run removes the class save")
-	# Restore the real run save if there was one.
-	if not backup.is_empty():
-		mgr.save_run(backup)
+	_assert(mgr.save_run(mp_run, "mp", 2), "mp save lands in slot 2")
+	var mp_loaded: Dictionary = mgr.load_run("mp", 2)
+	_assert(bool(mp_loaded.get("is_multiplayer", false)), "mp flag stamped from mode")
+	_assert(float(mp_loaded.get("host_difficulty", 0.0)) == 1.5, "host difficulty preserved")
+	_assert(mp_loaded.get("roster", []).size() == 2, "roster preserved")
+	_assert(mgr.is_save_compatible("mp", 2), "save compatibility passes")
+	var mp_summary: String = mgr.run_summary(mp_loaded)
+	_assert("2 players" in mp_summary, "mp summary shows player count")
+	_assert(mgr.has_run("solo", 0), "mp save did not disturb solo slot 0")
+	# Clear is slot-scoped.
+	mgr.clear_run("mp", 2)
+	_assert(not mgr.has_run("mp", 2), "clear_run removes the mp run")
+	_assert(mgr.has_run("solo", 0), "clear_run leaves other slots alone")
+	mgr.clear_run("solo", 0)
+	_assert(not mgr.has_run("solo", 0), "clear_run removes the solo run")
+	_assert(mgr.list_runs("solo").is_empty(), "list_runs empty after clear")
+	# Restore backups.
+	for p in backup.keys():
+		var f := FileAccess.open(p, FileAccess.WRITE)
+		f.store_buffer(backup[p])
+	if prof_backup.is_empty():
+		if FileAccess.file_exists(prof_path):
+			DirAccess.remove_absolute(prof_path)
+	else:
+		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
+		pf.store_buffer(prof_backup)
 	mgr.free()
+
+
+func _test_save_profile() -> void:
+	print("[Playtest] SaveManager profile + cloud guards...")
+	var SaveScript := load("res://scripts/autoload/save_manager.gd")
+	var prof_path := "user://profile_local.cfg"
+	var prof_backup := PackedByteArray()
+	if FileAccess.file_exists(prof_path):
+		prof_backup = FileAccess.get_file_as_bytes(prof_path)
+		DirAccess.remove_absolute(prof_path)
+	var mgr = SaveScript.new()
+	# Local fallback: Steam is not initialized in headless tests. (The -s
+	# test script itself can't name the SteamManager autoload at compile
+	# time, so resolve it off the tree root at runtime.)
+	var sm: Node = root.get_node_or_null("SteamManager")
+	_assert(sm == null or not bool(sm.get("initialized")), "Steam uninitialized in test env")
+	_assert(mgr._profile_path().ends_with("profile_local.cfg"),
+		"profile resolves to the local account")
+	_assert(not mgr._cloud_available(), "cloud unavailable without Steam")
+	# Profile meta roundtrip.
+	_assert(mgr.unlock_item("void_blade"), "unlock_item grants")
+	_assert(not mgr.unlock_item("void_blade"), "unlock_item not double-granted")
+	mgr.add_kills(57)
+	mgr.set_deepest_cycle(3)
+	mgr.add_cash_earned(1250)
+	mgr.add_cipher_fragment(4)
+	_assert(mgr.unlock_architect(), "unlock_architect grants")
+	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
+	var mgr2 = SaveScript.new()
+	mgr2.load_game()
+	_assert(mgr2.is_item_unlocked("void_blade"), "profile: item unlock persists")
+	_assert(mgr2.get_total_kills() == 57, "profile: kills persist")
+	_assert(mgr2.get_deepest_cycle() == 3, "profile: deepest cycle persists")
+	_assert(mgr2.get_total_cash_earned() == 1250, "profile: cash persists")
+	_assert(mgr2.get_cipher_fragments() == [4], "profile: fragments persist")
+	_assert(mgr2.is_architect_unlocked(), "profile: architect unlock persists")
+	_assert(mgr2._cloud_write_count == 0, "boot read-through is a no-op without Steam")
+	mgr.free()
+	mgr2.free()
+	if prof_backup.is_empty():
+		if FileAccess.file_exists(prof_path):
+			DirAccess.remove_absolute(prof_path)
+	else:
+		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
+		pf.store_buffer(prof_backup)
 
 
 func _test_station_phase4() -> void:
@@ -1330,10 +1406,11 @@ func _test_architect() -> void:
 	_assert(st.max_hp * 0.5 == 75.0, "Demolish deals 50% of max HP")
 	_assert(st.uid == "1_1", "Structure uid stored")
 	st.free()
-	# Save path pattern.
+	# Save slots (issue #4): runs persist per slot; the slot path never
+	# derives from class_id, so switching class can't clobber another slot.
 	var mgr = load("res://scripts/autoload/save_manager.gd").new()
-	_assert("architect" in mgr.SOLO_CLASSES, "architect in SOLO_CLASSES")
-	_assert("user://solo_%s.cfg" % "architect" == "user://solo_architect.cfg", "Architect save path pattern")
+	_assert(mgr._slot_path("solo", 0) == "user://runs/solo_0.cfg", "solo slot path pattern")
+	_assert(mgr._slot_path("mp", 2) == "user://runs/mp_2.cfg", "mp slot path pattern")
 	mgr.free()
 	# Class data loads.
 	var cd = load("res://data/classes/architect.tres")
@@ -1382,8 +1459,8 @@ func _test_cipher_unlock() -> void:
 	_assert(CipherPoems.next_fragment([]) == 0, "next_fragment starts at 0")
 	_assert(CipherPoems.next_fragment([0, 1, 3]) == 2, "next_fragment finds lowest gap")
 	_assert(CipherPoems.next_fragment([0, 1, 2, 3, 4, 5, 6, 7]) == -1, "next_fragment -1 when complete")
-	# Meta round-trip (back up user://savegame.cfg so the test can't clobber it).
-	var cfg_path := "user://savegame.cfg"
+	# Meta round-trip (back up user://profile_local.cfg so the test can't clobber it).
+	var cfg_path := "user://profile_local.cfg"
 	var backup := PackedByteArray()
 	if FileAccess.file_exists(cfg_path):
 		backup = FileAccess.get_file_as_bytes(cfg_path)

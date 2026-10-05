@@ -21,6 +21,11 @@ var host_loot_mult: float = 1.0
 var server_id: int = 1
 var selected_class_id: String = "warrior"
 var lobby_members: Array[int] = []
+## Active run slot (issue #4): every in-run save/clear targets this
+## (mode, slot). Set by play_solo / host_lobby / continue_run.
+## Phase 5's slot picker will choose the slot; until then slot 0.
+var active_run_mode: String = "solo"
+var active_run_slot: int = 0
 
 
 func _ready() -> void:
@@ -42,6 +47,8 @@ func host_lobby() -> void:
 	if not SteamManager.initialized:
 		connection_failed.emit("Steam isn't running. Open Steam, then try again.")
 		return
+	active_run_mode = SaveManager.MODE_MP
+	active_run_slot = 0
 	_reset_peer()
 	peer = SteamMultiplayerPeer.new()
 	if peer.create_host() != OK:
@@ -201,7 +208,9 @@ func play_solo() -> void:
 	is_host = true
 	host_difficulty = 1.0
 	host_loot_mult = 1.0
-	SaveManager.clear_run(selected_class_id)
+	active_run_mode = SaveManager.MODE_SOLO
+	active_run_slot = 0
+	SaveManager.clear_run(active_run_mode, active_run_slot)
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = randi()
@@ -222,13 +231,15 @@ func play_daily() -> void:
 
 
 ## Resume a saved run from the main menu. Branches on multiplayer saves.
-## class_id "" = multiplayer slot; otherwise that class's solo save.
-func continue_run(class_id: String = "") -> bool:
-	var run := SaveManager.load_run(class_id)
+## mode/slot address the run in SaveManager's slot API.
+func continue_run(mode: String, slot: int) -> bool:
+	var run := SaveManager.load_run(mode, slot)
 	if run.is_empty():
 		return false
 	if int(run.get("save_version", 0)) != SaveManager.SAVE_VERSION:
 		return false
+	active_run_mode = mode
+	active_run_slot = slot
 	if bool(run.get("is_multiplayer", false)):
 		return continue_multiplayer(run)
 	leave_lobby()

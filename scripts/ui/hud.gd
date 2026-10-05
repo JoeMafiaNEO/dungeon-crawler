@@ -593,7 +593,7 @@ func _on_save_quit_pressed() -> void:
 			"level_number": level_number,
 			"class_id": _player.class_id,
 			"player_state": _player.get_state(),
-		})
+		}, SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
 	_on_quit_pressed()
 
 
