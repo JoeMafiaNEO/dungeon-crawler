@@ -57,6 +57,16 @@ var cash_mult := 1.0
 ## Iron Resolve: armed 1-HP survival save (once per run).
 var second_wind_armed := false
 var second_wind_used := false
+## Apex specials (issue #5): effect multipliers from the equipped relic,
+## set by _apply_equipped_special() from SpecialData effect_params.
+var special_hp_mult := 1.0
+var special_pickup_mult := 1.0
+var special_cooldown_mult := 1.0
+
+
+## Ability cooldown multiplier from the equipped special (apex_warden_sigil).
+func cooldown_mult() -> float:
+	return special_cooldown_mult
 ## Bounty Board (issue #7): server-authoritative per-player progress,
 ## {bounty_id: count} (-1 = failed). Synced via player snapshots.
 var bounty_progress := {}
@@ -245,6 +255,8 @@ func _recalc_stats() -> void:
 		spd_m *= pow(item.speed_mult, count)
 		xp_mult *= pow(item.xp_mult, count)
 	max_hp *= hp_m
+	# Apex relic (issue #5): equipped Boar Hide scales max HP.
+	max_hp *= special_hp_mult
 	damage *= dmg_m
 	move_speed *= spd_m
 	# Milestone passives: 25/50/75/100.
@@ -942,7 +954,7 @@ func _activate_smoke_veil() -> void:
 			hud.toast("Smoke Veil on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["smoke_veil"] = 30.0
+	ability_cds["smoke_veil"] = (30.0) * cooldown_mult()
 	stealthed = true
 	_stealth_t = 7.0 if has_trait("longer_shadows") else 6.0
 	rpc("set_stealthed", true)
@@ -979,7 +991,7 @@ func _activate_mark() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["mark"] = 25.0
+	ability_cds["mark"] = (25.0) * cooldown_mult()
 	# Hamstring Mark trait: marked targets are also slowed 20%.
 	var hamstring := 0.8 if has_trait("hamstring_mark") else 1.0
 	target.rpc_id(NetworkManager.server_id, "apply_mark", 10.0, hamstring)
@@ -1015,7 +1027,7 @@ func _activate_shadow_step() -> void:
 			hud.toast("Shadow Step on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["shadow_step"] = 15.0
+	ability_cds["shadow_step"] = (15.0) * cooldown_mult()
 	var fwd := -global_transform.basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized()
@@ -1060,7 +1072,7 @@ func _activate_fan() -> void:
 			hud.toast("Fan of Knives on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["fan"] = 20.0
+	ability_cds["fan"] = (20.0) * cooldown_mult()
 	var dmg := damage * _buff_mult("damage") * rank_mult() * 1.2
 	# Unseen trait: first attack after veil/blink crits for 2x.
 	if unseen_crit_ready:
@@ -1145,7 +1157,7 @@ func _activate_inferno() -> void:
 	var hit := space.intersect_ray(params)
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
-	ability_cds["inferno"] = 60.0
+	ability_cds["inferno"] = (60.0) * cooldown_mult()
 	_cast_seq += 1
 	# 10 ticks x 0.6 = 6.0x base ≈ 1.5x rank-V meteor (4.0x), plus burn.
 	var dmg := damage * _buff_mult("damage") * 0.6 * trait_damage_mult("fireball")
@@ -1195,7 +1207,7 @@ func _activate_glacial_prison() -> void:
 			hud.toast("Glacial Prison on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["glacial_prison"] = 60.0
+	ability_cds["glacial_prison"] = (60.0) * cooldown_mult()
 	_cast_seq += 1
 	rpc("cast_glacial_prison", global_position, int(multiplayer.get_unique_id()), _cast_seq)
 	AudioManager.sfx("milestone")
@@ -1228,7 +1240,7 @@ func _activate_tempest() -> void:
 			hud.toast("Tempest on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["tempest"] = 90.0
+	ability_cds["tempest"] = (90.0) * cooldown_mult()
 	_cast_seq += 1
 	var dmg := damage * _buff_mult("damage") * 0.8 * 1.5 * trait_damage_mult("lightning")
 	rpc("cast_tempest", dmg, int(multiplayer.get_unique_id()), _cast_seq)
@@ -1279,7 +1291,7 @@ func _activate_signature_totem(totem_id: String) -> void:
 			AudioManager.sfx("ui_error")
 		return
 	totem_charges -= 1
-	ability_cds[cd_key] = cd
+	ability_cds[cd_key] = (cd) * cooldown_mult()
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon != null:
 		dungeon.rpc("place_totem", totem_id, global_position, int(multiplayer.get_unique_id()), 1)
@@ -1318,7 +1330,7 @@ func _activate_assassinate() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["assassinate"] = 45.0
+	ability_cds["assassinate"] = (45.0) * cooldown_mult()
 	var origin := global_position
 	# Blink to behind the target (far side relative to our position).
 	var away: Vector3 = target.global_position - global_position
@@ -1363,7 +1375,7 @@ func _activate_execution() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["execution"] = 60.0
+	ability_cds["execution"] = (60.0) * cooldown_mult()
 	var me := int(multiplayer.get_unique_id())
 	var base := damage * _buff_mult("damage") * rank_mult()
 	var is_boss: bool = (target.get("data") as MobData).is_boss
@@ -2022,7 +2034,7 @@ func _place_structure(structure_id: String) -> void:
 		AudioManager.sfx("ui_error")
 		return
 	var point := _cursor_ground_point()
-	ability_cds[structure_id] = cd
+	ability_cds[structure_id] = (cd) * cooldown_mult()
 	_structure_seq += 1
 	var uid := "%d_%d" % [me, _structure_seq]
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
@@ -2052,7 +2064,7 @@ func _cast_reinforce() -> void:
 		if to.length() < best_d:
 			best_d = to.length()
 			best = p
-	ability_cds["reinforce"] = 25.0
+	ability_cds["reinforce"] = (25.0) * cooldown_mult()
 	AudioManager.sfx("totem_place")
 	var target: Player = best if best != null else self
 	target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0)
@@ -2077,7 +2089,7 @@ func _cast_demolish() -> void:
 			hud.toast("No structures to demolish!")
 		AudioManager.sfx("ui_error")
 		return
-	ability_cds["demolish"] = 45.0
+	ability_cds["demolish"] = (45.0) * cooldown_mult()
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null:
 		dungeon.rpc("demolish_structures", me)
@@ -2091,7 +2103,7 @@ func _cast_holy_light() -> void:
 		if hud != null:
 			hud.toast("Holy Light on cooldown!")
 		return
-	ability_cds["holy_light"] = 20.0
+	ability_cds["holy_light"] = (20.0) * cooldown_mult()
 	rpc("spawn_holy_light")
 
 
@@ -2441,7 +2453,7 @@ func _update_board_hover() -> void:
 
 func _nearest_pickup() -> ItemPickup:
 	var best: ItemPickup = null
-	var best_d := PICKUP_RANGE
+	var best_d := PICKUP_RANGE * special_pickup_mult
 	for node in get_tree().get_nodes_in_group("pickups"):
 		var pickup := node as ItemPickup
 		if pickup == null or not pickup.is_available():
@@ -2578,6 +2590,15 @@ func receive_item(item_id: String, sell_value: int = -1) -> void:
 		return
 	var item := ItemDB.get_item(item_id)
 	if item == null:
+		return
+	# Apex relic (issue #5): earns the special into the vault instead of
+	# entering the inventory. The passive applies when equipped (issue #6).
+	if not item.grants_special.is_empty():
+		var sp := SpecialData.get_special(item.grants_special)
+		SpecialData.earn_for(self, item.grants_special)
+		if hud != null and sp != null:
+			hud.toast("Relic claimed: %s — equip it in the Relic Vault!" % sp.display_name)
+		AudioManager.sfx("unlock")
 		return
 	# Danger-model scaled drops carry their sell value from the pickup.
 	# Duplicate before mutating so the shared ItemDB entry stays pristine.
@@ -2832,12 +2853,6 @@ func die() -> void:
 			var stats := run_stats()
 			var score := int(stats.get("cycle", 1)) * 1000 + int(stats.get("level", 1)) * 10 + int(stats.get("kills", 0))
 			DailyRun.record_attempt(score)
-			# Issue #9 Phase 1: Steam leaderboards. Depth always uploads;
-			# speed uploads only on a full Cycle-1 clear. Skipped offline.
-			var clear_sec := -1
-			if Dungeon.daily_c1_clear_msec >= 0:
-				clear_sec = int((Dungeon.daily_c1_clear_msec - Dungeon.daily_start_msec) / 1000)
-			Leaderboard.upload_daily(int(stats.get("cycle", 1)), int(stats.get("level", 1)), clear_sec)
 		SaveManager.clear_run(SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
 		if hud != null:
 			hud.show_death_screen(run_stats())
@@ -3011,6 +3026,9 @@ func _apply_equipped_special() -> void:
 	# Derived effects reset first: unequipping or switching can never stack.
 	cash_mult = 1.0
 	second_wind_armed = false
+	special_hp_mult = 1.0
+	special_pickup_mult = 1.0
+	special_cooldown_mult = 1.0
 	match equipped_special:
 		"iron_resolve":
 			if not second_wind_used:
@@ -3021,6 +3039,14 @@ func _apply_equipped_special() -> void:
 				cash_mult = float(charm.effect_params.get("cash_mult", 1.25))
 		"holy_light":
 			pass # key-7 entry granted by refresh_abilities() below
+		"apex_boar_hide", "apex_horror_eye", "apex_warden_sigil":
+			# Apex relics (issue #5): multipliers read from effect_params.
+			var apex := SpecialData.get_special(equipped_special)
+			if apex != null:
+				special_hp_mult = float(apex.effect_params.get("max_hp_mult", 1.0))
+				special_pickup_mult = float(apex.effect_params.get("pickup_mult", 1.0))
+				special_cooldown_mult = float(apex.effect_params.get("cooldown_mult", 1.0))
+	_recalc_stats()
 	refresh_abilities()
 
 

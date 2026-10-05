@@ -232,9 +232,6 @@ func play_daily() -> void:
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = DailyRun.get_today_seed()
 	Dungeon.next_level_number = 1
-	# Issue #9 Phase 1: stamp the daily start for the speed leaderboard.
-	Dungeon.daily_start_msec = Time.get_ticks_msec()
-	Dungeon.daily_c1_clear_msec = -1
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
 

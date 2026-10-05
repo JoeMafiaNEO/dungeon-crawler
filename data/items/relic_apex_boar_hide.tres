@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/apex_boar_hide.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "relic_apex_boar_hide"
+display_name = "Relic: Boar Hide"
+description = "Apex Bristleback trophy. Grants the Boar Hide special."
+icon = ExtResource("2")
+slot = 2
+rarity = 4
+grants_special = "apex_boar_hide"

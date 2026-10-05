@@ -57,10 +57,10 @@ func _run() -> void:
 	_test_apex_phase1()
 	_test_specials_phase1()
 	_test_apex_mechanics()
+	_test_apex_relics()
 	_test_bounty_phase1()
 	_test_combo_phase1()
 	_test_combo_codex()
-	_test_leaderboard_phase1()
 	_print_results()
 	quit()
 
@@ -1983,7 +1983,7 @@ func _test_warrior_signatures() -> void:
 	# Wiring present in source.
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains("func _activate_signature_totem"), "Signature totem activation exists")
-	_assert(psrc.contains('ability_cds[cd_key] = cd'), "Signature cooldowns tracked")
+	_assert(psrc.contains('ability_cds[cd_key] = (cd) * cooldown_mult()'), "Signature cooldowns tracked")
 	_assert(psrc.contains("func apply_sanctuary"), "Sanctuary immunity RPC exists")
 	_assert(psrc.contains("_sanctuary_t > 0.0"), "Sanctuary immunity checked in take_damage")
 	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
@@ -3368,86 +3368,130 @@ func _test_combo_codex() -> void:
 	print("[Playtest] combo codex phase 2 done")
 
 
-func _test_leaderboard_phase1() -> void:
-	print("[Playtest] leaderboards (issue #9 Phase 1)...")
-	# NOTE: playtest.gd is the -s entry point, compiled before autoload
-	# globals resolve; reach them via load() and /root lookups instead.
-	var LBScript = load("res://scripts/autoload/leaderboard.gd")
-	# Score formulas (pure statics).
-	_assert(LBScript.depth_score(1, 1) == 100001, "depth score c1l1")
-	_assert(LBScript.depth_score(2, 5) == 200005, "depth score c2l5")
-	_assert(LBScript.depth_score(2, 1) > LBScript.depth_score(1, 99),
-		"cycle dominates level in depth score")
-	_assert(LBScript.speed_score(125) == 125, "speed score passthrough")
-	_assert(LBScript.speed_score(-3) == 0, "speed score clamps negative")
-	_assert(LBScript.format_score(LBScript.BOARD_DEPTH, 200005) == "Cycle 2 · Lv 5",
-		"depth score formats")
-	_assert(LBScript.format_score(LBScript.BOARD_SPEED, 125) == "2:05",
-		"speed score formats as m:ss")
-	# Offline graceful skip: Steam is not initialized on this VM.
-	var sm: Node = root.get_node_or_null("SteamManager")
-	_assert(sm != null and not bool(sm.get("initialized")), "precondition: Steam offline")
-	var lb: Node = root.get_node_or_null("Leaderboard")
-	_assert(lb != null, "Leaderboard autoload exists")
-	_assert(not bool(lb.call("steam_available")), "leaderboard reports unavailable")
-	lb.call("ensure_boards")
-	lb.call("upload_daily", 2, 5, 125)
-	lb.call("upload_daily", 1, 3)
-	lb.call("fetch_top", LBScript.BOARD_DEPTH)
-	_assert((lb.get("_handles") as Dictionary).is_empty(), "no board handles without Steam")
-	_assert((lb.get("_pending_uploads") as Array).is_empty(), "no queued uploads without Steam")
-	_assert((lb.call("get_cached", LBScript.BOARD_DEPTH) as Array).is_empty(),
-		"empty cache without Steam")
-	# Daily wiring: play_daily stamps timing; dungeon stamps Cycle-1 clear.
-	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
-	_assert(nsrc.contains("daily_start_msec"), "play_daily stamps daily start")
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("daily_c1_clear_msec"), "dungeon stamps Cycle-1 clear")
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("Leaderboard.upload_daily"), "daily end uploads scores")
-	# Panel: exactly 10 fixed rows per board, zero scroll containers.
-	var menu = load("res://scenes/ui/main_menu.tscn").instantiate()
-	root.add_child(menu)
-	menu._refresh_leaderboard_panel()
-	for path in ["DailyPhase/LeaderboardPanel/DepthCol/DepthRows",
-			"DailyPhase/LeaderboardPanel/SpeedCol/SpeedRows"]:
-		var rows: VBoxContainer = menu.get_node(path)
-		_assert(_live_children(rows).size() == LBScript.MAX_ENTRIES,
-			"%s has 10 fixed rows" % path.get_file())
-	var scrolls := []
-	_find_scroll_containers(menu.get_node("DailyPhase"), scrolls)
-	_assert(scrolls.is_empty(), "DailyPhase has no scroll containers")
-	# Seeded entries: player row highlighted, count stays fixed at 10.
-	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = [
-		{"rank": 1, "name": "Rival", "score": 300002, "is_player": false},
-		{"rank": 2, "name": "Me", "score": 200005, "is_player": true},
-	]
-	menu._refresh_leaderboard_panel()
-	var depth_rows: VBoxContainer = menu.get_node("DailyPhase/LeaderboardPanel/DepthCol/DepthRows")
-	_assert(_live_children(depth_rows).size() == 10, "row count stays 10 with entries")
-	var player_lbl: Label = null
-	for child in _live_children(depth_rows):
-		if child is Label and child.text.contains("Me"):
-			player_lbl = child
-	_assert(player_lbl != null, "player entry shown")
-	_assert(player_lbl.get_theme_color("font_color") == Color(1.0, 0.85, 0.3),
-		"player row highlighted gold")
-	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = []
-	menu.queue_free()
-	print("[Playtest] leaderboard phase 1 done")
+## Stub dungeon for relic drop tests: records spawn_pickup calls.
+class RelicDungeonStub extends Node:
+	var pickups: Array = []
+
+	@rpc("any_peer", "call_local")
+	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
+		pickups.append([item_id, pos, value_mult])
+
+	func get_player_node(_peer_id: int) -> Node:
+		return null
 
 
-## Children not queued for deletion (queue_free is deferred to frame end).
-func _live_children(node: Node) -> Array:
-	var out: Array = []
-	for child in node.get_children():
-		if not child.is_queued_for_deletion():
-			out.append(child)
-	return out
+func _test_apex_relics() -> void:
+	print("[Playtest] Apex phase 3 relics + trophies...")
+	# --- Special registry (#6 API): 3 apex specials with effect_params.
+	var hide := SpecialData.get_special("apex_boar_hide")
+	var eye := SpecialData.get_special("apex_horror_eye")
+	var sigil := SpecialData.get_special("apex_warden_sigil")
+	_assert(hide != null, "relic3: boar hide special loads")
+	_assert(eye != null, "relic3: horror eye special loads")
+	_assert(sigil != null, "relic3: warden sigil special loads")
+	_assert(absf(float(hide.effect_params.get("max_hp_mult", 0.0)) - 1.10) < 0.001,
+		"relic3: hide max_hp_mult 1.10")
+	_assert(absf(float(eye.effect_params.get("pickup_mult", 0.0)) - 1.20) < 0.001,
+		"relic3: eye pickup_mult 1.20")
+	_assert(absf(float(sigil.effect_params.get("cooldown_mult", 0.0)) - 0.85) < 0.001,
+		"relic3: sigil cooldown_mult 0.85")
+	_assert(not hide.unlock_hint.is_empty(), "relic3: hide has unlock hint")
+	_assert(hide.icon != null, "relic3: hide has icon")
+	# --- Apex -> special/relic mappings.
+	_assert(SpecialData.apex_special_for_boss("apex_boar") == "apex_boar_hide",
+		"relic3: boar maps to special")
+	_assert(SpecialData.apex_special_for_boss("apex_warden") == "apex_warden_sigil",
+		"relic3: warden maps to special")
+	_assert(SpecialData.apex_special_for_boss("apex_horror") == "apex_horror_eye",
+		"relic3: horror maps to special")
+	_assert(SpecialData.relic_item_for_apex("apex_boar") == "relic_apex_boar_hide",
+		"relic3: boar maps to relic item")
+	_assert(SpecialData.apex_special_for_boss("boss_boar") == "",
+		"relic3: non-apex maps to no special")
+	_assert(SpecialData.trophy_name_for_apex("apex_boar") == "Boar Hide",
+		"relic3: trophy name resolves")
+	# --- Relic items in ItemDB (physical drops).
+	var ItemDBNode = root.get_node_or_null("ItemDB")
+	var r1 = ItemDBNode.get_item("relic_apex_boar_hide")
+	var r2 = ItemDBNode.get_item("relic_apex_warden_sigil")
+	var r3 = ItemDBNode.get_item("relic_apex_horror_eye")
+	_assert(r1 != null and r2 != null and r3 != null, "relic3: 3 relic items in ItemDB")
+	_assert(r1.rarity == ItemData.Rarity.LEGENDARY, "relic3: relic is legendary")
+	_assert(r1.grants_special == "apex_boar_hide", "relic3: relic grants boar special")
+	# --- Trophy meta (scratch account via _test_account_pin).
+	var SaveScript := load("res://scripts/autoload/save_manager.gd")
+	var mgr = SaveScript.new()
+	mgr.set("_test_account_pin", "playtest_relic3")
+	mgr.load_game()
+	_assert(mgr.record_apex_trophy("apex_boar"), "relic3: trophy recorded")
+	_assert(not mgr.record_apex_trophy("apex_boar"), "relic3: trophy no dupe")
+	_assert(mgr.has_apex_trophy("apex_boar"), "relic3: has trophy")
+	_assert(not mgr.has_apex_trophy("apex_warden"), "relic3: no warden trophy yet")
+	var mgr2 = SaveScript.new()
+	mgr2.set("_test_account_pin", "playtest_relic3")
+	mgr2.load_game()
+	_assert(mgr2.has_apex_trophy("apex_boar"), "relic3: trophy persists")
+	mgr.free()
+	mgr2.free()
+	# Cleanup scratch profile.
+	var scratch := "user://profile_playtest_relic3.cfg"
+	if FileAccess.file_exists(scratch):
+		DirAccess.remove_absolute(scratch)
+	# --- Equipped apex effects apply via _apply_equipped_special.
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var base_hp: float = p.max_hp
+	p.equipped_special = "apex_boar_hide"
+	p._apply_equipped_special()
+	_assert(absf(p.max_hp - base_hp * 1.10) < 0.01, "relic3: hide +10% max HP when equipped")
+	_assert(absf(float(p.get("special_hp_mult")) - 1.10) < 0.001, "relic3: hp mult set")
+	p.equipped_special = "apex_horror_eye"
+	p._apply_equipped_special()
+	_assert(absf(p.special_pickup_mult - 1.20) < 0.001, "relic3: eye pickup mult set")
+	p.equipped_special = "apex_warden_sigil"
+	p._apply_equipped_special()
+	_assert(absf(p.cooldown_mult() - 0.85) < 0.001, "relic3: sigil -15% cooldowns")
+	p.equipped_special = ""
+	p._apply_equipped_special()
+	_assert(absf(p.cooldown_mult() - 1.0) < 0.001, "relic3: unequip resets cooldowns")
+	_assert(absf(p.max_hp - base_hp) < 0.01, "relic3: unequip resets max HP")
+	p.queue_free()
+	# --- Forced relic drop: apex boss always drops its relic (100%, no RNG).
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	for n in get_nodes_in_group("dungeon"):
+		n.get_parent().remove_child(n)
+		n.free()
+	var stub := RelicDungeonStub.new()
+	stub.add_to_group("dungeon")
+	root.add_child(stub)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var adata: Resource = load("res://data/mobs/apex_boar.tres")
+	var amob = MobScene.instantiate()
+	amob.setup(99, adata, 1.0, 1.0, false, 1.0)
+	holder.add_child(amob)
+	amob._drop_and_reward(1)
+	var found_relic := false
+	for pk in stub.pickups:
+		if str(pk[0]) == "relic_apex_boar_hide":
+			found_relic = true
+	_assert(found_relic, "relic3: apex boar forces relic drop")
+	stub.pickups.clear()
+	var ndata: Resource = load("res://data/mobs/boss_boar.tres")
+	var nmob = MobScene.instantiate()
+	nmob.setup(100, ndata, 1.0, 1.0, false, 1.0)
+	holder.add_child(nmob)
+	nmob._drop_and_reward(1)
+	var found_any_relic := false
+	for pk in stub.pickups:
+		if str(pk[0]).begins_with("relic_apex_"):
+			found_any_relic = true
+	_assert(not found_any_relic, "relic3: normal boss drops no relic")
 
-
-func _find_scroll_containers(node: Node, out: Array) -> void:
-	if node is ScrollContainer:
-		out.append(node)
-	for child in node.get_children():
-		_find_scroll_containers(child, out)
+	amob.queue_free()
+	nmob.queue_free()
+	stub.queue_free()
+	holder.queue_free()

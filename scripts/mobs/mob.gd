@@ -838,7 +838,8 @@ func _play_death() -> void:
 
 
 func _drop_and_reward(attacker: int) -> void:
-	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
+	# Untyped dungeon ref (like the apex paths): lets test stubs stand in.
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon == null:
 		return
 	var player_node: Node = dungeon.get_player_node(attacker)
@@ -887,6 +888,12 @@ func _drop_and_reward(attacker: int) -> void:
 				break
 	# Meta items from elites/bosses.
 	_try_meta_drop(dungeon)
+	# Apex relic (issue #5 Phase 3): the apex boss ALWAYS drops its relic,
+	# outside the weighted pool — a 100% forced drop, not a table entry.
+	if data.apex_id != "":
+		var relic_id := SpecialData.relic_item_for_apex(data.id)
+		if relic_id != "":
+			dungeon.rpc("spawn_pickup", relic_id, global_position + Vector3(0, 0.8, 0), 1.0)
 
 
 ## Potion/consumable item IDs (village-only drops).
@@ -895,7 +902,7 @@ func _is_potion(item_id: String) -> bool:
 
 
 ## Meta-unlocked items can drop from elites and bosses once unlocked.
-func _try_meta_drop(dungeon: Dungeon) -> void:
+func _try_meta_drop(dungeon) -> void:
 	if not (data.is_boss or is_elite):
 		return
 	var unlocked := SaveManager.get_unlocked_items()

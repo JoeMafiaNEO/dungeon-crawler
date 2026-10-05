@@ -845,6 +845,45 @@ func _refresh_collection_log() -> void:
 		idx += 1
 	_refresh_cipher_section()
 	_refresh_combo_codex()
+	_refresh_trophy_section()
+
+
+## Apex trophies (issue #5 Phase 3): 3 fixed rows, one per apex boss.
+## Earned rows show the relic icon in gold; locked rows show ??? + hint.
+## Fixed row count → layout cannot scroll.
+func _refresh_trophy_section() -> void:
+	var trophies: Array = SaveManager.get_apex_trophies()
+	var header := Label.new()
+	header.text = "Apex Trophies — %d/3" % trophies.size()
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	%CollectionLog.add_child(header)
+	for apex_id in ["apex_boar", "apex_warden", "apex_horror"]:
+		var earned: bool = apex_id in trophies
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 8)
+		%CollectionLog.add_child(row)
+		var icon := TextureRect.new()
+		icon.custom_minimum_size = Vector2(24, 24)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		var sp := SpecialData.get_special(SpecialData.apex_special_for_boss(apex_id))
+		if sp != null and sp.icon != null:
+			icon.texture = sp.icon
+		if not earned:
+			icon.modulate = Color(0.25, 0.25, 0.3)
+		row.add_child(icon)
+		var label := Label.new()
+		if earned:
+			label.text = "%s — %s" % [sp.display_name, sp.effect_summary]
+			label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		else:
+			label.text = "??? — %s" % sp.unlock_hint
+			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+		label.add_theme_font_size_override("font_size", 11)
+		row.add_child(label)
 
 
 ## Architect Cipher section: collected fragments as raw cipher + shift hint

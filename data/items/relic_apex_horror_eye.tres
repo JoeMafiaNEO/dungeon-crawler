@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/specials/apex_horror_eye.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "relic_apex_horror_eye"
+display_name = "Relic: Horror Eye"
+description = "Apex Maw of the Deep trophy. Grants the Horror Eye special."
+icon = ExtResource("2")
+slot = 2
+rarity = 4
+grants_special = "apex_horror_eye"

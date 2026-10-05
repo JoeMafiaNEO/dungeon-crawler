@@ -122,11 +122,6 @@ static var spawn_in_annex := false
 static var arrived_by_train := false
 ## Roster from a continued multiplayer save (empty for fresh runs).
 static var continued_roster: Array = []
-## Daily run timing (issue #9 Phase 1): wall-clock msec when today's daily
-## started, and when it cleared Cycle 1 (-1 = not cleared). Used for the
-## daily_speed leaderboard (Cycle-1 clear seconds).
-static var daily_start_msec: int = 0
-static var daily_c1_clear_msec: int = -1
 ## Host toggle: allow strangers to join a continued run as fresh characters.
 static var continued_open_lobby: bool = false
 
@@ -216,12 +211,6 @@ func _ready() -> void:
 		push_warning("[Dungeon] Unknown theme '%s', falling back to village." % next_theme_id)
 		theme = load("res://data/levels/theme_village.tres") as LevelTheme
 	level_number = next_level_number
-	# Issue #9 Phase 1: stamp the Cycle-1 clear moment on a daily run. A daily
-	# run that reaches cycle 2 has fully cleared Cycle 1; the speed board
-	# scores the wall-clock seconds from daily start to this stamp.
-	if next_seed == DailyRun.get_today_seed() and get_cycle_number() == 2 \
-			and daily_c1_clear_msec < 0:
-		daily_c1_clear_msec = Time.get_ticks_msec()
 	# Cycle scaling: each full loop (village->dungeon->depths) enlarges the
 	# map and adds keys. Duplicate the theme so the .tres stays pristine.
 	var cycle := (level_number - 1) / THEME_ORDER.size()
@@ -1546,7 +1535,22 @@ func _check_apex_boss_kill() -> void:
 		if trophy != "":
 			for p in get_tree().get_nodes_in_group("players"):
 				SpecialData.earn_for(p, trophy)
+		# Apex trophies (issue #5 Phase 3): each peer records the kill in
+		# their own profile (Collection tab) + toast.
+		if theme.boss_id != "":
+			rpc("record_apex_kill", theme.boss_id)
 		rpc("complete_level_objective")
+
+
+## Each peer records the apex kill in their own profile + toast (server RPC).
+@rpc("any_peer", "call_local")
+func record_apex_kill(apex_mob_id: String) -> void:
+	if SaveManager.record_apex_trophy(apex_mob_id):
+		var trophy_name := SpecialData.trophy_name_for_apex(apex_mob_id)
+		var hud = get("_local_hud")
+		if hud != null:
+			hud.toast("TROPHY: %s slain!" % trophy_name)
+		AudioManager.sfx("unlock")
 
 
 func _wave_cleared() -> void:

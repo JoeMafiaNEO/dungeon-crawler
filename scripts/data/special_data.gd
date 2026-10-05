@@ -65,9 +65,54 @@ static func apex_special_for_boss(boss_id: String) -> String:
 	return str(APEX_BOSS_SPECIALS.get(boss_id, ""))
 
 
+## Apex boss mob id -> trophy display name (Collection tab, issue #5).
+static func trophy_name_for_apex(apex_mob_id: String) -> String:
+	var sp := get_special(apex_special_for_boss(apex_mob_id))
+	if sp != null:
+		return sp.display_name
+	match apex_mob_id:
+		"apex_boar":
+			return "Apex Bristleback"
+		"apex_warden":
+			return "Apex Warden"
+		"apex_horror":
+			return "Apex Maw of the Deep"
+	return apex_mob_id
+
+
+## Apex boss mob id -> relic ItemData id (physical 100% drop, issue #5).
+static func relic_item_for_apex(apex_mob_id: String) -> String:
+	match apex_mob_id:
+		"apex_boar":
+			return "relic_apex_boar_hide"
+		"apex_warden":
+			return "relic_apex_warden_sigil"
+		"apex_horror":
+			return "relic_apex_horror_eye"
+	return ""
+
+
+## Runtime SaveManager lookup (autoload refs don't resolve at compile time
+## in -s script mode; this keeps the API working headless and in-game).
+static func _save_manager() -> Node:
+	var loop := Engine.get_main_loop() as SceneTree
+	if loop != null:
+		return loop.root.get_node_or_null("SaveManager")
+	return null
+
+
+## Runtime NetworkManager lookup (same compile-time autoload issue).
+static func _network_manager() -> Node:
+	var loop := Engine.get_main_loop() as SceneTree
+	if loop != null:
+		return loop.root.get_node_or_null("NetworkManager")
+	return null
+
+
 ## True when the id is in the account-level vault.
 static func is_earned(special_id: String) -> bool:
-	return special_id in SaveManager.get_vault_specials()
+	var sm := _save_manager()
+	return sm != null and special_id in sm.get_vault_specials()
 
 
 ## Earn a special into the account vault. Idempotent: returns true only
@@ -77,11 +122,14 @@ static func earn(special_id: String) -> bool:
 	if data == null:
 		push_warning("[SpecialData] earn() unknown special: %s" % special_id)
 		return false
-	var earned: Array = SaveManager.get_vault_specials()
+	var sm := _save_manager()
+	if sm == null:
+		return false
+	var earned: Array = sm.get_vault_specials()
 	if special_id in earned:
 		return false
 	earned.append(special_id)
-	SaveManager.set_vault_specials(earned)
+	sm.set_vault_specials(earned)
 	return true
 
 
@@ -105,8 +153,9 @@ static func equip(player: Node, special_id: String) -> bool:
 	player.call("_apply_equipped_special")
 	if not player.get_tree().get_multiplayer().is_server():
 		var dungeon := player.get_tree().get_first_node_in_group("dungeon")
-		if dungeon != null:
-			dungeon.rpc_id(NetworkManager.server_id, "sync_equipped_special",
+		var nm := _network_manager()
+		if dungeon != null and nm != null:
+			dungeon.rpc_id(int(nm.get("server_id")), "sync_equipped_special",
 				int(player.get_multiplayer_authority()), special_id)
 	return true
 

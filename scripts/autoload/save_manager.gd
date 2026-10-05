@@ -258,6 +258,27 @@ func add_run() -> void:
 	save_game()
 
 
+## Apex trophies (issue #5 Phase 3): account-level list of slain apex boss mob
+## ids. Shown in the Collection tab; each also unlocks a vault special passive.
+func get_apex_trophies() -> Array:
+	return _profile.get_value("meta", "apex_trophies", [])
+
+
+## Record an apex boss kill. Returns true if this is the first kill (no dupes).
+func record_apex_trophy(apex_mob_id: String) -> bool:
+	var trophies: Array = get_apex_trophies()
+	if apex_mob_id in trophies:
+		return false
+	trophies.append(apex_mob_id)
+	_profile.set_value("meta", "apex_trophies", trophies)
+	save_game()
+	return true
+
+
+func has_apex_trophy(apex_mob_id: String) -> bool:
+	return apex_mob_id in get_apex_trophies()
+
+
 func get_total_runs() -> int:
 	return int(_profile.get_value("meta", "total_runs", 0))
 
