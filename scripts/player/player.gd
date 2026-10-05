@@ -1488,6 +1488,10 @@ func switch_class(new_class: String) -> void:
 		return
 	if multiplayer.get_peers().size() > 0:
 		return  # solo only
+	# Issue #4 Phase 2: persist the outgoing class's collection before the
+	# reset below wipes it (mid-level earnings would otherwise be lost).
+	if not family_collection.is_empty():
+		SaveManager.save_collections(str(class_id), family_collection)
 	class_id = new_class
 	class_data = load("res://data/classes/%s.tres" % class_id) as ClassData
 	# Reset progression.
@@ -1507,6 +1511,9 @@ func switch_class(new_class: String) -> void:
 	specialization = ""
 	affinity.clear()
 	family_collection.clear()
+	# Issue #4 Phase 2: restore the incoming class's earned collection —
+	# collections are permanent account meta, not per-run state.
+	family_collection = SaveManager.load_collections(new_class)
 	_affinity_enemy_cd.clear()
 	_recalc_stats()
 	hp = max_hp

@@ -19,6 +19,7 @@ func _run() -> void:
 	_test_rts_production()
 	_test_save_roundtrip()
 	_test_save_profile()
+	_test_save_collections()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -249,6 +250,121 @@ func _test_save_profile() -> void:
 	else:
 		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
 		pf.store_buffer(prof_backup)
+
+
+func _test_save_collections() -> void:
+	print("[Playtest] Affinity collections persistence (issue #4 Phase 2)...")
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var mgr = SaveScript.new()
+	# Back up the real local profile and the slots this test touches.
+	var prof_path := "user://profile_local.cfg"
+	var prof_backup := ""
+	if FileAccess.file_exists(prof_path):
+		prof_backup = FileAccess.get_file_as_string(prof_path)
+		DirAccess.remove_absolute(prof_path)
+	var slot_paths := ["user://runs/solo_0.cfg", "user://runs/mp_1.cfg"]
+	var slot_backups := {}
+	for sp in slot_paths:
+		if FileAccess.file_exists(sp):
+			slot_backups[sp] = FileAccess.get_file_as_bytes(sp)
+			DirAccess.remove_absolute(sp)
+	mgr._profile.clear()  # fresh standalone instance: start from empty meta
+
+	# Profile roundtrip, per-class keyed.
+	var mage_coll := {"fire": {"traits": ["kindled"], "signature": false}}
+	mgr.save_collections("mage", mage_coll)
+	_assert(mgr.load_collections("mage") == mage_coll, "collections roundtrip")
+	_assert(mgr.load_collections("rogue") == {}, "unknown class has no collections")
+	# Merge: union of traits, signature OR — never a downgrade.
+	var merged: Dictionary = SaveScript.merge_collections(
+		{"fire": {"traits": ["kindled"], "signature": false}},
+		{"fire": {"traits": ["wildfire"], "signature": true},
+			"frost": {"traits": [], "signature": false}})
+	var mtraits: Array = merged["fire"]["traits"]
+	_assert(mtraits.has("kindled") and mtraits.has("wildfire"), "merge unions traits")
+	_assert(bool(merged["fire"]["signature"]), "merge ORs signature")
+	_assert(merged.has("frost"), "merge adds missing families")
+	_assert(SaveScript.merge_collections({}, mage_coll) == mage_coll,
+		"merge with empty keeps everything")
+
+	# Solo save_run persists the run's collection into the profile.
+	var warrior_coll := {"warden": {"traits": ["bulwark"], "signature": false}}
+	_assert(mgr.save_run({"class_id": "warrior", "level_number": 1,
+		"player_state": {"family_collection": warrior_coll}}, "solo", 0),
+		"solo save with collection")
+	_assert(mgr.load_collections("warrior") == warrior_coll,
+		"solo save_run persists collections to profile")
+	# An empty collection never clobbers earned unlocks.
+	_assert(mgr.save_run({"class_id": "warrior", "level_number": 1,
+		"player_state": {}}, "solo", 0), "solo save without collection")
+	_assert(mgr.load_collections("warrior") == warrior_coll,
+		"empty collection doesn't clobber profile")
+
+	# Per-class separation: rogue write leaves mage/warrior untouched.
+	mgr.save_collections("rogue", {"shadow": {"traits": [], "signature": true}})
+	_assert(mgr.load_collections("mage") == mage_coll, "mage untouched by rogue write")
+	_assert(mgr.load_collections("warrior") == warrior_coll, "warrior untouched by rogue write")
+
+	# MP save_run persists ONLY the host's entry — clients keep their own
+	# profiles on their own machines.
+	var mp_run := {"class_id": "mage", "level_number": 2, "roster": [
+		{"steam_id": 111, "class_id": "mage", "is_host": true,
+			"player_state": {"family_collection":
+				{"storm": {"traits": ["charged"], "signature": false}}}},
+		{"steam_id": 222, "class_id": "rogue", "is_host": false,
+			"player_state": {"family_collection":
+				{"shadow": {"traits": ["gloom"], "signature": true}}}},
+	]}
+	_assert(mgr.save_run(mp_run, "mp", 1), "mp save with roster")
+	_assert(mgr.load_collections("mage") == {"storm": {"traits": ["charged"], "signature": false}},
+		"mp save persists HOST collection")
+	_assert(mgr.load_collections("rogue") == {"shadow": {"traits": [], "signature": true}},
+		"mp save never persists client collections")
+
+	# Respec preserves collections (behavioral, on a real Player).
+	var PlayerScript = load("res://scripts/player/player.gd")
+	var p = PlayerScript.new()
+	p.family_collection = {"fire": {"traits": ["kindled"], "signature": false}}
+	p.specialization = "fireball"
+	p.affinity = {"fireball": 30.0}
+	p.respec()
+	_assert(p.specialization == "" and float(p.affinity.get("fireball", -1.0)) == 0.0,
+		"respec clears specialization + affinity")
+	_assert(p.family_collection == {"fire": {"traits": ["kindled"], "signature": false}},
+		"respec preserves family_collection")
+	p.free()
+
+	# Wiring: spawn merges the profile copy, departure persists per-peer,
+	# class switch persists outgoing + loads incoming, save_run funnels.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("SaveManager.merge_collections(")
+		and dsrc.contains("SaveManager.load_collections(class_id)"),
+		"_do_spawn merges profile collections")
+	_assert(dsrc.contains("SaveManager.save_collections(str(me.class_id), coll)"),
+		"board_train_interior persists each peer's own collection")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("SaveManager.save_collections(str(class_id), family_collection)"),
+		"switch_class persists outgoing collection")
+	_assert(psrc.contains("SaveManager.load_collections(new_class)"),
+		"switch_class loads incoming collection")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/autoload/save_manager.gd")
+	_assert(ssrc.contains("_persist_run_collections(run, mode)"),
+		"save_run funnels collections to the profile")
+	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
+	mgr.free()
+
+	# Restore.
+	for sp in slot_paths:
+		if slot_backups.has(sp):
+			var f := FileAccess.open(sp, FileAccess.WRITE)
+			f.store_buffer(slot_backups[sp])
+		elif FileAccess.file_exists(sp):
+			DirAccess.remove_absolute(sp)
+	if prof_backup != "":
+		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
+		pf.store_string(prof_backup)
+	elif FileAccess.file_exists(prof_path):
+		DirAccess.remove_absolute(prof_path)
 
 
 func _test_station_phase4() -> void:

@@ -453,6 +453,11 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 		if not saved_player_state.is_empty():
 			p.apply_state(saved_player_state)
 			saved_player_state = {}
+		# Issue #4 Phase 2: collections are permanent account meta — merge the
+		# profile copy on every spawn so cross-run unlocks survive new runs,
+		# level transitions and rejoins. Union, never a downgrade.
+		p.family_collection = SaveManager.merge_collections(
+			p.family_collection, SaveManager.load_collections(class_id))
 		_local_hud = HudScene.instantiate()
 		add_child(_local_hud)
 		_local_hud.setup(p)
@@ -1995,6 +2000,12 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	var me := _my_player()
 	if me != null:
 		saved_player_state = me.get_state()
+		# Issue #4 Phase 2: every peer persists its OWN collection to its OWN
+		# local profile here — collections never cross peers, and clients
+		# (who never run the host's save_run) keep their unlocks too.
+		var coll: Dictionary = me.family_collection
+		if not coll.is_empty():
+			SaveManager.save_collections(str(me.class_id), coll)
 	Dungeon.next_theme_id = theme_id
 	Dungeon.next_seed = new_seed
 	Dungeon.next_level_number = new_level

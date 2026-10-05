@@ -369,6 +369,70 @@ func set_setting(section: String, key: String, value) -> void:
 	save_settings()
 
 
+## Affinity family collections (issue #4 Phase 2): permanent per-class
+## account meta — {family_id: {"traits": [ids], "signature": bool}}.
+## Persisted on every run save and level transition, loaded on player spawn.
+## In MP each client writes only their OWN local profile (never the host's,
+## never a peer's): collections never cross peers.
+func save_collections(class_id: String, collection: Dictionary) -> void:
+	_profile.set_value("collections", class_id, (collection as Dictionary).duplicate(true))
+	save_game()
+
+
+func load_collections(class_id: String) -> Dictionary:
+	var c: Variant = _profile.get_value("collections", class_id, {})
+	if c is Dictionary:
+		return (c as Dictionary).duplicate(true)
+	return {}
+
+
+## Union of two collections: every earned trait kept, signature is OR.
+## Used on spawn so a profile copy and a run-state copy can never downgrade
+## each other regardless of which was written last.
+static func merge_collections(a: Dictionary, b: Dictionary) -> Dictionary:
+	var out := (a as Dictionary).duplicate(true)
+	for fid in b:
+		if not (b[fid] is Dictionary):
+			continue
+		if not out.has(fid):
+			out[fid] = (b[fid] as Dictionary).duplicate(true)
+			continue
+		var oa: Dictionary = out[fid]
+		var ob: Dictionary = b[fid]
+		var traits: Array = oa.get("traits", [])
+		for t in ob.get("traits", []):
+			if not traits.has(t):
+				traits.append(t)
+		oa["traits"] = traits
+		oa["signature"] = bool(oa.get("signature", false)) or bool(ob.get("signature", false))
+	return out
+
+
+## Persist collections found in a run dict into the LOCAL profile.
+## Solo: the run's own player_state. MP: ONLY the host's roster entry —
+## clients persist their own collections on their own machines (see
+## board_train_interior), so the host never writes a peer's unlocks.
+## Empty collections never clobber earned ones.
+func _persist_run_collections(run: Dictionary, mode: String) -> void:
+	if mode == MODE_SOLO:
+		var ps: Dictionary = run.get("player_state", {})
+		_persist_one_collection(str(run.get("class_id", "")), ps)
+		return
+	for entry in run.get("roster", []):
+		if entry is Dictionary and bool(entry.get("is_host", false)):
+			_persist_one_collection(str(entry.get("class_id", "")),
+				entry.get("player_state", {}))
+			break
+
+
+func _persist_one_collection(class_id: String, player_state: Variant) -> void:
+	if class_id.is_empty() or not (player_state is Dictionary):
+		return
+	var coll: Variant = (player_state as Dictionary).get("family_collection", {})
+	if coll is Dictionary and not (coll as Dictionary).is_empty():
+		save_collections(class_id, coll)
+
+
 # --- Run slots ---
 # user://runs/solo_0..2.cfg and user://runs/mp_0..2.cfg. Each slot file
 # stores one run dict + save_version + saved_at. Auto-saved on every level
@@ -404,6 +468,8 @@ func save_run(run: Dictionary, mode: String, slot: int) -> bool:
 	if cfg.save(tmp_path) != OK:
 		return false
 	DirAccess.rename_absolute(tmp_path, path)
+	# Phase 2: collections ride along on every run save (host-only in MP).
+	_persist_run_collections(run, mode)
 	_cloud_write(_relative(path), FileAccess.get_file_as_bytes(path))
 	return true
 
