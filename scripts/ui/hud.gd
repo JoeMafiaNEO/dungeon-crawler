@@ -60,6 +60,7 @@ func _ready() -> void:
 	add_to_group("hud")
 	_build_pause_tabs()
 	_build_bounty_tracker()
+	_build_potion_slot()
 
 
 ## Compact bounty tracker (issue #7 Phase 2): 2-3 short lines under the
@@ -82,6 +83,148 @@ func _build_bounty_tracker() -> void:
 	_bounty_tracker.add_theme_constant_override("outline_size", 4)
 	_bounty_tracker.visible = false
 	add_child(_bounty_tracker)
+
+
+## Potion quick-slot (Jesse's feature): small slot left of the ability bar.
+## Left-click cycles the equipped potion type (only types in inventory).
+## H drinks via Player.use_item(). Code-built for bare-script harnesses.
+func _build_potion_slot() -> void:
+	if _potion_button != null:
+		return
+	_potion_button = Button.new()
+	_potion_button.name = "PotionSlot"
+	# Bottom-center, left of the AbilityBar (bar spans -220..+220).
+	_potion_button.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_potion_button.offset_left = -296.0
+	_potion_button.offset_top = -76.0
+	_potion_button.offset_right = -232.0
+	_potion_button.offset_bottom = -12.0
+	_potion_button.tooltip_text = "Left-click: cycle potion type. H: drink."
+	_potion_button.pressed.connect(_cycle_potion)
+	# Count label (bottom-right of the slot).
+	_potion_count_label = Label.new()
+	_potion_count_label.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_potion_count_label.offset_left = -28.0
+	_potion_count_label.offset_top = -20.0
+	_potion_count_label.offset_right = -4.0
+	_potion_count_label.offset_bottom = -4.0
+	_potion_count_label.add_theme_font_size_override("font_size", 14)
+	_potion_count_label.add_theme_color_override("font_color", Color(1, 1, 1))
+	_potion_count_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_potion_count_label.add_theme_constant_override("outline_size", 3)
+	_potion_count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_potion_button.add_child(_potion_count_label)
+	# Key hint label (top-left).
+	var key_hint := Label.new()
+	key_hint.text = "[H]"
+	key_hint.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	key_hint.offset_left = 4.0
+	key_hint.offset_top = 2.0
+	key_hint.add_theme_font_size_override("font_size", 11)
+	key_hint.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
+	key_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_potion_button.add_child(key_hint)
+	add_child(_potion_button)
+	refresh_potion_slot()
+
+
+## Update the potion slot from the player's inventory. Called from
+## refresh_inventory() and after cycling/drinking.
+func refresh_potion_slot() -> void:
+	if _potion_button == null:
+		return
+	if _potion_player == null or not is_instance_valid(_potion_player):
+		_potion_player = get_tree().get_first_node_in_group("player") as Player
+	if _potion_player == null:
+		_potion_button.visible = false
+		return
+	_potion_button.visible = true
+	# Count each potion type in inventory.
+	var counts := {}
+	for pid in POTION_IDS:
+		counts[pid] = 0
+	for entry in _potion_player.inventory:
+		var item = entry["item"]
+		if item != null and counts.has(item.id):
+			counts[item.id] = int(counts[item.id]) + int(entry["count"])
+	# If equipped type is empty, auto-advance to a type with stock.
+	var equipped: String = POTION_IDS[_potion_idx]
+	if int(counts[equipped]) <= 0:
+		for i in POTION_IDS.size():
+			var pid: String = POTION_IDS[(_potion_idx + i) % POTION_IDS.size()]
+			if int(counts[pid]) > 0:
+				_potion_idx = POTION_IDS.find(pid)
+				equipped = pid
+				break
+	var total := 0
+	for pid in POTION_IDS:
+		total += int(counts[pid])
+	if total <= 0:
+		# Empty/greyed state.
+		_potion_button.modulate = Color(0.4, 0.4, 0.4, 0.6)
+		_potion_count_label.text = ""
+		_potion_button.text = "—"
+		_potion_button.tooltip_text = "No potions. Buy from the station vendor."
+		return
+	# Show equipped type.
+	var color: Color = POTION_COLORS[equipped]
+	_potion_button.modulate = Color(1, 1, 1, 1)
+	# Tint via theme stylebox.
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = color.darkened(0.55)
+	sb.border_color = color
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(6)
+	_potion_button.add_theme_stylebox_override("normal", sb)
+	var sbh := sb.duplicate() as StyleBoxFlat
+	sbh.bg_color = color.darkened(0.4)
+	_potion_button.add_theme_stylebox_override("hover", sbh)
+	var sbp := sb.duplicate() as StyleBoxFlat
+	sbp.bg_color = color.darkened(0.7)
+	_potion_button.add_theme_stylebox_override("pressed", sbp)
+	_potion_button.text = POTION_NAMES[equipped]
+	_potion_count_label.text = "x%d" % int(counts[equipped])
+	_potion_button.tooltip_text = "%s Potion x%d — Left-click: cycle. H: drink." % [POTION_NAMES[equipped], int(counts[equipped])]
+
+
+## Left-click: cycle to the next potion type the player actually has.
+func _cycle_potion() -> void:
+	if _potion_player == null or not is_instance_valid(_potion_player):
+		return
+	# Build list of types with stock.
+	var available: Array = []
+	for entry in _potion_player.inventory:
+		var item = entry["item"]
+		if item != null and POTION_IDS.has(item.id) and int(entry["count"]) > 0:
+			if not available.has(item.id):
+				available.append(item.id)
+	if available.size() <= 1:
+		return  # Nothing to cycle to.
+	var current: String = POTION_IDS[_potion_idx]
+	var pos := available.find(current)
+	if pos == -1:
+		_potion_idx = POTION_IDS.find(available[0])
+	else:
+		_potion_idx = POTION_IDS.find(available[(pos + 1) % available.size()])
+	AudioManager.sfx("ui_click")
+	refresh_potion_slot()
+
+
+## H key: drink the equipped potion via the server-authoritative use_item().
+func drink_potion() -> void:
+	if _potion_player == null or not is_instance_valid(_potion_player):
+		return
+	var pid: String = POTION_IDS[_potion_idx]
+	# Find the inventory index for this potion type.
+	for i in _potion_player.inventory.size():
+		var entry: Dictionary = _potion_player.inventory[i]
+		var item = entry["item"]
+		if item != null and item.id == pid and int(entry["count"]) > 0:
+			_potion_player.use_item(i)
+			refresh_potion_slot()
+			return
+	# Equipped type ran out — refresh to auto-advance or show empty.
+	refresh_potion_slot()
 
 
 ## Rework the pause panel into three tabs (Stats / Specialization / Collection).
@@ -256,6 +399,11 @@ func _process(delta: float) -> void:
 		_last_warlord = warlord_now
 		if _player != null:
 			refresh_abilities(_player)
+	# Potion quick-slot: lazy-show when the player spawns (in case
+	# refresh_inventory hasn't run yet).
+	if _potion_button != null and not _potion_button.visible:
+		if get_tree().get_first_node_in_group("player") != null:
+			refresh_potion_slot()
 	# Low-HP vignette: pulses red as health drops below 35%.
 	if _hp_frac < 0.35 and _player != null and _player.get("alive"):
 		_vignette_t += delta
@@ -423,6 +571,24 @@ func _on_vendor_buy(st: Node, item_id: String) -> void:
 
 var bounty_open := false
 var _bounty_tracker: Label = null
+# Potion quick-slot (Jesse's feature): HUD slot next to the ability bar.
+# Left-click cycles the equipped potion type; H drinks via Player.use_item().
+# Only cycles through types the player actually has in inventory.
+const POTION_IDS := ["health_potion", "swift_potion", "power_elixir"]
+const POTION_COLORS := {
+	"health_potion": Color(0.9, 0.25, 0.25),
+	"swift_potion": Color(0.25, 0.7, 1.0),
+	"power_elixir": Color(0.85, 0.55, 0.15),
+}
+const POTION_NAMES := {
+	"health_potion": "Health",
+	"swift_potion": "Swift",
+	"power_elixir": "Power",
+}
+var _potion_idx := 0
+var _potion_button: Button = null
+var _potion_count_label: Label = null
+var _potion_player: Player = null
 var _bounty_tick := 0.0
 ## Issue #19: tracks Warlord theme state to refresh the ability bar
 ## (hide/show Eagle Eye) when entering/leaving Warlord.
@@ -1844,6 +2010,9 @@ func refresh_inventory(p: Player) -> void:
 			label = "[USE] " + label
 		var idx: int = %InventoryList.add_item("%s  %s" % [label, _item_summary(item)])
 		%InventoryList.set_item_custom_fg_color(idx, ItemData.rarity_color(item.rarity))
+	# Potion quick-slot: refresh from the player's inventory.
+	_potion_player = p
+	refresh_potion_slot()
 
 
 func _on_dispose_pressed() -> void:

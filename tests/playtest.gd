@@ -76,6 +76,7 @@ func _run() -> void:
 	_test_wave_ui_dedupe_and_boarding_hide()
 	_test_departure_board_click_layer()
 	_test_destination_popup_mouse_hold()
+	_test_potion_quick_slot()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4667,3 +4668,19 @@ func _test_destination_popup_mouse_hold() -> void:
 	_assert(psrc.contains("not hud.dest_popup_open"),
 		"#65: player respects dest_popup_open on click")
 	print("[Playtest] destination popup mouse hold done")
+
+
+func _test_potion_quick_slot() -> void:
+	print("[Playtest] potion quick-slot (Jesse's feature)...")
+	# Static: HUD has the potion slot builder, cycle, and drink methods.
+	# Player has the H key handler. Drink goes through use_item().
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func _build_potion_slot"), "potion slot builder exists")
+	_assert(hsrc.contains("func _cycle_potion"), "potion cycle exists")
+	_assert(hsrc.contains("func drink_potion"), "potion drink exists")
+	_assert(hsrc.contains("POTION_IDS"), "potion ID list exists")
+	_assert(hsrc.contains("use_item"), "drink uses use_item path")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("KEY_H"), "H key handler exists")
+	_assert(psrc.contains("drink_potion"), "H calls drink_potion")
+	print("[Playtest] potion quick-slot done")

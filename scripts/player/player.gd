@@ -583,6 +583,11 @@ func _input(event: InputEvent) -> void:
 		elif k.physical_keycode == KEY_G:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_ping()
+		elif k.physical_keycode == KEY_H:
+			# Potion quick-slot: drink the equipped potion (Jesse's feature).
+			if alive and (hud == null or not hud.is_paused):
+				if hud != null and hud.has_method("drink_potion"):
+					hud.drink_potion()
 		elif k.physical_keycode == KEY_R:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_start_wave()
