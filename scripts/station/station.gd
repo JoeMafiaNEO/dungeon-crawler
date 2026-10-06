@@ -537,8 +537,9 @@ func _poll_boarding_zone() -> void:
 ## black. Called on all peers via the dungeon's begin_annex_departure rpc.
 func play_departure_ride(theme_id: String, spots: Dictionary) -> void:
 	apply_dressing(theme_id)
-	if TrainInterior.USE_SYNTH_TRAIN_CUES:
-		AudioManager.sfx("train_whistle")
+	# Jesse's whistle recording (assets/audio/sfx/train_whistle.mp3) overrides
+	# the synth via the file-override path, so this always plays his sound.
+	AudioManager.sfx("train_whistle")
 	pull_aboard(spots) # moves players, toasts "All aboard!", hides the timer
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("fade_out"):

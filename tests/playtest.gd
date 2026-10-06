@@ -1189,6 +1189,9 @@ func _test_train_ambient() -> void:
 		"brake recording mp3 in repo")
 	_assert(amsrc2.contains('["ogg", "wav", "mp3"]'),
 		"sfx file override checks mp3")
+	# Jesse's whistle recording likewise overrides the synth whistle.
+	_assert(FileAccess.file_exists("res://assets/audio/sfx/train_whistle.mp3"),
+		"whistle recording mp3 in repo")
 
 
 func _test_station_annex() -> void:

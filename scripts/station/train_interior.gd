@@ -27,11 +27,11 @@ static var ride_seconds := 25.0
 ## Test/driver override: when > 0 the ride lasts this long instead.
 static var ride_seconds_override := 0.0
 
-## Train audio policy (Jesse, 2026-10-05): his inside-old-train recording is
-## the ride ambient and his brake recording is the brake sound — the only
-## train sounds for now. The synth whistle/chug/rumble cues stay in the code
-## but are silent. Flip back to true if he wants to expand the train
-## soundscape later.
+## Train audio policy (Jesse, 2026-10-05): his recordings are the train
+## soundscape — inside-old-train ambient for the ride, his whistle for
+## departure, his brake recording for arrival. The synth chug/rumble cues
+## stay in the code but are silent. Flip back to true if he wants to expand
+## the train soundscape later.
 const USE_SYNTH_TRAIN_CUES := false
 
 ## Full ride length. The skip lever fast-forwards to ~2s remaining.
