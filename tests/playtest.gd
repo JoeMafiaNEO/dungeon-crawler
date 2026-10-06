@@ -521,10 +521,41 @@ func _test_locale_infrastructure() -> void:
 		DirAccess.remove_absolute("user://profile_test_locale.cfg")
 	TranslationServer.set_locale("en")
 	mgr.free()
-	# 5. Grep audit: count tr() usages (informational baseline for Phase 2).
+	# 5. Phase 3: Verify es/fr/de translations resolve correctly.
+	# Each locale's .translation resource must be generated and loaded.
+	for locale in ["es", "fr", "de"]:
+		var trans_res := load("res://translations/strings.%s.translation" % locale) as Translation
+		_assert(trans_res != null, "locale: %s.translation exists" % locale)
+		if trans_res != null:
+			TranslationServer.add_translation(trans_res)
+	# Spanish: VICTORY -> "¡VICTORIA!"
+	TranslationServer.set_locale("es")
+	_assert(TranslationServer.translate("VICTORY") == "¡VICTORIA!",
+		"locale: es VICTORY (got '" + TranslationServer.translate("VICTORY") + "')")
+	# French: VICTORY -> "VICTOIRE !"
+	TranslationServer.set_locale("fr")
+	_assert(TranslationServer.translate("VICTORY") == "VICTOIRE !",
+		"locale: fr VICTORY (got '" + TranslationServer.translate("VICTORY") + "')")
+	# German: VICTORY -> "SIEG!"
+	TranslationServer.set_locale("de")
+	_assert(TranslationServer.translate("VICTORY") == "SIEG!",
+		"locale: de VICTORY (got '" + TranslationServer.translate("VICTORY") + "')")
+	# Verify placeholders preserved: WAVE_N with %d
+	TranslationServer.set_locale("es")
+	var wave_es := TranslationServer.translate("WAVE_N")
+	_assert("%d" in wave_es, "locale: es WAVE_N preserves %d (got '" + wave_es + "')")
+	# Verify tr_n plurals: FOUND_LOBBY_ONE/MANY
+	TranslationServer.set_locale("fr")
+	var lobby_one := TranslationServer.translate("FOUND_LOBBY_ONE")
+	var lobby_many := TranslationServer.translate("FOUND_LOBBY_MANY")
+	_assert("%d" in lobby_one and "%d" in lobby_many,
+		"locale: fr lobby plural keys have %d")
+	# Reset to English.
+	TranslationServer.set_locale("en")
+	# 6. Grep audit: count tr() usages (informational baseline for Phase 2).
 	# Phase 1 is infrastructure; Phase 2 does the full externalization.
 	# This documents the starting point.
-	print("[Playtest] locale: infrastructure verified")
+	print("[Playtest] locale: infrastructure verified (Phase 3 translations active)")
 
 
 func _test_legacy_migration() -> void:

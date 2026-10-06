@@ -1,196 +1,232 @@
 keys,en,es,fr,de
-SETTINGS,Settings,,,
-LANGUAGE,Language,,,
-ENGLISH,English,,,
-SPANISH,Español,,,
-FRENCH,Français,,,
-GERMAN,Deutsch,,,
-MASTER,Master,,,
-MUSIC,Music,,,
-SFX,SFX,,,
-CRT_FILTER,CRT filter,,,
-SCREEN_SHAKE,Screen shake,,,
-FULLSCREEN,Fullscreen,,,
-CLOSE,Close,,,
-SELECT_DESTINATION,SELECT DESTINATION,,,
-CLICK_TO_VOTE,"Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes)",,,
-CONTINUE,Continue,,,
-START_GAME,Start Game,,,
-LORE_CODEX,Lore Codex,,,
-ASCEND,Ascend,,,
-LV,Lv %d %s,,,
-FRACTION,%d / %d,,,
-LEFT_CLICK_CYCLE_POTION,Left-click: cycle potion type. H: drink.,,,
-KEY_HINT_H,[H],,,
-POTIONS_BUY_FROM_THE,No potions. Buy from the station vendor.,,,
-COUNT_X,x%d,,,
-POTION_LEFT_CLICK_CYCLE,%s Potion x%d — Left-click: cycle. H: drink.,,,
-WASD_MOVE_CLICK_ATTACK,WASD move · Click attack · Shift dash · Q ability · G ping · R start wave,,,
-VENDOR,Vendor,,,
-PRICE_DOLLARS,$%d,,,
-BUY,BUY,,,
-ESC_CLOSE,E / Esc — close,,,
-YOUR_CASH,Your cash: $%d,,,
-BOUNTY_BOARD,Bounty Board,,,
-UNCLAIMED_BOUNTIES_EXPIRE_DEPARTURE,Unclaimed bounties expire at departure.,,,
-RELIC_VAULT,RELIC VAULT,,,
-EQUIP_ONE_SPECIAL_PER,Equip one special per run — effects apply immediately.,,,
-EQUIPPED_NONE,Equipped: none,,,
-EQUIPPED,Equipped: %s,,,
-TROPHIES,TROPHIES,,,
-LOCKED,LOCKED,,,
-UNEQUIP,UNEQUIP,,,
-EQUIP,EQUIP,,,
-SELECT_DESTINATION_2,SELECT DESTINATION,,,
-CLICK_DESTINATION_VOTE_UNANIMOUS,Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes),,,
-OLD_NOTE_FRAGMENT,Old Note — fragment %d/8,,,
-THE_MASON_SHIFTS_HIS,(the mason shifts his letters forward — count back %d),,,
-BRASS_LOCKBOX,Brass Lockbox,,,
-BRASS_LOCKBOX_ETCHED_WITH,A brass lockbox etched with mason's marks.,,,
-ENTER_THE_MASON_KEY,Enter the mason's key...,,,
-UNLOCK,Unlock,,,
-THE_LOCKBOX_CLICKS_SHUT,The lockbox clicks shut. (%d/8 fragments),,,
-SAVE_QUIT_MENU,Save & Quit to Menu,,,
-SAVE_QUIT_SAVES_RUN,Save & Quit (saves run),,,
-DISCONNECT_HOST_HOLDS_THE,Disconnect (host holds the save),,,
-SPECIALIZATION_UNLOCKS_LEVEL_CURRENTLY,Specialization unlocks at level %d (currently %d).,,,
-STR_7460,%s [%s] — %.0f,,,
-RESPEC,Respec,,,
-SPECIALIZE,Specialize,,,
-UNLOCKS_LEVEL,Unlocks at level %d,,,
-STAT_POINTS,Stat points: %d,,,
-DMG,+%d dmg,,,
-HP,+%d hp,,,
-SPD,+%.1f spd,,,
-AURA,+%d aura,,,
-SPECIALIZE_SKILL_BEGIN_FAMILY,Specialize in a skill to begin a family collection.,,,
-FAMILY,%s Family — %.0f/100,,,
-STR_7106,◆%d %s,,,
-STR_8234,◇%d %s,,,
-STR_3474,◆100 %s,,,
-REACH_AFFINITY,Reach 100 affinity,,,
-APEX_TROPHIES,Apex Trophies — %d/3,,,
-STR_6149,%s — %s,,,
-STR_1557,??? — %s,,,
-ARCHITECT_CIPHER,Architect Cipher — %d/8,,,
-THE_VERSE_SPEAKS,%s. %s — the verse speaks of %s,,,
-COMBO_FINISHERS,Combo Finishers — %d/5,,,
-STR_8975,◆ %s — %s,,,
-STR_6869,◇ ??? — %s,,,
-CASH,Cash: $%d / $%d,,,
-WAVE,Lv %d · %s%s · Wave %d/%d,,,
-LV_2,Lv %d · %s%s,,,
-WALK_THROUGH_CHECKOUT_SELL,Walk through CHECKOUT to sell loot and unlock the gate!,,,
-WAITING_FOR_HOST,Waiting for host...,,,
-MOBS_LEFT,Mobs left: %d,,,
-KEYS,Keys: %d/%d,,,
-CLEARED,Cleared!,,,
-TRAIN_DEPARTS_BOARD,TRAIN DEPARTS IN %d:%02d — BOARD!,,,
-ALL_ABOARD_TRAIN_LEAVES,ALL ABOARD — TRAIN LEAVES IN %d:%02d (%d/%d),,,
-STR_877,%s — %d:%02d,,,
-DOWNED_TEAMMATE_REVIVE_BLEED,DOWNED\nTeammate revive or bleed-out in %ds,,,
-THE_DUNGEON_CLAIMED_YOU,The dungeon claimed you.,,,
-SLAIN,Slain by %s,,,
-TIME_SURVIVED_KILLS_LEVEL,Time survived: %s\nKills: %d\nLevel reached: %d\nCycle reached: %d\nDamage dealt: %d,,,
-STR_4651,[%s],,,
-ABILITY_NAME_RANK,%s %s,,,
-STR_699,%.0fs,,,
-USED,used,,,
-READY,READY,,,
-LOGGED,Logged in as %s,,,
-STEAM_NOT_RUNNING_SOLO,Steam not running — solo play available.,,,
-RUNS_KILLS_DEEPEST_CYCLE,Runs: %d · Kills: %d · Deepest cycle: %d · Achievements: %d,,,
-SEED_LOCAL_BEST,Seed %d · %s\nLocal best: %d%s,,,
-LEADERBOARD_ROW,%d. %s — %s,,,
-LEADERBOARD_ROW_EMPTY,%d. —,,,
-STEAM_WORKSHOP_OFFLINE_CANNOT,Steam Workshop offline — cannot fetch top echoes.,,,
-FETCHING,Fetching...,,,
-RACE_TOP_ECHOES,Race top echoes,,,
-SHARED_ECHOES_TODAY_THE,No shared echoes today — be the first!,,,
-RACE,Race: %s,,,
-WORKSHOP_ECHO_READY_TOGGLE,Workshop echo ready — toggle 'Race my best echo' and start!,,,
-STEAM,Steam,,,
-LAN,LAN,,,
-JOIN,Join IP: %s:%d,,,
-HOST,Host IP:,,,
-STR_8818,192.168.1.x,,,
-YOUR_NAME,Your name:,,,
-PLAYER,Player,,,
-JOIN_LAN_GAME,Join LAN Game,,,
-SEARCHING_FOR_LOBBIES,Searching for lobbies...,,,
-SELECT_LOBBY_FIRST,Select a lobby first.,,,
-JOINING,Joining %s...,,,
-SLOT,Slot %d,,,
-CONTINUE_2,Continue,,,
-SAVE_FROM_OLDER_VERSION,Save from an older version,,,
-NEW,New,,,
-START_NEW_RUN_THIS,Start a new run in this slot (asks before overwriting),,,
-EMPTY_SLOT,Empty slot,,,
-NEW_RUN,New Run,,,
-LEGACY,Legacy: %s · %s,,,
-MORE_LEGACY_SAVES_DISK,+%d more legacy saves on disk,,,
-OVERWRITE,Overwrite,,,
-CANCEL,Cancel,,,
-SETTINGS_2,Settings,,,
-STR_9707,%d,,,
-LANGUAGE_2,Language,,,
-CLOSE_2,Close,,,
-SLOT_ALREADY_HOLDS_SAVED,Slot %d already holds a saved run:\n%s\n\nStart a new run and overwrite it?,,,
-KICK_SELECTED,Kick Selected,,,
-AUTO_START,Auto-start in %ds,,,
-SLOT_2,MP Slot %d · %s,,,
-LV_3,%s — Lv %d %s [%s],,,
-INVITE,Invite,,,
-LOBBIES_FOUND_HOST_ONE,No lobbies found. Host one!,,,
-CHECKOUT_WALK_THROUGH_SELL,CHECKOUT\n(walk through to sell),,,
-POTION_SHOP,POTION SHOP,,,
-BUY_2,%s\n(E to buy),,,
-PEER_REJOINED,%s has rejoined the battle!,,,
-FACTION_AI_CONTROLLED,%s's faction is now AI-controlled.,,,
-WARLORD_DOMAIN,WARLORD'S DOMAIN — Last faction standing wins!,,,
-WARLORD_CONTROLS,Press TAB for command view. B to build. Right-click to order units.,,,
-VICTORY,VICTORY!,,,
-GATE_UNLOCKED,GATE UNLOCKED!,,,
-WAVE_N,WAVE %d,,,
-THEME_CLEARED,%s CLEARED!,,,
-THEME_CLEARED_KEYS,%s CLEARED! Find %d keys to clear the level!,,,
-WAVE_CLEARED,Wave cleared!,,,
-BOSS_WARNING,WARNING: %s,,,
-LEVEL_CLEARED_GAINS,Level cleared — gains secured.,,,
-"LEFT_EARLY","Left early!\nLevel gains forfeited.",,,
-PARTY_WIPED,Party wiped! The run has been erased.,,,
-BOSS_ENRAGED,%s IS ENRAGED!,,,
-BOSS_CALLS_GUARD,%s CALLS ITS GUARD!,,,
-BOSS_SLAIN,%s SLAIN!,,,
-NOW_ARRIVING,NOW ARRIVING: %s,,,
-FINISHER_BANNER,%s!,,,
-CODEX_UPDATED,Codex updated: %s discovered!,,,
-DOORS_LOCKED,DOORS LOCKED,,,
-BOARD_HERE,BOARD HERE,,,
-REST,REST,,,
-DEPARTURES,DEPARTURES,,,
-ALL_LIVING_PLAYERS_MUST,ALL LIVING PLAYERS MUST AGREE ON A DESTINATION,,,
-STR_4691,%s  [%d],,,
-RELIC_VAULT_2,RELIC VAULT,,,
-NOW_BOARDING,NOW BOARDING: %s,,,
-SECOND_WIND,SECOND WIND! Iron Resolve holds you at 1 HP.,,,
-SPECIAL_EARNED,SPECIAL EARNED: %s — %s,,,
-BOUNTY_COMPLETE,BOUNTY COMPLETE: %s (+$%d +%d XP),,,
-ACHIEVEMENT_UNLOCKED,ACHIEVEMENT: %s — %s,,,
-NO_AGREEMENT,No agreement — vote again.,,,
-FOUND_LOBBY_ONE,Found %d lobby.,,,
-FOUND_LOBBY_MANY,Found %d lobbies.,,,
-AGE,Age Up,,,
-TAB_COMMAND_VIEW,TAB — Command View,,,
-BUILD_CLICK_PLACE_RIGHT,"Build (click to place, right-click to cancel)",,,
-TRAIN_UNITS,%s — train units,,,
-WOOD_FOOD_GOLD_STONE,Wood: %d  Food: %d  Gold: %d  Stone: %d,,,
-AGE_2,Age: %s,,,
-POP,Pop: %d/%d,,,
-AGE_3,Age Up: %s,,,
-WARLORD_DOMAIN_2,WARLORD'S DOMAIN,,,
-COMMAND_YOUR_FACTION_LAST,Command your faction — last one standing wins.,,,
-COLOR_FFD_COLOR_COLOR,[color=#ffd966]%s[/color]  [color=#e8e8e8]%s[/color],,,
-PRESS_TAB_START_COMMANDING,Press TAB to start commanding — this card will fade.,,,
-BUILD_CLICK_SELECT_TRAIN,B — Build | Click — Select / Train / Gather | Right-click — Order | Drag — Multi-select | TAB — Exit,,,
-NEW_ABILITY_UNLOCKED,New ability unlocked: %s!,,,
+SETTINGS,Settings,Ajustes,Paramètres,Einstellungen
+LANGUAGE,Language,Idioma,Langue,Sprache
+ENGLISH,English,English,English,English
+SPANISH,Español,Español,Español,Español
+FRENCH,Français,Français,Français,Français
+GERMAN,Deutsch,Deutsch,Deutsch,Deutsch
+MASTER,Master,General,Principal,Master
+MUSIC,Music,Música,Musique,Musik
+SFX,SFX,Efectos,Effets,SFX
+CRT_FILTER,CRT filter,Filtro CRT,Filtre CRT,CRT-Filter
+SCREEN_SHAKE,Screen shake,Sacudida de pantalla,Tremblement d'écran,Bildschirmwackeln
+FULLSCREEN,Fullscreen,Pantalla completa,Plein écran,Vollbild
+CLOSE,Close,Cerrar,Fermer,Schließen
+SELECT_DESTINATION,SELECT DESTINATION,ELIGE DESTINO,CHOISIR DESTINATION,ZIEL WÄHLEN
+CLICK_TO_VOTE,Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes),Haz clic en un destino para votar. El voto unánime hace partir el tren. (E/Esc cierra),Cliquez sur une destination pour voter. Un vote unanime fait partir le train. (E/Échap ferme),"Klicke auf ein Ziel, um abzustimmen. Einstimmige Abstimmung lässt den Zug abfahren. (E/Esc schließt)"
+CONTINUE,Continue,Continuar,Continuer,Fortsetzen
+START_GAME,Start Game,Iniciar juego,Commencer,Spiel starten
+LORE_CODEX,Lore Codex,Códice de historia,Codex d'histoire,Lore-Kodex
+ASCEND,Ascend,Ascender,Ascension,Aufsteigen
+LV,Lv %d %s,Nv %d %s,Niv %d %s,St %d %s
+FRACTION,%d / %d,%d / %d,%d / %d,%d / %d
+LEFT_CLICK_CYCLE_POTION,Left-click: cycle potion type. H: drink.,Clic izq.: cambiar poción. H: beber.,Clic gauche : changer de potion. H : boire.,Linksklick: Trank wechseln. H: trinken.
+KEY_HINT_H,[H],[H],[H],[H]
+POTIONS_BUY_FROM_THE,No potions. Buy from the station vendor.,Sin pociones. Compra al vendedor de la estación.,Pas de potions. Achetez au vendeur de la gare.,Keine Tränke. Kaufe beim Bahnhofshändler.
+COUNT_X,x%d,x%d,x%d,x%d
+POTION_LEFT_CLICK_CYCLE,%s Potion x%d — Left-click: cycle. H: drink.,Poción %s x%d — Clic izq.: cambiar. H: beber.,Potion %s x%d — Clic gauche : changer. H : boire.,%s-Trank x%d — Linksklick: wechseln. H: trinken.
+WASD_MOVE_CLICK_ATTACK,WASD move · Click attack · Shift dash · Q ability · G ping · R start wave,WASD mover · Clic atacar · Shift esquivar · Q habilidad · G marcar · R iniciar oleada,WASD bouger · Clic attaquer · Maj esquiver · Q capacité · G ping · R lancer la vague,WASD bewegen · Klick angreifen · Shift ausweichen · Q Fähigkeit · G Ping · R Welle starten
+VENDOR,Vendor,Vendedor,Vendeur,Händler
+PRICE_DOLLARS,$%d,$%d,$%d,$%d
+BUY,BUY,COMPRAR,ACHETER,KAUFEN
+ESC_CLOSE,E / Esc — close,E / Esc — cerrar,E / Échap — fermer,E / Esc — schließen
+YOUR_CASH,Your cash: $%d,Tu dinero: $%d,Votre argent : $%d,Dein Geld: $%d
+BOUNTY_BOARD,Bounty Board,Tablón de recompensas,Tableau des primes,Kopfgeldtafel
+UNCLAIMED_BOUNTIES_EXPIRE_DEPARTURE,Unclaimed bounties expire at departure.,Las recompensas sin reclamar expiran al partir.,Les primes non réclamées expirent au départ.,Nicht abgeholte Kopfgelder verfallen bei Abfahrt.
+RELIC_VAULT,RELIC VAULT,CÁMARA DE RELIQUIAS,CAVEAU DES RELIQUES,RELiktKAMMER
+EQUIP_ONE_SPECIAL_PER,Equip one special per run — effects apply immediately.,Equipa un especial por partida — los efectos se aplican al instante.,Équipez un spécial par partie — effets immédiats.,Rüste ein Spezial pro Durchlauf aus — Effekte sofort aktiv.
+EQUIPPED_NONE,Equipped: none,Equipado: ninguno,Équipé : aucun,Ausgerüstet: keins
+EQUIPPED,Equipped: %s,Equipado: %s,Équipé : %s,Ausgerüstet: %s
+TROPHIES,TROPHIES,TROFEOS,TROPHÉES,TROPHÄEN
+LOCKED,LOCKED,BLOQUEADO,VERROUILLÉ,GESPERRT
+UNEQUIP,UNEQUIP,DESEQUIPAR,DÉSÉQUIPER,ABLEGEN
+EQUIP,EQUIP,EQUIPAR,ÉQUIPER,AUSRÜSTEN
+SELECT_DESTINATION_2,SELECT DESTINATION,ELIGE DESTINO,CHOISIR DESTINATION,ZIEL WÄHLEN
+CLICK_DESTINATION_VOTE_UNANIMOUS,Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes),Haz clic en un destino para votar. El voto unánime hace partir el tren. (E/Esc cierra),Cliquez sur une destination pour voter. Un vote unanime fait partir le train. (E/Échap ferme),"Klicke auf ein Ziel, um abzustimmen. Einstimmige Abstimmung lässt den Zug abfahren. (E/Esc schließt)"
+OLD_NOTE_FRAGMENT,Old Note — fragment %d/8,Nota antigua — fragmento %d/8,Vieille note — fragment %d/8,Alte Notiz — Fragment %d/8
+THE_MASON_SHIFTS_HIS,(the mason shifts his letters forward — count back %d),(el albañil desplaza sus letras hacia adelante — cuenta atrás %d),(le maçon décale ses lettres vers l'avant — comptez à rebours %d),(der Maurer verschiebt seine Buchstaben nach vorn — zähle %d zurück)
+BRASS_LOCKBOX,Brass Lockbox,Caja de latón,Coffret en laiton,Messingkassette
+BRASS_LOCKBOX_ETCHED_WITH,A brass lockbox etched with mason's marks.,Una caja de latón grabada con marcas de albañil.,Un coffret en laiton gravé de marques de maçon.,Eine Messingkassette mit Maurermarken.
+ENTER_THE_MASON_KEY,Enter the mason's key...,Introduce la clave del albañil...,Entrez la clé du maçon...,Gib den Maurerschlüssel ein...
+UNLOCK,Unlock,Desbloquear,Déverrouiller,Entsperren
+THE_LOCKBOX_CLICKS_SHUT,The lockbox clicks shut. (%d/8 fragments),La caja se cierra con un clic. (%d/8 fragmentos),Le coffret se referme. (%d/8 fragments),Die Kassette schnappt zu. (%d/8 Fragmente)
+SAVE_QUIT_MENU,Save & Quit to Menu,Guardar y salir al menú,Sauvegarder et quitter,Speichern & zum Menü
+SAVE_QUIT_SAVES_RUN,Save & Quit (saves run),Guardar y salir (guarda la partida),Sauvegarder et quitter (sauvegarde la partie),Speichern & beenden (speichert den Durchlauf)
+DISCONNECT_HOST_HOLDS_THE,Disconnect (host holds the save),Desconectar (el anfitrión guarda la partida),Déconnecter (l'hôte garde la sauvegarde),Trennen (Host behält den Spielstand)
+SPECIALIZATION_UNLOCKS_LEVEL_CURRENTLY,Specialization unlocks at level %d (currently %d).,La especialización se desbloquea en el nivel %d (actual %d).,La spécialisation se débloque au niveau %d (actuel %d).,Spezialisierung ab Stufe %d (aktuell %d).
+STR_7460,%s [%s] — %.0f,%s [%s] — %.0f,%s [%s] — %.0f,%s [%s] — %.0f
+RESPEC,Respec,Reasignar,Réassigner,Zurücksetzen
+SPECIALIZE,Specialize,Especializar,Spécialiser,Spezialisieren
+UNLOCKS_LEVEL,Unlocks at level %d,Se desbloquea en el nivel %d,Se débloque au niveau %d,Ab Stufe %d verfügbar
+STAT_POINTS,Stat points: %d,Puntos de atributo: %d,Points de stats : %d,Attributpunkte: %d
+DMG,+%d dmg,+%d daño,+%d dégâts,+%d Schaden
+HP,+%d hp,+%d vida,+%d PV,+%d LP
+SPD,+%.1f spd,+%.1f vel,+%.1f vit,+%.1f Tempo
+AURA,+%d aura,+%d aura,+%d aura,+%d Aura
+SPECIALIZE_SKILL_BEGIN_FAMILY,Specialize in a skill to begin a family collection.,Especialízate en una habilidad para empezar una colección familiar.,Spécialisez-vous dans une compétence pour commencer une collection.,"Spezialisiere dich auf eine Fähigkeit, um eine Sammlung zu beginnen."
+FAMILY,%s Family — %.0f/100,Familia %s — %.0f/100,Famille %s — %.0f/100,%s-Familie — %.0f/100
+STR_7106,◆%d %s,◆%d %s,◆%d %s,◆%d %s
+STR_8234,◇%d %s,◇%d %s,◇%d %s,◇%d %s
+STR_3474,◆100 %s,◆100 %s,◆100 %s,◆100 %s
+REACH_AFFINITY,Reach 100 affinity,Alcanza 100 de afinidad,Atteignez 100 d'affinité,Erreiche 100 Affinität
+APEX_TROPHIES,Apex Trophies — %d/3,Trofeos ápice — %d/3,Trophées apex — %d/3,Apex-Trophäen — %d/3
+STR_6149,%s — %s,%s — %s,%s — %s,%s — %s
+STR_1557,??? — %s,??? — %s,??? — %s,??? — %s
+ARCHITECT_CIPHER,Architect Cipher — %d/8,Cifra del arquitecto — %d/8,Chiffre de l'architecte — %d/8,Architekten-Chiffre — %d/8
+THE_VERSE_SPEAKS,%s. %s — the verse speaks of %s,%s. %s — el verso habla de %s,%s. %s — le vers parle de %s,%s. %s — der Vers spricht von %s
+COMBO_FINISHERS,Combo Finishers — %d/5,Remates combinados — %d/5,Finishers combo — %d/5,Kombi-Finisher — %d/5
+STR_8975,◆ %s — %s,◆ %s — %s,◆ %s — %s,◆ %s — %s
+STR_6869,◇ ??? — %s,◇ ??? — %s,◇ ??? — %s,◇ ??? — %s
+CASH,Cash: $%d / $%d,Dinero: $%d / $%d,Argent : $%d / $%d,Geld: $%d / $%d
+WAVE,Lv %d · %s%s · Wave %d/%d,Nv %d · %s%s · Oleada %d/%d,Niv %d · %s%s · Vague %d/%d,St %d · %s%s · Welle %d/%d
+LV_2,Lv %d · %s%s,Nv %d · %s%s,Niv %d · %s%s,St %d · %s%s
+WALK_THROUGH_CHECKOUT_SELL,Walk through CHECKOUT to sell loot and unlock the gate!,¡Cruza la CAJA para vender el botín y desbloquear la puerta!,Traversez la CAISSE pour vendre le butin et débloquer la porte !,"Geh durch die KASSE, um Beute zu verkaufen und das Tor zu öffnen!"
+WAITING_FOR_HOST,Waiting for host...,Esperando al anfitrión...,En attente de l'hôte...,Warte auf Host...
+MOBS_LEFT,Mobs left: %d,Enemigos restantes: %d,Ennemis restants : %d,Gegner übrig: %d
+KEYS,Keys: %d/%d,Llaves: %d/%d,Clés : %d/%d,Schlüssel: %d/%d
+CLEARED,Cleared!,¡Despejado!,Nettoyé !,Gesäubert!
+TRAIN_DEPARTS_BOARD,TRAIN DEPARTS IN %d:%02d — BOARD!,EL TREN PARTE EN %d:%02d — ¡SUBE!,LE TRAIN PART DANS %d:%02d — MONTEZ !,ZUG FÄHRT IN %d:%02d — EINSTEIGEN!
+ALL_ABOARD_TRAIN_LEAVES,ALL ABOARD — TRAIN LEAVES IN %d:%02d (%d/%d),¡TODOS A BORDO — EL TREN SALE EN %d:%02d (%d/%d),TOUT LE MONDE À BORD — DÉPART DANS %d:%02d (%d/%d),ALLE EINSTEIGEN — ABFAHRT IN %d:%02d (%d/%d)
+STR_877,%s — %d:%02d,%s — %d:%02d,%s — %d:%02d,%s — %d:%02d
+DOWNED_TEAMMATE_REVIVE_BLEED,DOWNED\nTeammate revive or bleed-out in %ds,"¡CAÍDO!
+Un compañero te revive o mueres en %ds","À TERRE !
+Un allié vous ranime ou vous mourez dans %ds","AM BODEN!
+Teamkollege belebt dich oder du verblutest in %ds"
+THE_DUNGEON_CLAIMED_YOU,The dungeon claimed you.,La mazmorra te reclamó.,Le donjon vous a réclamé.,Der Dungeon hat dich gefordert.
+SLAIN,Slain by %s,Asesinado por %s,Tué par %s,Getötet von %s
+TIME_SURVIVED_KILLS_LEVEL,Time survived: %s\nKills: %d\nLevel reached: %d\nCycle reached: %d\nDamage dealt: %d,"Tiempo sobrevivido: %s
+Muertes: %d
+Nivel alcanzado: %d
+Ciclo alcanzado: %d
+Daño infligido: %d","Temps survécu : %s
+Victimes : %d
+Niveau atteint : %d
+Cycle atteint : %d
+Dégâts infligés : %d","Überlebte Zeit: %s
+Kills: %d
+Erreichte Stufe: %d
+Erreichter Zyklus: %d
+Verursachter Schaden: %d"
+STR_4651,[%s],[%s],[%s],[%s]
+ABILITY_NAME_RANK,%s %s,%s %s,%s %s,%s %s
+STR_699,%.0fs,%.0fs,%.0fs,%.0fs
+USED,used,usado,utilisé,verbraucht
+READY,READY,LISTO,PRÊT,BEREIT
+LOGGED,Logged in as %s,Conectado como %s,Connecté en tant que %s,Angemeldet als %s
+STEAM_NOT_RUNNING_SOLO,Steam not running — solo play available.,Steam no está en ejecución — solo disponible en solitario.,Steam n'est pas lancé — jeu solo disponible.,Steam läuft nicht — nur Solo verfügbar.
+RUNS_KILLS_DEEPEST_CYCLE,Runs: %d · Kills: %d · Deepest cycle: %d · Achievements: %d,Partidas: %d · Muertes: %d · Ciclo más profundo: %d · Logros: %d,Parties : %d · Victimes : %d · Cycle max : %d · Succès : %d,Durchläufe: %d · Kills: %d · Tiefster Zyklus: %d · Erfolge: %d
+SEED_LOCAL_BEST,Seed %d · %s\nLocal best: %d%s,"Semilla %d · %s
+Mejor local: %d%s","Graine %d · %s
+Record local : %d%s","Seed %d · %s
+Lokale Bestzeit: %d%s"
+LEADERBOARD_ROW,%d. %s — %s,%d. %s — %s,%d. %s — %s,%d. %s — %s
+LEADERBOARD_ROW_EMPTY,%d. —,%d. —,%d. —,%d. —
+STEAM_WORKSHOP_OFFLINE_CANNOT,Steam Workshop offline — cannot fetch top echoes.,Steam Workshop sin conexión — no se pueden obtener ecos.,Steam Workshop hors ligne — impossible de récupérer les échos.,Steam Workshop offline — Echos können nicht abgerufen werden.
+FETCHING,Fetching...,Buscando...,Récupération...,Lade...
+RACE_TOP_ECHOES,Race top echoes,Compite contra los mejores ecos,Affrontez les meilleurs échos,Fahre gegen Top-Echos
+SHARED_ECHOES_TODAY_THE,No shared echoes today — be the first!,No hay ecos compartidos hoy — ¡sé el primero!,Aucun écho partagé aujourd'hui — soyez le premier !,Heute keine geteilten Echos — sei der Erste!
+RACE,Race: %s,Carrera: %s,Course : %s,Rennen: %s
+WORKSHOP_ECHO_READY_TOGGLE,Workshop echo ready — toggle 'Race my best echo' and start!,Eco del Workshop listo — ¡activa 'Correr contra mi mejor eco' y empieza!,Écho du Workshop prêt — activez 'Courir contre mon meilleur écho' !,Workshop-Echo bereit — aktiviere 'Fahre gegen mein bestes Echo'!
+STEAM,Steam,Steam,Steam,Steam
+LAN,LAN,LAN,LAN,LAN
+JOIN,Join IP: %s:%d,Unirse IP: %s:%d,Rejoindre IP : %s:%d,Beitreten IP: %s:%d
+HOST,Host IP:,IP del anfitrión:,IP de l'hôte :,Host-IP:
+STR_8818,192.168.1.x,192.168.1.x,192.168.1.x,192.168.1.x
+YOUR_NAME,Your name:,Tu nombre:,Votre nom :,Dein Name:
+PLAYER,Player,Jugador,Joueur,Spieler
+JOIN_LAN_GAME,Join LAN Game,Unirse a partida LAN,Rejoindre une partie LAN,LAN-Spiel beitreten
+SEARCHING_FOR_LOBBIES,Searching for lobbies...,Buscando salas...,Recherche de salons...,Suche nach Lobbys...
+SELECT_LOBBY_FIRST,Select a lobby first.,Selecciona una sala primero.,Sélectionnez d'abord un salon.,Wähle zuerst eine Lobby.
+JOINING,Joining %s...,Uniéndose a %s...,Connexion à %s...,Trete %s bei...
+SLOT,Slot %d,Ranura %d,Emplacement %d,Slot %d
+CONTINUE_2,Continue,Continuar,Continuer,Fortsetzen
+SAVE_FROM_OLDER_VERSION,Save from an older version,Guardado de una versión anterior,Sauvegarde d'une ancienne version,Spielstand einer älteren Version
+NEW,New,Nuevo,Nouveau,Neu
+START_NEW_RUN_THIS,Start a new run in this slot (asks before overwriting),Empezar una nueva partida en esta ranura (pregunta antes de sobrescribir),Commencer une nouvelle partie ici (demande avant d'écraser),Neuen Durchlauf in diesem Slot starten (fragt vor Überschreiben)
+EMPTY_SLOT,Empty slot,Ranura vacía,Emplacement vide,Leerer Slot
+NEW_RUN,New Run,Nueva partida,Nouvelle partie,Neuer Durchlauf
+LEGACY,Legacy: %s · %s,Legado: %s · %s,Héritage : %s · %s,Legacy: %s · %s
+MORE_LEGACY_SAVES_DISK,+%d more legacy saves on disk,+%d más guardados legados en disco,+%d sauvegardes héritées sur le disque,+%d weitere Legacy-Spielstände
+OVERWRITE,Overwrite,Sobrescribir,Écraser,Überschreiben
+CANCEL,Cancel,Cancelar,Annuler,Abbrechen
+SETTINGS_2,Settings,Ajustes,Paramètres,Einstellungen
+STR_9707,%d,%d,%d,%d
+LANGUAGE_2,Language,Idioma,Langue,Sprache
+CLOSE_2,Close,Cerrar,Fermer,Schließen
+SLOT_ALREADY_HOLDS_SAVED,Slot %d already holds a saved run:\n%s\n\nStart a new run and overwrite it?,"La ranura %d ya tiene una partida guardada:
+%s
+
+¿Empezar una nueva partida y sobrescribirla?","L'emplacement %d contient déjà une partie :
+%s
+
+Commencer une nouvelle partie et l'écraser ?","Slot %d enthält bereits einen Spielstand:
+%s
+
+Neuen Durchlauf starten und überschreiben?"
+KICK_SELECTED,Kick Selected,Expulsar seleccionado,Expulser la sélection,Ausgewählte kicken
+AUTO_START,Auto-start in %ds,Inicio auto en %ds,Démarrage auto dans %ds,Auto-Start in %ds
+SLOT_2,MP Slot %d · %s,Ranura MP %d · %s,Emplacement MP %d · %s,MP-Slot %d · %s
+LV_3,%s — Lv %d %s [%s],%s — Nv %d %s [%s],%s — Niv %d %s [%s],%s — St %d %s [%s]
+INVITE,Invite,Invitar,Inviter,Einladen
+LOBBIES_FOUND_HOST_ONE,No lobbies found. Host one!,No se encontraron salas. ¡Crea una!,Aucun salon trouvé. Hébergez-en un !,Keine Lobbys gefunden. Hoste eine!
+CHECKOUT_WALK_THROUGH_SELL,CHECKOUT\n(walk through to sell),"CAJA
+(cruza para vender)","CAISSE
+(traversez pour vendre)","KASSE
+(durchgehen zum Verkaufen)"
+POTION_SHOP,POTION SHOP,TIENDA DE POCIONES,BOUTIQUE DE POTIONS,TRANKLADEN
+BUY_2,%s\n(E to buy),"%s
+(E para comprar)","%s
+(E pour acheter)","%s
+(E zum Kaufen)"
+PEER_REJOINED,%s has rejoined the battle!,¡%s se ha reincorporado a la batalla!,%s a rejoint la bataille !,%s ist dem Kampf wieder beigetreten!
+FACTION_AI_CONTROLLED,%s's faction is now AI-controlled.,La facción de %s ahora es controlada por IA.,La faction de %s est désormais contrôlée par l'IA.,%ss Fraktion ist nun KI-gesteuert.
+WARLORD_DOMAIN,WARLORD'S DOMAIN — Last faction standing wins!,DOMINIO DEL SEÑOR DE LA GUERRA — ¡La última facción en pie gana!,DOMAINE DU SEIGNEUR DE GUERRE — La dernière faction debout gagne !,DOMÄNE DES KRIEGSHERRN — Die letzte Fraktion gewinnt!
+WARLORD_CONTROLS,Press TAB for command view. B to build. Right-click to order units.,Pulsa TAB para vista de mando. B para construir. Clic derecho para ordenar unidades.,TAB pour vue commandement. B pour construire. Clic droit pour ordonner.,TAB für Befehlsansicht. B zum Bauen. Rechtsklick für Befehle.
+VICTORY,VICTORY!,¡VICTORIA!,VICTOIRE !,SIEG!
+GATE_UNLOCKED,GATE UNLOCKED!,¡PUERTA DESBLOQUEADA!,PORTE DÉVERROUILLÉE !,TOR ENTSPERRT!
+WAVE_N,WAVE %d,OLEADA %d,VAGUE %d,WELLE %d
+THEME_CLEARED,%s CLEARED!,¡%s DESPEJADO!,%s NETTOYÉ !,%s GESÄUBERT!
+THEME_CLEARED_KEYS,%s CLEARED! Find %d keys to clear the level!,¡%s DESPEJADO! ¡Encuentra %d llaves para despejar el nivel!,%s NETTOYÉ ! Trouvez %d clés pour finir le niveau !,"%s GESÄUBERT! Finde %d Schlüssel, um das Level zu schaffen!"
+WAVE_CLEARED,Wave cleared!,¡Oleada despejada!,Vague nettoyée !,Welle gesäubert!
+BOSS_WARNING,WARNING: %s,ADVERTENCIA: %s,ATTENTION : %s,WARNUNG: %s
+LEVEL_CLEARED_GAINS,Level cleared — gains secured.,Nivel despejado — ganancias aseguradas.,Niveau nettoyé — gains sécurisés.,Level gesäubert — Gewinne gesichert.
+LEFT_EARLY,Left early!\nLevel gains forfeited.,"¡Te fuiste pronto!
+Ganancias del nivel perdidas.","Parti trop tôt !
+Gains du niveau perdus.","Zu früh gegangen!
+Levelgewinne verloren."
+PARTY_WIPED,Party wiped! The run has been erased.,¡Grupo aniquilado! La partida ha sido borrada.,Équipe anéantie ! La partie a été effacée.,Gruppe ausgelöscht! Der Durchlauf wurde gelöscht.
+BOSS_ENRAGED,%s IS ENRAGED!,¡%s ENFURECIDO!,%s ENRAGÉ !,%s IST WÜTEND!
+BOSS_CALLS_GUARD,%s CALLS ITS GUARD!,¡%s LLAMA A SU GUARDIA!,%s APPELLE SA GARDE !,%s RUFT SEINE WACHE!
+BOSS_SLAIN,%s SLAIN!,¡%s ANIQUILADO!,%s ANÉANTI !,%s BESIEGT!
+NOW_ARRIVING,NOW ARRIVING: %s,AHORA LLEGANDO: %s,ARRIVÉE : %s,JETZT ANKOMMEND: %s
+FINISHER_BANNER,%s!,¡%s!,%s !,%s!
+CODEX_UPDATED,Codex updated: %s discovered!,Códice actualizado: ¡%s descubierto!,Codex mis à jour : %s découvert !,Kodex aktualisiert: %s entdeckt!
+DOORS_LOCKED,DOORS LOCKED,PUERTAS BLOQUEADAS,PORTES VERROUILLÉES,TÜREN VERRIEGELT
+BOARD_HERE,BOARD HERE,SUBE AQUÍ,MONTEZ ICI,HIER EINSTEIGEN
+REST,REST,DESCANSO,REPOS,RAST
+DEPARTURES,DEPARTURES,SALIDAS,DÉPARTS,ABFAHRTEN
+ALL_LIVING_PLAYERS_MUST,ALL LIVING PLAYERS MUST AGREE ON A DESTINATION,TODOS LOS JUGADORES VIVOS DEBEN ACORDAR UN DESTINO,TOUS LES JOUEURS VIVANTS DOIVENT S'ACCORDER SUR UNE DESTINATION,ALLE LEBENDEN SPIELER MÜSSEN SICH AUF EIN ZIEL EINIGEN
+STR_4691,%s  [%d],%s [%d],%s [%d],%s [%d]
+RELIC_VAULT_2,RELIC VAULT,CÁMARA DE RELIQUIAS,CAVEAU DES RELIQUES,RELiktKAMMER
+NOW_BOARDING,NOW BOARDING: %s,AHORA EMBARCANDO: %s,EMBARQUEMENT : %s,JETZT EINSTEIGEN: %s
+SECOND_WIND,SECOND WIND! Iron Resolve holds you at 1 HP.,¡SEGUNDO AIRE! Iron Resolve te mantiene a 1 PV.,SECOND SOUFFLE ! Iron Resolve vous maintient à 1 PV.,ZWEITER WIND! Iron Resolve hält dich bei 1 LP.
+SPECIAL_EARNED,SPECIAL EARNED: %s — %s,ESPECIAL GANADO: %s — %s,SPÉCIAL GAGNÉ : %s — %s,SPEZIAL VERDIENT: %s — %s
+BOUNTY_COMPLETE,BOUNTY COMPLETE: %s (+$%d +%d XP),RECOMPENSA COMPLETA: %s (+$%d +%d XP),PRIME TERMINÉE : %s (+$%d +%d XP),KOPFGELD FERTIG: %s (+$%d +%d XP)
+ACHIEVEMENT_UNLOCKED,ACHIEVEMENT: %s — %s,LOGRO: %s — %s,SUCCÈS : %s — %s,ERFOLG: %s — %s
+NO_AGREEMENT,No agreement — vote again.,Sin acuerdo — vota de nuevo.,Pas d'accord — votez à nouveau.,Keine Einigung — stimmt erneut ab.
+FOUND_LOBBY_ONE,Found %d lobby.,Sala %d encontrada.,%d salon trouvé.,%d Lobby gefunden.
+FOUND_LOBBY_MANY,Found %d lobbies.,%d salas encontradas.,%d salons trouvés.,%d Lobbys gefunden.
+AGE,Age Up,Avanzar era,Âge supérieur,Zeitalter aufsteigen
+TAB_COMMAND_VIEW,TAB — Command View,TAB — Vista de mando,TAB — Vue commandement,TAB — Befehlsansicht
+BUILD_CLICK_PLACE_RIGHT,"Build (click to place, right-click to cancel)","Construir (clic para colocar, clic derecho para cancelar)","Construire (clic pour placer, clic droit pour annuler)","Bauen (Klick zum Platzieren, Rechtsklick zum Abbrechen)"
+TRAIN_UNITS,%s — train units,%s — entrenar unidades,%s — entraîner des unités,%s — Einheiten ausbilden
+WOOD_FOOD_GOLD_STONE,Wood: %d  Food: %d  Gold: %d  Stone: %d,Madera: %d Comida: %d Oro: %d Piedra: %d,Bois : %d Nourriture : %d Or : %d Pierre : %d,Holz: %d Nahrung: %d Gold: %d Stein: %d
+AGE_2,Age: %s,Era: %s,Âge : %s,Zeitalter: %s
+POP,Pop: %d/%d,Pob: %d/%d,Pop : %d/%d,Bev: %d/%d
+AGE_3,Age Up: %s,Avanzar era: %s,Âge supérieur : %s,Aufstieg: %s
+WARLORD_DOMAIN_2,WARLORD'S DOMAIN,DOMINIO DEL SEÑOR DE LA GUERRA,DOMAINE DU SEIGNEUR DE GUERRE,DOMÄNE DES KRIEGSHERRN
+COMMAND_YOUR_FACTION_LAST,Command your faction — last one standing wins.,Comanda tu facción — la última en pie gana.,Commandez votre faction — la dernière debout gagne.,Befehle deine Fraktion — die letzte gewinnt.
+COLOR_FFD_COLOR_COLOR,[color=#ffd966]%s[/color]  [color=#e8e8e8]%s[/color],[color=#ffd966]%s[/color] [color=#e8e8e8]%s[/color],[color=#ffd966]%s[/color] [color=#e8e8e8]%s[/color],[color=#ffd966]%s[/color] [color=#e8e8e8]%s[/color]
+PRESS_TAB_START_COMMANDING,Press TAB to start commanding — this card will fade.,Pulsa TAB para empezar a comandar — esta tarjeta se desvanecerá.,Appuyez sur TAB pour commander — cette carte s'estompera.,Drücke TAB zum Befehlen — diese Karte blendet aus.
+BUILD_CLICK_SELECT_TRAIN,B — Build | Click — Select / Train / Gather | Right-click — Order | Drag — Multi-select | TAB — Exit,B — Construir | Clic — Seleccionar / Entrenar / Recolectar | Clic derecho — Ordenar | Arrastrar — Multiselección | TAB — Salir,B — Construire | Clic — Sélectionner / Entraîner / Récolter | Clic droit — Ordonner | Glisser — Multisélection | TAB — Quitter,B — Bauen | Klick — Auswählen / Ausbilden / Sammeln | Rechtsklick — Befehl | Ziehen — Mehrfachauswahl | TAB — Beenden
+NEW_ABILITY_UNLOCKED,New ability unlocked: %s!,¡Nueva habilidad desbloqueada: %s!,Nouvelle capacité débloquée : %s !,Neue Fähigkeit freigeschaltet: %s!
