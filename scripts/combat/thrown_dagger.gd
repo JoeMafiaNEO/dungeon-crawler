@@ -17,6 +17,9 @@ var _hit := false
 var _returning := false
 var _return_speed := 32.0
 const CATCH_DIST := 1.2
+## Issue #81: per-leg hit set — each mob takes damage once per leg.
+## Cleared when the return leg starts.
+var _hit_mobs := {}
 
 
 func setup(p_velocity: Vector3, p_damage: float, p_owner: int, p_range := 6.0) -> void:
@@ -117,6 +120,8 @@ func _update_return(delta: float, owner: Node) -> void:
 ## Start the return leg.
 func _start_return() -> void:
 	_returning = true
+	# Issue #81: clear the hit set — return leg gets its own once-per-mob.
+	_hit_mobs.clear()
 	# Tell the owner the dagger is returning (for HUD/Fan lockout).
 	var owner := _owner_node()
 	if owner != null and owner.has_method("_on_dagger_returning"):
@@ -124,14 +129,19 @@ func _start_return() -> void:
 
 
 ## Check for mob hits (both legs). Server only.
+## Issue #81: each mob takes damage once per leg (tracked in _hit_mobs).
 func _check_mob_hits() -> void:
 	for node in get_tree().get_nodes_in_group("mobs"):
 		var mob := node as Mob
 		if mob == null or not mob.alive:
 			continue
+		var mob_id := mob.get_instance_id()
+		if _hit_mobs.has(mob_id):
+			continue
 		var a := Vector2(mob.global_position.x, mob.global_position.z)
 		var b := Vector2(global_position.x, global_position.z)
 		if a.distance_to(b) < 0.9:
+			_hit_mobs[mob_id] = true
 			# Mark Target +50% applies on both legs (Phase 2 kit interaction).
 			var hit_dmg := damage
 			if mob.is_marked():
@@ -143,8 +153,6 @@ func _check_mob_hits() -> void:
 				var cast_id := "thrown_%d" % get_instance_id()
 				owner.gain_affinity_capped("precision", 1.0, mob.get_instance_id(), cast_id, 8.0)
 			# Don't despawn on hit — the dagger passes through (both legs hit).
-			# Small cooldown per mob to avoid multi-hit per frame (anti-cheese).
-			# (Implemented via the mob's own hit cooldown.)
 
 
 ## Auto-catch: dagger returns to hand.
