@@ -73,6 +73,7 @@ func _run() -> void:
 	_test_bounty_popup_opens()
 	_test_collection_full_state_compact()
 	_test_wave_ui_dedupe_and_boarding_hide()
+	_test_departure_board_click_layer()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -2432,7 +2433,7 @@ func _test_station_phase2() -> void:
 	_assert(bsrc.contains("func set_my_vote"), "board my-vote highlight API exists")
 	_assert(bsrc.contains("func set_tallies"), "board tally API exists")
 	_assert(bsrc.contains("func row_base_text"), "row text builder exists")
-	_assert(bsrc.contains("collision_layer = 4"), "rows on dedicated physics layer 4")
+	_assert(bsrc.contains("collision_layer = 8"), "rows on dedicated physics layer 4 (bitmask 8)")
 	_assert(bsrc.contains("input_ray_pickable = true"), "rows are ray-pickable")
 	# Issue #29 scope update: 3D reading-mode interaction replaced by 2D popup.
 	_assert(bsrc.contains("open_destination_popup"), "interact opens 2D destination popup")
@@ -4607,3 +4608,17 @@ func _test_wave_ui_dedupe_and_boarding_hide() -> void:
 	_assert(not hsrc.contains('%WaveStatus.text = "Waiting for host..." if not is_host else "Press R to begin wave"'),
 		"#60: redundant Press R hint removed")
 	print("[Playtest] wave UI dedupe done")
+
+
+func _test_departure_board_click_layer() -> void:
+	print("[Playtest] departure board click layer (issue #64)...")
+	# Static: the row hitbox must be on physics layer 4 (bitmask 8) to match
+	# the player cursor raycast (collision_mask = 8). Bitmask 4 = layer 3,
+	# which the ray never scans — clicks silently swallowed.
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("area.collision_layer = 8"),
+		"#64: board rows on layer 4 (bitmask 8)")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("q.collision_mask = 8"),
+		"#64: player raycast scans layer 4")
+	print("[Playtest] departure board click layer done")

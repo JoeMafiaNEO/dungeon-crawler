@@ -162,7 +162,8 @@ func _build_row(tid: String, y: float, slate: Color, next_level: int, party_leve
 	frame.visible = false
 	# Raycast target on dedicated layer 4 (nothing else uses it).
 	var area := Area3D.new()
-	area.collision_layer = 4
+	area.collision_layer = 8 # Issue #64: bitmask 8 = layer 4 (was 4 = layer 3,
+		# which the player raycast at mask 8 never hit).
 	area.collision_mask = 0
 	area.monitoring = false
 	area.monitorable = true
