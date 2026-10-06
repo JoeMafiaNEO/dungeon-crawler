@@ -5,6 +5,7 @@ extends Node
 
 var _layer: CanvasLayer
 var _rect: ColorRect
+var _mat: ShaderMaterial
 var _enabled := true
 
 
@@ -16,12 +17,18 @@ func _ready() -> void:
 	_rect = ColorRect.new()
 	_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var mat := ShaderMaterial.new()
-	mat.shader = load("res://assets/shaders/crt.gdshader")
-	_rect.material = mat
+	_mat = ShaderMaterial.new()
+	_mat.shader = load("res://assets/shaders/crt.gdshader")
+	_rect.material = _mat
 	_layer.add_child(_rect)
 	# Apply persisted setting (SaveManager may not be ready yet; defer).
 	call_deferred("_apply_saved")
+
+
+func _process(_delta: float) -> void:
+	# Drive the CRT animation (scanline drift, refresh band, flicker).
+	if _mat != null and _enabled:
+		_mat.set_shader_parameter("time", Time.get_ticks_msec() / 1000.0)
 
 
 func _apply_saved() -> void:

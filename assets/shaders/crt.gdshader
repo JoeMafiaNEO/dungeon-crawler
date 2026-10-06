@@ -9,6 +9,7 @@ uniform float scanline_strength : hint_range(0.0, 1.0) = 0.45;
 uniform float curvature : hint_range(0.0, 1.0) = 0.25;
 uniform float vignette_strength : hint_range(0.0, 1.0) = 0.50;
 uniform float aberration : hint_range(0.0, 1.0) = 0.75;
+uniform float time = 0.0;
 
 vec2 curve_uv(vec2 uv) {
 	// Barrel distortion for CRT curvature.
@@ -31,9 +32,14 @@ void fragment() {
 	col.b = texture(screen_texture, uv - vec2(ab, 0.0)).b;
 	col.a = 1.0;
 
-	// Scanlines.
-	float scan = sin(uv.y * 800.0 * 3.14159) * 0.5 + 0.5;
+	// Scanlines, drifting gently like a real CRT refresh.
+	float scan = sin((uv.y * 800.0 - time * 10.0) * 3.14159) * 0.5 + 0.5;
 	col.rgb *= 1.0 - scanline_strength * scan;
+
+	// Faint rolling refresh band + barely-there flicker.
+	float band = sin(uv.y * 6.28318 - time * 2.5) * 0.5 + 0.5;
+	col.rgb *= 1.0 - 0.03 * band * band;
+	col.rgb *= 1.0 + 0.008 * sin(time * 47.0);
 
 	// Vignette.
 	vec2 vc = uv - 0.5;
