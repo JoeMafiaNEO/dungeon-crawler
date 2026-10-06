@@ -393,6 +393,10 @@ func _on_join_transport_toggled(pressed: bool, lan_mode: bool, other: Button, se
 	var list := %JoinPhase.get_node_or_null("LobbyList")
 	if list != null:
 		list.visible = not lan_mode
+	# Hide the Steam lobby buttons (Refresh/Join Selected) in LAN mode.
+	var join_row := %JoinPhase.get_node_or_null("JoinRow")
+	if join_row != null:
+		join_row.visible = not lan_mode
 	AudioManager.sfx("ui_click")
 
 
