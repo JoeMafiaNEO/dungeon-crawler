@@ -80,6 +80,7 @@ func _run() -> void:
 	_test_positioning_fixes()
 	_test_shieldbearer()
 	_test_splitter()
+	_test_gravewarden()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4765,3 +4766,29 @@ func _test_splitter() -> void:
 	var dungeon_mix := FileAccess.get_file_as_string("res://data/levels/theme_dungeon.tres")
 	_assert(dungeon_mix.contains("splitter"), "dungeon theme has splitter")
 	print("[Playtest] Splitter done")
+
+
+## Issue #67 Phase 3: Gravewarden support aura mechanics.
+func _test_gravewarden() -> void:
+	print("[Playtest] Gravewarden (issue #67 Phase 3)...")
+	# MobData fields exist.
+	var data := MobData.new()
+	data.support_aura_radius = 8.0
+	data.support_heal_ps = 6.0
+	data.support_dmg_mult = 1.25
+	_assert(abs(data.support_aura_radius - 8.0) < 0.01, "aura radius is 8.0")
+	_assert(abs(data.support_heal_ps - 6.0) < 0.01, "heal is 6.0/s")
+	_assert(abs(data.support_dmg_mult - 1.25) < 0.01, "dmg mult is 1.25")
+	# Data file exists with correct fields.
+	var gw_src := FileAccess.get_file_as_string("res://data/mobs/gravewarden.tres")
+	_assert(gw_src.contains("support_aura_radius = 8.0"), "gravewarden.tres has aura radius")
+	_assert(gw_src.contains("xp_reward = 120"), "gravewarden has 120 XP")
+	# mob.gd has the support logic.
+	var mob_src := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(mob_src.contains("_support_tick"), "mob.gd has support tick")
+	_assert(mob_src.contains("_aura_ring"), "mob.gd has aura ring visual")
+	_assert(mob_src.contains("support_dmg_mult"), "mob.gd applies dmg buff")
+	# Theme placement: depths.
+	var depths_mix := FileAccess.get_file_as_string("res://data/levels/theme_depths.tres")
+	_assert(depths_mix.contains("gravewarden"), "depths theme has gravewarden")
+	print("[Playtest] Gravewarden done")

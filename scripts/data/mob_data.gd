@@ -55,3 +55,11 @@ extends Resource
 @export var split_id: String = "slime_small"
 ## Number of children to spawn on death.
 @export var split_count: int = 3
+
+# --- Gravewarden config (issue #67 Phase 3): support aura ---
+## Radius of the support aura (heals/buffs allies, not self).
+@export var support_aura_radius: float = 8.0
+## Healing per second applied to allies in the aura.
+@export var support_heal_ps: float = 6.0
+## Damage multiplier applied to allies in the aura.
+@export var support_dmg_mult: float = 1.25

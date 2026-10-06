@@ -50,6 +50,12 @@ var _burn_t := 0.0
 var _burn_dps := 0.0
 var _burn_attacker := 0
 var _burn_tick := 0.0
+## Gravewarden (issue #67 Phase 3): support aura tick (0.5s server-side).
+var _aura_tick := 0.0
+var _aura_ring: MeshInstance3D
+## Gravewarden buff: damage multiplier from ally aura (ticks down).
+var _support_dmg_t := 0.0
+var _support_dmg_mult := 1.0
 ## Relentless (Conqueror trait): while bulwark-slowed, this mob deals -10% damage.
 var bulwark_slow_t := 0.0
 ## Doom Totem (Conqueror signature): mob takes +30% damage from all sources.
@@ -104,6 +110,22 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 		_shield_visual.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 		add_child(_shield_visual)
 		_shield_up = true
+	# Gravewarden (issue #67 Phase 3): pulsing gold-green aura ring.
+	# Reuses totem ring visual style.
+	if data.support_aura_radius > 0.0:
+		_aura_ring = MeshInstance3D.new()
+		_aura_ring.name = "SupportAuraRing"
+		var ring_mesh := TorusMesh.new()
+		ring_mesh.inner_radius = data.support_aura_radius - 0.3
+		ring_mesh.outer_radius = data.support_aura_radius
+		_aura_ring.mesh = ring_mesh
+		var ring_mat := StandardMaterial3D.new()
+		ring_mat.albedo_color = Color(0.8, 0.9, 0.3, 0.6)  # Gold-green.
+		ring_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		ring_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_aura_ring.material_override = ring_mat
+		_aura_ring.position = Vector3(0, 0.1, 0)
+		add_child(_aura_ring)
 
 
 func _ready() -> void:
@@ -157,6 +179,21 @@ func _physics_process(delta: float) -> void:
 	# Blind debuff ticks down (server-side).
 	if _blind_t > 0.0:
 		_blind_t -= delta
+	# Gravewarden (issue #67 Phase 3): 0.5s server tick heals/buffs allies (not self).
+	if data.support_aura_radius > 0.0 and multiplayer.is_server():
+		_aura_tick += delta
+		if _aura_tick >= 0.5:
+			_aura_tick = 0.0
+			_support_tick()
+	# Support damage buff ticks down.
+	if _support_dmg_t > 0.0:
+		_support_dmg_t -= delta
+		if _support_dmg_t <= 0.0:
+			_support_dmg_mult = 1.0
+	# Gravewarden aura ring pulses (visual only, all peers).
+	if _aura_ring != null and is_instance_valid(_aura_ring):
+		var pulse := 1.0 + 0.08 * sin(Time.get_ticks_msec() / 1000.0 * 4.0)
+		_aura_ring.scale = Vector3(pulse, 1.0, pulse)
 	# Relentless marker ticks down alongside the slow.
 	if bulwark_slow_t > 0.0:
 		bulwark_slow_t -= delta
@@ -292,7 +329,13 @@ var _strafe_t := 0.0
 
 ## Outgoing damage multiplier: Relentless makes bulwark-slowed mobs deal -10%.
 func _dmg_mult() -> float:
-	return 0.9 if bulwark_slow_t > 0.0 else 1.0
+	var mult := 1.0
+	if bulwark_slow_t > 0.0:
+		mult *= 0.9
+	# Gravewarden support aura buff.
+	if _support_dmg_t > 0.0:
+		mult *= _support_dmg_mult
+	return mult
 
 
 ## Apex enrage: +40% movement speed below 30% HP (Bristleback).
@@ -388,6 +431,24 @@ func _do_attack() -> void:
 		_target.take_structure_damage(data.damage * dmg_scale * _dmg_mult(), NetworkManager.server_id)
 	else:
 		_target.rpc_id(_target.get_multiplayer_authority(), "take_damage", data.damage * dmg_scale * _dmg_mult(), data.display_name)
+
+
+## Gravewarden (issue #67 Phase 3): 0.5s server tick.
+## Heals and buffs allies in support_aura_radius (not itself).
+func _support_tick() -> void:
+	if not alive:
+		return
+	for n in get_tree().get_nodes_in_group("mobs"):
+		var ally := n as Mob
+		if ally == null or ally == self or not ally.alive:
+			continue
+		var dist: float = global_position.distance_to(ally.global_position)
+		if dist <= data.support_aura_radius:
+			# Heal (0.5s worth).
+			ally.hp = minf(ally.hp + data.support_heal_ps * 0.5, ally.max_hp)
+			# Damage buff: refresh timer.
+			ally._support_dmg_t = 0.6
+			ally._support_dmg_mult = data.support_dmg_mult
 
 
 ## Shieldbearer (issue #67): update the tower-shield overlay visibility.
