@@ -27,6 +27,12 @@ static var ride_seconds := 25.0
 ## Test/driver override: when > 0 the ride lasts this long instead.
 static var ride_seconds_override := 0.0
 
+## Train audio policy (Jesse, 2026-10-05): his inside-old-train recording is
+## the ONLY train sound for now. The synth whistle/chug/rumble/brake cues
+## stay in the code but are silent. Flip back to true if he wants to expand
+## the train soundscape later.
+const USE_SYNTH_TRAIN_CUES := false
+
 ## Full ride length. The skip lever fast-forwards to ~2s remaining.
 const RIDE_SECONDS := 25.0
 ## After arrival, stragglers still in the car are pulled through the door.
@@ -165,7 +171,8 @@ func _apply_ride_started() -> void:
 	_chug_timer = 0.0
 	_scenery_root.visible = true
 	_skip_lever.visible = true
-	AudioManager.sfx("train_chug")
+	if USE_SYNTH_TRAIN_CUES:
+		AudioManager.sfx("train_chug")
 	# Jesse's inside-old-train field recording: interior ambient beds under the
 	# chug/rumble loop for the whole ride; the dungeon theme crossfades back
 	# in on arrival. (DM wiring: audio-owned hook, authorized 2026-10-04.)
@@ -185,11 +192,13 @@ func _process(delta: float) -> void:
 		# The passing world takes on the destination's palette as we slow.
 		mat.albedo_color = Color.WHITE.lerp(_dress_tint, 0.2 + 0.4 * (1.0 - f))
 	# Chug + rumble loop (one-shots re-triggered, like the departure ride).
+	# Silent while Jesse's recording is the only train sound (see const).
 	_chug_timer -= delta
 	if _chug_timer <= 0.0:
 		_chug_timer = 2.0
-		AudioManager.sfx("train_chug", null, randf_range(0.92, 1.08), 0.7)
-		AudioManager.sfx("rumble", null, randf_range(0.85, 1.0), 0.5)
+		if USE_SYNTH_TRAIN_CUES:
+			AudioManager.sfx("train_chug", null, randf_range(0.92, 1.08), 0.7)
+			AudioManager.sfx("rumble", null, randf_range(0.85, 1.0), 0.5)
 	var sec := int(ceil(maxf(_ride_left, 0.0)))
 	if sec != _last_ride_sec:
 		_last_ride_sec = sec
@@ -253,7 +262,8 @@ func begin_arrival() -> void:
 	_arrived = true
 	_riding = false
 	ride_active = false
-	AudioManager.sfx("train_brake")
+	if USE_SYNTH_TRAIN_CUES:
+		AudioManager.sfx("train_brake")
 	if _local_hud != null:
 		_local_hud.announce("NOW ARRIVING: " + _ride_dest, Dungeon.arrival_tint(ride_theme_id))
 		if _local_hud.has_method("hide_station_timer"):

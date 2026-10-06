@@ -537,14 +537,16 @@ func _poll_boarding_zone() -> void:
 ## black. Called on all peers via the dungeon's begin_annex_departure rpc.
 func play_departure_ride(theme_id: String, spots: Dictionary) -> void:
 	apply_dressing(theme_id)
-	AudioManager.sfx("train_whistle")
+	if TrainInterior.USE_SYNTH_TRAIN_CUES:
+		AudioManager.sfx("train_whistle")
 	pull_aboard(spots) # moves players, toasts "All aboard!", hides the timer
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("fade_out"):
 		hud.fade_out(1.2)
 	await get_tree().create_timer(1.0).timeout
-	AudioManager.sfx("train_chug")
-	AudioManager.sfx("rumble")
+	if TrainInterior.USE_SYNTH_TRAIN_CUES:
+		AudioManager.sfx("train_chug")
+		AudioManager.sfx("rumble")
 
 
 @rpc("any_peer", "call_local")

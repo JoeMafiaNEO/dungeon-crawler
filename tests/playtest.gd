@@ -1179,6 +1179,11 @@ func _test_train_ambient() -> void:
 	_assert(tsrc.contains('sfx("train_chug")'), "ride chug kept")
 	var ssrc2 := FileAccess.get_file_as_string("res://scripts/station/station.gd")
 	_assert(ssrc2.contains('sfx("train_whistle")'), "departure whistle kept")
+	# Jesse's call (2026-10-05): his recording is the ONLY train sound for
+	# now — synth cues stay in code but are gated silent, re-enable by
+	# flipping the const.
+	_assert(tsrc.contains("const USE_SYNTH_TRAIN_CUES := false"),
+		"synth train cues gated off, recording is the only train sound")
 
 
 func _test_station_annex() -> void:
