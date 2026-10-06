@@ -127,6 +127,15 @@ var _cooldown := 0.0
 var _jump_queued := false
 var _was_on_floor := true
 var _step_timer := 0.0
+## Issue #69 Phase 1: Thrown dagger charge. Hold RMB 0→1 over 0.8s.
+## LMB while charging throws; releasing RMB cancels silently.
+var _dagger_charge := 0.0
+var _charging := false
+const DAGGER_CHARGE_TIME := 0.8
+const DAGGER_RANGE_MIN := 6.0
+const DAGGER_RANGE_MAX := 16.0
+const DAGGER_DMG_MIN := 0.6
+const DAGGER_DMG_MAX := 1.4
 ## Dash: Shift for a quick burst. _dash_t > 0 while dashing (i-frames),
 ## _dash_cd is the cooldown before the next dash.
 var _dash_t := 0.0
@@ -544,7 +553,23 @@ func _input(event: InputEvent) -> void:
 					if rts_cam == null or not bool(rts_cam.get("active")):
 						Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 			elif _cooldown <= 0.0:
-				_do_attack()
+				# Issue #69 Phase 1: LMB while charging throws the dagger.
+				if _charging and class_id == "rogue":
+					_throw_dagger()
+				else:
+					_do_attack()
+		elif mb.button_index == MOUSE_BUTTON_RIGHT:
+			# Issue #69 Phase 1: RMB hold charges the thrown dagger (rogue only).
+			if class_id == "rogue" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+				if mb.pressed:
+					_charging = true
+					_dagger_charge = 0.0
+				else:
+					# Release without LMB: cancel silently, no penalty.
+					_charging = false
+					_dagger_charge = 0.0
+					if hud != null and hud.has_method("set_charge_meter"):
+						hud.set_charge_meter(0.0, false)
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_MIDDLE:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_ping()
@@ -1823,6 +1848,11 @@ func _physics_process(delta: float) -> void:
 		else:
 			_step_timer = 0.0
 		_cooldown = maxf(0.0, _cooldown - delta)
+		# Issue #69 Phase 1: charge the dagger while RMB held (0→1 over 0.8s).
+		if _charging:
+			_dagger_charge = minf(1.0, _dagger_charge + delta / DAGGER_CHARGE_TIME)
+			if hud != null and hud.has_method("set_charge_meter"):
+				hud.set_charge_meter(_dagger_charge, true)
 		_update_pickup_prompt()
 		_snapshot -= delta
 		if _snapshot <= 0.0:
@@ -1935,6 +1965,42 @@ func _do_attack() -> void:
 	# RTS: damage enemy units and buildings in the Warlord's Domain.
 	if rts_faction >= 0:
 		_damage_rts_targets(fwd, from)
+
+
+## Issue #69 Phase 1: Throw the dagger at current charge.
+## Range: 6m (tap) → 16m (full). Damage: 0.6x → 1.4x dagger hit.
+func _throw_dagger() -> void:
+	_charging = false
+	var charge := clampf(_dagger_charge, 0.0, 1.0)
+	_dagger_charge = 0.0
+	if hud != null and hud.has_method("set_charge_meter"):
+		hud.set_charge_meter(0.0, false)
+	_cooldown = 0.5  # Brief recovery after throw.
+	_attack_anim()
+	var from := int(multiplayer.get_unique_id())
+	var fwd := -global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized()
+	var throw_range := lerpf(DAGGER_RANGE_MIN, DAGGER_RANGE_MAX, charge)
+	var throw_dmg := damage * lerpf(DAGGER_DMG_MIN, DAGGER_DMG_MAX, charge) * _buff_mult("damage")
+	# Unseen crit applies.
+	if unseen_crit_ready:
+		throw_dmg *= 2.0
+		unseen_crit_ready = false
+	AudioManager.sfx("dagger_throw")
+	var spawn_pos := global_position + Vector3(0, 1.4, 0) + fwd * 0.8
+	var dagger_vel := fwd * 24.0
+	rpc_id(NetworkManager.server_id, "_request_dagger_spawn", spawn_pos, dagger_vel, throw_dmg, from, throw_range)
+
+
+@rpc("any_peer", "call_local")
+func _request_dagger_spawn(pos: Vector3, vel: Vector3, dmg: float, owner: int, range_m: float) -> void:
+	if not multiplayer.is_server():
+		return
+	var dagger := ThrownDagger.new()
+	dagger.setup(vel, dmg, owner, range_m)
+	get_parent().add_child(dagger)
+	dagger.global_position = pos
 
 
 func _damage_rts_targets(fwd: Vector3, from: int) -> void:

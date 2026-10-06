@@ -92,6 +92,7 @@ func _run() -> void:
 	_test_workshop_phase3()
 	_test_settings_phase1()
 	_test_settings_phase2()
+	_test_thrown_dagger_phase1()
 
 	_print_results()
 	quit()
@@ -3816,6 +3817,33 @@ func _test_settings_phase2() -> void:
 	_assert(msrc.contains("_apply_fullscreen"), "fullscreen apply exists")
 	_assert(msrc.contains("WINDOW_MODE_FULLSCREEN"), "fullscreen uses DisplayServer")
 	_assert(msrc.contains("_apply_saved_fullscreen"), "fullscreen applied on boot")
+
+
+func _test_thrown_dagger_phase1() -> void:
+	print("[Playtest] Thrown dagger phase 1 (issue #69)...")
+	# ThrownDagger script exists with fireball pattern.
+	_assert(FileAccess.file_exists("res://scripts/combat/thrown_dagger.gd"),
+		"thrown_dagger.gd exists")
+	var tsrc := FileAccess.get_file_as_string("res://scripts/combat/thrown_dagger.gd")
+	_assert(tsrc.contains("class_name ThrownDagger"), "ThrownDagger has class_name")
+	_assert(tsrc.contains("_is_in_wall"), "dagger checks wall collision")
+	_assert(tsrc.contains("multiplayer.is_server()"), "dagger server owns hits")
+	_assert(tsrc.contains("_max_range"), "dagger has range limit")
+	# Player charge state.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("_dagger_charge"), "player has charge var")
+	_assert(psrc.contains("_charging"), "player has charging flag")
+	_assert(psrc.contains("DAGGER_CHARGE_TIME"), "charge time constant exists")
+	_assert(psrc.contains("DAGGER_RANGE_MIN"), "range min constant exists")
+	_assert(psrc.contains("DAGGER_RANGE_MAX"), "range max constant exists")
+	_assert(psrc.contains("MOUSE_BUTTON_RIGHT"), "RMB handled for charge")
+	_assert(psrc.contains("_throw_dagger"), "player can throw dagger")
+	_assert(psrc.contains("_request_dagger_spawn"), "dagger spawn RPC exists")
+	# HUD charge meter.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("set_charge_meter"), "HUD has charge meter API")
+	_assert(hsrc.contains("ChargeMeter"), "HUD has charge meter")
+	print("[Playtest] Thrown dagger phase 1 done")
 
 
 ## Recursive ScrollContainer audit for the zero-scroll rule.

@@ -61,6 +61,35 @@ func _ready() -> void:
 	_build_pause_tabs()
 	_build_bounty_tracker()
 	_build_potion_slot()
+	_build_charge_meter()
+
+
+## Issue #69 Phase 1: Thrown dagger charge meter. Small bar near the
+## crosshair (HUD-only), visible while RMB is held.
+var _charge_bar: ProgressBar = null
+
+func _build_charge_meter() -> void:
+	_charge_bar = ProgressBar.new()
+	_charge_bar.name = "ChargeMeter"
+	_charge_bar.set_anchors_preset(Control.PRESET_CENTER)
+	_charge_bar.offset_left = -40.0
+	_charge_bar.offset_top = 24.0
+	_charge_bar.offset_right = 40.0
+	_charge_bar.offset_bottom = 32.0
+	_charge_bar.min_value = 0.0
+	_charge_bar.max_value = 1.0
+	_charge_bar.value = 0.0
+	_charge_bar.show_percentage = false
+	_charge_bar.visible = false
+	add_child(_charge_bar)
+
+
+## Issue #69 Phase 1: Update the charge meter. Called by player.
+func set_charge_meter(charge: float, visible: bool) -> void:
+	if _charge_bar == null:
+		return
+	_charge_bar.visible = visible
+	_charge_bar.value = clampf(charge, 0.0, 1.0)
 
 
 ## Compact bounty tracker (issue #7 Phase 2): 2-3 short lines under the
