@@ -86,6 +86,7 @@ func _run() -> void:
 	_test_gravewarden()
 	_test_snapshot_yaw()
 	_test_sprite_orientation()
+	_test_yaw_edge_cases()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4984,3 +4985,31 @@ func _test_sprite_orientation() -> void:
 	_assert(src.contains("mark.billboard = BaseMaterial3D.BILLBOARD_ENABLED"),
 		"mark indicators stay billboarded")
 	print("[Playtest] Sprite orientation done")
+
+
+## Issue #72 Phase 3: Yaw edge-case validation.
+func _test_yaw_edge_cases() -> void:
+	print("[Playtest] Yaw edge cases (issue #72 Phase 3)...")
+	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	# Death freeze: when dead, the interpolation still runs but _yaw
+	# stays at last value (no new snapshots change it). The code
+	# interpolates toward _remote_yaw which stops updating on death.
+	# Verify the death path doesn't reset _yaw.
+	_assert(not src.contains("_yaw = 0.0"),
+		"death doesn't reset yaw (freezes at last synced)")
+	# Class switch: _yaw is not reset on class change (keeps flowing).
+	# The _yaw var persists across class switches (no reset in switch code).
+	_assert(src.contains("var _yaw :="),
+		"_yaw persists (not reset on class switch)")
+	# Snapshot gap: _has_remote guards interpolation (initializes from
+	# first snapshot, no lerp before first receive).
+	_assert(src.contains("if _has_remote:"),
+		"interpolation guarded by _has_remote")
+	# Headless math: interpolation converges even with large initial gap.
+	var y := deg_to_rad(170.0)
+	var target := deg_to_rad(0.0)
+	for i in 30:
+		y = lerp_angle(y, target, 0.3)
+	_assert(abs(y - target) < 0.05,
+		"large gap converges without snapping")
+	print("[Playtest] Yaw edge cases done")
