@@ -875,6 +875,7 @@ func _build_skip_lever() -> void:
 	tag.font_size = 48
 	tag.pixel_size = 0.008
 	tag.position = Vector3(0, 2.1, 0)
+	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	lever.add_child(tag)
 	lever.visible = false
 	add_child(lever)

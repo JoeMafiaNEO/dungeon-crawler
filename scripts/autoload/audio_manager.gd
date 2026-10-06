@@ -101,19 +101,47 @@ func _apply_volumes() -> void:
 
 
 func _save_volumes() -> void:
-	var c := ConfigFile.new()
-	c.set_value("vol", "master", master_vol)
-	c.set_value("vol", "music", music_vol)
-	c.set_value("vol", "sfx", sfx_vol)
-	c.save(CFG_PATH)
+	# Issue #17: volumes live on the account profile now. SaveManager may
+	# not be ready during early autoload init, so guard.
+	if has_node("/root/SaveManager"):
+		var sm := get_node("/root/SaveManager")
+		sm.set_profile_setting("settings", "master_vol", master_vol)
+		sm.set_profile_setting("settings", "music_vol", music_vol)
+		sm.set_profile_setting("settings", "sfx_vol", sfx_vol)
+	else:
+		# Fallback to legacy path if SaveManager isn't up yet.
+		var c := ConfigFile.new()
+		c.set_value("vol", "master", master_vol)
+		c.set_value("vol", "music", music_vol)
+		c.set_value("vol", "sfx", sfx_vol)
+		c.save(CFG_PATH)
 
 
 func _load_volumes() -> void:
-	var c := ConfigFile.new()
-	if c.load(CFG_PATH) == OK:
-		master_vol = float(c.get_value("vol", "master", 1.0))
-		music_vol = float(c.get_value("vol", "music", 0.8))
-		sfx_vol = float(c.get_value("vol", "sfx", 1.0))
+	# Issue #17 migration: if the legacy audio.cfg exists and the profile
+	# has no volume settings yet, migrate the old values over.
+	var migrated := false
+	if FileAccess.file_exists(CFG_PATH) and has_node("/root/SaveManager"):
+		var sm := get_node("/root/SaveManager")
+		var has_profile_vols: bool = sm._profile.has_section("settings")
+		if not has_profile_vols:
+			var c := ConfigFile.new()
+			if c.load(CFG_PATH) == OK:
+				master_vol = float(c.get_value("vol", "master", 1.0))
+				music_vol = float(c.get_value("vol", "music", 0.8))
+				sfx_vol = float(c.get_value("vol", "sfx", 1.0))
+				migrated = true
+	if not migrated and has_node("/root/SaveManager"):
+		var sm2 := get_node("/root/SaveManager")
+		master_vol = float(sm2.get_profile_setting("settings", "master_vol", 1.0))
+		music_vol = float(sm2.get_profile_setting("settings", "music_vol", 0.8))
+		sfx_vol = float(sm2.get_profile_setting("settings", "sfx_vol", 1.0))
+	elif not migrated:
+		var c2 := ConfigFile.new()
+		if c2.load(CFG_PATH) == OK:
+			master_vol = float(c2.get_value("vol", "master", 1.0))
+			music_vol = float(c2.get_value("vol", "music", 0.8))
+			sfx_vol = float(c2.get_value("vol", "sfx", 1.0))
 
 
 # --- SFX ---
