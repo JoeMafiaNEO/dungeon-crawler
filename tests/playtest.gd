@@ -90,6 +90,7 @@ func _run() -> void:
 	_test_sprite_orientation()
 	_test_yaw_edge_cases()
 	_test_ascension()
+	_test_warlord_seasons()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5228,3 +5229,52 @@ func _test_ascension() -> void:
 
 func _asc_mult(count: int) -> float:
 	return 1.0 + 0.05 * minf(float(count), 10.0)
+func _test_warlord_seasons() -> void:
+	print("[Playtest] Warlord Seasons (issue #10 Phase 1)...")
+	# Tuning config has [seasons] section.
+	var cfg := FileAccess.get_file_as_string("res://scripts/rts/rts_tuning.cfg")
+	_assert(cfg.contains("[seasons]"),
+		"rts_tuning.cfg has [seasons] section")
+	_assert(cfg.contains("rotation_seconds = 480"),
+		"8-minute rotation in config")
+	_assert(cfg.contains("gold_rush_nodes"),
+		"gold rush tuning present")
+	_assert(cfg.contains("plague_dps"),
+		"plague tuning present")
+	_assert(cfg.contains("raid_unit_count"),
+		"mercenary raid tuning present")
+	# SeasonManager exists and has the right structure.
+	var src := FileAccess.get_file_as_string("res://scripts/rts/season_manager.gd")
+	_assert(src.contains("class_name SeasonManager"),
+		"SeasonManager class exists")
+	_assert(src.contains("\"gold_rush\"") and src.contains("\"plague\"") and src.contains("\"mercenary_raid\""),
+		"3 events defined")
+	_assert(src.contains("func start()"),
+		"scheduler has start()")
+	_assert(src.contains("season_warning") and src.contains("season_started"),
+		"warning/started signals exist")
+	# Event implementations.
+	_assert(src.contains("_do_gold_rush"),
+		"gold rush implementation exists")
+	_assert(src.contains("_do_plague_start") or src.contains("_tick_plague"),
+		"plague implementation exists")
+	_assert(src.contains("_do_mercenary_raid"),
+		"mercenary raid implementation exists")
+	# Plague skips structures: _apply_plague_damage only hits rts_units group.
+	var plague_section := src.substr(src.find("func _apply_plague_damage"))
+	plague_section = plague_section.substr(0, plague_section.find("func _do_mercenary_raid"))
+	_assert(plague_section.contains("rts_units") and not plague_section.contains("rts_buildings"),
+		"plague targets units only (structures unaffected)")
+	# Dungeon hooks the scheduler.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("season_manager.gd"),
+		"dungeon creates SeasonManager")
+	_assert(src.contains("_do_mercenary_raid"),
+		"season manager has raid spawner")
+	# HUD has countdown.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/rts/rts_hud.gd")
+	_assert(hsrc.contains("_season_label"),
+		"HUD has season countdown label")
+	_assert(hsrc.contains("set_season_manager"),
+		"HUD connects to SeasonManager")
+	print("[Playtest] Warlord Seasons done")

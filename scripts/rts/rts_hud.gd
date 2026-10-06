@@ -9,6 +9,9 @@ var _faction_id := 0
 var _res_label: Label = null
 var _age_label: Label = null
 var _pop_label: Label
+## Issue #10: Warlord Seasons countdown line.
+var _season_label: Label = null
+var _season_manager: Node = null
 var _age_up_btn: Button = null
 var _hint_label: Label = null
 var _guide_panel: PanelContainer = null
@@ -54,6 +57,21 @@ func _build_ui() -> void:
 	_age_up_btn.add_theme_font_size_override("font_size", 16)
 	_age_up_btn.pressed.connect(_on_age_up_pressed)
 	top.add_child(_age_up_btn)
+
+	# Issue #10: Warlord Seasons countdown (top-right, under resources).
+	_season_label = Label.new()
+	_season_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_season_label.offset_left = -320.0
+	_season_label.offset_top = 8.0
+	_season_label.offset_right = -16.0
+	_season_label.offset_bottom = 32.0
+	_season_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_season_label.add_theme_font_size_override("font_size", 16)
+	_season_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	_season_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_season_label.add_theme_constant_override("outline_size", 4)
+	_season_label.visible = false
+	add_child(_season_label)
 
 	# Bottom hint (contextual: changes with command view).
 	_hint_label = Label.new()
@@ -404,3 +422,51 @@ func _process(delta: float) -> void:
 		_guide_timer -= delta
 		if _guide_timer <= 0.0:
 			hide_guide()
+	# Issue #10: Warlord Seasons countdown line.
+	_update_season_line()
+
+## Issue #10: connect the SeasonManager for countdown + banners.
+func set_season_manager(sm: Node) -> void:
+	_season_manager = sm
+	if _season_manager != null:
+		_season_manager.season_warning.connect(_on_season_warning)
+		_season_manager.season_started.connect(_on_season_started)
+		_season_manager.season_ended.connect(_on_season_ended)
+		_season_label.visible = true
+
+
+func _update_season_line() -> void:
+	if _season_label == null or not _season_label.visible:
+		return
+	if _season_manager == null:
+		_season_label.visible = false
+		return
+	var t: float = _season_manager.time_until_next()
+	if t < 0:
+		_season_label.visible = false
+		return
+	var eid: String = _season_manager.current_event_id()
+	var ename: String = _season_manager.event_display_name(eid)
+	var mins: int = int(t) / 60
+	var secs: int = int(t) % 60
+	_season_label.text = "Next: %s in %d:%02d" % [ename, mins, secs]
+
+
+func _on_season_warning(event_id: String, seconds: float) -> void:
+	var ename: String = _season_manager.event_display_name(event_id) if _season_manager != null else event_id
+	# 30s warning banner via the main HUD announce (if available).
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("announce"):
+		hud.announce("%s incoming in %ds!" % [ename, int(seconds)], Color(1.0, 0.85, 0.4))
+
+
+func _on_season_started(event_id: String) -> void:
+	var ename: String = _season_manager.event_display_name(event_id) if _season_manager != null else event_id
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("announce"):
+		hud.announce("SEASON: %s!" % ename, Color(1.0, 0.6, 0.2))
+
+
+func _on_season_ended(event_id: String) -> void:
+	# Countdown line will update to the next event automatically.
+	pass

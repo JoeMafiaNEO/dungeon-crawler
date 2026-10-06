@@ -153,6 +153,8 @@ var is_warlord := false
 # Normal wave flow; the level objective is killing the rotating apex boss.
 var is_apex := false
 var _rts_manager: RTSManager = null
+## Issue #10: Warlord Seasons scheduler (typed as Node to avoid load-order issues).
+var _season_manager: Node = null
 var _warlord_setup_pending := false
 var _construction_check_tick := 0.0
 var market_cash_goal := 500
@@ -842,6 +844,9 @@ func _setup_warlord() -> void:
 	add_child(rts_hud)
 	rts_hud.setup(_rts_manager, local_faction)
 	rts_hud.show_guide()
+	# Issue #10: connect the SeasonManager to the RTS HUD for countdown.
+	if _season_manager != null:
+		rts_hud.set_season_manager(_season_manager)
 
 	rpc("announce_key", "WARLORD_DOMAIN", [])
 	rpc("announce_key", "WARLORD_CONTROLS", [])
@@ -853,6 +858,14 @@ func _setup_warlord() -> void:
 			var pfaction := int(p.get("rts_faction"))
 			var pciv := _rts_manager.get_civ(pfaction).civ_id
 			rpc_id(pid, "client_setup_warlord", pfaction, pciv)
+	# Issue #10 Phase 1: Warlord Seasons scheduler (server-side 8-min rotation).
+	# Use load() to avoid class_name resolution issues in test contexts.
+	var season_script := load("res://scripts/rts/season_manager.gd")
+	_season_manager = season_script.new()
+	_season_manager.name = "SeasonManager"
+	add_child(_season_manager)
+	_season_manager.setup(_rts_manager, self)
+	_season_manager.start()
 
 
 ## Client-side RTS bootstrap: create local manager, camera, and HUD.
@@ -880,6 +893,13 @@ func client_setup_warlord(my_faction: int, my_civ_id: String) -> void:
 	rts_hud.name = "RTSHUD"
 	add_child(rts_hud)
 	rts_hud.setup(_rts_manager, my_faction)
+	# Issue #10: client-side SeasonManager (receives RPCs, drives HUD).
+	# The timer only runs on the server; the client just displays.
+	var season_script := load("res://scripts/rts/season_manager.gd")
+	var season_mgr: Node = season_script.new()
+	season_mgr.name = "SeasonManager"
+	add_child(season_mgr)
+	rts_hud.set_season_manager(season_mgr)
 	# Sync rts_faction onto the local player so _damage_rts_targets runs.
 	var me := get_player_node(multiplayer.get_unique_id())
 	if me != null:
