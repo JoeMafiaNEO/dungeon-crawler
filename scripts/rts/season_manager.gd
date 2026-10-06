@@ -200,13 +200,15 @@ func _order_raid_attack(raider: Node3D, target_faction: int) -> void:
 	var best_d := INF
 	var rpos: Vector3 = raider.global_position
 	for node in get_tree().get_nodes_in_group("rts_units"):
-		if int(node.get("faction", -999)) == target_faction:
+		var f = node.get("faction")
+		if f != null and int(f) == target_faction:
 			var d: float = rpos.distance_to((node as Node3D).global_position)
 			if d < best_d:
 				best_d = d
 				best = node as Node3D
 	for node in get_tree().get_nodes_in_group("rts_buildings"):
-		if int(node.get("faction", -999)) == target_faction:
+		var f = node.get("faction")
+		if f != null and int(f) == target_faction:
 			var d: float = rpos.distance_to((node as Node3D).global_position)
 			if d < best_d:
 				best_d = d
