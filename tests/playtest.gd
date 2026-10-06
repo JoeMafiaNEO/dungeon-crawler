@@ -3844,6 +3844,27 @@ func _test_thrown_dagger_phase1() -> void:
 	_assert(hsrc.contains("set_charge_meter"), "HUD has charge meter API")
 	_assert(hsrc.contains("ChargeMeter"), "HUD has charge meter")
 	print("[Playtest] Thrown dagger phase 1 done")
+	_test_thrown_dagger_phase2()
+
+
+func _test_thrown_dagger_phase2() -> void:
+	print("[Playtest] Thrown dagger phase 2 (boomerang return)...")
+	var tsrc := FileAccess.get_file_as_string("res://scripts/combat/thrown_dagger.gd")
+	_assert(tsrc.contains("_returning"), "dagger has return state")
+	_assert(tsrc.contains("_update_return"), "dagger has return update")
+	_assert(tsrc.contains("_start_return"), "dagger can start return")
+	_assert(tsrc.contains("_catch"), "dagger has catch")
+	_assert(tsrc.contains("CATCH_DIST"), "catch distance constant exists")
+	_assert(tsrc.contains("is_marked"), "return leg checks mark for +50%")
+	_assert(tsrc.contains("gain_affinity_capped"), "return feeds Precision affinity")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("_dagger_out"), "player tracks dagger-out state")
+	_assert(psrc.contains("_dagger_catch_cd"), "player has catch cooldown")
+	_assert(psrc.contains("DAGGER_CATCH_COOLDOWN"), "catch cooldown constant exists")
+	_assert(psrc.contains("_on_dagger_caught"), "player handles catch")
+	_assert(psrc.contains("_on_dagger_returning"), "player handles return start")
+	_assert(psrc.contains("Dagger is out"), "Fan requires dagger in hand")
+	print("[Playtest] Thrown dagger phase 2 done")
 
 
 ## Recursive ScrollContainer audit for the zero-scroll rule.

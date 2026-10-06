@@ -136,6 +136,12 @@ const DAGGER_RANGE_MIN := 6.0
 const DAGGER_RANGE_MAX := 16.0
 const DAGGER_DMG_MIN := 0.6
 const DAGGER_DMG_MAX := 1.4
+## Issue #69 Phase 2: Dagger-out state. While the dagger is flying (out or
+## returning), melee is disabled and Fan of Knives requires dagger in hand.
+## 1.2s cooldown after catch before the next throw.
+var _dagger_out := false
+var _dagger_catch_cd := 0.0
+const DAGGER_CATCH_COOLDOWN := 1.2
 ## Dash: Shift for a quick burst. _dash_t > 0 while dashing (i-frames),
 ## _dash_cd is the cooldown before the next dash.
 var _dash_t := 0.0
@@ -1100,7 +1106,13 @@ func _activate_shadow_step() -> void:
 
 
 ## Fan of Knives: blades damage all enemies within 5m. 20s cooldown.
+## Issue #69 Phase 2: requires dagger in hand (not thrown).
 func _activate_fan() -> void:
+	if _dagger_out:
+		if hud != null:
+			hud.toast("Dagger is out — catch it first.")
+			AudioManager.sfx("ui_error")
+		return
 	if float(ability_cds.get("fan", 0.0)) > 0.0:
 		if hud != null:
 			hud.toast("Fan of Knives on cooldown.")
@@ -1848,6 +1860,7 @@ func _physics_process(delta: float) -> void:
 		else:
 			_step_timer = 0.0
 		_cooldown = maxf(0.0, _cooldown - delta)
+		_dagger_catch_cd = maxf(0.0, _dagger_catch_cd - delta)
 		# Issue #69 Phase 1: charge the dagger while RMB held (0→1 over 0.8s).
 		if _charging:
 			_dagger_charge = minf(1.0, _dagger_charge + delta / DAGGER_CHARGE_TIME)
@@ -1927,6 +1940,9 @@ func _try_dash() -> void:
 
 
 func _do_attack() -> void:
+	# Issue #69 Phase 2: melee disabled while the dagger is out.
+	if class_id == "rogue" and _dagger_out:
+		return
 	# War Drums: +10% attack speed while the trait buff is active.
 	_cooldown = attack_cooldown / (1.1 if _war_drums_t > 0.0 else 1.0)
 	_attack_anim()
@@ -1970,11 +1986,15 @@ func _do_attack() -> void:
 ## Issue #69 Phase 1: Throw the dagger at current charge.
 ## Range: 6m (tap) → 16m (full). Damage: 0.6x → 1.4x dagger hit.
 func _throw_dagger() -> void:
+	# Issue #69 Phase 2: can't throw while dagger is out or on catch cooldown.
+	if _dagger_out or _dagger_catch_cd > 0.0:
+		return
 	_charging = false
 	var charge := clampf(_dagger_charge, 0.0, 1.0)
 	_dagger_charge = 0.0
 	if hud != null and hud.has_method("set_charge_meter"):
 		hud.set_charge_meter(0.0, false)
+	_dagger_out = true
 	_cooldown = 0.5  # Brief recovery after throw.
 	_attack_anim()
 	var from := int(multiplayer.get_unique_id())
@@ -2001,6 +2021,19 @@ func _request_dagger_spawn(pos: Vector3, vel: Vector3, dmg: float, owner: int, r
 	dagger.setup(vel, dmg, owner, range_m)
 	get_parent().add_child(dagger)
 	dagger.global_position = pos
+
+
+## Issue #69 Phase 2: Dagger started returning (for HUD/Fan lockout feedback).
+func _on_dagger_returning() -> void:
+	pass  # _dagger_out already true; HUD could show "returning" here.
+
+
+## Issue #69 Phase 2: Dagger caught. 1.2s cooldown before next throw.
+@rpc("any_peer", "call_local")
+func _on_dagger_caught() -> void:
+	_dagger_out = false
+	_dagger_catch_cd = DAGGER_CATCH_COOLDOWN
+	AudioManager.sfx("dagger_catch")
 
 
 func _damage_rts_targets(fwd: Vector3, from: int) -> void:
