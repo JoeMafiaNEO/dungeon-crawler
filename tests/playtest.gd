@@ -4772,6 +4772,13 @@ func _test_potion_quick_slot() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains("KEY_H"), "H key handler exists")
 	_assert(psrc.contains("drink_potion"), "H calls drink_potion")
+	# Issue #77 regression: the player joins group "players" (plural), so the
+	# HUD must never look up a nonexistent "player" group for the slot.
+	_assert(psrc.contains('add_to_group("players")'), "player joins players group")
+	_assert(not hsrc.contains('get_first_node_in_group("player")'),
+		"no stale \"player\" (singular) group lookup in hud.gd")
+	_assert(hsrc.contains('get_first_node_in_group("players")') or hsrc.contains("_player"),
+		"potion slot resolves the real player")
 	print("[Playtest] potion quick-slot done")
 
 
@@ -4818,6 +4825,13 @@ func _test_shieldbearer() -> void:
 	var meteor_src := FileAccess.get_file_as_string("res://scripts/combat/meteor.gd")
 	_assert(meteor_src.contains("bypass_block") or meteor_src.contains(", true)"),
 		"meteor passes bypass flag")
+	# Issue #79 regression: the shield overlay must be a MeshInstance3D.
+	# Sprite3D has no .mesh property, so the old overlay hit a SCRIPT ERROR
+	# on every Shieldbearer <redacted> spawn and never rendered.
+	_assert(mob_src.contains("_shield_visual = MeshInstance3D.new()"),
+		"shield overlay is MeshInstance3D (not Sprite3D)")
+	_assert(mob_src.contains("var _shield_visual: MeshInstance3D"),
+		"shield visual typed as MeshInstance3D")
 	print("[Playtest] Shieldbearer done")
 
 

@@ -163,7 +163,12 @@ func refresh_potion_slot() -> void:
 	if _potion_button == null:
 		return
 	if _potion_player == null or not is_instance_valid(_potion_player):
-		_potion_player = get_tree().get_first_node_in_group("player") as Player
+		# Issue #77: the player joins group "players" (plural); prefer the
+		# setup() player and only fall back to the group lookup.
+		if _player != null and is_instance_valid(_player):
+			_potion_player = _player
+		else:
+			_potion_player = get_tree().get_first_node_in_group("players") as Player
 	if _potion_player == null:
 		_potion_button.visible = false
 		return
@@ -431,7 +436,9 @@ func _process(delta: float) -> void:
 	# Potion quick-slot: lazy-show when the player spawns (in case
 	# refresh_inventory hasn't run yet).
 	if _potion_button != null and not _potion_button.visible:
-		if get_tree().get_first_node_in_group("player") != null:
+		# Issue #77: player joins group "players" (plural); the setup() player
+	# counts too.
+		if _player != null or get_tree().get_first_node_in_group("players") != null:
 			refresh_potion_slot()
 	# Low-HP vignette: pulses red as health drops below 35%.
 	if _hp_frac < 0.35 and _player != null and _player.get("alive"):
