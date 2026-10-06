@@ -104,7 +104,7 @@ func _run() -> void:
 	_test_settings_phase1()
 	_test_settings_phase2()
 	_test_thrown_dagger_phase1()
-	_test_holy_light_nuke()
+	_test_holy_light_heal()
 
 	_print_results()
 	quit()
@@ -4040,14 +4040,14 @@ func _test_thrown_dagger_hit_once() -> void:
 	print("[Playtest] Thrown dagger hit-once-per-leg done")
 
 
-func _test_holy_light_nuke() -> void:
-	print("[Playtest] Holy Light huge AoE nuke...")
+func _test_holy_light_heal() -> void:
+	print("[Playtest] Holy Light radiant heal...")
 	var SD: GDScript = load("res://scripts/data/special_data.gd")
 	var holder := Node3D.new() # -s mode has no current_scene; positional sfx needs one
 	root.add_child(holder)
 	current_scene = holder
-	# Clear stale dungeon stubs (relic-test pattern): the nuke and apex
-	# announce RPCs target group[0], which must be our stub.
+	# Clear stale dungeon stubs (relic-test pattern): the light and announce
+	# RPCs target group[0], which must be our stub.
 	for n in get_nodes_in_group("dungeon"):
 		n.get_parent().remove_child(n)
 		n.free()
@@ -4065,25 +4065,28 @@ func _test_holy_light_nuke() -> void:
 	var has_hl: bool = (mage.get("unlocked_abilities") as Array).any(
 		func(x): return x["id"] == "holy_light")
 	_assert(has_hl, "holy: key-7 ability granted when equipped")
-	# Mobs: inner (5m), edge (exactly 18m), just-outside (18.6m), far (25m).
-	# Tanky hp_scale so they survive to measure exact damage.
+	# Wound the mage + an in-range ally; park a far ally at 20m (outside 15m).
+	var max_hp := float(mage.get("max_hp"))
+	mage.set("hp", max_hp * 0.5)
+	var ally = PlayerScene.instantiate()
+	ally.set("class_id", "warrior")
+	holder.add_child(ally)
+	ally.global_position = mage.global_position + Vector3(10, 0, 0)
+	var ally_max := float(ally.get("max_hp"))
+	ally.set("hp", ally_max * 0.5)
+	var far = PlayerScene.instantiate()
+	far.set("class_id", "rogue")
+	holder.add_child(far)
+	far.global_position = mage.global_position + Vector3(20, 0, 0)
+	var far_max := float(far.get("max_hp"))
+	far.set("hp", far_max * 0.5)
+	# A mob next to the caster must take NO damage (light only, no nuke).
 	var sdata: Resource = load("res://data/mobs/slime.tres")
-	var spots := [5.0, 18.0, 18.6, 25.0]
-	var mobs := []
-	var hp0 := []
-	for d in spots:
-		var m = MobScene.instantiate()
-		m.setup(1, sdata, 200.0, 1.0, false, 1.0)
-		holder.add_child(m)
-		m.global_position = mage.global_position + Vector3(d, 0, 0)
-		mobs.append(m)
-		hp0.append(float(m.get("hp")))
-		_assert(bool(m.get("alive")), "holy: mob at %dm starts alive" % d)
-	# Expected nuke damage: 6x buffed mage damage.
-	var expected: float = float(mage.get("damage")) \
-		* float(mage.call("_buff_mult", "damage")) \
-		* float(mage.call("rank_mult")) * 6.0
-	_assert(expected > 0.0, "holy: expected damage positive")
+	var mob = MobScene.instantiate()
+	mob.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(mob)
+	mob.global_position = mage.global_position + Vector3(3, 0, 0)
+	var mob_hp0 := float(mob.get("hp"))
 	mage.call("_cast_holy_light")
 	# Visual: the HolyLight node spawns under the dungeon, map-wide range.
 	var light_node: Node = root.find_child("HolyLight", true, false)
@@ -4095,12 +4098,12 @@ func _test_holy_light_nuke() -> void:
 			ms = float(parent_layout["grid_size"]) * float(parent_layout["cell_size"])
 		_assert(absf(float(light_node.get("omni_range")) - ms * 1.5) < 1.0,
 			"holy: light range covers map")
-	# Cooldown: applied and blocks a second cast (no double nuke).
+	# Cooldown: applied and blocks a second cast.
 	_assert(float((mage.get("ability_cds") as Dictionary).get("holy_light", 0.0)) > 0.0,
 		"holy: 20s cooldown applied")
-	var hp_before := float(mobs[0].get("hp"))
+	var hp_before := float(mage.get("hp"))
 	mage.call("_cast_holy_light")
-	_assert(float(mobs[0].get("hp")) == hp_before, "holy: cooldown blocks recast damage")
+	_assert(float(mage.get("hp")) == hp_before, "holy: cooldown blocks recast heal")
 	var light_count := 0
 	var stack := [root]
 	while not stack.is_empty():
@@ -4109,27 +4112,22 @@ func _test_holy_light_nuke() -> void:
 			light_count += 1
 		stack.append_array(sn.get_children())
 	_assert(light_count == 1, "holy: cooldown blocks second light")
-	# Damage by distance: 5m and 18m hit for ~6x, 18.6m and 25m untouched.
-	for i in range(4):
-		var dealt: float = hp0[i] - float(mobs[i].get("hp"))
-		if spots[i] <= 18.0:
-			_assert(dealt > 0.0, "holy: mob at %dm takes damage" % spots[i])
-			_assert(absf(dealt - expected) / expected < 0.05,
-				"holy: mob at %dm takes 6x (%.0f vs %.0f)" % [spots[i], dealt, expected])
-		else:
-			_assert(dealt == 0.0, "holy: mob at %dm untouched" % spots[i])
-	# Recast after clearing the cooldown does not error (dead mobs skipped).
-	(mage.get("ability_cds") as Dictionary)["holy_light"] = 0.0
-	mage.call("_cast_holy_light")
-	_assert(true, "holy: recast after cooldown does not error")
-	# Cleanup: stub out of the dungeon group so later tests see a clean tree.
+	# Heal: caster + in-range ally gain 15% max HP; far ally and mob untouched.
+	_assert(absf(float(mage.get("hp")) - max_hp * 0.65) < 1.0,
+		"holy: caster healed 15% (%.0f)" % float(mage.get("hp")))
+	_assert(absf(float(ally.get("hp")) - ally_max * 0.65) < 1.0,
+		"holy: ally at 10m healed 15%")
+	_assert(float(far.get("hp")) == far_max * 0.5, "holy: ally at 20m not healed")
+	_assert(float(mob.get("hp")) == mob_hp0, "holy: mob takes no damage")
+	# Cleanup.
 	stub.remove_from_group("dungeon")
 	stub.queue_free()
-	for m in mobs:
-		m.queue_free()
+	mob.queue_free()
 	mage.queue_free()
+	ally.queue_free()
+	far.queue_free()
 	holder.queue_free()
-	print("[Playtest] Holy Light huge AoE nuke done")
+	print("[Playtest] Holy Light radiant heal done")
 
 
 ## Recursive ScrollContainer audit for the zero-scroll rule.
