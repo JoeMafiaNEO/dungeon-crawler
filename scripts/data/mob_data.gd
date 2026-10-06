@@ -39,3 +39,11 @@ extends Resource
 ## Apex mechanic id for apex-cycle bosses (issue #5): "", "enrage" (Bristleback),
 ## "adds" (Warden), "phaseshift" (Horror). Empty for every non-apex mob/boss.
 @export var apex_id: String = ""
+
+# --- Shieldbearer config (issue #67): frontal block mechanics ---
+## If true, frontal attacks within block_arc_deg are reduced by block_mult.
+@export var frontal_block: bool = false
+## Frontal arc in degrees (centered on facing direction) where block applies.
+@export var block_arc_deg: float = 120.0
+## Damage multiplier for blocked frontal hits (0.1 = 90% reduction).
+@export var block_mult: float = 0.1

@@ -78,6 +78,7 @@ func _run() -> void:
 	_test_destination_popup_mouse_hold()
 	_test_potion_quick_slot()
 	_test_positioning_fixes()
+	_test_shieldbearer()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4698,3 +4699,36 @@ func _test_positioning_fixes() -> void:
 	_assert(not isrc.contains("global_transform * mi.get_aabb()"),
 		"item measure avoids global_transform")
 	print("[Playtest] positioning fixes done")
+
+
+## Issue #67 Phase 1: Shieldbearer frontal block mechanics.
+func _test_shieldbearer() -> void:
+	print("[Playtest] Shieldbearer (issue #67 Phase 1)...")
+	# MobData fields exist.
+	var data := MobData.new()
+	data.frontal_block = true
+	data.block_arc_deg = 120.0
+	data.block_mult = 0.1
+	_assert(data.frontal_block, "shieldbearer has frontal_block")
+	_assert(abs(data.block_arc_deg - 120.0) < 0.01, "block arc is 120 deg")
+	_assert(abs(data.block_mult - 0.1) < 0.001, "block mult is 0.1")
+	# Theme placement: dungeon and depths include shieldbearer.
+	var dungeon_mix := FileAccess.get_file_as_string("res://data/levels/theme_dungeon.tres")
+	_assert(dungeon_mix.contains("shieldbearer"), "dungeon theme has shieldbearer")
+	var depths_mix := FileAccess.get_file_as_string("res://data/levels/theme_depths.tres")
+	_assert(depths_mix.contains("shieldbearer"), "depths theme has shieldbearer")
+	# Mob data file exists with block fields.
+	var sb_src := FileAccess.get_file_as_string("res://data/mobs/shieldbearer.tres")
+	_assert(sb_src.contains("frontal_block = true"), "shieldbearer.tres has frontal_block")
+	# mob.gd has the block logic.
+	var mob_src := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(mob_src.contains("block_arc_deg"), "mob.gd checks block arc")
+	_assert(mob_src.contains("_shield_up"), "mob.gd has shield state")
+	_assert(mob_src.contains("_windup_t"), "mob.gd has windup opening")
+	_assert(mob_src.contains("_stagger_t"), "mob.gd has stagger")
+	_assert(mob_src.contains("bypass_block"), "take_damage has bypass param")
+	# Meteor bypasses.
+	var meteor_src := FileAccess.get_file_as_string("res://scripts/combat/meteor.gd")
+	_assert(meteor_src.contains("bypass_block") or meteor_src.contains(", true)"),
+		"meteor passes bypass flag")
+	print("[Playtest] Shieldbearer done")

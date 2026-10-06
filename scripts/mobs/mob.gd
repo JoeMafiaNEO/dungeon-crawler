@@ -27,6 +27,15 @@ var _sprite: AnimatedSprite3D
 var _flash_tween: Tween
 var _bob_t := 0.0
 var _base_scale := Vector3.ONE
+## Shieldbearer (issue #67): frontal block state machine (server-authoritative).
+## _shield_up: shield is raised (blocks frontal). _shield_drop_t: timer for
+## windup opening (0.9s). _stagger_t: timer for flank stagger (1.5s).
+var _shield_up := true
+var _shield_drop_t := 0.0
+var _stagger_t := 0.0
+var _shield_visual: Sprite3D
+## Shieldbearer windup: 0.9s opening where shield is down before the strike.
+var _windup_t := 0.0
 ## Elite mobs: 2.5x HP, 1.25x size, +1.5 loot luck, gold nameplate.
 var is_elite := false
 ## Slow debuff (frost): _slow_t seconds remaining at _slow_mult speed.
@@ -79,6 +88,22 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 	is_elite = p_elite and not p_data.is_boss
 	if is_elite:
 		hp_scale *= 2.5
+	# Shieldbearer (issue #67): tower-shield overlay. Visible when shield is up.
+	if data.frontal_block:
+		_shield_visual = Sprite3D.new()
+		_shield_visual.name = "ShieldOverlay"
+		# Placeholder: blue-grey quad. Art Director to provide SNES tower-shield sprite.
+		var quad := QuadMesh.new()
+		quad.size = Vector2(1.2, 1.6)
+		_shield_visual.mesh = quad
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.45, 0.55, 0.70)
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_shield_visual.material_override = mat
+		_shield_visual.position = Vector3(0, 1.0, 0.35)
+		_shield_visual.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		add_child(_shield_visual)
+		_shield_up = true
 
 
 func _ready() -> void:
@@ -116,6 +141,13 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if not alive:
 		return
+	# Shieldbearer (issue #67): stagger timer ticks down; shield raises when done.
+	if _stagger_t > 0.0:
+		_stagger_t -= delta
+		if _stagger_t <= 0.0:
+			_stagger_t = 0.0
+			_shield_up = true
+			_update_shield_visual()
 	# Slow debuff ticks down (server-side).
 	if _slow_t > 0.0:
 		_slow_t -= delta
@@ -167,18 +199,24 @@ func _physics_process(delta: float) -> void:
 			velocity.x = 0.0
 			velocity.z = 0.0
 			_attack_cd -= delta
-			if _attack_cd <= 0.0:
+			# Shieldbearer windup: 0.9s opening (shield down) before the strike.
+			if _windup_t > 0.0:
+				_windup_t -= delta
+				if _windup_t <= 0.0:
+					_windup_t = 0.0
+					_do_attack()
+					# Shield raises after the strike (unless staggered).
+					if _stagger_t <= 0.0:
+						_shield_up = true
+			elif _attack_cd <= 0.0:
 				_attack_cd = data.attack_cooldown
-				if _misses():
-					pass  # Blinded (Smoke Bombard): the swing misses.
-				elif _target.is_in_group("decoys"):
-					# Shadow decoy: direct damage, server-side (no RPC target).
-					_target.damage(data.damage * dmg_scale * _dmg_mult())
-				elif _target.is_in_group("structures"):
-					# Architect structure: direct damage, server-side (no RPC target).
-					_target.take_structure_damage(data.damage * dmg_scale * _dmg_mult(), NetworkManager.server_id)
+				if data.frontal_block and _shield_up:
+					# Start windup: shield drops for 0.9s (the opening).
+					_windup_t = 0.9
+					_shield_up = false
+					_update_shield_visual()
 				else:
-					_target.rpc_id(_target.get_multiplayer_authority(), "take_damage", data.damage * dmg_scale * _dmg_mult(), data.display_name)
+					_do_attack()
 	elif not boss_busy:
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -336,6 +374,45 @@ func apply_blind(duration: float) -> void:
 ## Blind miss roll, checked at each attack site (server-side).
 func _misses() -> bool:
 	return _blind_t > 0.0 and randf() < 0.5
+
+
+## Execute the melee attack (extracted for Shieldbearer windup).
+func _do_attack() -> void:
+	if _misses():
+		pass  # Blinded (Smoke Bombard): the swing misses.
+	elif _target.is_in_group("decoys"):
+		# Shadow decoy: direct damage, server-side (no RPC target).
+		_target.damage(data.damage * dmg_scale * _dmg_mult())
+	elif _target.is_in_group("structures"):
+		# Architect structure: direct damage, server-side (no RPC target).
+		_target.take_structure_damage(data.damage * dmg_scale * _dmg_mult(), NetworkManager.server_id)
+	else:
+		_target.rpc_id(_target.get_multiplayer_authority(), "take_damage", data.damage * dmg_scale * _dmg_mult(), data.display_name)
+
+
+## Shieldbearer (issue #67): update the tower-shield overlay visibility.
+## Shield up = visible (blocking); shield down = hidden (opening/stagger).
+func _update_shield_visual() -> void:
+	if _shield_visual != null and is_instance_valid(_shield_visual):
+		_shield_visual.visible = _shield_up
+	# Sync to clients.
+	if multiplayer.is_server():
+		rpc("_sync_shield", _shield_up)
+
+
+@rpc("any_peer", "call_local")
+func _sync_shield(up: bool) -> void:
+	_shield_up = up
+	if _shield_visual != null and is_instance_valid(_shield_visual):
+		_shield_visual.visible = up
+
+
+## Shieldbearer (issue #67): clang + spark on frontal block (all peers).
+@rpc("any_peer", "call_local")
+func shield_clang(pos: Vector3) -> void:
+	# TODO: Sound Engineer — shield clang SFX (positional).
+	# TODO: Art — spark particles at pos.
+	pass
 
 
 ## Applies a burn DoT (wildfire trait). Server-side; refreshes duration.
@@ -724,7 +801,7 @@ func push_snapshot(pos: Vector3, hp_v: float, alive_v: bool) -> void:
 
 
 @rpc("any_peer", "call_local")
-func take_damage(amount: float, attacker: int, attacker_pos: Vector3) -> void:
+func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_block: bool = false) -> void:
 	if not multiplayer.is_server():
 		return
 	if not alive:
@@ -754,6 +831,24 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3) -> void:
 	# Doom Totem (Conqueror signature): +30% damage from all sources.
 	if doom_t > 0.0:
 		amount *= 1.3
+	# Shieldbearer (issue #67): frontal block. If the shield is up and the
+	# attacker is within the frontal arc, reduce damage. Meteor bypasses.
+	var blocked := false
+	if data.frontal_block and not bypass_block and _shield_up:
+		var to_attacker: Vector3 = attacker_pos - global_position
+		to_attacker.y = 0.0
+		if to_attacker.length() > 0.01:
+			# Mob's forward: sprite faces target via rotation.y = atan2(dir.x, dir.z).
+			var fwd := Vector3(sin(_sprite.rotation.y), 0.0, cos(_sprite.rotation.y))
+			var angle_deg := rad_to_deg(fwd.angle_to(to_attacker.normalized()))
+			if angle_deg <= data.block_arc_deg * 0.5:
+				blocked = true
+				amount *= data.block_mult
+				rpc("shield_clang", global_position)
+	if data.frontal_block and not blocked and not bypass_block:
+		# Flank/rear hit: 1.5s stagger (shield drops).
+		_stagger_t = 1.5
+		_shield_up = false
 	hp -= amount
 	# Credit run stats: the attacking player tracks total damage dealt.
 	# Covers every source (melee, spells, projectiles, totems) in one place.
@@ -766,7 +861,9 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3) -> void:
 	var away: Vector3 = global_position - attacker_pos
 	away.y = 0.0
 	if away.length() > 0.01:
-		_knockback = away.normalized() * 6.0
+		# Shieldbearer: blocked hits have zero knockback.
+		if not blocked:
+			_knockback = away.normalized() * 6.0
 	rpc("hit_react", global_position, amount, attacker)
 	if hp <= 0.0:
 		hp = 0.0
