@@ -359,6 +359,9 @@ func _build_join_lan_ui() -> void:
 	_lan_ip_field.placeholder_text = "192.168.1.x"
 	_lan_ip_field.custom_minimum_size = Vector2(280, 0)
 	_lan_ip_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	# Issues #73/#76: keep the LAN form compact and centered — a
+	# full-width LineEdit reads as an unstyled dark band.
+	_lan_ip_field.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	form.add_child(_lan_ip_field)
 	var name_label := Label.new()
 	name_label.text = "Your name:"
@@ -369,9 +372,11 @@ func _build_join_lan_ui() -> void:
 	_lan_name_field.custom_minimum_size = Vector2(280, 0)
 	_lan_name_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_lan_name_field.max_length = 16
+	_lan_name_field.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	form.add_child(_lan_name_field)
 	var join_btn := Button.new()
 	join_btn.text = "Join LAN Game"
+	join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	join_btn.pressed.connect(_on_lan_join_pressed)
 	form.add_child(join_btn)
 	phase.add_child(form)

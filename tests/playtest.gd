@@ -4987,6 +4987,17 @@ func _test_lan_toggle_no_recursion() -> void:
 			fname + " never assigns button_pressed (would re-emit toggled)")
 		_assert(body.contains("set_pressed_no_signal"),
 			fname + " uses set_pressed_no_signal")
+	# Issues #73/#76: the LAN join form must stay compact and centered
+	# (full-width LineEdits read as unstyled dark bands), and the Steam
+	# JoinRow must hide in LAN mode.
+	_assert(msrc.contains("_lan_ip_field.size_flags_horizontal = Control.SIZE_SHRINK_CENTER"),
+		"#73: LAN IP field is shrink-centered")
+	_assert(msrc.contains("_lan_name_field.size_flags_horizontal = Control.SIZE_SHRINK_CENTER"),
+		"#73: LAN name field is shrink-centered")
+	_assert(msrc.contains("join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER"),
+		"#73: LAN join button is shrink-centered")
+	_assert(msrc.contains("join_row.visible = not lan_mode"),
+		"#76: Steam JoinRow hides in LAN mode")
 	print("[Playtest] LAN toggle no-recursion done")
 
 
