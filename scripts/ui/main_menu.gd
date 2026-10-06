@@ -312,10 +312,12 @@ func _build_host_lan_ui() -> void:
 
 func _on_host_transport_toggled(pressed: bool, lan_mode: bool, other: Button, self_btn: Button) -> void:
 	if not pressed:
-		# Keep one selected.
-		self_btn.button_pressed = true
+		# Keep one selected. set_pressed_no_signal: changing pressed state
+		# programmatically must NOT re-emit toggled, or the two buttons
+		# ping-pong each other into infinite recursion (stack overflow).
+		self_btn.set_pressed_no_signal(true)
 		return
-	other.button_pressed = false
+	other.set_pressed_no_signal(false)
 	_lan_mode_host = lan_mode
 	if _lan_ip_label != null:
 		_lan_ip_label.visible = lan_mode
@@ -378,9 +380,11 @@ func _build_join_lan_ui() -> void:
 
 func _on_join_transport_toggled(pressed: bool, lan_mode: bool, other: Button, self_btn: Button) -> void:
 	if not pressed:
-		self_btn.button_pressed = true
+		# set_pressed_no_signal: never re-emit toggled from inside the
+		# handler, or the two buttons recurse into a stack overflow.
+		self_btn.set_pressed_no_signal(true)
 		return
-	other.button_pressed = false
+	other.set_pressed_no_signal(false)
 	_lan_mode_join = lan_mode
 	var form := %JoinPhase.get_node_or_null("LanJoinForm")
 	if form != null:

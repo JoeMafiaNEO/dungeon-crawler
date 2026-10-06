@@ -80,6 +80,7 @@ func _run() -> void:
 	_test_positioning_fixes()
 	_test_lan_multiplayer_phase1()
 	_test_lan_lobby_fixes()
+	_test_lan_toggle_no_recursion()
 	_test_shieldbearer()
 	_test_splitter()
 	_test_gravewarden()
@@ -4907,3 +4908,23 @@ func _test_lan_lobby_fixes() -> void:
 	# The broadcast replaces the roster wholesale on clients.
 	_assert(nsrc.contains("lan_names = names.duplicate()"), "roster sync replaces names")
 	print("[Playtest] LAN lobby fixes done")
+
+
+## LAN toggle recursion guard: the Steam/LAN toggle buttons must use
+## set_pressed_no_signal. Assigning button_pressed inside a toggled handler
+## re-emits toggled and the two buttons ping-pong into a stack overflow
+## (main_menu.gd _on_host_transport_toggled, reported by Jesse 2026-10-05).
+func _test_lan_toggle_no_recursion() -> void:
+	print("[Playtest] LAN toggle no-recursion...")
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	for fname in ["func _on_host_transport_toggled", "func _on_join_transport_toggled"]:
+		var start := msrc.find(fname)
+		_assert(start != -1, fname + " exists")
+		var next_func := msrc.find("\nfunc ", start + 1)
+		_assert(next_func != -1, fname + " body bounded")
+		var body := msrc.substr(start, next_func - start)
+		_assert(not body.contains(".button_pressed ="),
+			fname + " never assigns button_pressed (would re-emit toggled)")
+		_assert(body.contains("set_pressed_no_signal"),
+			fname + " uses set_pressed_no_signal")
+	print("[Playtest] LAN toggle no-recursion done")
