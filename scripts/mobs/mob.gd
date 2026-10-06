@@ -33,7 +33,7 @@ var _base_scale := Vector3.ONE
 var _shield_up := true
 var _shield_drop_t := 0.0
 var _stagger_t := 0.0
-var _shield_visual: Sprite3D
+var _shield_visual: MeshInstance3D
 ## Shieldbearer windup: 0.9s opening where shield is down before the strike.
 var _windup_t := 0.0
 ## Elite mobs: 2.5x HP, 1.25x size, +1.5 loot luck, gold nameplate.
@@ -96,7 +96,7 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 		hp_scale *= 2.5
 	# Shieldbearer (issue #67): tower-shield overlay. Visible when shield is up.
 	if data.frontal_block:
-		_shield_visual = Sprite3D.new()
+		_shield_visual = MeshInstance3D.new()
 		_shield_visual.name = "ShieldOverlay"
 		# Placeholder: blue-grey quad. Art Director to provide SNES tower-shield sprite.
 		var quad := QuadMesh.new()
@@ -107,7 +107,6 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		_shield_visual.material_override = mat
 		_shield_visual.position = Vector3(0, 1.0, 0.35)
-		_shield_visual.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 		add_child(_shield_visual)
 		_shield_up = true
 	# Gravewarden (issue #67 Phase 3): pulsing gold-green aura ring.

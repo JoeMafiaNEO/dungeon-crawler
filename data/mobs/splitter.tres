@@ -38,6 +38,7 @@ drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("Dr
 frames = [ExtResource("3")]
 loot_luck = 0.0
 bonus_drops = 0
+scale_mult = 1.5
 split_on_death = true
 split_id = "slime_small"
 split_count = 3
