@@ -598,6 +598,11 @@ func _build_slot_card(mode: String, slot: int) -> MarginContainer:
 	margin.add_theme_constant_override("margin_right", 16)
 	margin.add_theme_constant_override("margin_top", 6)
 	margin.add_theme_constant_override("margin_bottom", 6)
+	# Issue #74: keep each slot card a compact centered row. A full-width
+	# row pinned the action buttons to the far screen edge, detached from
+	# the slot label; a 560px centered card reads as one row.
+	margin.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	margin.custom_minimum_size = Vector2(560, 0)
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 12)

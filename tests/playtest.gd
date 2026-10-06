@@ -814,6 +814,10 @@ func _test_saves_ui() -> void:
 		"#75: HostArchitectButton wired to a handler")
 	_assert(msrc.contains("func _on_host_architect_pressed"),
 		"#75: host architect handler exists")
+	# Issue #74 regression: slot cards must be compact centered rows, not
+	# full-width — otherwise the action buttons pin to the far screen edge.
+	_assert(msrc.contains("margin.size_flags_horizontal = Control.SIZE_SHRINK_CENTER"),
+		"#74: slot card is shrink-centered")
 
 	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
 	mgr.free()
