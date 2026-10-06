@@ -47,3 +47,11 @@ extends Resource
 @export var block_arc_deg: float = 120.0
 ## Damage multiplier for blocked frontal hits (0.1 = 90% reduction).
 @export var block_mult: float = 0.1
+
+# --- Splitter config (issue #67 Phase 2): split on death ---
+## If true, spawn split_count children of split_id on death (server-side).
+@export var split_on_death: bool = false
+## Mob ID to spawn on death (e.g., "slime_small").
+@export var split_id: String = "slime_small"
+## Number of children to spawn on death.
+@export var split_count: int = 3

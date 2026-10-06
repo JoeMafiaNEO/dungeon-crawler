@@ -79,6 +79,7 @@ func _run() -> void:
 	_test_potion_quick_slot()
 	_test_positioning_fixes()
 	_test_shieldbearer()
+	_test_splitter()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4732,3 +4733,35 @@ func _test_shieldbearer() -> void:
 	_assert(meteor_src.contains("bypass_block") or meteor_src.contains(", true)"),
 		"meteor passes bypass flag")
 	print("[Playtest] Shieldbearer done")
+
+
+## Issue #67 Phase 2: Splitter split-on-death mechanics.
+func _test_splitter() -> void:
+	print("[Playtest] Splitter (issue #67 Phase 2)...")
+	# MobData fields exist.
+	var data := MobData.new()
+	data.split_on_death = true
+	data.split_id = "slime_small"
+	data.split_count = 3
+	_assert(data.split_on_death, "splitter has split_on_death")
+	_assert(data.split_id == "slime_small", "split id is slime_small")
+	_assert(data.split_count == 3, "split count is 3")
+	# Small slime: no split (hard cap, children can never split).
+	var small := MobData.new()
+	small.split_on_death = false
+	_assert(not small.split_on_death, "slime_small cannot split (hard cap)")
+	# Data files exist.
+	var splitter_src := FileAccess.get_file_as_string("res://data/mobs/splitter.tres")
+	_assert(splitter_src.contains('split_on_death = true'), "splitter.tres splits")
+	_assert(splitter_src.contains('split_id = "slime_small"'), "splitter spawns slime_small")
+	var small_src := FileAccess.get_file_as_string("res://data/mobs/slime_small.tres")
+	_assert(small_src.contains("health = 15.0"), "slime_small has 15 HP")
+	_assert(small_src.contains("move_speed = 5.5"), "slime_small speed 5.5")
+	# mob.gd has the spawn-on-death logic.
+	var mob_src := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(mob_src.contains("split_on_death"), "mob.gd checks split_on_death")
+	_assert(mob_src.contains("server_spawn_mob"), "mob.gd uses server spawn path")
+	# Theme placement.
+	var dungeon_mix := FileAccess.get_file_as_string("res://data/levels/theme_dungeon.tres")
+	_assert(dungeon_mix.contains("splitter"), "dungeon theme has splitter")
+	print("[Playtest] Splitter done")

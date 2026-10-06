@@ -870,6 +870,14 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		alive = false
 		rpc("play_death")
 		_drop_and_reward(attacker)
+		# Splitter (issue #67 Phase 2): server-side spawn-on-death.
+		# Children have split_on_death=false (hard cap, no cascade).
+		if data.split_on_death and multiplayer.is_server():
+			var dungeon := get_tree().get_first_node_in_group("dungeon")
+			if dungeon != null and dungeon.has_method("server_spawn_mob"):
+				for i in data.split_count:
+					var offset := Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0))
+					dungeon.server_spawn_mob(data.split_id, global_position + offset)
 		# Track kills for achievements (server-side).
 		if multiplayer.is_server():
 			SaveManager.add_kills(1)
