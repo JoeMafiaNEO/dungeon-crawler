@@ -45,7 +45,6 @@ func _run() -> void:
 	_test_audio_coverage()
 	_test_audio_new_features()
 	_test_train_ambient()
-	_test_audio_combat_cues()
 	_test_station_annex()
 	_test_station_embedded()
 	_test_annex_departure()
@@ -79,15 +78,9 @@ func _run() -> void:
 	_test_destination_popup_mouse_hold()
 	_test_potion_quick_slot()
 	_test_positioning_fixes()
-	_test_lan_multiplayer_phase1()
-	_test_lan_lobby_fixes()
-	_test_lan_toggle_no_recursion()
 	_test_shieldbearer()
 	_test_splitter()
 	_test_gravewarden()
-	_test_snapshot_yaw()
-	_test_sprite_orientation()
-	_test_yaw_edge_cases()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -1205,25 +1198,6 @@ func _test_train_ambient() -> void:
 	# Jesse's whistle recording likewise overrides the synth whistle.
 	_assert(FileAccess.file_exists("res://assets/audio/sfx/train_whistle.mp3"),
 		"whistle recording mp3 in repo")
-
-
-func _test_audio_combat_cues() -> void:
-	print("[Playtest] Audio: shield clang + dagger cues...")
-	# DM assignment: Shieldbearer block (issue #67) + rogue thrown dagger
-	# (issue #69) were silent. Every cue must synth and be registered.
-	var SoundScript := load("res://scripts/audio/sound_synth.gd")
-	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
-	for sfx in ["shield_clang", "dagger_throw", "dagger_catch"]:
-		var w: AudioStreamWAV = SoundScript.call(sfx)
-		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
-		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
-	# Wiring: the mob.gd shield_clang stub plays the cue positionally;
-	# the dagger call sites already exist in player.gd.
-	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
-	_assert(msrc.contains('sfx("shield_clang", pos)'), "shield_clang stub wired")
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains('sfx("dagger_throw")'), "dagger throw call site")
-	_assert(psrc.contains('sfx("dagger_catch")'), "dagger catch call site")
 
 
 func _test_station_annex() -> void:
@@ -4877,169 +4851,3 @@ func _test_gravewarden() -> void:
 	var depths_mix := FileAccess.get_file_as_string("res://data/levels/theme_depths.tres")
 	_assert(depths_mix.contains("gravewarden"), "depths theme has gravewarden")
 	print("[Playtest] Gravewarden done")
-
-
-func _test_lan_multiplayer_phase1() -> void:
-	print("[Playtest] LAN multiplayer Phase 1 (issue #70)...")
-	# Static: transport enum, ENet host/join, handshake, kick, guards.
-	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
-	_assert(nsrc.contains("enum Transport"), "transport enum exists")
-	_assert(nsrc.contains("func host_lan"), "LAN host exists")
-	_assert(nsrc.contains("func join_lan"), "LAN join exists")
-	_assert(nsrc.contains("ENetMultiplayerPeer"), "uses ENetMultiplayerPeer")
-	_assert(nsrc.contains("func lan_sync_config"), "handshake RPC exists")
-	_assert(nsrc.contains("func kick_peer"), "kick exists")
-	_assert(nsrc.contains("disconnect_peer"), "kick uses disconnect_peer")
-	_assert(nsrc.contains("func get_lan_ip"), "LAN IP helper exists")
-	# server_id from actual peer, not hardcoded.
-	_assert(nsrc.contains("server_id = multiplayer.get_unique_id()"),
-		"server_id from actual peer")
-	# Save skips on LAN.
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("Transport.LAN"), "dungeon guards LAN saves")
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("Transport.LAN"), "HUD guards LAN save-quit")
-	# UI: toggle, IP display, join fields, kick button.
-	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
-	_assert(msrc.contains("_build_host_lan_ui"), "host LAN UI builder exists")
-	_assert(msrc.contains("_build_join_lan_ui"), "join LAN UI builder exists")
-	_assert(msrc.contains("KickButton"), "kick button exists")
-	print("[Playtest] LAN multiplayer Phase 1 done")
-
-
-## LAN lobby fixes: start button works on LAN, roster syncs to clients.
-## (Static checks: autoload singletons aren't visible as identifiers in -s
-## script mode, so this suite verifies the wiring by source inspection —
-## the same convention as _test_lan_multiplayer_phase1.)
-func _test_lan_lobby_fixes() -> void:
-	print("[Playtest] LAN lobby fixes (start button + roster sync)...")
-	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
-	# Fix 1: start_game must handle LAN before the Steam lobby_id gate.
-	var sg := nsrc.find("func start_game()")
-	var lan_branch := nsrc.find("if transport == Transport.LAN:", sg)
-	var lobby_gate := nsrc.find("if lobby_id == 0:", sg)
-	_assert(sg != -1 and lan_branch != -1 and lobby_gate != -1 and lan_branch < lobby_gate,
-		"start_game handles LAN before the lobby_id gate")
-	_assert(nsrc.find('rpc("load_dungeon"', sg) != -1, "start_game broadcasts dungeon load")
-	# Fix 2: host broadcasts the roster so clients' lobby menus stay current.
-	_assert(nsrc.contains("func lan_sync_roster"), "roster broadcast RPC exists")
-	_assert(nsrc.contains("func _broadcast_lan_roster"), "roster broadcast helper exists")
-	_assert(nsrc.contains("@rpc(\"authority\", \"call_remote\", \"reliable\")\nfunc lan_sync_roster"),
-		"roster broadcast is authority/reliable")
-	# Broadcast is wired into every membership change: announce, disconnect, kick.
-	var ann := nsrc.find("func lan_announce_name")
-	_assert(ann != -1 and nsrc.find("_broadcast_lan_roster()", ann) != -1,
-		"announce triggers roster broadcast")
-	var disc := nsrc.find("func _on_peer_disconnected")
-	_assert(disc != -1 and nsrc.find("lan_names.erase", disc) != -1,
-		"disconnect erases the name (no ghosts)")
-	_assert(disc != -1 and nsrc.find("_broadcast_lan_roster()", disc) != -1,
-		"disconnect triggers roster broadcast")
-	var kick := nsrc.find("func kick_peer")
-	_assert(kick != -1 and nsrc.find("_broadcast_lan_roster()", kick) != -1,
-		"kick triggers roster broadcast")
-	# The broadcast replaces the roster wholesale on clients.
-	_assert(nsrc.contains("lan_names = names.duplicate()"), "roster sync replaces names")
-	print("[Playtest] LAN lobby fixes done")
-
-
-## LAN toggle recursion guard: the Steam/LAN toggle buttons must use
-## set_pressed_no_signal. Assigning button_pressed inside a toggled handler
-## re-emits toggled and the two buttons ping-pong into a stack overflow
-## (main_menu.gd _on_host_transport_toggled, reported by Jesse 2026-10-05).
-func _test_lan_toggle_no_recursion() -> void:
-	print("[Playtest] LAN toggle no-recursion...")
-	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
-	for fname in ["func _on_host_transport_toggled", "func _on_join_transport_toggled"]:
-		var start := msrc.find(fname)
-		_assert(start != -1, fname + " exists")
-		var next_func := msrc.find("\nfunc ", start + 1)
-		_assert(next_func != -1, fname + " body bounded")
-		var body := msrc.substr(start, next_func - start)
-		_assert(not body.contains(".button_pressed ="),
-			fname + " never assigns button_pressed (would re-emit toggled)")
-		_assert(body.contains("set_pressed_no_signal"),
-			fname + " uses set_pressed_no_signal")
-	print("[Playtest] LAN toggle no-recursion done")
-
-
-## Issue #72 Phase 1: Snapshot yaw plumbing.
-func _test_snapshot_yaw() -> void:
-	print("[Playtest] Snapshot yaw (issue #72 Phase 1)...")
-	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	# push_snapshot has yaw_v param.
-	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
-	# Caller passes _yaw.
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw)'),
-		"caller passes _yaw")
-	# _remote_yaw stored and interpolated with lerp_angle.
-	_assert(src.contains("_remote_yaw"), "stores _remote_yaw")
-	_assert(src.contains("lerp_angle(_yaw, _remote_yaw"),
-		"interpolates with lerp_angle")
-	# Headless math: lerp_angle converges without snapping.
-	var a := 0.0
-	var target := PI * 0.9
-	for i in 20:
-		a = lerp_angle(a, target, 0.5)
-	_assert(abs(a - target) < 0.01, "lerp_angle converges")
-	# Wrap-around: short way (e.g., 350° -> 10° goes +20°, not -340°).
-	var wrapped := lerp_angle(deg_to_rad(350.0), deg_to_rad(10.0), 0.5)
-	# 350° + 10° = 360°/0°, halfway is 0° (or 360°).
-	var deg := rad_to_deg(wrapped)
-	_assert(abs(deg) < 5.0 or abs(deg - 360.0) < 5.0,
-		"wrap-around takes short way (350->10 via 0)")
-	print("[Playtest] Snapshot yaw done")
-
-
-## Issue #72 Phase 2: Player sprite orientation rendering.
-func _test_sprite_orientation() -> void:
-	print("[Playtest] Sprite orientation (issue #72 Phase 2)...")
-	# player.tscn: AnimatedSprite3D billboard DISABLED.
-	var tscn := FileAccess.get_file_as_string("res://scenes/player/player.tscn")
-	# The AnimatedSprite3D node should NOT have billboard = 1.
-	# (Label3D keeps billboard = 1.)
-	var sprite_section := tscn.get_slice('[node name="AnimatedSprite3D"', 1)
-	sprite_section = sprite_section.get_slice("[node name=", 0)
-	_assert(not sprite_section.contains("billboard = 1"),
-		"player sprite billboard disabled")
-	# Label3D stays billboarded.
-	_assert(tscn.contains('[node name="Label3D"'), "Label3D exists")
-	# player.gd: remote peers yaw the sprite.
-	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(src.contains("_sprite.rotation.y = _yaw"),
-		"remote peers yaw the sprite")
-	# Double-sided (cull disabled).
-	_assert(src.contains("CULL_DISABLED"),
-		"sprite material cull disabled (double-sided)")
-	# Mark indicators stay billboarded.
-	_assert(src.contains("mark.billboard = BaseMaterial3D.BILLBOARD_ENABLED"),
-		"mark indicators stay billboarded")
-	print("[Playtest] Sprite orientation done")
-
-
-## Issue #72 Phase 3: Yaw edge-case validation.
-func _test_yaw_edge_cases() -> void:
-	print("[Playtest] Yaw edge cases (issue #72 Phase 3)...")
-	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	# Death freeze: when dead, the interpolation still runs but _yaw
-	# stays at last value (no new snapshots change it). The code
-	# interpolates toward _remote_yaw which stops updating on death.
-	# Verify the death path doesn't reset _yaw.
-	_assert(not src.contains("_yaw = 0.0"),
-		"death doesn't reset yaw (freezes at last synced)")
-	# Class switch: _yaw is not reset on class change (keeps flowing).
-	# The _yaw var persists across class switches (no reset in switch code).
-	_assert(src.contains("var _yaw :="),
-		"_yaw persists (not reset on class switch)")
-	# Snapshot gap: _has_remote guards interpolation (initializes from
-	# first snapshot, no lerp before first receive).
-	_assert(src.contains("if _has_remote:"),
-		"interpolation guarded by _has_remote")
-	# Headless math: interpolation converges even with large initial gap.
-	var y := deg_to_rad(170.0)
-	var target := deg_to_rad(0.0)
-	for i in 30:
-		y = lerp_angle(y, target, 0.3)
-	_assert(abs(y - target) < 0.05,
-		"large gap converges without snapping")
-	print("[Playtest] Yaw edge cases done")

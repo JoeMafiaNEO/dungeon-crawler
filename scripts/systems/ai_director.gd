@@ -10,8 +10,11 @@ const ENEMY_COSTS := {
 	"goblin": 10,
 	"archer": 12,
 	"cultist": 15,
+	"splitter": 18,
 	"orc": 20,
 	"skeleton": 22,
+	"shieldbearer": 25,
+	"gravewarden": 30,
 	"elite": 40,  # Multiplier on base cost.
 }
 

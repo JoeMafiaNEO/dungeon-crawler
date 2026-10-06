@@ -237,12 +237,9 @@ func _build_sprite() -> void:
 	frames.set_animation_loop("default", true)
 	_sprite.frames = frames
 	_sprite.modulate = class_data.tint
-	# Issue #72 Phase 2: double-sided (cull disabled) for mirrored back view.
-	# Authentic SNES look, zero new art.
-	var mat := StandardMaterial3D.new()
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_sprite.material_override = mat
+	# Issue #72 Phase 2: billboard disabled in tscn; sprite yaws to facing.
+	# NOTE: Do NOT set material_override here — StandardMaterial3D breaks
+	# AnimatedSprite3D texture rendering (white quads, issue #78).
 	_sprite.play("default")
 
 
