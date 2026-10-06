@@ -137,9 +137,18 @@ func _build_visual() -> void:
 static func _measure(n: Node3D) -> AABB:
 	var box := AABB()
 	var first := true
+	# Issue: was using global_transform, which is unreliable during setup
+	# (scene tree not updated yet). Use local transform chain instead.
 	for c in _all_meshes(n):
 		var mi := c as MeshInstance3D
-		var wa: AABB = (c as Node3D).global_transform * mi.get_aabb()
+		var local_box: AABB = mi.get_aabb()
+		# Walk up the local transform chain to n.
+		var xform := Transform3D.IDENTITY
+		var cur := mi as Node3D
+		while cur != null and cur != n:
+			xform = cur.transform * xform
+			cur = cur.get_parent() as Node3D
+		var wa: AABB = xform * local_box
 		if first:
 			box = wa
 			first = false

@@ -1234,6 +1234,12 @@ func _spawn_building_local(faction_id: int, btype: String, pos: Vector3, civ_id:
 ## Checkout counter: walk through to auto-sell supermarket loot for cash.
 func _spawn_checkout() -> void:
 	var pos := _plaza_pos() + Vector3(12, 0, 0)
+	# Issue: on cycle 2+ the map is larger but the plaza can be near the edge,
+	# pushing the checkout (4m radius) off the map. Clamp to the playable area.
+	var half := float(_layout.grid_size) * _layout.cell_size * 0.5 - 6.0
+	pos.x = clampf(pos.x, -half, half)
+	pos.z = clampf(pos.z, -half, half)
+	pos.y = 0.0
 	rpc("spawn_checkout", pos)
 
 

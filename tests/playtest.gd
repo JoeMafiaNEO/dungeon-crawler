@@ -77,6 +77,7 @@ func _run() -> void:
 	_test_departure_board_click_layer()
 	_test_destination_popup_mouse_hold()
 	_test_potion_quick_slot()
+	_test_positioning_fixes()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4684,3 +4685,16 @@ func _test_potion_quick_slot() -> void:
 	_assert(psrc.contains("KEY_H"), "H key handler exists")
 	_assert(psrc.contains("drink_potion"), "H calls drink_potion")
 	print("[Playtest] potion quick-slot done")
+
+
+func _test_positioning_fixes() -> void:
+	print("[Playtest] positioning fixes (Jesse's screenshots)...")
+	# Static: checkout must clamp to map bounds; item measure must not use
+	# unreliable global_transform during setup.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("clampf(pos.x, -half, half)"),
+		"checkout clamped to map bounds")
+	var isrc := FileAccess.get_file_as_string("res://scripts/items/item_pickup.gd")
+	_assert(not isrc.contains("global_transform * mi.get_aabb()"),
+		"item measure avoids global_transform")
+	print("[Playtest] positioning fixes done")
