@@ -164,6 +164,10 @@ offset_left = -400.0
 offset_top = -60.0
 offset_right = 400.0
 offset_bottom = 60.0
+# Issue #46: pivot at center so the 1.25x announce pop-scale grows
+# symmetrically. With the default top-left pivot, wide banners shifted
+# right and the tail was cut at the viewport's right edge.
+pivot_offset = Vector2(400, 60)
 theme_override_font_sizes/font_size = 72
 horizontal_alignment = 1
 

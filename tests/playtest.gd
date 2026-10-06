@@ -1009,6 +1009,12 @@ func _test_station_phase5() -> void:
 	_assert(hsrc.contains("func fade_in"), "hud.fade_in exists")
 	_assert(hsrc.contains("func announce(text: String, tint: Color"),
 		"announce takes a theme tint")
+	# Issue #46 regression: the announce pop-scale must grow symmetrically
+	# around the label's center. With the default top-left pivot, wide
+	# banners shifted right and the tail was cut at the viewport edge.
+	var hud_tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
+	_assert(hud_tsrc.contains("pivot_offset = Vector2(400, 60)"),
+		"#46: AnnounceLabel pivot is centered")
 
 	# --- Departure ride wiring: whistle -> chug -> fade (dungeon-driven) ---
 	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
