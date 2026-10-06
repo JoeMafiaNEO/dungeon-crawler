@@ -14,6 +14,14 @@ var _confirm_mode := ""
 var _confirm_slot := 0
 ## Issue #17 settings panel state.
 var _settings_overlay: Control
+## Issue #70: LAN multiplayer UI state.
+var _lan_mode_host := false  # True if HostPhase is in LAN mode.
+var _lan_mode_join := false  # True if JoinPhase is in LAN mode.
+var _lan_ip_label: Label = null
+var _lan_ip_field: LineEdit = null
+var _lan_name_field: LineEdit = null
+var _lan_host_toggle: Button = null
+var _lan_join_toggle: Button = null
 
 const CLASS_DESCS := {
 	"warrior": "Warrior — Tanky melee, totems and auras.",
@@ -59,6 +67,11 @@ func _show_phase(phase_name: String) -> void:
 	%LobbyPanel.visible = false
 	for p in _phases:
 		p.visible = (p.name == phase_name)
+	# Issue #70: ensure LAN UI exists when Host/Join phases show.
+	if phase_name == "HostPhase":
+		_build_host_lan_ui()
+	elif phase_name == "JoinPhase":
+		_build_join_lan_ui()
 
 
 func _show_lobby(title: String, can_start: bool) -> void:
@@ -68,6 +81,8 @@ func _show_lobby(title: String, can_start: bool) -> void:
 	%LobbyPanel.visible = true
 	%LobbyTitle.text = title
 	%StartButton.visible = can_start
+	# Issue #70: kick button for LAN host (kicks selected member).
+	_ensure_kick_button()
 	_refresh_members()
 
 
@@ -261,6 +276,132 @@ func _on_daily_back_pressed() -> void:
 
 # --- Multiplayer phase ---
 
+# --- Issue #70: LAN multiplayer UI ---
+
+## Build the Steam/LAN toggle + IP display for HostPhase (idempotent).
+func _build_host_lan_ui() -> void:
+	if _lan_host_toggle != null:
+		return
+	var phase := %HostPhase as VBoxContainer
+	# Toggle row.
+	var toggle_row := HBoxContainer.new()
+	toggle_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var steam_btn := Button.new()
+	steam_btn.text = "Steam"
+	steam_btn.toggle_mode = true
+	steam_btn.button_pressed = true
+	var lan_btn := Button.new()
+	lan_btn.text = "LAN"
+	lan_btn.toggle_mode = true
+	steam_btn.toggled.connect(_on_host_transport_toggled.bind(false, lan_btn, steam_btn))
+	lan_btn.toggled.connect(_on_host_transport_toggled.bind(true, steam_btn, lan_btn))
+	toggle_row.add_child(steam_btn)
+	toggle_row.add_child(lan_btn)
+	phase.add_child(toggle_row)
+	phase.move_child(toggle_row, 1)  # After the title.
+	_lan_host_toggle = lan_btn
+	# IP display (hidden unless LAN mode).
+	_lan_ip_label = Label.new()
+	_lan_ip_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_ip_label.add_theme_font_size_override("font_size", 28)
+	_lan_ip_label.add_theme_color_override("font_color", Color(0.4, 1.0, 0.5))
+	_lan_ip_label.visible = false
+	phase.add_child(_lan_ip_label)
+	phase.move_child(_lan_ip_label, 2)
+
+
+func _on_host_transport_toggled(pressed: bool, lan_mode: bool, other: Button, self_btn: Button) -> void:
+	if not pressed:
+		# Keep one selected.
+		self_btn.button_pressed = true
+		return
+	other.button_pressed = false
+	_lan_mode_host = lan_mode
+	if _lan_ip_label != null:
+		_lan_ip_label.visible = lan_mode
+		if lan_mode:
+			_lan_ip_label.text = "Join IP: %s:%d" % [NetworkManager.get_lan_ip(), NetworkManager.LAN_PORT]
+	AudioManager.sfx("ui_click")
+
+
+## Build the Steam/LAN toggle + IP/name fields for JoinPhase (idempotent).
+func _build_join_lan_ui() -> void:
+	if _lan_join_toggle != null:
+		return
+	var phase := %JoinPhase as VBoxContainer
+	var toggle_row := HBoxContainer.new()
+	toggle_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var steam_btn := Button.new()
+	steam_btn.text = "Steam"
+	steam_btn.toggle_mode = true
+	steam_btn.button_pressed = true
+	var lan_btn := Button.new()
+	lan_btn.text = "LAN"
+	lan_btn.toggle_mode = true
+	steam_btn.toggled.connect(_on_join_transport_toggled.bind(false, lan_btn, steam_btn))
+	lan_btn.toggled.connect(_on_join_transport_toggled.bind(true, steam_btn, lan_btn))
+	toggle_row.add_child(steam_btn)
+	toggle_row.add_child(lan_btn)
+	phase.add_child(toggle_row)
+	phase.move_child(toggle_row, 1)
+	_lan_join_toggle = lan_btn
+	# LAN join form (hidden unless LAN mode).
+	var form := VBoxContainer.new()
+	form.name = "LanJoinForm"
+	form.visible = false
+	var ip_label := Label.new()
+	ip_label.text = "Host IP:"
+	ip_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	form.add_child(ip_label)
+	_lan_ip_field = LineEdit.new()
+	_lan_ip_field.placeholder_text = "192.168.1.x"
+	_lan_ip_field.custom_minimum_size = Vector2(280, 0)
+	_lan_ip_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	form.add_child(_lan_ip_field)
+	var name_label := Label.new()
+	name_label.text = "Your name:"
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	form.add_child(name_label)
+	_lan_name_field = LineEdit.new()
+	_lan_name_field.placeholder_text = "Player"
+	_lan_name_field.custom_minimum_size = Vector2(280, 0)
+	_lan_name_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_name_field.max_length = 16
+	form.add_child(_lan_name_field)
+	var join_btn := Button.new()
+	join_btn.text = "Join LAN Game"
+	join_btn.pressed.connect(_on_lan_join_pressed)
+	form.add_child(join_btn)
+	phase.add_child(form)
+	phase.move_child(form, 2)
+
+
+func _on_join_transport_toggled(pressed: bool, lan_mode: bool, other: Button, self_btn: Button) -> void:
+	if not pressed:
+		self_btn.button_pressed = true
+		return
+	other.button_pressed = false
+	_lan_mode_join = lan_mode
+	var form := %JoinPhase.get_node_or_null("LanJoinForm")
+	if form != null:
+		form.visible = lan_mode
+	# Hide the Steam lobby list in LAN mode.
+	var list := %JoinPhase.get_node_or_null("LobbyList")
+	if list != null:
+		list.visible = not lan_mode
+	AudioManager.sfx("ui_click")
+
+
+func _on_lan_join_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	var ip := _lan_ip_field.text.strip_edges()
+	var pname := _lan_name_field.text.strip_edges()
+	if ip == "":
+		# TODO: show error in UI.
+		return
+	NetworkManager.join_lan(ip, NetworkManager.LAN_PORT, pname)
+
+
 func _on_host_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	# Issue #4 Phase 5: a fresh host targets the first empty MP slot.
@@ -374,6 +515,11 @@ func _on_loot_double_pressed() -> void:
 
 func _on_create_lobby_pressed() -> void:
 	AudioManager.sfx("ui_click")
+	# Issue #70: LAN host bypasses Steam lobby.
+	if _lan_mode_host:
+		NetworkManager.lan_player_name = "Host"
+		NetworkManager.host_lan()
+		return
 	# Issue #4 Phase 5: the lobby hosts into the slot chosen on the MP saves UI.
 	NetworkManager.host_lobby(_host_slot)
 
@@ -779,6 +925,44 @@ func _refresh_members() -> void:
 	for sid in NetworkManager.lobby_members:
 		var marker := " (host)" if sid == NetworkManager.server_id else ""
 		%MemberList.add_item(NetworkManager.member_name(sid) + marker)
+	# Issue #70: show kick button only for LAN host.
+	_update_kick_button()
+
+
+## Issue #70: ensure the kick button exists in the lobby panel.
+func _ensure_kick_button() -> void:
+	if %LobbyPanel.get_node_or_null("KickButton") != null:
+		return
+	var btn := Button.new()
+	btn.name = "KickButton"
+	btn.text = "Kick Selected"
+	btn.visible = false
+	btn.pressed.connect(_on_kick_pressed)
+	%LobbyPanel.add_child(btn)
+	# Place after MemberList, before StartButton.
+	%LobbyPanel.move_child(btn, %LobbyPanel.get_children().find(%MemberList) + 1)
+
+
+func _update_kick_button() -> void:
+	var btn := %LobbyPanel.get_node_or_null("KickButton") as Button
+	if btn == null:
+		return
+	btn.visible = (NetworkManager.transport == NetworkManager.Transport.LAN
+		and NetworkManager.is_host)
+
+
+func _on_kick_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	var sel: PackedInt32Array = %MemberList.get_selected_items()
+	if sel.is_empty():
+		return
+	var idx := sel[0]
+	if idx < 0 or idx >= NetworkManager.lobby_members.size():
+		return
+	var pid: int = NetworkManager.lobby_members[idx]
+	if pid == NetworkManager.server_id:
+		return  # Can't kick yourself.
+	NetworkManager.kick_peer(pid)
 
 
 func _on_start_pressed() -> void:

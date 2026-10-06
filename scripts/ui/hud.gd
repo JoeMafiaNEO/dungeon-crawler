@@ -1208,10 +1208,12 @@ func _on_save_quit_pressed() -> void:
 		return
 	if multiplayer.get_peers().size() > 0:
 		# Host: multiplayer save with roster collection (async, then quit).
-		var saver = station if station != null else dungeon
-		saver.save_multiplayer_run(theme_id, level_number, level_seed)
-		# save_multiplayer_run waits 3s for clients; quit after.
-		await get_tree().create_timer(3.5).timeout
+		# Issue #70: LAN has no saves — skip straight to quit.
+		if NetworkManager.transport != NetworkManager.Transport.LAN:
+			var saver = station if station != null else dungeon
+			saver.save_multiplayer_run(theme_id, level_number, level_seed)
+			# save_multiplayer_run waits 3s for clients; quit after.
+			await get_tree().create_timer(3.5).timeout
 	else:
 		SaveManager.save_run({
 			"theme_id": theme_id,

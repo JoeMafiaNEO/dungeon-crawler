@@ -11,8 +11,17 @@ signal connection_failed(reason: String)
 
 const GAME_TAG := "dungeon-crawler"
 const MAX_PLAYERS := 4
+const LAN_PORT := 7777
 
-var peer: SteamMultiplayerPeer
+## Issue #70: transport enum — STEAM (default) or LAN (ENet).
+enum Transport { STEAM, LAN }
+var transport: Transport = Transport.STEAM
+## LAN: cosmetic player name (entered on join, never verified).
+var lan_player_name: String = ""
+## LAN: peer IDs mapped to cosmetic names (host tracks these).
+var lan_names: Dictionary = {}
+
+var peer: MultiplayerPeer
 var lobby_id: int = 0
 var is_host: bool = false
 ## Host-configurable game settings (synced to clients via lobby data).
@@ -29,7 +38,12 @@ var active_run_slot: int = 0
 
 
 func _ready() -> void:
-	if not SteamManager.initialized:
+	if transport == Transport.LAN or not SteamManager.initialized:
+		# LAN mode: skip Steam lobby signals, but still track peers.
+		multiplayer.peer_connected.connect(_on_peer_connected)
+		multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+		multiplayer.connected_to_server.connect(_on_connected_to_server)
+		multiplayer.connection_failed.connect(_on_connection_failed)
 		return
 	Steam.lobby_created.connect(_on_lobby_created)
 	Steam.lobby_match_list.connect(_on_lobby_match_list)
@@ -76,6 +90,103 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 	Steam.setLobbyJoinable(lobby_id, true)
 	_refresh_members()
 	lobby_created_success.emit()
+
+
+# --- LAN hosting (issue #70) ---
+
+## Host a LAN game via ENet. No Steam lobby, no saves.
+func host_lan(port: int = LAN_PORT) -> void:
+	transport = Transport.LAN
+	active_run_mode = "lan"
+	active_run_slot = 0
+	_reset_peer()
+	var enet := ENetMultiplayerPeer.new()
+	if enet.create_server(port, MAX_PLAYERS) != OK:
+		connection_failed.emit("Couldn't start a LAN host on port %d." % port)
+		return
+	peer = enet
+	multiplayer.multiplayer_peer = peer
+	is_host = true
+	# server_id from the actual host peer (never hardcoded).
+	server_id = multiplayer.get_unique_id()
+	lan_names.clear()
+	lan_names[server_id] = lan_player_name if lan_player_name != "" else "Host"
+	_refresh_members()
+	lobby_created_success.emit()
+
+
+## Get the site-local IP for the LAN join display.
+func get_lan_ip() -> String:
+	for addr in IP.get_local_addresses():
+		# Site-local: 192.168.x.x, 10.x.x.x, 172.16-31.x.x
+		if addr.begins_with("192.168.") or addr.begins_with("10."):
+			return addr
+		if addr.begins_with("172."):
+			var parts := addr.split(".")
+			if parts.size() >= 2:
+				var second := int(parts[1])
+				if second >= 16 and second <= 31:
+					return addr
+	# Fallback: first non-loopback IPv4.
+	for addr in IP.get_local_addresses():
+		if not addr.begins_with("127.") and addr.contains(".") and not addr.contains(":"):
+			return addr
+	return "127.0.0.1"
+
+
+## Join a LAN game via ENet.
+func join_lan(address: String, port: int = LAN_PORT, player_name: String = "") -> void:
+	transport = Transport.LAN
+	lan_player_name = player_name if player_name != "" else "Player"
+	active_run_mode = "lan"
+	active_run_slot = 0
+	_reset_peer()
+	var enet := ENetMultiplayerPeer.new()
+	if enet.create_client(address, port) != OK:
+		connection_failed.emit("Couldn't connect to %s:%d." % [address, port])
+		return
+	peer = enet
+	multiplayer.multiplayer_peer = peer
+	is_host = false
+	# server_id is set by the handshake (host's actual peer ID).
+	server_id = 1
+
+
+## Host -> client: sync difficulty/loot config on LAN join (single RPC).
+@rpc("authority", "call_remote", "reliable")
+func lan_sync_config(difficulty: float, loot_mult: float, host_name: String) -> void:
+	host_difficulty = difficulty
+	host_loot_mult = loot_mult
+	lan_names[server_id] = host_name
+	_refresh_members()
+
+
+## Client -> host: announce cosmetic name on join.
+@rpc("any_peer", "call_remote", "reliable")
+func lan_announce_name(player_name: String) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	lan_names[sender] = player_name
+	_refresh_members()
+	lobby_members_changed.emit()
+
+
+func _on_lan_peer_connected(id: int) -> void:
+	# Host sends config to the new client.
+	if is_host and transport == Transport.LAN:
+		rpc_id(id, "lan_sync_config", host_difficulty, host_loot_mult,
+			lan_names.get(server_id, "Host"))
+
+
+## Host kick: server-side disconnect (issue #70).
+func kick_peer(peer_id: int) -> void:
+	if not is_host:
+		return
+	if transport == Transport.LAN and peer != null:
+		peer.disconnect_peer(peer_id)
+		lan_names.erase(peer_id)
+		_refresh_members()
+		lobby_members_changed.emit()
+	# Steam: no kick API in Phase 1 (lobby owner can use Steam UI).
 
 
 func start_game() -> void:
@@ -145,6 +256,10 @@ func _on_lobby_joined(joined_id: int, _permissions: int, _locked: bool, response
 
 
 func _on_connected_to_server() -> void:
+	if transport == Transport.LAN:
+		# ENet: server is always peer 1. Announce our cosmetic name.
+		server_id = 1
+		rpc_id(server_id, "lan_announce_name", lan_player_name)
 	_refresh_members()
 	lobby_join_succeeded.emit()
 
@@ -155,7 +270,9 @@ func _on_connection_failed() -> void:
 
 # --- Members ---
 
-func _on_peer_connected(_id: int) -> void:
+func _on_peer_connected(id: int) -> void:
+	if transport == Transport.LAN:
+		_on_lan_peer_connected(id)
 	_refresh_members()
 	lobby_members_changed.emit()
 
@@ -172,6 +289,18 @@ func _on_lobby_chat_update(_lobby: int, _changed: int, _maker: int, _state: int)
 
 func _refresh_members() -> void:
 	lobby_members.clear()
+	if transport == Transport.LAN:
+		# ENet: track connected peers (host=1 + clients).
+		if multiplayer.multiplayer_peer != null:
+			# Host is always in the list.
+			if is_host:
+				lobby_members.append(server_id)
+			# Add known peers from lan_names (excluding host if already added).
+			for pid in lan_names:
+				if int(pid) != server_id or not is_host:
+					if not lobby_members.has(int(pid)):
+						lobby_members.append(int(pid))
+		return
 	if lobby_id != 0 and SteamManager.initialized:
 		var count: int = Steam.getNumLobbyMembers(lobby_id)
 		for i in count:
@@ -185,15 +314,28 @@ func _refresh_members() -> void:
 				lobby_members.append(sid)
 
 
-func member_name(steam_id: int) -> String:
+func member_name(peer_id: int) -> String:
+	if transport == Transport.LAN:
+		return str(lan_names.get(peer_id, "Player %d" % peer_id))
 	if SteamManager.initialized:
-		return Steam.getFriendPersonaName(steam_id)
-	return "Player %d" % steam_id
+		return Steam.getFriendPersonaName(peer_id)
+	return "Player %d" % peer_id
 
 
 # --- Leaving / solo ---
 
 func leave_lobby() -> void:
+	if transport == Transport.LAN:
+		lobby_id = 0
+		is_host = false
+		lobby_members.clear()
+		lan_names.clear()
+		transport = Transport.STEAM  # Reset to default.
+		Dungeon.continued_roster = []
+		_reset_peer()
+		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
+		server_id = 1
+		return
 	if lobby_id != 0 and SteamManager.initialized:
 		Steam.leaveLobby(lobby_id)
 	lobby_id = 0

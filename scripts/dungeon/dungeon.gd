@@ -2430,6 +2430,9 @@ func _build_torches() -> void:
 func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) -> void:
 	if not multiplayer.is_server():
 		return
+	# Issue #70: LAN has no saves — skip the departure auto-save.
+	if NetworkManager.transport == NetworkManager.Transport.LAN:
+		return
 	_save_base = {
 		"theme_id": theme_id,
 		"level_number": level_number,

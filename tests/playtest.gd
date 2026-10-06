@@ -78,6 +78,7 @@ func _run() -> void:
 	_test_destination_popup_mouse_hold()
 	_test_potion_quick_slot()
 	_test_positioning_fixes()
+	_test_lan_multiplayer_phase1()
 	_test_shieldbearer()
 	_test_splitter()
 	_test_gravewarden()
@@ -4841,3 +4842,31 @@ func _test_gravewarden() -> void:
 	var depths_mix := FileAccess.get_file_as_string("res://data/levels/theme_depths.tres")
 	_assert(depths_mix.contains("gravewarden"), "depths theme has gravewarden")
 	print("[Playtest] Gravewarden done")
+
+
+func _test_lan_multiplayer_phase1() -> void:
+	print("[Playtest] LAN multiplayer Phase 1 (issue #70)...")
+	# Static: transport enum, ENet host/join, handshake, kick, guards.
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("enum Transport"), "transport enum exists")
+	_assert(nsrc.contains("func host_lan"), "LAN host exists")
+	_assert(nsrc.contains("func join_lan"), "LAN join exists")
+	_assert(nsrc.contains("ENetMultiplayerPeer"), "uses ENetMultiplayerPeer")
+	_assert(nsrc.contains("func lan_sync_config"), "handshake RPC exists")
+	_assert(nsrc.contains("func kick_peer"), "kick exists")
+	_assert(nsrc.contains("disconnect_peer"), "kick uses disconnect_peer")
+	_assert(nsrc.contains("func get_lan_ip"), "LAN IP helper exists")
+	# server_id from actual peer, not hardcoded.
+	_assert(nsrc.contains("server_id = multiplayer.get_unique_id()"),
+		"server_id from actual peer")
+	# Save skips on LAN.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("Transport.LAN"), "dungeon guards LAN saves")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("Transport.LAN"), "HUD guards LAN save-quit")
+	# UI: toggle, IP display, join fields, kick button.
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("_build_host_lan_ui"), "host LAN UI builder exists")
+	_assert(msrc.contains("_build_join_lan_ui"), "join LAN UI builder exists")
+	_assert(msrc.contains("KickButton"), "kick button exists")
+	print("[Playtest] LAN multiplayer Phase 1 done")
