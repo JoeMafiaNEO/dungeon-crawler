@@ -45,6 +45,7 @@ func _run() -> void:
 	_test_audio_coverage()
 	_test_audio_new_features()
 	_test_train_ambient()
+	_test_audio_combat_cues()
 	_test_station_annex()
 	_test_station_embedded()
 	_test_annex_departure()
@@ -1204,6 +1205,25 @@ func _test_train_ambient() -> void:
 	# Jesse's whistle recording likewise overrides the synth whistle.
 	_assert(FileAccess.file_exists("res://assets/audio/sfx/train_whistle.mp3"),
 		"whistle recording mp3 in repo")
+
+
+func _test_audio_combat_cues() -> void:
+	print("[Playtest] Audio: shield clang + dagger cues...")
+	# DM assignment: Shieldbearer block (issue #67) + rogue thrown dagger
+	# (issue #69) were silent. Every cue must synth and be registered.
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	for sfx in ["shield_clang", "dagger_throw", "dagger_catch"]:
+		var w: AudioStreamWAV = SoundScript.call(sfx)
+		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
+		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
+	# Wiring: the mob.gd shield_clang stub plays the cue positionally;
+	# the dagger call sites already exist in player.gd.
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains('sfx("shield_clang", pos)'), "shield_clang stub wired")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains('sfx("dagger_throw")'), "dagger throw call site")
+	_assert(psrc.contains('sfx("dagger_catch")'), "dagger catch call site")
 
 
 func _test_station_annex() -> void:

@@ -470,9 +470,8 @@ func _sync_shield(up: bool) -> void:
 ## Shieldbearer (issue #67): clang + spark on frontal block (all peers).
 @rpc("any_peer", "call_local")
 func shield_clang(pos: Vector3) -> void:
-	# TODO: Sound Engineer — shield clang SFX (positional).
 	# TODO: Art — spark particles at pos.
-	pass
+	AudioManager.sfx("shield_clang", pos)
 
 
 ## Applies a burn DoT (wildfire trait). Server-side; refreshes duration.

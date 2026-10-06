@@ -29,6 +29,7 @@ func _ready() -> void:
 	_ensure_bus("SFX")
 	for b in ["swing", "hit", "mob_die", "player_hurt", "player_die", "fireball_cast",
 			"explosion", "pickup", "coin", "levelup", "wave_horn", "wave_clear",
+			"shield_clang", "dagger_throw", "dagger_catch",
 			"jump", "land", "footstep", "drink",
 			"key", "unlock", "ability_unlock", "boss_roar", "boss_slam", "boss_die", "bow_shot", "arrow_hit", "dash", "revive",
 			"frost_cast", "frost_hit", "lightning_cast", "lightning_zap", "meteor_cast", "meteor_incoming",

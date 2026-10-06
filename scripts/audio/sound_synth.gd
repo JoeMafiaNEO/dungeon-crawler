@@ -332,6 +332,32 @@ static func explosion() -> AudioStreamWAV:
 	]))
 
 
+static func shield_clang() -> AudioStreamWAV:
+	# Tower-shield block (issue #67): bright metallic strike with ringing decay.
+	return _wav(_mix([
+		_tone(2200.0, 1800.0, 0.18, "square", 22.0, 0.45),
+		_tone(3300.0, 2900.0, 0.25, "sine", 14.0, 0.40),
+		_tone(1567.0, 1500.0, 0.35, "sine", 10.0, 0.35, 0.02),
+		_noise(0.08, 40.0, 0.50, 0.0, 0.20),
+	]))
+
+
+static func dagger_throw() -> AudioStreamWAV:
+	# Rogue thrown dagger (issue #69): spinning whoosh sweeping up off the hand.
+	return _wav(_mix([
+		_noise(0.22, 14.0, 0.70, 0.0, 0.45),
+		_tone(900.0, 2400.0, 0.20, "sine", 10.0, 0.35),
+	]))
+
+
+static func dagger_catch() -> AudioStreamWAV:
+	# Dagger snatched from the air: soft thump + click.
+	return _wav(_mix([
+		_tone(300.0, 150.0, 0.08, "sine", 30.0, 0.60),
+		_tone(1800.0, 1200.0, 0.05, "square", 40.0, 0.30, 0.03),
+	]))
+
+
 # --- loot / progression ---
 
 static func pickup() -> AudioStreamWAV:
