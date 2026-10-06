@@ -40,9 +40,9 @@ func _ready() -> void:
 	_style_buttons()
 	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %StagingPhase, %DailyPhase]
 	if SteamManager.initialized:
-		%PersonaLabel.text = "Logged in as %s" % SteamManager.persona_name
+		%PersonaLabel.text = tr("LOGGED") % SteamManager.persona_name
 	else:
-		%PersonaLabel.text = "Steam not running — solo play available."
+		%PersonaLabel.text = tr("STEAM_NOT_RUNNING_SOLO")
 		%MultiButton.disabled = true
 	NetworkManager.lobby_list_updated.connect(_on_lobby_list)
 	NetworkManager.lobby_created_success.connect(_on_host_ready)
@@ -95,7 +95,7 @@ func _show_lobby(title: String, can_start: bool) -> void:
 
 func _refresh_title_stats() -> void:
 	var ach := SaveManager.get_unlocked_achievements()
-	%StatsLabel.text = "Runs: %d · Kills: %d · Deepest cycle: %d · Achievements: %d" % [
+	%StatsLabel.text = tr("RUNS_KILLS_DEEPEST_CYCLE") % [
 		SaveManager.get_total_runs(),
 		SaveManager.get_total_kills(),
 		SaveManager.get_deepest_cycle(),
@@ -150,7 +150,7 @@ func _on_daily_pressed() -> void:
 func _refresh_daily_ui() -> void:
 	var attempted := DailyRun.has_attempted_today()
 	var best := DailyRun.get_best_score()
-	%DailyInfo.text = "Seed %d · %s\nLocal best: %d%s" % [
+	%DailyInfo.text = tr("SEED_LOCAL_BEST") % [
 		DailyRun.get_today_seed(),
 		"Attempt used — come back tomorrow" if attempted else "One attempt per day",
 		best,
@@ -184,7 +184,7 @@ func _fill_board_rows(rows_node: VBoxContainer, board_name: String) -> void:
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		if i < entries.size():
 			var e: Dictionary = entries[i]
-			lbl.text = "%d. %s — %s" % [
+			lbl.text = tr("LEADERBOARD_ROW") % [
 				e.get("rank", i + 1), e.get("name", "?"),
 				Leaderboard.format_score(board_name, int(e.get("score", 0)))]
 			if bool(e.get("is_player", false)):
@@ -192,7 +192,7 @@ func _fill_board_rows(rows_node: VBoxContainer, board_name: String) -> void:
 			else:
 				lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
 		else:
-			lbl.text = "%d. —" % (i + 1)
+			lbl.text = tr("LEADERBOARD_ROW_EMPTY") % (i + 1)
 			lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
 		rows_node.add_child(lbl)
 
@@ -222,30 +222,30 @@ func _on_race_echo_toggled(pressed: bool) -> void:
 func _on_top_echoes_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	if not WorkshopEcho.steam_available():
-		%DailyInfo.text = "Steam Workshop offline — cannot fetch top echoes."
+		%DailyInfo.text = tr("STEAM_WORKSHOP_OFFLINE_CANNOT")
 		return
 	%TopEchoesButton.disabled = true
-	%TopEchoesButton.text = "Fetching..."
+	%TopEchoesButton.text = tr("FETCHING")
 	WorkshopEcho.query_complete.connect(_on_workshop_query, CONNECT_ONE_SHOT)
 	WorkshopEcho.query_today_echoes()
 
 
 func _on_workshop_query(echoes: Array) -> void:
 	%TopEchoesButton.disabled = false
-	%TopEchoesButton.text = "Race top echoes"
+	%TopEchoesButton.text = tr("RACE_TOP_ECHOES")
 	for child in %TopEchoesList.get_children():
 		child.queue_free()
 	if echoes.is_empty():
 		var lbl := Label.new()
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		lbl.text = "No shared echoes today — be the first!"
+		lbl.text = tr("SHARED_ECHOES_TODAY_THE")
 		lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 		%TopEchoesList.add_child(lbl)
 		return
 	for e in echoes:
 		var b := Button.new()
 		b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		b.text = "Race: %s" % str(e.get("title", "Echo"))
+		b.text = tr("RACE") % str(e.get("title", "Echo"))
 		b.pressed.connect(_on_workshop_echo_chosen.bind(int(e.get("file_id", 0))))
 		%TopEchoesList.add_child(b)
 	_style_buttons()
@@ -271,7 +271,7 @@ func _on_workshop_download(file_id: int, echo_path: String) -> void:
 		EchoRecorder.race_echo_path = local
 		EchoRecorder.race_echo = true
 		%RaceEchoCheck.button_pressed = true
-		%DailyInfo.text = "Workshop echo ready — toggle 'Race my best echo' and start!"
+		%DailyInfo.text = tr("WORKSHOP_ECHO_READY_TOGGLE")
 
 
 func _on_daily_back_pressed() -> void:
@@ -292,11 +292,11 @@ func _build_host_lan_ui() -> void:
 	var toggle_row := HBoxContainer.new()
 	toggle_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	var steam_btn := Button.new()
-	steam_btn.text = "Steam"
+	steam_btn.text = tr("STEAM")
 	steam_btn.toggle_mode = true
 	steam_btn.button_pressed = true
 	var lan_btn := Button.new()
-	lan_btn.text = "LAN"
+	lan_btn.text = tr("LAN")
 	lan_btn.toggle_mode = true
 	steam_btn.toggled.connect(_on_host_transport_toggled.bind(false, lan_btn, steam_btn))
 	lan_btn.toggled.connect(_on_host_transport_toggled.bind(true, steam_btn, lan_btn))
@@ -327,7 +327,7 @@ func _on_host_transport_toggled(pressed: bool, lan_mode: bool, other: Button, se
 	if _lan_ip_label != null:
 		_lan_ip_label.visible = lan_mode
 		if lan_mode:
-			_lan_ip_label.text = "Join IP: %s:%d" % [NetworkManager.get_lan_ip(), NetworkManager.LAN_PORT]
+			_lan_ip_label.text = tr("JOIN") % [NetworkManager.get_lan_ip(), NetworkManager.LAN_PORT]
 	AudioManager.sfx("ui_click")
 
 
@@ -339,11 +339,11 @@ func _build_join_lan_ui() -> void:
 	var toggle_row := HBoxContainer.new()
 	toggle_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	var steam_btn := Button.new()
-	steam_btn.text = "Steam"
+	steam_btn.text = tr("STEAM")
 	steam_btn.toggle_mode = true
 	steam_btn.button_pressed = true
 	var lan_btn := Button.new()
-	lan_btn.text = "LAN"
+	lan_btn.text = tr("LAN")
 	lan_btn.toggle_mode = true
 	steam_btn.toggled.connect(_on_join_transport_toggled.bind(false, lan_btn, steam_btn))
 	lan_btn.toggled.connect(_on_join_transport_toggled.bind(true, steam_btn, lan_btn))
@@ -357,11 +357,11 @@ func _build_join_lan_ui() -> void:
 	form.name = "LanJoinForm"
 	form.visible = false
 	var ip_label := Label.new()
-	ip_label.text = "Host IP:"
+	ip_label.text = tr("HOST")
 	ip_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	form.add_child(ip_label)
 	_lan_ip_field = LineEdit.new()
-	_lan_ip_field.placeholder_text = "192.168.1.x"
+	_lan_ip_field.placeholder_text = tr("STR_8818")
 	_lan_ip_field.custom_minimum_size = Vector2(280, 0)
 	_lan_ip_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	# Issues #73/#76: keep the LAN form compact and centered — a
@@ -369,18 +369,18 @@ func _build_join_lan_ui() -> void:
 	_lan_ip_field.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	form.add_child(_lan_ip_field)
 	var name_label := Label.new()
-	name_label.text = "Your name:"
+	name_label.text = tr("YOUR_NAME")
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	form.add_child(name_label)
 	_lan_name_field = LineEdit.new()
-	_lan_name_field.placeholder_text = "Player"
+	_lan_name_field.placeholder_text = tr("PLAYER")
 	_lan_name_field.custom_minimum_size = Vector2(280, 0)
 	_lan_name_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_lan_name_field.max_length = 16
 	_lan_name_field.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	form.add_child(_lan_name_field)
 	var join_btn := Button.new()
-	join_btn.text = "Join LAN Game"
+	join_btn.text = tr("JOIN_LAN_GAME")
 	join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	join_btn.pressed.connect(_on_lan_join_pressed)
 	form.add_child(join_btn)
@@ -558,7 +558,7 @@ func _on_host_back_pressed() -> void:
 
 func _on_refresh_pressed() -> void:
 	AudioManager.sfx("ui_click")
-	%JoinStatusLabel.text = "Searching for lobbies..."
+	%JoinStatusLabel.text = tr("SEARCHING_FOR_LOBBIES")
 	%LobbyList.clear()
 	NetworkManager.refresh_lobby_list()
 
@@ -567,10 +567,10 @@ func _on_join_selected_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	var selected: PackedInt32Array = %LobbyList.get_selected_items()
 	if selected.is_empty():
-		%JoinStatusLabel.text = "Select a lobby first."
+		%JoinStatusLabel.text = tr("SELECT_LOBBY_FIRST")
 		return
 	var lobby: Dictionary = _lobbies[selected[0]]
-	%JoinStatusLabel.text = "Joining %s..." % lobby["name"]
+	%JoinStatusLabel.text = tr("JOINING") % lobby["name"]
 	NetworkManager.join_lobby(int(lobby["id"]))
 
 
@@ -613,7 +613,7 @@ func _build_slot_card(mode: String, slot: int) -> MarginContainer:
 	row.add_theme_constant_override("separation", 12)
 	margin.add_child(row)
 	var slot_lbl := Label.new()
-	slot_lbl.text = "Slot %d" % (slot + 1)
+	slot_lbl.text = tr("SLOT") % (slot + 1)
 	slot_lbl.custom_minimum_size = Vector2(64, 0)
 	row.add_child(slot_lbl)
 	var meta := Label.new()
@@ -623,22 +623,22 @@ func _build_slot_card(mode: String, slot: int) -> MarginContainer:
 	if SaveManager.has_run(mode, slot):
 		meta.text = SaveManager.run_summary(SaveManager.load_run(mode, slot))
 		var cont := Button.new()
-		cont.text = "Continue"
+		cont.text = tr("CONTINUE_2")
 		cont.pressed.connect(_on_slot_continue_pressed.bind(mode, slot))
 		if not SaveManager.is_save_compatible(mode, slot):
 			cont.disabled = true
-			cont.tooltip_text = "Save from an older version"
+			cont.tooltip_text = tr("SAVE_FROM_OLDER_VERSION")
 		row.add_child(cont)
 		var new_btn := Button.new()
-		new_btn.text = "New"
-		new_btn.tooltip_text = "Start a new run in this slot (asks before overwriting)"
+		new_btn.text = tr("NEW")
+		new_btn.tooltip_text = tr("START_NEW_RUN_THIS")
 		new_btn.pressed.connect(_on_slot_new_pressed.bind(mode, slot))
 		row.add_child(new_btn)
 	else:
-		meta.text = "Empty slot"
+		meta.text = tr("EMPTY_SLOT")
 		meta.modulate = Color(0.55, 0.55, 0.60)
 		var new_btn := Button.new()
-		new_btn.text = "New Run"
+		new_btn.text = tr("NEW_RUN")
 		new_btn.pressed.connect(_on_slot_new_pressed.bind(mode, slot))
 		row.add_child(new_btn)
 	return margin
@@ -667,7 +667,7 @@ func _refresh_legacy_rows(list_node: VBoxContainer, mode: String) -> void:
 			continue
 		shown += 1
 		var lbl := Label.new()
-		lbl.text = "Legacy: %s · %s" % [
+		lbl.text = tr("LEGACY") % [
 			str(entry.get("path", "")).get_file(),
 			SaveManager.run_summary(entry.get("run", {})),
 		]
@@ -676,7 +676,7 @@ func _refresh_legacy_rows(list_node: VBoxContainer, mode: String) -> void:
 		list_node.add_child(lbl)
 	if total > 2:
 		var more := Label.new()
-		more.text = "+%d more legacy saves on disk" % (total - 2)
+		more.text = tr("MORE_LEGACY_SAVES_DISK") % (total - 2)
 		more.modulate = Color(0.55, 0.52, 0.45)
 		more.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		list_node.add_child(more)
@@ -742,11 +742,11 @@ func _build_confirm_modal() -> void:
 	hb.add_theme_constant_override("separation", 16)
 	vb.add_child(hb)
 	var yes := Button.new()
-	yes.text = "Overwrite"
+	yes.text = tr("OVERWRITE")
 	yes.pressed.connect(_on_overwrite_confirmed)
 	hb.add_child(yes)
 	var no := Button.new()
-	no.text = "Cancel"
+	no.text = tr("CANCEL")
 	no.pressed.connect(_on_overwrite_cancelled)
 	hb.add_child(no)
 	add_child(_confirm_overlay)
@@ -783,7 +783,7 @@ func _build_settings_panel() -> void:
 	vb.add_theme_constant_override("separation", 10)
 	panel.add_child(vb)
 	var title := Label.new()
-	title.text = "Settings"
+	title.text = tr("SETTINGS_2")
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 22)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
@@ -806,7 +806,7 @@ func _build_settings_panel() -> void:
 		row.add_child(slider)
 		var val := Label.new()
 		val.name = "Val_%s" % spec[1]
-		val.text = "%d" % int(slider.value)
+		val.text = tr("STR_9707") % int(slider.value)
 		val.custom_minimum_size = Vector2(40, 0)
 		row.add_child(val)
 		vb.add_child(row)
@@ -830,7 +830,7 @@ func _build_settings_panel() -> void:
 	lrow.add_theme_constant_override("separation", 12)
 	lrow.alignment = BoxContainer.ALIGNMENT_CENTER
 	var llab := Label.new()
-	llab.text = "Language"
+	llab.text = tr("LANGUAGE_2")
 	llab.custom_minimum_size = Vector2(150, 0)
 	lrow.add_child(llab)
 	var lang_opt := OptionButton.new()
@@ -849,7 +849,7 @@ func _build_settings_panel() -> void:
 	lrow.add_child(lang_opt)
 	vb.add_child(lrow)
 	var close := Button.new()
-	close.text = "Close"
+	close.text = tr("CLOSE_2")
 	close.pressed.connect(func() -> void: _settings_overlay.visible = false)
 	vb.add_child(close)
 	add_child(_settings_overlay)
@@ -899,7 +899,7 @@ func _on_settings_vol_changed(value: float, key: String) -> void:
 	if _settings_overlay != null:
 		var lab := _settings_overlay.find_child("Val_%s" % key, true, false) as Label
 		if lab != null:
-			lab.text = "%d" % int(value)
+			lab.text = tr("STR_9707") % int(value)
 
 
 func _on_settings_toggle_changed(pressed: bool, key: String) -> void:
@@ -939,7 +939,7 @@ func _show_overwrite_confirm(mode: String, slot: int) -> void:
 	_confirm_mode = mode
 	_confirm_slot = slot
 	var run := SaveManager.load_run(mode, slot)
-	_confirm_msg.text = "Slot %d already holds a saved run:\n%s\n\nStart a new run and overwrite it?" % [
+	_confirm_msg.text = tr("SLOT_ALREADY_HOLDS_SAVED") % [
 		slot + 1, SaveManager.run_summary(run)]
 	_confirm_overlay.visible = true
 
@@ -1006,7 +1006,7 @@ func _ensure_kick_button() -> void:
 		return
 	var btn := Button.new()
 	btn.name = "KickButton"
-	btn.text = "Kick Selected"
+	btn.text = tr("KICK_SELECTED")
 	btn.visible = false
 	btn.pressed.connect(_on_kick_pressed)
 	%LobbyPanel.add_child(btn)
@@ -1073,7 +1073,7 @@ func _process(delta: float) -> void:
 		_staging_active = false
 		_on_start_run_pressed()
 		return
-	%AutoStartLabel.text = "Auto-start in %ds" % int(ceili(_staging_timer))
+	%AutoStartLabel.text = tr("AUTO_START") % int(ceili(_staging_timer))
 
 
 func _refresh_staging_roster() -> void:
@@ -1085,7 +1085,7 @@ func _refresh_staging_roster() -> void:
 	var roster: Array = Dungeon.continued_roster
 	var run := SaveManager.load_run(SaveManager.MODE_MP, NetworkManager.active_run_slot)
 	# Issue #4 Phase 4: the staging screen names the slot being continued.
-	%StagingInfo.text = "MP Slot %d · %s" % [NetworkManager.active_run_slot + 1, SaveManager.run_summary(run)]
+	%StagingInfo.text = tr("SLOT_2") % [NetworkManager.active_run_slot + 1, SaveManager.run_summary(run)]
 	var joined := {}
 	for sid in NetworkManager.lobby_members:
 		joined[int(sid)] = true
@@ -1098,7 +1098,7 @@ func _refresh_staging_roster() -> void:
 		var lbl := Label.new()
 		var status := "Joined" if joined.has(sid) else "Waiting"
 		var status_color := Color(0.5, 1.0, 0.5) if joined.has(sid) else Color(1.0, 0.8, 0.4)
-		lbl.text = "%s — Lv %d %s [%s]" % [
+		lbl.text = tr("LV_3") % [
 			entry.get("player_name", "?"),
 			int(ps.get("level", 1)),
 			str(entry.get("class_id", "?")).capitalize(),
@@ -1108,7 +1108,7 @@ func _refresh_staging_roster() -> void:
 		row.add_child(lbl)
 		if not joined.has(sid) and not bool(entry.get("is_host", false)):
 			var inv := Button.new()
-			inv.text = "Invite"
+			inv.text = tr("INVITE")
 			_style_one_button(inv) # Issue #36: match the menu button style.
 			inv.pressed.connect(_on_invite_player_pressed.bind(sid))
 			row.add_child(inv)
@@ -1161,9 +1161,9 @@ func _on_lobby_list(lobbies: Array) -> void:
 	_lobbies = lobbies
 	%LobbyList.clear()
 	if lobbies.is_empty():
-		%JoinStatusLabel.text = "No lobbies found. Host one!"
+		%JoinStatusLabel.text = tr("LOBBIES_FOUND_HOST_ONE")
 		return
-	%JoinStatusLabel.text = "Found %d lobb%s." % [lobbies.size(), "y" if lobbies.size() == 1 else "ies"]
+	%JoinStatusLabel.text = tr_n("FOUND_LOBBY_ONE", "FOUND_LOBBY_MANY", lobbies.size()) % [lobbies.size()]
 	for lobby in lobbies:
 		%LobbyList.add_item("%s (%d/%d)" % [lobby["name"], lobby["players"], lobby["max_players"]])
 

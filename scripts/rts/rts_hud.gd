@@ -50,7 +50,7 @@ func _build_ui() -> void:
 	top.add_child(_pop_label)
 
 	_age_up_btn = Button.new()
-	_age_up_btn.text = "Age Up"
+	_age_up_btn.text = tr("AGE")
 	_age_up_btn.add_theme_font_size_override("font_size", 16)
 	_age_up_btn.pressed.connect(_on_age_up_pressed)
 	top.add_child(_age_up_btn)
@@ -63,7 +63,7 @@ func _build_ui() -> void:
 	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_hint_label.add_theme_font_size_override("font_size", 14)
-	_hint_label.text = "TAB — Command View"
+	_hint_label.text = tr("TAB_COMMAND_VIEW")
 	add_child(_hint_label)
 	_build_panels()
 	_build_guide()
@@ -80,7 +80,7 @@ func _build_panels() -> void:
 	vb.add_theme_constant_override("separation", 4)
 	_build_panel.add_child(vb)
 	var title := Label.new()
-	title.text = "Build (click to place, right-click to cancel)"
+	title.text = tr("BUILD_CLICK_PLACE_RIGHT")
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
 	var grid := GridContainer.new()
@@ -210,7 +210,7 @@ func show_train_menu(building: Node3D) -> void:
 	_build_panel.visible = false
 	_train_panel.visible = true
 	call_deferred("_pin_train_panel")
-	_train_title.text = "%s — train units" % btype.replace("_", " ").capitalize()
+	_train_title.text = tr("TRAIN_UNITS") % btype.replace("_", " ").capitalize()
 	var grid := _train_panel.get_node("VBoxContainer/TrainGrid")
 	for c in grid.get_children():
 		c.queue_free()
@@ -283,9 +283,9 @@ func _refresh() -> void:
 	if _manager == null:
 		return
 	var res := _manager.get_resources(_faction_id)
-	_res_label.text = "Wood: %d  Food: %d  Gold: %d  Stone: %d" % [res["wood"], res["food"], res["gold"], res["stone"]]
-	_age_label.text = "Age: %s" % RTSManager.AGES[_manager.get_age(_faction_id)]
-	_pop_label.text = "Pop: %d/%d" % [_manager.get_population(_faction_id), _manager.get_pop_cap(_faction_id)]
+	_res_label.text = tr("WOOD_FOOD_GOLD_STONE") % [res["wood"], res["food"], res["gold"], res["stone"]]
+	_age_label.text = tr("AGE_2") % RTSManager.AGES[_manager.get_age(_faction_id)]
+	_pop_label.text = tr("POP") % [_manager.get_population(_faction_id), _manager.get_pop_cap(_faction_id)]
 	if _build_panel.visible:
 		_refresh_build_buttons()
 	if _train_panel.visible:
@@ -315,7 +315,7 @@ func _refresh_age_button() -> void:
 	for k in ["wood", "food", "gold", "stone"]:
 		if int(next_cost.get(k, 0)) > 0:
 			parts.append("%d %s" % [int(next_cost[k]), k.capitalize()])
-	_age_up_btn.text = "Age Up: %s" % ", ".join(parts)
+	_age_up_btn.text = tr("AGE_3") % ", ".join(parts)
 	_age_up_btn.disabled = not _manager.can_afford(_faction_id, next_cost)
 
 
@@ -338,13 +338,13 @@ func _build_guide() -> void:
 	vb.add_theme_constant_override("separation", 8)
 	_guide_panel.add_child(vb)
 	var title := Label.new()
-	title.text = "WARLORD'S DOMAIN"
+	title.text = tr("WARLORD_DOMAIN_2")
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 22)
 	title.add_theme_color_override("font_color", Color(0.95, 0.8, 0.4))
 	vb.add_child(title)
 	var sub := Label.new()
-	sub.text = "Command your faction — last one standing wins."
+	sub.text = tr("COMMAND_YOUR_FACTION_LAST")
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_font_size_override("font_size", 14)
 	sub.add_theme_color_override("font_color", Color(0.75, 0.78, 0.82))
@@ -366,10 +366,10 @@ func _build_guide() -> void:
 		var brk: int = line.find("]  ")
 		var key_part: String = line.substr(0, brk + 1)
 		var desc_part: String = line.substr(brk + 3)
-		row.text = "[color=#ffd966]%s[/color]  [color=#e8e8e8]%s[/color]" % [key_part, desc_part]
+		row.text = tr("COLOR_FFD_COLOR_COLOR") % [key_part, desc_part]
 		vb.add_child(row)
 	var dismiss := Label.new()
-	dismiss.text = "Press TAB to start commanding — this card will fade."
+	dismiss.text = tr("PRESS_TAB_START_COMMANDING")
 	dismiss.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	dismiss.add_theme_font_size_override("font_size", 13)
 	dismiss.add_theme_color_override("font_color", Color(0.6, 0.65, 0.7))
@@ -394,9 +394,9 @@ func hide_guide() -> void:
 func set_command_view(active: bool) -> void:
 	if active:
 		hide_guide()
-		_hint_label.text = "B — Build | Click — Select / Train / Gather | Right-click — Order | Drag — Multi-select | TAB — Exit"
+		_hint_label.text = tr("BUILD_CLICK_SELECT_TRAIN")
 	else:
-		_hint_label.text = "TAB — Command View"
+		_hint_label.text = tr("TAB_COMMAND_VIEW")
 
 
 func _process(delta: float) -> void:
