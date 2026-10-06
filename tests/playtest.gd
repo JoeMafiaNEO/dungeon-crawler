@@ -4756,6 +4756,11 @@ func _test_destination_popup_mouse_hold() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains("not hud.dest_popup_open"),
 		"#65: player respects dest_popup_open on click")
+	# Issue #71: boarding must auto-dismiss the destination popup so it
+	# can't cover the BOARD HERE instruction during the 45s window.
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(stsrc.contains("close_destination_popup"),
+		"#71: announce_boarding closes the destination popup")
 	print("[Playtest] destination popup mouse hold done")
 
 

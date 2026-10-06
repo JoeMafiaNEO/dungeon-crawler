@@ -469,6 +469,10 @@ func announce_boarding() -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("announce"):
 		hud.announce("ALL ABOARD!")
+	# Issue #71: the SELECT DESTINATION popup must not linger through the
+	# 45s boarding phase — it covered the BOARD HERE instruction.
+	if hud != null and hud.has_method("close_destination_popup"):
+		hud.close_destination_popup()
 
 
 ## Keep every peer's boarding HUD in sync: countdown + aboard roster.
