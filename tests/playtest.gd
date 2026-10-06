@@ -84,6 +84,7 @@ func _run() -> void:
 	_test_shieldbearer()
 	_test_splitter()
 	_test_gravewarden()
+	_test_snapshot_yaw()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4928,3 +4929,31 @@ func _test_lan_toggle_no_recursion() -> void:
 		_assert(body.contains("set_pressed_no_signal"),
 			fname + " uses set_pressed_no_signal")
 	print("[Playtest] LAN toggle no-recursion done")
+
+
+## Issue #72 Phase 1: Snapshot yaw plumbing.
+func _test_snapshot_yaw() -> void:
+	print("[Playtest] Snapshot yaw (issue #72 Phase 1)...")
+	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	# push_snapshot has yaw_v param.
+	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
+	# Caller passes _yaw.
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw)'),
+		"caller passes _yaw")
+	# _remote_yaw stored and interpolated with lerp_angle.
+	_assert(src.contains("_remote_yaw"), "stores _remote_yaw")
+	_assert(src.contains("lerp_angle(_yaw, _remote_yaw"),
+		"interpolates with lerp_angle")
+	# Headless math: lerp_angle converges without snapping.
+	var a := 0.0
+	var target := PI * 0.9
+	for i in 20:
+		a = lerp_angle(a, target, 0.5)
+	_assert(abs(a - target) < 0.01, "lerp_angle converges")
+	# Wrap-around: short way (e.g., 350° -> 10° goes +20°, not -340°).
+	var wrapped := lerp_angle(deg_to_rad(350.0), deg_to_rad(10.0), 0.5)
+	# 350° + 10° = 360°/0°, halfway is 0° (or 360°).
+	var deg := rad_to_deg(wrapped)
+	_assert(abs(deg) < 5.0 or abs(deg - 360.0) < 5.0,
+		"wrap-around takes short way (350->10 via 0)")
+	print("[Playtest] Snapshot yaw done")

@@ -159,6 +159,8 @@ var _buff_announced := {"speed": false, "damage": false}
 var _snapshot := 0.0
 var _remote_pos := Vector3.ZERO
 var _has_remote := false
+## Issue #72 Phase 1: remote yaw for snapshot interpolation.
+var _remote_yaw := 0.0
 var _sprite: AnimatedSprite3D
 var _yaw := 0.0
 var _pitch := 0.0
@@ -1870,10 +1872,13 @@ func _physics_process(delta: float) -> void:
 		_snapshot -= delta
 		if _snapshot <= 0.0:
 			_snapshot = SNAPSHOT_INTERVAL
-			rpc("push_snapshot", global_position, hp, level, alive)
+			# Issue #72 Phase 1: include look yaw in the snapshot.
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw)
 	else:
 		if _has_remote:
 			global_position = global_position.lerp(_remote_pos, clampf(delta * 10.0, 0.0, 1.0))
+			# Issue #72 Phase 1: interpolate yaw (short-way, no snapping).
+			_yaw = lerp_angle(_yaw, _remote_yaw, clampf(delta * 10.0, 0.0, 1.0))
 
 
 func _process(delta: float) -> void:
@@ -3331,10 +3336,11 @@ func apply_forfeit_net(s: Dictionary) -> void:
 
 
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float) -> void:
 	if is_multiplayer_authority():
 		return
 	_remote_pos = pos
+	_remote_yaw = yaw_v
 	_has_remote = true
 	hp = hp_v
 	level = lvl
