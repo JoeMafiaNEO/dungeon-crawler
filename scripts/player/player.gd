@@ -237,6 +237,12 @@ func _build_sprite() -> void:
 	frames.set_animation_loop("default", true)
 	_sprite.frames = frames
 	_sprite.modulate = class_data.tint
+	# Issue #72 Phase 2: double-sided (cull disabled) for mirrored back view.
+	# Authentic SNES look, zero new art.
+	var mat := StandardMaterial3D.new()
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_sprite.material_override = mat
 	_sprite.play("default")
 
 
@@ -1879,6 +1885,9 @@ func _physics_process(delta: float) -> void:
 			global_position = global_position.lerp(_remote_pos, clampf(delta * 10.0, 0.0, 1.0))
 			# Issue #72 Phase 1: interpolate yaw (short-way, no snapping).
 			_yaw = lerp_angle(_yaw, _remote_yaw, clampf(delta * 10.0, 0.0, 1.0))
+			# Issue #72 Phase 2: remote peers yaw the sprite to synced facing.
+			if _sprite != null:
+				_sprite.rotation.y = _yaw
 
 
 func _process(delta: float) -> void:

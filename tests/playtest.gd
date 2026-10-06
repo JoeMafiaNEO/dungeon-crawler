@@ -85,6 +85,7 @@ func _run() -> void:
 	_test_splitter()
 	_test_gravewarden()
 	_test_snapshot_yaw()
+	_test_sprite_orientation()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4957,3 +4958,29 @@ func _test_snapshot_yaw() -> void:
 	_assert(abs(deg) < 5.0 or abs(deg - 360.0) < 5.0,
 		"wrap-around takes short way (350->10 via 0)")
 	print("[Playtest] Snapshot yaw done")
+
+
+## Issue #72 Phase 2: Player sprite orientation rendering.
+func _test_sprite_orientation() -> void:
+	print("[Playtest] Sprite orientation (issue #72 Phase 2)...")
+	# player.tscn: AnimatedSprite3D billboard DISABLED.
+	var tscn := FileAccess.get_file_as_string("res://scenes/player/player.tscn")
+	# The AnimatedSprite3D node should NOT have billboard = 1.
+	# (Label3D keeps billboard = 1.)
+	var sprite_section := tscn.get_slice('[node name="AnimatedSprite3D"', 1)
+	sprite_section = sprite_section.get_slice("[node name=", 0)
+	_assert(not sprite_section.contains("billboard = 1"),
+		"player sprite billboard disabled")
+	# Label3D stays billboarded.
+	_assert(tscn.contains('[node name="Label3D"'), "Label3D exists")
+	# player.gd: remote peers yaw the sprite.
+	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(src.contains("_sprite.rotation.y = _yaw"),
+		"remote peers yaw the sprite")
+	# Double-sided (cull disabled).
+	_assert(src.contains("CULL_DISABLED"),
+		"sprite material cull disabled (double-sided)")
+	# Mark indicators stay billboarded.
+	_assert(src.contains("mark.billboard = BaseMaterial3D.BILLBOARD_ENABLED"),
+		"mark indicators stay billboarded")
+	print("[Playtest] Sprite orientation done")
