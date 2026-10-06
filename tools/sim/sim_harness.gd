@@ -16,6 +16,7 @@ extends Node
 ##   --seed S         base RNG seed; match i uses S + i (default 1234)
 ##   --timeout M      per-match cap in sim-minutes (default 25)
 ##   --out DIR        report directory, res://-relative (default tools/sim/output)
+##   --seasons        enable Warlord Seasons during sim (issue #10 Phase 2)
 
 const CLASSES := ["warrior", "rogue", "mage"]
 const CIV_OF := {"warrior": "iron_vanguard", "rogue": "shadow_covenant", "mage": "arcane_dominion"}
@@ -26,6 +27,8 @@ var _time_scale := 8.0
 var _base_seed := 1234
 var _timeout_min := 25.0
 var _out_dir := "tools/sim/output"
+## Issue #10 Phase 2: enable Warlord Seasons during sim matches.
+var _seasons := false
 
 var _winner := -1
 var _results: Array = []
@@ -63,6 +66,9 @@ func _parse_args() -> void:
 		elif args[i] == "--out" and i + 1 < args.size():
 			_out_dir = args[i + 1]
 			i += 2
+		elif args[i] == "--seasons":
+			_seasons = true
+			i += 1
 		else:
 			i += 1
 
@@ -95,6 +101,8 @@ func _run_match(m: int) -> void:
 		clean_wait += get_process_delta_time()
 	var packed := load("res://scenes/dungeon/dungeon.tscn") as PackedScene
 	var dungeon := packed.instantiate()
+	# Issue #10 Phase 2: --seasons flag controls Warlord Seasons in sim.
+	dungeon.set("seasons_enabled", _seasons)
 	tree.root.add_child(dungeon)
 	tree.current_scene = dungeon
 
@@ -171,6 +179,12 @@ func _run_match(m: int) -> void:
 		print("[Sim] match %d: TIMEOUT (%.0fs sim), leader=%s" % [m, duration, str(result["draw_leader"])])
 	else:
 		print("[Sim] match %d: winner=%s (%.0fs sim)" % [m, str(civs.get(_winner, _winner)), duration])
+	# Issue #10 Phase 2: track seasons that fired during this match.
+	if _seasons:
+		var season_mgr = dungeon.get("_season_manager")
+		if season_mgr != null:
+			result["seasons_fired"] = season_mgr.get("seasons_fired") if season_mgr.get("seasons_fired") != null else []
+			result["active_season"] = season_mgr.get("current_event_id") if season_mgr.has_method("current_event_id") else ""
 	_results.append(result)
 	mgr.winner_declared.disconnect(_on_winner)
 	_teardown(dungeon)
@@ -548,8 +562,13 @@ func _write_report() -> void:
 		"timeout_min": _timeout_min,
 		"tuning_file_mtime": tune_mtime,
 		"tuning_file_sha256": tune_sha,
+		"seasons_enabled": _seasons,
 		"results": _results,
 	}
+	# Issue #10 Phase 2: include balance gate in payload when seasons enabled.
+	if _seasons:
+		payload["balance_gate"] = _balance_gate()
+		payload["per_season_wins"] = _season_wins()
 	var jf := FileAccess.open(base + ".json", FileAccess.WRITE)
 	jf.store_string(JSON.stringify(payload, "\t"))
 	jf.close()
@@ -573,6 +592,51 @@ func _civ_wins() -> Dictionary:
 	return wins
 
 
+## Issue #10 Phase 2: wins broken down by which season was active at match end.
+func _season_wins() -> Dictionary:
+	# season_id -> {civ -> wins, "matches": count}
+	var by_season := {}
+	for r in _results:
+		var sid: String = str(r.get("active_season", "none"))
+		if sid == "":
+			sid = "none"
+		if not by_season.has(sid):
+			by_season[sid] = {"iron_vanguard": 0, "shadow_covenant": 0, "arcane_dominion": 0, "draw": 0, "matches": 0}
+		var d: Dictionary = by_season[sid]
+		d["matches"] = int(d["matches"]) + 1
+		var w := int(r["winner"])
+		if w < 0:
+			d["draw"] = int(d["draw"]) + 1
+		else:
+			var civ: String = (r["civs"] as Dictionary).get(w, "draw")
+			d[civ] = int(d.get(civ, 0)) + 1
+	return by_season
+
+
+## Issue #10 Phase 2: 15-point balance gate.
+## In a 3-way FFA, expected win rate is 33.3% per civ. The gate passes if
+## no civ's win rate deviates more than 15 percentage points from 33.3%
+## (i.e., stays within 18.3% - 48.3%). Seasons shouldn't break the win rate.
+func _balance_gate() -> Dictionary:
+	var wins := _civ_wins()
+	var total := _results.size()
+	var gate := {"passed": true, "deviations": {}, "max_deviation": 0.0}
+	if total == 0:
+		gate["passed"] = false
+		return gate
+	var expected := 100.0 / 3.0  # 33.3%
+	var max_dev := 0.0
+	for civ in ["iron_vanguard", "shadow_covenant", "arcane_dominion"]:
+		var rate := 100.0 * float(wins[civ]) / float(total)
+		var dev := absf(rate - expected)
+		(gate["deviations"] as Dictionary)[civ] = dev
+		max_dev = maxf(max_dev, dev)
+		if dev > 15.0:
+			gate["passed"] = false
+	gate["max_deviation"] = max_dev
+	return gate
+
+
 func _render_summary(payload: Dictionary) -> String:
 	var wins := _civ_wins()
 	var total := _results.size()
@@ -582,10 +646,28 @@ func _render_summary(payload: Dictionary) -> String:
 	var avg_dur := dur / maxf(1.0, float(total))
 	var lines: Array = []
 	lines.append("== Balance report: %d matches, avg %.1f sim-min ==" % [total, avg_dur / 60.0])
+	if _seasons:
+		lines.append("  [seasons ENABLED]")
 	for civ in ["iron_vanguard", "shadow_covenant", "arcane_dominion"]:
 		lines.append("  %s: %d wins (%.0f%%)" % [civ, int(wins[civ]), 100.0 * float(wins[civ]) / maxf(1.0, float(total))])
 	if int(wins["draw"]) > 0:
 		lines.append("  draws/timeouts: %d" % int(wins["draw"]))
+	# Issue #10 Phase 2: per-season breakdown + 15-point balance gate.
+	if _seasons:
+		var by_season := _season_wins()
+		lines.append("  -- per-season (active at match end) --")
+		for sid in by_season:
+			var d: Dictionary = by_season[sid]
+			var mcount := int(d["matches"])
+			var wparts: Array = []
+			for civ in ["iron_vanguard", "shadow_covenant", "arcane_dominion"]:
+				wparts.append("%s:%d" % [civ.substr(0, 4), int(d[civ])])
+			lines.append("    %s: %d matches (%s)" % [sid, mcount, ", ".join(wparts)])
+		var gate := _balance_gate()
+		var status := "PASS" if bool(gate["passed"]) else "FAIL"
+		lines.append("  -- 15-point balance gate: %s (max dev %.1fpp) --" % [status, float(gate["max_deviation"])])
+		if not bool(gate["passed"]):
+			lines.append("  GATE FAILED: seasons shifted win rates >15pp from 33%")
 	return "\n".join(lines)
 
 
@@ -613,6 +695,38 @@ func _render_markdown(payload: Dictionary) -> String:
 	if int(wins["draw"]) > 0:
 		L.append("| draw/timeout | %d | |" % int(wins["draw"]))
 	L.append("")
+	# Issue #10 Phase 2: seasons section.
+	if bool(payload.get("seasons_enabled", false)):
+		L.append("## Warlord Seasons (issue #10)")
+		L.append("")
+		L.append("Seasons were ENABLED for this run.")
+		L.append("")
+		var per_season: Dictionary = payload.get("per_season_wins", {})
+		if not per_season.is_empty():
+			L.append("### Per-season win rates (by active season at match end)")
+			L.append("")
+			L.append("| Season | Matches | Iron Vanguard | Shadow Covenant | Arcane Dominion |")
+			L.append("|---|---|---|---|---|")
+			for sid in per_season:
+				var d: Dictionary = per_season[sid]
+				var mcount := int(d["matches"])
+				L.append("| %s | %d | %d | %d | %d |" % [
+					sid, mcount,
+					int(d["iron_vanguard"]), int(d["shadow_covenant"]), int(d["arcane_dominion"])])
+			L.append("")
+		var gate: Dictionary = payload.get("balance_gate", {})
+		if not gate.is_empty():
+			var status := "PASS" if bool(gate["passed"]) else "FAIL"
+			L.append("### 15-point balance gate: %s" % status)
+			L.append("")
+			L.append("Max deviation from 33.3%%: %.1fpp (threshold 15pp)." % float(gate["max_deviation"]))
+			var devs: Dictionary = gate.get("deviations", {})
+			for civ in ["iron_vanguard", "shadow_covenant", "arcane_dominion"]:
+				L.append("- %s: %.1fpp deviation" % [civ, float(devs.get(civ, 0.0))])
+			if not bool(gate["passed"]):
+				L.append("")
+				L.append("**GATE FAILED**: seasons shifted win rates >15pp from expected 33%.")
+			L.append("")
 	L.append("## Per-match results")
 	L.append("")
 	L.append("| Match | Seed | Factions (0/1/2) | Winner | Duration (sim-min) |")

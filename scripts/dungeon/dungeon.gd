@@ -155,6 +155,8 @@ var is_apex := false
 var _rts_manager: RTSManager = null
 ## Issue #10: Warlord Seasons scheduler (typed as Node to avoid load-order issues).
 var _season_manager: Node = null
+## Issue #10 Phase 2: seasons can be disabled (sim harness baseline).
+var seasons_enabled := true
 var _warlord_setup_pending := false
 var _construction_check_tick := 0.0
 var market_cash_goal := 500
@@ -859,6 +861,9 @@ func _setup_warlord() -> void:
 			var pciv := _rts_manager.get_civ(pfaction).civ_id
 			rpc_id(pid, "client_setup_warlord", pfaction, pciv)
 	# Issue #10 Phase 1: Warlord Seasons scheduler (server-side 8-min rotation).
+	# Issue #10 Phase 2: conditional for sim harness baseline.
+	if not seasons_enabled:
+		return
 	# Use load() to avoid class_name resolution issues in test contexts.
 	var season_script := load("res://scripts/rts/season_manager.gd")
 	_season_manager = season_script.new()

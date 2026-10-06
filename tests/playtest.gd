@@ -91,6 +91,7 @@ func _run() -> void:
 	_test_yaw_edge_cases()
 	_test_ascension()
 	_test_warlord_seasons()
+	_test_warlord_seasons_phase2()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5278,3 +5279,35 @@ func _test_warlord_seasons() -> void:
 	_assert(hsrc.contains("set_season_manager"),
 		"HUD connects to SeasonManager")
 	print("[Playtest] Warlord Seasons done")
+
+
+## Issue #10 Phase 2: --seasons harness flag + balance gate.
+func _test_warlord_seasons_phase2() -> void:
+	print("[Playtest] Warlord Seasons Phase 2 (issue #10)...")
+	# Harness has --seasons flag.
+	var hsrc := FileAccess.get_file_as_string("res://tools/sim/sim_harness.gd")
+	_assert(hsrc.contains("--seasons"),
+		"harness documents --seasons flag")
+	_assert(hsrc.contains("_seasons = true") or hsrc.contains("_seasons=true"),
+		"harness parses --seasons flag")
+	_assert(hsrc.contains("seasons_enabled"),
+		"harness sets seasons_enabled on dungeon")
+	# SeasonManager tracks fired seasons.
+	var ssrc := FileAccess.get_file_as_string("res://scripts/rts/season_manager.gd")
+	_assert(ssrc.contains("seasons_fired"),
+		"SeasonManager tracks seasons_fired")
+	# Balance gate exists.
+	_assert(hsrc.contains("_balance_gate"),
+		"harness has _balance_gate()")
+	_assert(hsrc.contains("15.0") or hsrc.contains("15-point"),
+		"15-point threshold present")
+	# Per-season report exists.
+	_assert(hsrc.contains("_season_wins"),
+		"harness has _season_wins()")
+	_assert(hsrc.contains("per_season_wins") or hsrc.contains("per-season"),
+		"per-season report present")
+	# Dungeon respects seasons_enabled.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("seasons_enabled"),
+		"dungeon has seasons_enabled flag")
+	print("[Playtest] Warlord Seasons Phase 2 done")

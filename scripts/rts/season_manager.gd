@@ -24,6 +24,8 @@ var _warning_sent := false
 var _active_event := ""
 var _active_timer := 0.0
 var _running := false
+## Issue #10 Phase 2: track which seasons fired (for sim harness).
+var seasons_fired: Array = []
 
 func setup(rts_manager: RTSManager, dungeon: Node) -> void:
 	_rts = rts_manager
@@ -78,6 +80,7 @@ func _process(delta: float) -> void:
 func _start_event(event_id: String) -> void:
 	_active_event = event_id
 	_active_timer = 0.0
+	seasons_fired.append(event_id)  # Issue #10 Phase 2: track for sim.
 	print("[Seasons] Starting event: ", event_id)
 	rpc("client_season_started", event_id)
 	season_started.emit(event_id)
