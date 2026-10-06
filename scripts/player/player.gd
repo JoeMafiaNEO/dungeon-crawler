@@ -536,7 +536,9 @@ func _input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-				if hud == null or (not hud.is_paused and not hud.cipher_popup_open and _reading_board == null):
+				# Issue #65: don't steal the mouse back while the destination
+				# popup is open — clicks on popup rows must stay in UI mode.
+				if hud == null or (not hud.is_paused and not hud.cipher_popup_open and not hud.dest_popup_open and _reading_board == null):
 					# Don't steal the mouse back while in RTS command view.
 					var rts_cam := get_tree().get_first_node_in_group("rts_camera")
 					if rts_cam == null or not bool(rts_cam.get("active")):

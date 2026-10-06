@@ -74,6 +74,7 @@ func _run() -> void:
 	_test_collection_full_state_compact()
 	_test_wave_ui_dedupe_and_boarding_hide()
 	_test_departure_board_click_layer()
+	_test_destination_popup_mouse_hold()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4622,3 +4623,14 @@ func _test_departure_board_click_layer() -> void:
 	_assert(psrc.contains("q.collision_mask = 8"),
 		"#64: player raycast scans layer 4")
 	print("[Playtest] departure board click layer done")
+
+
+func _test_destination_popup_mouse_hold() -> void:
+	print("[Playtest] destination popup mouse hold (issue #65)...")
+	# Static: the player's click-to-recapture must NOT steal the mouse while
+	# the destination popup is open. Otherwise clicking a 2D row recaptures
+	# the mouse and the vote leaks to the wrong destination.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("not hud.dest_popup_open"),
+		"#65: player respects dest_popup_open on click")
+	print("[Playtest] destination popup mouse hold done")
