@@ -419,6 +419,8 @@ func _on_host_pressed() -> void:
 		_show_overwrite_confirm(SaveManager.MODE_MP, 0)
 		return
 	_host_slot = slot
+	# Mason's Cipher: the Architect stays hidden on the host row until unlocked.
+	%HostArchitectButton.visible = SaveManager.is_architect_unlocked()
 	# Initialize from the title selection (don't clobber); keep changeable.
 	_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
 	_show_phase("HostPhase")
@@ -473,6 +475,11 @@ func _on_host_rogue_pressed() -> void:
 func _on_host_mage_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	_select_class("mage")
+
+
+func _on_host_architect_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	_select_class("architect")
 
 
 func _select_difficulty(value: float) -> void:

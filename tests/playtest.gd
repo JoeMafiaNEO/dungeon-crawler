@@ -806,6 +806,14 @@ func _test_saves_ui() -> void:
 			"SavesLabel", "_on_new_game_pressed", "_on_continue_multi_pressed"]:
 		_assert(not tsrc.contains(gone) and not msrc.contains(gone),
 			"old save UI fully removed: " + gone)
+	# Issue #75 regression: the Host Game class row must mirror the title
+	# row — an architect-unlocked player can host as Architect.
+	_assert(tsrc.contains("[node name=\"HostArchitectButton\""),
+		"#75: HostClassRow has an Architect button")
+	_assert(tsrc.contains("_on_host_architect_pressed"),
+		"#75: HostArchitectButton wired to a handler")
+	_assert(msrc.contains("func _on_host_architect_pressed"),
+		"#75: host architect handler exists")
 
 	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
 	mgr.free()

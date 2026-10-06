@@ -265,6 +265,13 @@ size_flags_horizontal = 4
 icon = ExtResource("5")
 text = "Mage"
 
+[node name="HostArchitectButton" type="Button" parent="HostPhase/HostClassRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+icon = ExtResource("6")
+text = "Architect"
+
 [node name="HostClassDesc" type="Label" parent="HostPhase"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -634,6 +641,7 @@ text = "Leave"
 [connection signal="pressed" from="HostPhase/HostClassRow/HostWarriorButton" to="." method="_on_host_warrior_pressed"]
 [connection signal="pressed" from="HostPhase/HostClassRow/HostRogueButton" to="." method="_on_host_rogue_pressed"]
 [connection signal="pressed" from="HostPhase/HostClassRow/HostMageButton" to="." method="_on_host_mage_pressed"]
+[connection signal="pressed" from="HostPhase/HostClassRow/HostArchitectButton" to="." method="_on_host_architect_pressed"]
 [connection signal="pressed" from="HostPhase/DiffRow/DiffEasy" to="." method="_on_diff_easy_pressed"]
 [connection signal="pressed" from="HostPhase/DiffRow/DiffNormal" to="." method="_on_diff_normal_pressed"]
 [connection signal="pressed" from="HostPhase/DiffRow/DiffHard" to="." method="_on_diff_hard_pressed"]
