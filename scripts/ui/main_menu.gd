@@ -32,6 +32,11 @@ const CLASS_DESCS := {
 
 
 func _ready() -> void:
+	# Issue #33 Phase 1: apply the persisted locale before any UI draws.
+	# SaveManager autoload has already loaded the profile at this point.
+	var locale := SaveManager.get_locale()
+	TranslationServer.set_locale(locale)
+	print("[MainMenu] locale applied at boot: ", locale)
 	_style_buttons()
 	_phases = [%TitlePhase, %ModePhase, %MultiPhase, %HostPhase, %JoinPhase, %SoloPhase, %StagingPhase, %DailyPhase]
 	if SteamManager.initialized:
@@ -818,12 +823,53 @@ func _build_settings_panel() -> void:
 		tog.toggled.connect(_on_settings_toggle_changed.bind(spec[1]))
 		trow.add_child(tog)
 		vb.add_child(trow)
+	# Issue #33 Phase 1: language picker. OptionButton with supported locales.
+	# Phase 1 ships English only; es/fr/de are listed for Phase 3 (selecting
+	# them falls back to English until translations land).
+	var lrow := HBoxContainer.new()
+	lrow.add_theme_constant_override("separation", 12)
+	lrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var llab := Label.new()
+	llab.text = "Language"
+	llab.custom_minimum_size = Vector2(150, 0)
+	lrow.add_child(llab)
+	var lang_opt := OptionButton.new()
+	lang_opt.name = "LanguagePicker"
+	# [display name, locale code]
+	var locales := [["English", "en"], ["Español", "es"], ["Français", "fr"], ["Deutsch", "de"]]
+	var current := SaveManager.get_locale()
+	var selected_idx := 0
+	for i in locales.size():
+		lang_opt.add_item(locales[i][0], i)
+		lang_opt.set_item_metadata(i, locales[i][1])
+		if str(locales[i][1]) == current:
+			selected_idx = i
+	lang_opt.selected = selected_idx
+	lang_opt.item_selected.connect(_on_settings_language_changed)
+	lrow.add_child(lang_opt)
+	vb.add_child(lrow)
 	var close := Button.new()
 	close.text = "Close"
 	close.pressed.connect(func() -> void: _settings_overlay.visible = false)
 	vb.add_child(close)
 	add_child(_settings_overlay)
 	_style_buttons()
+
+
+## Issue #33 Phase 1: language picker handler. Persists the locale and
+## applies it immediately via TranslationServer.
+func _on_settings_language_changed(index: int) -> void:
+	var picker := _settings_overlay.get_node_or_null("LanguagePicker") as OptionButton
+	# Find the picker via the VBox children (name lookup may fail if reparented).
+	if picker == null:
+		for child in _settings_overlay.find_children("LanguagePicker", "OptionButton", true, false):
+			picker = child as OptionButton
+			break
+	if picker == null:
+		return
+	var locale := str(picker.get_item_metadata(index))
+	SaveManager.set_locale(locale)
+	print("[MainMenu] locale set to: ", locale)
 
 
 func _settings_vol_default(key: String) -> float:

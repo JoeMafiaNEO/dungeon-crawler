@@ -270,6 +270,31 @@ func get_profile_setting(section: String, key: String, default: Variant) -> Vari
 	return _profile.get_value(section, key, default)
 
 
+## Issue #33 Phase 1: locale setting. Returns the persisted locale, or the
+## OS locale (if it's one we ship), or English as fallback.
+## Supported locales for Phase 1: en (only). Phase 3 adds es/fr/de.
+func get_locale() -> String:
+	var saved := str(get_profile_setting("settings", "locale", ""))
+	if saved != "":
+		return saved
+	# Default to OS locale when available.
+	var os_locale := OS.get_locale_language()
+	# Map OS language to our supported locales.
+	match os_locale:
+		"es":
+			return "es"  # Phase 3; falls back to en until translations land.
+		"fr":
+			return "fr"
+		"de":
+			return "de"
+	return "en"
+
+
+func set_locale(locale: String) -> void:
+	set_profile_setting("settings", "locale", locale)
+	TranslationServer.set_locale(locale)
+
+
 func add_run() -> void:
 	_profile.set_value("meta", "total_runs", get_total_runs() + 1)
 	save_game()
