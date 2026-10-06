@@ -3053,7 +3053,9 @@ func run_stats() -> Dictionary:
 func gain_xp(amount: int, track_kill: bool = true) -> void:
 	if not is_multiplayer_authority():
 		return
-	xp += int(amount * xp_mult)
+	# Issue #11 Phase 1: Ascension buff (account-wide, per-player in MP).
+	var asc_mult := SaveManager.get_ascension_xp_mult()
+	xp += int(amount * xp_mult * asc_mult)
 	if track_kill:
 		_register_kill()
 	var grew := false

@@ -62,6 +62,7 @@ func _ready() -> void:
 	_build_bounty_tracker()
 	_build_potion_slot()
 	_build_charge_meter()
+	_build_ascension_indicator()
 
 
 ## Issue #69 Phase 1: Thrown dagger charge meter. Small bar near the
@@ -82,6 +83,38 @@ func _build_charge_meter() -> void:
 	_charge_bar.show_percentage = false
 	_charge_bar.visible = false
 	add_child(_charge_bar)
+
+
+## Issue #11 Phase 1: Ascension indicator (wings icon + count next to XP bar).
+## Placeholder gold chevron until Art Director lands the SNES wings sprite.
+var _asc_label: Label = null
+
+func _build_ascension_indicator() -> void:
+	_asc_label = Label.new()
+	_asc_label.name = "AscensionIndicator"
+	# Position: top-left, near the XP bar area.
+	_asc_label.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_asc_label.offset_left = 12.0
+	_asc_label.offset_top = 52.0
+	_asc_label.add_theme_font_size_override("font_size", 14)
+	_asc_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	_asc_label.visible = false
+	add_child(_asc_label)
+	_update_ascension_indicator()
+
+
+func _update_ascension_indicator() -> void:
+	if _asc_label == null:
+		return
+	var count := SaveManager.get_ascension_count()
+	if count <= 0:
+		_asc_label.visible = false
+		return
+	_asc_label.visible = true
+	var pct := int((SaveManager.get_ascension_xp_mult() - 1.0) * 100.0)
+	# Placeholder: gold chevron "»" as wings. Art to provide sprite.
+	_asc_label.text = "» %d" % count
+	_asc_label.tooltip_text = "+%d%% XP (%d ascension%s)" % [pct, count, "" if count == 1 else "s"]
 
 
 ## Issue #69 Phase 1: Update the charge meter. Called by player.
@@ -1009,11 +1042,39 @@ func _refresh_destination_list(votes: Dictionary = {}, my_vote: String = "") -> 
 		var theme_id: String = str(tid)
 		btn.pressed.connect(_on_destination_chosen.bind(theme_id))
 		_dest_list.add_child(btn)
+	# Issue #11 Phase 1: ASCEND gold row (fixed 6th row, zero-scroll preserved).
+	# Uses the same unanimous-vote flow with special id "ASCEND".
+	var ascend_btn := Button.new()
+	var asc_count := SaveManager.get_ascension_count()
+	var asc_label := "ASCEND — Reset to Cycle 1 (+%d%% XP, %d ascensions)" % [
+		int((SaveManager.get_ascension_xp_mult() - 1.0) * 100.0), asc_count]
+	var asc_votes := 0
+	for peer_id in votes:
+		if str(votes[peer_id]) == "ASCEND":
+			asc_votes += 1
+	if asc_votes > 0:
+		asc_label += "   [%d vote%s]" % [asc_votes, "" if asc_votes == 1 else "s"]
+	if my_vote == "ASCEND":
+		asc_label = ">> " + asc_label
+	ascend_btn.text = asc_label
+	ascend_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	ascend_btn.add_theme_font_size_override("font_size", 15)
+	ascend_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	ascend_btn.pressed.connect(_on_destination_chosen.bind("ASCEND"))
+	_dest_list.add_child(ascend_btn)
 
 
 func _on_destination_chosen(theme_id: String) -> void:
 	if _dest_station == null or not is_instance_valid(_dest_station):
 		return
+	# Issue #11 Phase 1: Solo ASCEND gets a confirm modal.
+	if theme_id == "ASCEND":
+		var players := get_tree().get_nodes_in_group("players")
+		if players.size() <= 1:
+			_show_quit_confirm(
+				"Reset this run to Cycle 1? You keep nothing but +5% XP forever.",
+				func() -> void: _dest_station.rpc("cast_vote", "ASCEND"))
+			return
 	_dest_station.rpc("cast_vote", theme_id)
 	AudioManager.sfx("ui_click")
 	# Refresh to show my vote highlight; the server sync_votes will

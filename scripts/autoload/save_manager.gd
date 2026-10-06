@@ -103,6 +103,8 @@ func _seed_profile_defaults() -> void:
 	_profile.set_value("meta", "combos_discovered", [])
 	_profile.set_value("meta", "architect_unlocked", false)
 	_profile.set_value("meta", "vault_specials", [])
+	# Issue #11 Phase 1: Ascension count (permanent +5% XP per ascension, cap +50%).
+	_profile.set_value("meta", "ascension_count", 0)
 
 
 func load_game() -> void:
@@ -332,6 +334,23 @@ func add_kills(count: int) -> void:
 
 func get_total_kills() -> int:
 	return int(_profile.get_value("meta", "total_kills", 0))
+
+
+## Issue #11 Phase 1: Ascension count (permanent XP buff).
+func get_ascension_count() -> int:
+	return int(_profile.get_value("meta", "ascension_count", 0))
+
+
+func add_ascension() -> int:
+	var n := get_ascension_count() + 1
+	_profile.set_value("meta", "ascension_count", n)
+	save_game()
+	return n
+
+
+## Ascension XP multiplier: 1.0 + 0.05 * min(count, 10), cap +50%.
+func get_ascension_xp_mult() -> float:
+	return 1.0 + 0.05 * minf(float(get_ascension_count()), 10.0)
 
 
 func set_deepest_cycle(cycle: int) -> void:

@@ -89,6 +89,7 @@ func _run() -> void:
 	_test_snapshot_yaw()
 	_test_sprite_orientation()
 	_test_yaw_edge_cases()
+	_test_ascension()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5197,3 +5198,33 @@ func _test_yaw_edge_cases() -> void:
 	_assert(abs(y - target) < 0.05,
 		"large gap converges without snapping")
 	print("[Playtest] Yaw edge cases done")
+
+
+## Issue #11 Phase 1: Ascension core.
+func _test_ascension() -> void:
+	print("[Playtest] Ascension (issue #11 Phase 1)...")
+	# Buff math: 1.0 + 0.05 * min(count, 10), cap +50%.
+	_assert(abs(_asc_mult(0) - 1.0) < 0.001, "0 ascensions = 1.0x")
+	_assert(abs(_asc_mult(1) - 1.05) < 0.001, "1 ascension = 1.05x")
+	_assert(abs(_asc_mult(10) - 1.5) < 0.001, "10 ascensions = 1.5x (cap)")
+	_assert(abs(_asc_mult(15) - 1.5) < 0.001, "15 ascensions = 1.5x (capped)")
+	# SaveManager has the helpers.
+	var sm_src := FileAccess.get_file_as_string("res://scripts/autoload/save_manager.gd")
+	_assert(sm_src.contains("get_ascension_count"), "SaveManager has get_ascension_count")
+	_assert(sm_src.contains("add_ascension"), "SaveManager has add_ascension")
+	_assert(sm_src.contains("get_ascension_xp_mult"), "SaveManager has get_ascension_xp_mult")
+	# Board ASCEND row.
+	var hud_src := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hud_src.contains("ASCEND"), "HUD has ASCEND row")
+	_assert(hud_src.contains("_update_ascension_indicator"), "HUD has ascension indicator")
+	# Station handles ASCEND vote.
+	var st_src := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(st_src.contains("_do_ascend"), "station has _do_ascend")
+	# Player applies the buff.
+	var pl_src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(pl_src.contains("get_ascension_xp_mult"), "player applies ascension buff")
+	print("[Playtest] Ascension done")
+
+
+func _asc_mult(count: int) -> float:
+	return 1.0 + 0.05 * minf(float(count), 10.0)

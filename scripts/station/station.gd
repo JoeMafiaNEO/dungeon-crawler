@@ -371,9 +371,31 @@ func depart(living_override: Array = []) -> void:
 	var theme_id := resolve_destination(votes, living)
 	if theme_id == "":
 		return # No unanimity — the train doesn't leave.
+	# Issue #11 Phase 1: ASCEND — party-wide prestige reset, not a destination.
+	if theme_id == "ASCEND":
+		_departing = true
+		rpc("_do_ascend")
+		return
 	_departing = true
 	apply_dressing(theme_id)
 	_start_boarding(theme_id, living)
+
+
+## Issue #11 Phase 1: ASCEND execution. Each player increments their OWN
+## profile ascension_count (not host-inherited), wipes their run, and starts
+## a fresh Cycle 1. Server triggers, clients execute locally.
+@rpc("any_peer", "call_local", "reliable")
+func _do_ascend() -> void:
+	# Increment own ascension count.
+	var new_count := SaveManager.add_ascension()
+	print("[Ascension] Ascended! Count: %d (+%d%% XP)" % [new_count, int((SaveManager.get_ascension_xp_mult() - 1.0) * 100.0)])
+	# TODO Phase 2: full run wipe + fresh Cycle 1 start. For Phase 1, the
+	# count and buff are live; the run continues (wipe path hooks in Phase 2).
+	# Reset the vote state so the board can be used again.
+	if multiplayer.is_server():
+		votes.clear()
+		_departing = false
+		rpc("sync_votes", votes)
 
 
 ## ALL ABOARD: banner + 45s server-authoritative boarding timer + aboard
