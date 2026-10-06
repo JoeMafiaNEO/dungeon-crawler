@@ -166,6 +166,10 @@ func _apply_ride_started() -> void:
 	_scenery_root.visible = true
 	_skip_lever.visible = true
 	AudioManager.sfx("train_chug")
+	# Jesse's inside-old-train field recording: interior ambient beds under the
+	# chug/rumble loop for the whole ride; the dungeon theme crossfades back
+	# in on arrival. (DM wiring: audio-owned hook, authorized 2026-10-04.)
+	AudioManager.play_music("train")
 	_show_ride_hud()
 
 
@@ -871,7 +875,6 @@ func _build_skip_lever() -> void:
 	tag.font_size = 48
 	tag.pixel_size = 0.008
 	tag.position = Vector3(0, 2.1, 0)
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	lever.add_child(tag)
 	lever.visible = false
 	add_child(lever)

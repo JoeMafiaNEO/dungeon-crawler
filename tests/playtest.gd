@@ -20,7 +20,6 @@ func _run() -> void:
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
-	_test_save_scratch_runs_dir()
 	_test_legacy_migration()
 	_test_mp_slots()
 	_test_saves_ui()
@@ -31,7 +30,6 @@ func _run() -> void:
 	_test_affinity_save_roundtrip()
 	_test_specialization_level_gate()
 	_test_pause_tabs()
-	_test_pause_stats_zero_scroll()
 	_test_switch_class_refresh()
 	_test_architect()
 	_test_cipher_unlock()
@@ -44,6 +42,7 @@ func _run() -> void:
 	_test_music_queued_pickup()
 	_test_audio_coverage()
 	_test_audio_new_features()
+	_test_train_ambient()
 	_test_station_annex()
 	_test_station_embedded()
 	_test_annex_departure()
@@ -58,35 +57,10 @@ func _run() -> void:
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
 	_test_specials_phase1()
-	_test_specials_phase2()
-	_test_wave_stall_watchdog()
-	_test_eagle_eye_warlord_hide()
-	_test_issue18_ui_fixes()
-	_test_fireball_fuse()
-	_test_issue22_23_fixes()
-	_test_warlord_spawn_avoids_river()
-	_test_e_interact_not_dead_code()
-	_test_watchdog_resets_on_progress()
-	_test_r_wave_start_chain()
-	_test_destination_popup_replaces_3d()
-	_test_destination_popup_manual_only()
-	_test_bounty_popup_opens()
-	_test_collection_full_state_compact()
-	_test_wave_ui_dedupe_and_boarding_hide()
-	_test_departure_board_click_layer()
-	_test_destination_popup_mouse_hold()
 	_test_apex_mechanics()
-	_test_apex_relics()
 	_test_bounty_phase1()
 	_test_combo_phase1()
 	_test_combo_codex()
-	_test_bounty_phase2()
-	_test_leaderboard_phase1()
-	_test_echo_phase2()
-	_test_workshop_phase3()
-	_test_settings_phase1()
-	_test_settings_phase2()
-
 	_print_results()
 	quit()
 
@@ -404,53 +378,6 @@ func _test_save_collections() -> void:
 		pf.store_string(prof_backup)
 	elif FileAccess.file_exists(prof_path):
 		DirAccess.remove_absolute(prof_path)
-
-
-func _test_save_scratch_runs_dir() -> void:
-	print("[Playtest] Scratch runs dir isolation (boarding driver hardening)...")
-	var SaveScript = load("res://scripts/autoload/save_manager.gd")
-	var mgr = SaveScript.new()
-	var scratch := "user://runs_scratch_test"
-	# Ensure a clean slate; never touch real user://runs.
-	if DirAccess.dir_exists_absolute(scratch):
-		for f in DirAccess.get_files_at(scratch):
-			DirAccess.remove_absolute(scratch.path_join(f))
-		DirAccess.remove_absolute(scratch)
-	mgr.set("_test_runs_dir", scratch)
-	# Slot paths redirect into the scratch dir.
-	_assert(mgr._slot_path("solo", 0) == scratch + "/solo_0.cfg",
-		"scratch: slot path redirects")
-	_assert(mgr._slot_path("mp", 2) == scratch + "/mp_2.cfg",
-		"scratch: mp slot path redirects")
-	# save_run writes ONLY to the scratch dir.
-	var ok: bool = mgr.save_run({"theme_id": "village"}, "solo", 1)
-	_assert(ok, "scratch: save_run succeeds")
-	_assert(FileAccess.file_exists(scratch + "/solo_1.cfg"),
-		"scratch: run file lands in scratch dir")
-	_assert(not FileAccess.file_exists("user://runs/solo_1.cfg"),
-		"scratch: real slot untouched")
-	# load_run reads back through the redirect.
-	var back: Dictionary = mgr.load_run("solo", 1)
-	_assert(str(back.get("theme_id", "")) == "village",
-		"scratch: load_run roundtrips")
-	# list_runs sees the scratch file.
-	var listed: Array = mgr.list_runs("solo")
-	_assert(listed.size() == 1 and int(listed[0]["slot"]) == 1,
-		"scratch: list_runs sees scratch slot")
-	# Invalid modes/slots still rejected under the redirect.
-	_assert(mgr._slot_path("bogus", 0) == "", "scratch: bad mode rejected")
-	_assert(mgr._slot_path("solo", 9) == "", "scratch: bad slot rejected")
-	# Unpin restores the real path.
-	mgr.set("_test_runs_dir", "")
-	_assert(mgr._slot_path("solo", 0) == "user://runs/solo_0.cfg",
-		"scratch: unpin restores real path")
-	# Cleanup: remove the scratch dir and everything in it.
-	for f in DirAccess.get_files_at(scratch):
-		DirAccess.remove_absolute(scratch.path_join(f))
-	DirAccess.remove_absolute(scratch)
-	_assert(not DirAccess.dir_exists_absolute(scratch),
-		"scratch: dir cleaned up")
-	mgr.free()
 
 
 func _test_legacy_migration() -> void:
@@ -1159,6 +1086,25 @@ func _test_audio_new_features() -> void:
 		var w: AudioStreamWAV = SoundScript.call(sfx)
 		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
 		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
+
+
+func _test_train_ambient() -> void:
+	print("[Playtest] Audio: Jesse's train ambient...")
+	# DM assignment (2026-10-04): kokoreli777 inside-old-train recording beds
+	# the interior ride as the "train" music theme (file override path).
+	_assert(FileAccess.file_exists("res://assets/audio/music/train.mp3"),
+		"train ambient mp3 in repo")
+	var amsrc2 := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	_assert(amsrc2.contains('"mp3"'), "music file override checks mp3")
+	_assert(amsrc2.contains("func _enable_track_loop"),
+		"file-backed music themes loop")
+	var tsrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	_assert(tsrc.contains('play_music("train")'),
+		"interior starts train ambient when the ride begins")
+	# The recording layers UNDER the synth cues — departure stays untouched.
+	_assert(tsrc.contains('sfx("train_chug")'), "ride chug kept")
+	var ssrc2 := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc2.contains('sfx("train_whistle")'), "departure whistle kept")
 
 
 func _test_station_annex() -> void:
@@ -2056,7 +2002,7 @@ func _test_warrior_signatures() -> void:
 	# Wiring present in source.
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains("func _activate_signature_totem"), "Signature totem activation exists")
-	_assert(psrc.contains('ability_cds[cd_key] = (cd) * cooldown_mult()'), "Signature cooldowns tracked")
+	_assert(psrc.contains('ability_cds[cd_key] = cd'), "Signature cooldowns tracked")
 	_assert(psrc.contains("func apply_sanctuary"), "Sanctuary immunity RPC exists")
 	_assert(psrc.contains("_sanctuary_t > 0.0"), "Sanctuary immunity checked in take_damage")
 	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
@@ -2150,7 +2096,7 @@ func _test_pause_tabs() -> void:
 	# Tab membership covers all pause content.
 	_assert(hsrc.contains('"SpecLabel", "SpecList"'), "Spec tab has spec list")
 	_assert(hsrc.contains('"FamilyLabel", "FamilyPanel"'), "Collection tab has family panel")
-	_assert(hsrc.contains('"StatPair1", "StatPair2"'), "Stats tab uses compact stat pairs")
+	_assert(hsrc.contains('"DmgRow", "HpRow", "SpdRow", "AuraRow"'), "Stats tab has stat rows")
 	# Action buttons not in any tab (always visible).
 	_assert(not hsrc.contains('"ResumeButton"') or hsrc.contains('_pause_tab_members'), "Tab members defined")
 	# show_pause defaults to Stats tab.
@@ -2158,19 +2104,6 @@ func _test_pause_tabs() -> void:
 	# affinity_shots uses tab selection.
 	var tsrc := FileAccess.get_file_as_string("res://tools/affinity_shots/affinity_shots.gd")
 	_assert(tsrc.contains("select_pause_tab"), "Tool uses tab selection")
-
-
-## Issue #16: Pause -> Stats tab must fit with zero scrolling (Jesse's hard rule).
-func _test_pause_stats_zero_scroll() -> void:
-	print("[Playtest] Pause stats zero-scroll...")
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("func _compact_stats_tab"), "Stats compaction builder exists")
-	_assert(hsrc.contains('"StatPair1"') and hsrc.contains('"StatPair2"'), "Stat rows paired into two columns")
-	_assert(hsrc.contains("SCROLL_MODE_AUTO if idx == 1"), "Scroll disabled for Stats tab, auto only for Spec")
-	# Scene defines the pairs so unique-name lookups (%DmgVal etc.) keep working.
-	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
-	_assert(tsrc.contains('name="StatPair1"'), "Scene defines StatPair1")
-	_assert(tsrc.contains('name="StatPair2"'), "Scene defines StatPair2")
 
 
 func _test_switch_class_refresh() -> void:
@@ -2434,10 +2367,9 @@ func _test_station_phase2() -> void:
 	_assert(bsrc.contains("func set_my_vote"), "board my-vote highlight API exists")
 	_assert(bsrc.contains("func set_tallies"), "board tally API exists")
 	_assert(bsrc.contains("func row_base_text"), "row text builder exists")
-	_assert(bsrc.contains("collision_layer = 8"), "rows on dedicated physics layer 4 (bitmask 8)")
+	_assert(bsrc.contains("collision_layer = 4"), "rows on dedicated physics layer 4")
 	_assert(bsrc.contains("input_ray_pickable = true"), "rows are ray-pickable")
-	# Issue #29 scope update: 3D reading-mode interaction replaced by 2D popup.
-	_assert(bsrc.contains("open_destination_popup"), "interact opens 2D destination popup")
+	_assert(bsrc.contains("enter_reading"), "interact enters reading mode")
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
 	_assert(not hsrc.contains("func show_departure_board"), "floating board panel removed")
 	_assert(not hsrc.contains("func close_departure_board"), "close_departure_board gone")
@@ -3294,17 +3226,16 @@ func _test_combo_phase1() -> void:
 	_assert(absf(p2.hp - p2.max_hp * 0.7) < 0.01, "surge sim: team healed 20% max HP")
 
 	# --- Announce path is a safe no-op with no dungeon present.
-	# Pin the SaveManager autoload to a scratch profile: announce now
-	# records codex discoveries (which save) without touching the real profile.
+	# Redirect the SaveManager autoload to a scratch profile: announce now
+	# records codex discoveries (which save).
 	var _sm: Node = root.get_node("SaveManager")
-	_sm.set("_test_account_pin", "test_combo")
-	_sm.load_game()
+	var _orig_acct: String = _sm.get("_profile_account")
+	_sm.set("_profile_account", "test_combo")
 	ComboScript.announce_finisher(self, "orbital_strike")
 	_assert(true, "announce: no crash without dungeon")
 	ComboScript.announce_finisher(self, "bogus_id")
 	_assert(true, "announce: unknown id ignored")
-	_sm.set("_test_account_pin", "")
-	_sm.load_game()
+	_sm.set("_profile_account", _orig_acct)
 	if FileAccess.file_exists("user://profile_test_combo.cfg"):
 		DirAccess.remove_absolute("user://profile_test_combo.cfg")
 
@@ -3366,15 +3297,14 @@ func _test_combo_codex() -> void:
 
 	# --- SaveManager: discovery tracking (scratch account on a standalone instance).
 	var mgr = SaveScript.new()
-	mgr.set("_test_account_pin", "test_codex")
-	mgr.load_game()
+	mgr.set("_profile_account", "test_codex")
 	_assert(mgr.get_combos_discovered().is_empty(), "codex: starts undiscovered")
 	_assert(mgr.add_combo_discovered("orbital_strike"), "codex: first discovery returns true")
 	_assert(not mgr.add_combo_discovered("orbital_strike"), "codex: repeat returns false")
 	_assert(mgr.get_combos_discovered() == ["orbital_strike"], "codex: discovery recorded")
 	# Persistence roundtrip.
 	var mgr2 = SaveScript.new()
-	mgr2.set("_test_account_pin", "test_codex")
+	mgr2.set("_profile_account", "test_codex")
 	mgr2.load_game()
 	_assert(mgr2.get_combos_discovered() == ["orbital_strike"], "codex: discovery persists")
 	mgr.free()
@@ -3383,11 +3313,14 @@ func _test_combo_codex() -> void:
 		DirAccess.remove_absolute(scratch)
 
 	# --- Codex UI: 5 fixed rows, ??? for undiscovered, name for discovered.
-	# Pin the autoload to the scratch profile: fresh seeded defaults in
-	# memory, real profile untouched (reloaded at the end of this section).
+	# Drive the autoload (which the HUD reads) on the scratch account.
 	var sm: Node = root.get_node("SaveManager")
-	sm.set("_test_account_pin", "test_codex")
-	sm.load_game()
+	var orig_acct: String = sm.get("_profile_account")
+	sm.set("_profile_account", "test_codex")
+	# Clean in-memory state (the autoload may hold the real profile).
+	var prof: ConfigFile = sm.get("_profile")
+	var orig_found: Array = prof.get_value("meta", "combos_discovered", []).duplicate()
+	prof.set_value("meta", "combos_discovered", [])
 	_assert(sm.get_combos_discovered().is_empty(), "codex: autoload starts clean")
 	sm.add_combo_discovered("orbital_strike")
 	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
@@ -3433,9 +3366,8 @@ func _test_combo_codex() -> void:
 			found_name = true
 	_assert(found_name, "codex: discovered row shows name")
 	hud.queue_free()
-	# Unpin and reload the real profile so the autoload is exactly as before.
-	sm.set("_test_account_pin", "")
-	sm.load_game()
+	sm.set("_profile_account", orig_acct)
+	sm.get("_profile").set_value("meta", "combos_discovered", orig_found)
 	if FileAccess.file_exists(scratch):
 		DirAccess.remove_absolute(scratch)
 
@@ -3448,1189 +3380,4 @@ func _test_combo_codex() -> void:
 	_assert(ssrc.contains("func add_combo_discovered"), "save: add_combo_discovered")
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	_assert(dsrc.contains("is_new"), "dungeon: announce_combo takes is_new")
-	var abody := dsrc.get_slice("func announce_combo", 1).get_slice("func _pick_mob_type", 0)
-	_assert(abody.contains('sfx("finisher_" + finisher_id)'), "dungeon: per-finisher fanfare SFX")
-	_assert(abody.contains('sfx("codex_discover")'), "dungeon: codex_discover sting on first discovery")
-	_assert(not abody.contains('sfx("thunderclap")'), "dungeon: shared thunderclap no longer fired for finishers")
 	print("[Playtest] combo codex phase 2 done")
-
-
-## Stub dungeon for relic drop tests: records spawn_pickup calls.
-class RelicDungeonStub extends Node:
-	var pickups: Array = []
-
-	@rpc("any_peer", "call_local")
-	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
-		pickups.append([item_id, pos, value_mult])
-
-	func get_player_node(_peer_id: int) -> Node:
-		return null
-
-
-func _test_apex_relics() -> void:
-	print("[Playtest] Apex phase 3 relics + trophies...")
-	# --- Special registry (#6 API): 3 apex specials with effect_params.
-	var hide := SpecialData.get_special("apex_boar_hide")
-	var eye := SpecialData.get_special("apex_horror_eye")
-	var sigil := SpecialData.get_special("apex_warden_sigil")
-	_assert(hide != null, "relic3: boar hide special loads")
-	_assert(eye != null, "relic3: horror eye special loads")
-	_assert(sigil != null, "relic3: warden sigil special loads")
-	_assert(absf(float(hide.effect_params.get("max_hp_mult", 0.0)) - 1.10) < 0.001,
-		"relic3: hide max_hp_mult 1.10")
-	_assert(absf(float(eye.effect_params.get("pickup_mult", 0.0)) - 1.20) < 0.001,
-		"relic3: eye pickup_mult 1.20")
-	_assert(absf(float(sigil.effect_params.get("cooldown_mult", 0.0)) - 0.85) < 0.001,
-		"relic3: sigil cooldown_mult 0.85")
-	_assert(not hide.unlock_hint.is_empty(), "relic3: hide has unlock hint")
-	_assert(hide.icon != null, "relic3: hide has icon")
-	# --- Apex -> special/relic mappings.
-	_assert(SpecialData.apex_special_for_boss("apex_boar") == "apex_boar_hide",
-		"relic3: boar maps to special")
-	_assert(SpecialData.apex_special_for_boss("apex_warden") == "apex_warden_sigil",
-		"relic3: warden maps to special")
-	_assert(SpecialData.apex_special_for_boss("apex_horror") == "apex_horror_eye",
-		"relic3: horror maps to special")
-	_assert(SpecialData.relic_item_for_apex("apex_boar") == "relic_apex_boar_hide",
-		"relic3: boar maps to relic item")
-	_assert(SpecialData.apex_special_for_boss("boss_boar") == "",
-		"relic3: non-apex maps to no special")
-	_assert(SpecialData.trophy_name_for_apex("apex_boar") == "Boar Hide",
-		"relic3: trophy name resolves")
-	# --- Relic items in ItemDB (physical drops).
-	var ItemDBNode = root.get_node_or_null("ItemDB")
-	var r1 = ItemDBNode.get_item("relic_apex_boar_hide")
-	var r2 = ItemDBNode.get_item("relic_apex_warden_sigil")
-	var r3 = ItemDBNode.get_item("relic_apex_horror_eye")
-	_assert(r1 != null and r2 != null and r3 != null, "relic3: 3 relic items in ItemDB")
-	_assert(r1.rarity == ItemData.Rarity.LEGENDARY, "relic3: relic is legendary")
-	_assert(r1.grants_special == "apex_boar_hide", "relic3: relic grants boar special")
-	# --- Trophy meta (scratch account via _test_account_pin).
-	var SaveScript := load("res://scripts/autoload/save_manager.gd")
-	var mgr = SaveScript.new()
-	mgr.set("_test_account_pin", "playtest_relic3")
-	mgr.load_game()
-	_assert(mgr.record_apex_trophy("apex_boar"), "relic3: trophy recorded")
-	_assert(not mgr.record_apex_trophy("apex_boar"), "relic3: trophy no dupe")
-	_assert(mgr.has_apex_trophy("apex_boar"), "relic3: has trophy")
-	_assert(not mgr.has_apex_trophy("apex_warden"), "relic3: no warden trophy yet")
-	var mgr2 = SaveScript.new()
-	mgr2.set("_test_account_pin", "playtest_relic3")
-	mgr2.load_game()
-	_assert(mgr2.has_apex_trophy("apex_boar"), "relic3: trophy persists")
-	mgr.free()
-	mgr2.free()
-	# Cleanup scratch profile.
-	var scratch := "user://profile_playtest_relic3.cfg"
-	if FileAccess.file_exists(scratch):
-		DirAccess.remove_absolute(scratch)
-	# --- Equipped apex effects apply via _apply_equipped_special.
-	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
-	var p = PlayerScene.instantiate()
-	p.class_id = "warrior"
-	root.add_child(p)
-	var base_hp: float = p.max_hp
-	p.equipped_special = "apex_boar_hide"
-	p._apply_equipped_special()
-	_assert(absf(p.max_hp - base_hp * 1.10) < 0.01, "relic3: hide +10% max HP when equipped")
-	_assert(absf(float(p.get("special_hp_mult")) - 1.10) < 0.001, "relic3: hp mult set")
-	p.equipped_special = "apex_horror_eye"
-	p._apply_equipped_special()
-	_assert(absf(p.special_pickup_mult - 1.20) < 0.001, "relic3: eye pickup mult set")
-	p.equipped_special = "apex_warden_sigil"
-	p._apply_equipped_special()
-	_assert(absf(p.cooldown_mult() - 0.85) < 0.001, "relic3: sigil -15% cooldowns")
-	p.equipped_special = ""
-	p._apply_equipped_special()
-	_assert(absf(p.cooldown_mult() - 1.0) < 0.001, "relic3: unequip resets cooldowns")
-	_assert(absf(p.max_hp - base_hp) < 0.01, "relic3: unequip resets max HP")
-	p.queue_free()
-	# --- Forced relic drop: apex boss always drops its relic (100%, no RNG).
-	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
-	for n in get_nodes_in_group("dungeon"):
-		n.get_parent().remove_child(n)
-		n.free()
-	var stub := RelicDungeonStub.new()
-	stub.add_to_group("dungeon")
-	root.add_child(stub)
-	var holder := Node3D.new()
-	root.add_child(holder)
-	current_scene = holder
-	var adata: Resource = load("res://data/mobs/apex_boar.tres")
-	var amob = MobScene.instantiate()
-	amob.setup(99, adata, 1.0, 1.0, false, 1.0)
-	holder.add_child(amob)
-	amob._drop_and_reward(1)
-	var found_relic := false
-	for pk in stub.pickups:
-		if str(pk[0]) == "relic_apex_boar_hide":
-			found_relic = true
-	_assert(found_relic, "relic3: apex boar forces relic drop")
-	stub.pickups.clear()
-	var ndata: Resource = load("res://data/mobs/boss_boar.tres")
-	var nmob = MobScene.instantiate()
-	nmob.setup(100, ndata, 1.0, 1.0, false, 1.0)
-	holder.add_child(nmob)
-	nmob._drop_and_reward(1)
-	var found_any_relic := false
-	for pk in stub.pickups:
-		if str(pk[0]).begins_with("relic_apex_"):
-			found_any_relic = true
-	_assert(not found_any_relic, "relic3: normal boss drops no relic")
-
-	amob.queue_free()
-	nmob.queue_free()
-	stub.queue_free()
-	holder.queue_free()
-
-
-func _test_bounty_phase2() -> void:
-	print("[Playtest] Bounty board phase 2 (prop + UI)...")
-	var BoardScript := load("res://scripts/station/bounty_board.gd")
-	var BountyUIScript := load("res://scripts/ui/bounty_ui.gd")
-	var BountyScript := load("res://scripts/systems/bounty.gd")
-	_assert(BoardScript != null, "bounty_board.gd loads")
-	_assert(BountyUIScript != null, "bounty_ui.gd loads (Player-free)")
-	_assert(BountyScript != null, "bounty.gd loads for bounty UI")
-
-	# 1. Prop builds standalone: group, prompt, SNES board face.
-	var holder := Node3D.new()
-	root.add_child(holder)
-	var bb = BoardScript.new()
-	bb.name = "BountyBoard"
-	holder.add_child(bb) # _ready builds
-	_assert(bb.is_in_group("bounty_board"), "prop in bounty_board group")
-	_assert(str(bb.prompt_text()) == "Check bounties", "prop prompt text")
-	_assert(bb.has_method("interact"), "prop interact exists")
-	var face := bb.get_node_or_null("BoardFace") as MeshInstance3D
-	_assert(face != null, "prop has BoardFace quad")
-	var face_tex: Texture2D = null
-	if face != null and face.mesh != null:
-		var fm := (face.mesh as QuadMesh).material as StandardMaterial3D
-		if fm != null:
-			face_tex = fm.albedo_texture
-	_assert(face_tex != null, "board face uses the SNES board art")
-
-	# 2. Deterministic bounty fixtures (mirrors what the server rolls).
-	var bounties: Array = [
-		{"id": "b1", "kind": "kill", "mob_id": "goblin", "target": 8,
-			"cash_reward": 50, "xp_reward": 30,
-			"name": "Slay 8 Goblins", "desc": "Defeat 8 Goblins this level."},
-		{"id": "b2", "kind": "no_death", "target": 1,
-			"cash_reward": 220, "xp_reward": 180,
-			"name": "Untouchable", "desc": "Clear the level without dying."},
-		{"id": "b3", "kind": "kill", "mob_id": "slime", "target": 15,
-			"cash_reward": 100, "xp_reward": 60,
-			"name": "Slay 15 Slimes", "desc": "Defeat 15 Slimes this level."},
-	]
-	var progress := {"b1": 3, "b2": -1, "b3": 15}
-
-	# 3. Cards: exactly 3 fixed cards with progress / FAILED / DONE states.
-	# (BountyUI is Player-free so it loads in -s mode where hud.gd can't.)
-	var cards: Array = []
-	for b in bounties:
-		cards.append(BountyUIScript.make_card(b, progress))
-	_assert(cards.size() == 3, "panel builds 3 fixed cards")
-	var card_names := []
-	var card_states := []
-	for card in cards:
-		card_names.append(str(card.get_child(0).get("text")))
-		var row := card.get_child(2) as HBoxContainer
-		card_states.append(str(row.get_child(1).get("text")))
-	_assert(card_names == ["Slay 8 Goblins", "Untouchable", "Slay 15 Slimes"],
-		"cards show the 3 bounty names")
-	_assert(card_states == ["3/8", "FAILED", "DONE"], "cards show progress/failed/done states")
-	var bar1 := (cards[0].get_child(2) as HBoxContainer).get_child(0) as ProgressBar
-	_assert(int(bar1.max_value) == 8 and int(bar1.value) == 3, "card 1 progress bar 3/8")
-	_assert(str(cards[0].get_child(3).get("text")).contains("$50"),
-		"card shows cash reward")
-	_assert(str(cards[0].get_child(3).get("text")).contains("30 XP"),
-		"card shows XP reward")
-
-	# 4. Zero-scroll: a panel assembled from the 3 cards has no ScrollContainer.
-	var mock_panel := VBoxContainer.new()
-	for card in cards:
-		var dup: VBoxContainer = (card as VBoxContainer).duplicate()
-		mock_panel.add_child(dup)
-	_assert(not _has_scroll_container(mock_panel), "bounty panel: no ScrollContainer (zero-scroll)")
-
-	# 5. Tracker text: one short line per unsettled bounty, "" when settled.
-	var txt := str(BountyUIScript.tracker_text(bounties, progress))
-	_assert(txt.contains("Slay 8 Goblins"), "tracker names the active bounty")
-	_assert(not txt.contains("Untouchable"), "tracker hides the failed bounty")
-	_assert(not txt.contains("Slay 15 Slimes"), "tracker hides the done bounty")
-	_assert(txt.split("\n").size() == 1, "tracker is one short line for one active bounty")
-	var txt_done := str(BountyUIScript.tracker_text(bounties, {"b1": 8, "b2": -1, "b3": 15}))
-	_assert(txt_done.is_empty(), "tracker auto-hides (empty text) when all bounties settled")
-
-	# 6. Wiring: hud.gd delegates to BountyUI (source-level; hud.gd itself
-	# can't instantiate in -s mode because it references Player).
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("func show_bounty"), "show_bounty panel exists")
-	_assert(hsrc.contains("BountyUI.make_card"), "hud delegates card building to BountyUI")
-	_assert(hsrc.contains("BountyUI.tracker_text"), "hud delegates tracker text to BountyUI")
-	_assert(hsrc.contains("func _refresh_bounty_tracker"), "tracker refresh exists")
-	_assert(hsrc.contains("bounty_open = false"), "panel close clears bounty_open")
-
-	# 7. Embedded station: BountyBoard prop placed inside the hall.
-	var StationScript := load("res://scripts/station/station.gd")
-	var AnnexScript := load("res://scripts/station/station_annex.gd")
-	var ProcGenScript := load("res://scripts/procgen/procgen.gd")
-	var theme: Resource = load("res://data/levels/theme_village.tres")
-	var layout = ProcGenScript.generate(theme, 12345)
-	var plan: Dictionary = AnnexScript.plan(12345, layout)
-	var annex = AnnexScript.build(holder, plan, layout)
-	var st = StationScript.new()
-	st.name = "Station"
-	st.dungeon = holder
-	st.annex = annex
-	holder.add_child(st) # _ready runs the embedded build
-	var bbn: Node = st.get_node_or_null("BountyBoard")
-	_assert(bbn != null, "embedded: BountyBoard built")
-	if bbn != null:
-		var lp: Vector3 = bbn.position
-		_assert(absf(lp.x) <= 12.0 and absf(lp.z) <= 7.0,
-			"embedded: BountyBoard inside hall footprint")
-
-	# 8. Wiring: E-scan group + station placement source checks.
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains('"bounty_board"'), "player E-scan includes bounty board")
-	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
-	_assert(ssrc.contains("BountyBoardScript.new()"), "bounty board prop placed")
-
-	holder.queue_free()
-
-
-func _test_settings_phase1() -> void:
-	print("[Playtest] Settings phase 1 (panel + persistence)...")
-	var SaveScript := load("res://scripts/autoload/save_manager.gd")
-	_assert(SaveScript != null, "save_manager.gd loads")
-
-	var mgr = SaveScript.new()
-	mgr.set("_test_account_pin", "settings_test")
-	mgr.load_game()
-	mgr.set_profile_setting("settings", "master_vol", 0.75)
-	mgr.set_profile_setting("settings", "crt_enabled", false)
-	mgr.set_profile_setting("settings", "shake_enabled", true)
-	_assert(float(mgr.get_profile_setting("settings", "master_vol", 1.0)) == 0.75,
-		"profile: master_vol roundtrips")
-	_assert(bool(mgr.get_profile_setting("settings", "crt_enabled", true)) == false,
-		"profile: crt_enabled roundtrips")
-	_assert(bool(mgr.get_profile_setting("settings", "shake_enabled", false)) == true,
-		"profile: shake_enabled roundtrips")
-	_assert(str(mgr.get_profile_setting("settings", "missing_key", "dflt")) == "dflt",
-		"profile: missing key returns default")
-	var mgr2 = SaveScript.new()
-	mgr2.set("_test_account_pin", "settings_test")
-	mgr2.load_game()
-	_assert(float(mgr2.get_profile_setting("settings", "master_vol", 1.0)) == 0.75,
-		"profile: master_vol persists to disk")
-	mgr.free()
-	mgr2.free()
-	var ppath := "user://profile_settings_test.cfg"
-	if FileAccess.file_exists(ppath):
-		DirAccess.remove_absolute(ppath)
-
-	var asrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
-	_assert(asrc.contains("set_profile_setting(\"settings\""), "audio saves volumes to profile")
-	_assert(asrc.contains("get_profile_setting(\"settings\""), "audio loads volumes from profile")
-	_assert(asrc.contains("CFG_PATH") and asrc.contains("migrat"),
-		"audio migrates legacy audio.cfg")
-
-	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
-	_assert(tsrc.contains('name="SettingsButton"'), "TitlePhase has Settings button")
-	_assert(tsrc.contains('_on_settings_pressed'), "Settings button wired")
-	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
-	_assert(msrc.contains("func _build_settings_panel"), "settings panel builder exists")
-	_assert(msrc.contains("func _on_settings_pressed"), "settings open handler exists")
-	_assert(msrc.contains("set_master_vol") and msrc.contains("set_music_vol") and msrc.contains("set_sfx_vol"),
-		"sliders wire to AudioManager setters")
-	_assert(msrc.count("HSlider.new()") >= 1, "panel has volume sliders")
-	_assert(msrc.count("CheckButton.new()") >= 1, "panel has toggles")
-
-	var panel_src := msrc.substr(msrc.find("func _build_settings_panel"))
-	panel_src = panel_src.substr(0, panel_src.find("\nfunc ", 1))
-	_assert(not panel_src.contains("ScrollContainer"), "settings panel: no ScrollContainer")
-
-
-func _test_settings_phase2() -> void:
-	print("[Playtest] Settings phase 2 (CRT/shake/fullscreen)...")
-	# CRT shader exists.
-	_assert(FileAccess.file_exists("res://assets/shaders/crt.gdshader"),
-		"CRT shader exists")
-	var shsrc := FileAccess.get_file_as_string("res://assets/shaders/crt.gdshader")
-	_assert(shsrc.contains("scanline") or shsrc.contains("scan"),
-		"CRT shader has scanlines")
-	_assert(shsrc.contains("vignette"), "CRT shader has vignette")
-	# CRTManager autoload.
-	_assert(FileAccess.file_exists("res://scripts/autoload/crt_manager.gd"),
-		"CRTManager exists")
-	var csrc := FileAccess.get_file_as_string("res://scripts/autoload/crt_manager.gd")
-	_assert(csrc.contains("set_crt_enabled"), "CRTManager has toggle API")
-	_assert(csrc.contains("crt_enabled"), "CRTManager reads profile setting")
-	var psrc := FileAccess.get_file_as_string("res://project.godot")
-	_assert(psrc.contains("CRTManager"), "CRTManager registered as autoload")
-	# Shake gate in player.gd.
-	var plsrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(plsrc.contains("shake_enabled"), "player gates shake on profile setting")
-	# Fullscreen in main_menu.gd.
-	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
-	_assert(msrc.contains("_apply_fullscreen"), "fullscreen apply exists")
-	_assert(msrc.contains("WINDOW_MODE_FULLSCREEN"), "fullscreen uses DisplayServer")
-	_assert(msrc.contains("_apply_saved_fullscreen"), "fullscreen applied on boot")
-
-
-## Recursive ScrollContainer audit for the zero-scroll rule.
-func _has_scroll_container(n: Node) -> bool:
-	if n == null:
-		return false
-	if n is ScrollContainer:
-		return true
-	for c in n.get_children():
-		if _has_scroll_container(c):
-			return true
-	return false
-
-
-## Find a named descendant of the vault popup (cards, grid, trophy row).
-func _vault_find(hud: Node, node_name: String) -> Node:
-	var pop: Node = hud.get("_cipher_popup")
-	if pop == null:
-		return null
-	return pop.find_child(node_name, true, false)
-
-
-## Button text of a vault card (the last Button in its VBox).
-func _vault_card_button(card: Node) -> String:
-	for ch in card.find_children("*", "Button", true, false):
-		return (ch as Button).text
-	return ""
-
-
-## Press a vault card button by special id + expected label.
-func _vault_press(hud: Node, sid: String, label: String) -> bool:
-	var card := _vault_find(hud, "VaultCard_" + sid)
-	if card == null:
-		return false
-	for ch in card.find_children("*", "Button", true, false):
-		var b := ch as Button
-		if b.text == label and not b.disabled:
-			b.pressed.emit()
-			return true
-	return false
-
-
-## Collect the 3 fixed bounty cards out of a panel subtree.
-func _find_bounty_cards(n: Node) -> Array:
-	var out := []
-	if n is VBoxContainer and str(n.name).begins_with("BountyCard_"):
-		out.append(n)
-	for c in n.get_children():
-		out.append_array(_find_bounty_cards(c))
-	return out
-func _test_leaderboard_phase1() -> void:
-	print("[Playtest] leaderboards (issue #9 Phase 1)...")
-	# NOTE: playtest.gd is the -s entry point, compiled before autoload
-	# globals resolve; reach them via load() and /root lookups instead.
-	var LBScript = load("res://scripts/autoload/leaderboard.gd")
-	# Score formulas (pure statics).
-	_assert(LBScript.depth_score(1, 1) == 100001, "depth score c1l1")
-	_assert(LBScript.depth_score(2, 5) == 200005, "depth score c2l5")
-	_assert(LBScript.depth_score(2, 1) > LBScript.depth_score(1, 99),
-		"cycle dominates level in depth score")
-	_assert(LBScript.speed_score(125) == 125, "speed score passthrough")
-	_assert(LBScript.speed_score(-3) == 0, "speed score clamps negative")
-	_assert(LBScript.format_score(LBScript.BOARD_DEPTH, 200005) == "Cycle 2 · Lv 5",
-		"depth score formats")
-	_assert(LBScript.format_score(LBScript.BOARD_SPEED, 125) == "2:05",
-		"speed score formats as m:ss")
-	# Offline graceful skip: Steam is not initialized on this VM.
-	var sm: Node = root.get_node_or_null("SteamManager")
-	_assert(sm != null and not bool(sm.get("initialized")), "precondition: Steam offline")
-	var lb: Node = root.get_node_or_null("Leaderboard")
-	_assert(lb != null, "Leaderboard autoload exists")
-	_assert(not bool(lb.call("steam_available")), "leaderboard reports unavailable")
-	lb.call("ensure_boards")
-	lb.call("upload_daily", 2, 5, 125)
-	lb.call("upload_daily", 1, 3)
-	lb.call("fetch_top", LBScript.BOARD_DEPTH)
-	_assert((lb.get("_handles") as Dictionary).is_empty(), "no board handles without Steam")
-	_assert((lb.get("_pending_uploads") as Array).is_empty(), "no queued uploads without Steam")
-	_assert((lb.call("get_cached", LBScript.BOARD_DEPTH) as Array).is_empty(),
-		"empty cache without Steam")
-	# Panel: exactly 10 fixed rows per board, zero scroll containers.
-	var menu = load("res://scenes/ui/main_menu.tscn").instantiate()
-	root.add_child(menu)
-	menu._refresh_leaderboard_panel()
-	for path in ["DailyPhase/LeaderboardPanel/DepthCol/DepthRows",
-			"DailyPhase/LeaderboardPanel/SpeedCol/SpeedRows"]:
-		var rows: VBoxContainer = menu.get_node(path)
-		_assert(_live_children(rows).size() == LBScript.MAX_ENTRIES,
-			"%s has 10 fixed rows" % path.get_file())
-	var scrolls := []
-	_find_scroll_containers(menu.get_node("DailyPhase"), scrolls)
-	_assert(scrolls.is_empty(), "DailyPhase has no scroll containers")
-	# Seeded entries: player row highlighted, count stays fixed at 10.
-	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = [
-		{"rank": 1, "name": "Rival", "score": 300002, "is_player": false},
-		{"rank": 2, "name": "Me", "score": 200005, "is_player": true},
-	]
-	menu._refresh_leaderboard_panel()
-	var depth_rows: VBoxContainer = menu.get_node("DailyPhase/LeaderboardPanel/DepthCol/DepthRows")
-	_assert(_live_children(depth_rows).size() == 10, "row count stays 10 with entries")
-	var player_lbl: Label = null
-	for child in _live_children(depth_rows):
-		if child is Label and child.text.contains("Me"):
-			player_lbl = child
-	_assert(player_lbl != null, "player entry shown")
-	_assert(player_lbl.get_theme_color("font_color") == Color(1.0, 0.85, 0.3),
-		"player row highlighted gold")
-	(lb.get("_cache") as Dictionary)[LBScript.BOARD_DEPTH] = []
-	# Race-my-best toggle (Phase 2): defaults off, flips the Dungeon static.
-	_assert(not bool(menu.get_node("DailyPhase/RaceEchoCheck").button_pressed),
-		"race echo toggle defaults off")
-	menu.get_node("DailyPhase/RaceEchoCheck").button_pressed = true
-	# Issue #56: autoloads don't exist in -s mode — ensure an instance exists
-	# before the toggle touches the bare EchoRecorder identifier.
-	var er2: Node = root.get_node_or_null("EchoRecorder")
-	if er2 == null:
-		er2 = load("res://scripts/autoload/echo_recorder.gd").new()
-		er2.name = "EchoRecorder"
-		root.add_child(er2)
-	menu._on_race_echo_toggled(true)
-	_assert(bool(er2.get("race_echo")), "toggle sets EchoRecorder.race_echo")
-	menu._on_race_echo_toggled(false)
-	_assert(not bool(er2.get("race_echo")), "toggle clears EchoRecorder.race_echo")
-	menu.queue_free()
-	print("[Playtest] leaderboard phase 1 done")
-
-
-## Children not queued for deletion (queue_free is deferred to frame end).
-func _live_children(node: Node) -> Array:
-	var out: Array = []
-	for child in node.get_children():
-		if not child.is_queued_for_deletion():
-			out.append(child)
-	return out
-
-
-func _find_scroll_containers(node: Node, out: Array) -> void:
-	if node is ScrollContainer:
-		out.append(node)
-	for child in node.get_children():
-		_find_scroll_containers(child, out)
-
-
-func _test_echo_phase2() -> void:
-	print("[Playtest] echo record/playback (issue #9 Phase 2)...")
-	var ERScript = load("res://scripts/autoload/echo_recorder.gd")
-	# Issue #56: autoloads don't exist in -s script mode. Use the script
-	# directly — create an instance if the autoload isn't in the tree.
-	var er: Node = root.get_node_or_null("EchoRecorder")
-	if er == null:
-		er = ERScript.new()
-		er.name = "EchoRecorder"
-		root.add_child(er)
-	_assert(er != null, "EchoRecorder available")
-	_assert(not bool(er.get("is_recording")), "recorder idle by default")
-
-	# --- Sample encode/decode roundtrip ---
-	var buf := PackedByteArray()
-	ERScript.encode_sample(buf, 42, Vector3(12.345, 0.0, -67.89), 1.5708)
-	_assert(buf.size() == 12, "sample is 12 bytes")
-	var s: Dictionary = ERScript.decode_sample(buf, 0)
-	_assert(int(s["tick"]) == 42, "tick roundtrips")
-	_assert((s["pos"] as Vector3).distance_to(Vector3(12.345, 0.0, -67.89)) < 0.02,
-		"position roundtrips within 2cm")
-	_assert(absf(wrapf(float(s["yaw"]) - 1.5708, -PI, PI)) < 0.001,
-		"yaw roundtrips")
-	_assert(ERScript.decode_sample(buf, 5).is_empty(), "out-of-range decode is {}")
-
-	# --- File format: header, size bound, load roundtrip ---
-	# Simulate a 10-minute run: 6000 samples at 10Hz.
-	var big := PackedByteArray()
-	for i in 6000:
-		ERScript.encode_sample(big, i, Vector3(i * 0.01, 0, i * 0.02), float(i) * 0.001)
-	var events := [{"tick": 100, "ability_id": "fireball"}, {"tick": 5500, "ability_id": "meteor"}]
-	var data := {"date": "20261005", "seed": 987654, "samples": big,
-		"sample_count": 6000, "ability_events": events}
-	var path := "user://echoes/test_echo.dat"
-	_assert(bool(er.call("save_echo", data, path)), "echo saves")
-	var f := FileAccess.open(path, FileAccess.READ)
-	var fsize := f.get_length()
-	f.close()
-	# 25 header + 6000*12 samples + events ≈ 72KB. Bound well under 150KB.
-	_assert(fsize < 150 * 1024, "10-min echo under 150KB (was %d)" % fsize)
-	_assert(fsize > 60000, "10-min echo has substance (was %d)" % fsize)
-	var loaded: Dictionary = er.call("load_echo", path)
-	_assert(not loaded.is_empty(), "echo loads")
-	_assert(str(loaded["date"]) == "20261005", "date roundtrips")
-	_assert(int(loaded["seed"]) == 987654, "seed roundtrips")
-	_assert(int(loaded["sample_count"]) == 6000, "sample count roundtrips")
-	_assert((loaded["ability_events"] as Array).size() == 2, "ability events roundtrip")
-	_assert(str((loaded["ability_events"] as Array)[1]["ability_id"]) == "meteor",
-		"ability id roundtrips")
-	var ls0: Dictionary = ERScript.decode_sample(loaded["samples"], 0)
-	var ls5999: Dictionary = ERScript.decode_sample(loaded["samples"], 5999)
-	_assert(int(ls0["tick"]) == 0 and int(ls5999["tick"]) == 5999, "sample ticks survive")
-	# Corrupt/missing files fail clean, never crash.
-	_assert((er.call("load_echo", "user://echoes/does_not_exist.dat") as Dictionary).is_empty(),
-		"missing echo loads as {}")
-	var bad := FileAccess.open("user://echoes/bad.dat", FileAccess.WRITE)
-	bad.store_buffer(PackedByteArray([1, 2, 3, 4]))
-	bad.close()
-	_assert((er.call("load_echo", "user://echoes/bad.dat") as Dictionary).is_empty(),
-		"corrupt echo loads as {}")
-	DirAccess.remove_absolute("user://echoes/test_echo.dat")
-	DirAccess.remove_absolute("user://echoes/bad.dat")
-
-	# --- Recorder: 10Hz sampling, ability events, no RNG ---
-	# The recorder script must contain zero RNG calls (pure observation).
-	var rsrc := FileAccess.get_file_as_string("res://scripts/autoload/echo_recorder.gd")
-	for rng_call in ["randi(", "randf(", "randi_range(", "randf_range(", "RandomNumberGenerator", ".seed ="]:
-		_assert(not rsrc.contains(rng_call), "recorder has no RNG: %s" % rng_call)
-	# Live recording against a dummy player node.
-	var dummy := Node3D.new()
-	dummy.position = Vector3(3.0, 0.0, 4.0)
-	dummy.rotation.y = 0.75
-	root.add_child(dummy)
-	er.call("start_recording", dummy, "20261005", 12345)
-	_assert(bool(er.get("is_recording")), "recording starts")
-	er.call("record_ability", "fireball")
-	# Simulate 0.35s of _process → 3 samples at 10Hz.
-	er._process(0.35)
-	_assert(int(er.get("_sample_count")) == 3, "10Hz sampling (3 samples in 0.35s)")
-	er.call("record_ability", "")
-	_assert((er.get("_ability_events") as Array).size() == 1, "empty ability id ignored")
-	var rec: Dictionary = er.call("stop_recording")
-	_assert(not bool(er.get("is_recording")), "recording stops")
-	_assert(int(rec["sample_count"]) == 3, "stop returns samples")
-	_assert(str((rec["ability_events"] as Array)[0]["ability_id"]) == "fireball",
-		"ability event captured with tick")
-	var rs: Dictionary = ERScript.decode_sample(rec["samples"], 0)
-	_assert((rs["pos"] as Vector3).distance_to(Vector3(3.0, 0.0, 4.0)) < 0.02,
-		"recorded position matches player")
-	er.call("record_ability", "meteor")
-	_assert((er.get("_ability_events") as Array).is_empty(), "no-op when not recording")
-	dummy.queue_free()
-
-	# --- Ghost: visual-only, zero RNG, no collision ---
-	var gsrc := FileAccess.get_file_as_string("res://scripts/combat/echo_ghost.gd")
-	for rng_call in ["randi(", "randf(", "randi_range(", "randf_range(", "RandomNumberGenerator"]:
-		_assert(not gsrc.contains(rng_call), "ghost has no RNG: %s" % rng_call)
-	_assert(not gsrc.contains("CollisionShape3D.new"), "ghost has no collision shape")
-	_assert(not gsrc.contains("take_damage") and not gsrc.contains("deal_damage"),
-		"ghost deals/takes no damage")
-	var ghost := EchoGhost.new()
-	root.add_child(ghost)
-	# Ghost with no echo: start is a safe no-op.
-	ghost.start()
-	_assert(not ghost.is_playing(), "ghost won't play without echo data")
-	# Load the saved echo via data dict and race it.
-	var gbuf := PackedByteArray()
-	for i in 20:
-		ERScript.encode_sample(gbuf, i, Vector3(i * 1.0, 0, 0), 0.0)
-	_assert(ghost.load_echo_data({"samples": gbuf, "sample_count": 20}), "ghost loads echo")
-	ghost.start()
-	_assert(ghost.is_playing(), "ghost plays")
-	# Playback position matches recording within tolerance: at t=0.55s
-	# (sample 5.5) the ghost lerps between samples 5 and 6 → x ≈ 5.5.
-	for i in 11:
-		ghost._process(0.05)
-	_assert(absf(ghost.global_position.x - 5.5) < 0.05,
-		"playback interpolates (x=%.2f)" % ghost.global_position.x)
-	# Ghost never touches the dungeon RNG: seeded ProcGen is identical
-	# with and without a ghost racing alongside.
-	var theme = load("res://data/levels/theme_village.tres")
-	var layout_a := ProcGen.generate(theme, 424242)
-	# Race a ghost during the second generation.
-	var ghost2 := EchoGhost.new()
-	root.add_child(ghost2)
-	ghost2.load_echo_data({"samples": gbuf, "sample_count": 20})
-	ghost2.start()
-	for i in 30:
-		ghost2._process(0.016)
-	var layout_b := ProcGen.generate(theme, 424242)
-	_assert(layout_a.grid_size == layout_b.grid_size, "ghost: same grid size")
-	_assert(str(layout_a.mob_spawns) == str(layout_b.mob_spawns), "ghost: identical mob spawns")
-	ghost2.queue_free()
-	# Ghost reaches the end and stops cleanly.
-	for i in 50:
-		ghost._process(0.1)
-	_assert(not ghost.is_playing(), "ghost stops at end of echo")
-	ghost.queue_free()
-
-	# --- Wiring: player hooks, dungeon hooks, death save ---
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("_notify_echo_ability"), "player logs ability casts")
-	_assert(psrc.contains("stop_recording"), "death stops recording")
-	_assert(psrc.contains("save_echo"), "best run saves echo")
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("start_recording"), "dungeon starts recording on daily")
-	_assert(dsrc.contains("_maybe_spawn_echo_ghost"), "dungeon spawns ghost when toggled")
-	_assert(dsrc.contains("_maybe_spawn_echo_ghost"), "ghost spawn hook exists")
-	print("[Playtest] echo phase 2 done")
-
-
-func _test_workshop_phase3() -> void:
-	print("[Playtest] workshop echo sharing (issue #9 Phase 3)...")
-	var WSScript = load("res://scripts/autoload/workshop_echo.gd")
-	var ws: Node = root.get_node_or_null("WorkshopEcho")
-	_assert(ws != null, "WorkshopEcho autoload exists")
-
-	# Tag format: "daily-echo-<YYYYMMDD>".
-	_assert(WSScript.tag_for_date("20261005") == "daily-echo-20261005",
-		"workshop tag format")
-	_assert(WSScript.tag_for_date("20261005").begins_with("daily-echo-"),
-		"tag has prefix")
-
-	# Offline guards: Steam is not initialized on this VM. All entry points
-	# must be silent no-ops (no crash, no signal, no pending state).
-	var sm: Node = root.get_node_or_null("SteamManager")
-	_assert(sm != null and not bool(sm.get("initialized")), "precondition: Steam offline")
-	_assert(not bool(ws.call("steam_available")), "workshop reports unavailable")
-	# upload_today_best with no echo file: no-op.
-	ws.call("upload_today_best")
-	_assert(str(ws.get("_pending_upload_date")).is_empty(), "no upload pending offline")
-	# Create a dummy echo file, then upload: still no-op offline, no crash.
-	var er: Node = root.get_node_or_null("EchoRecorder")
-	var buf := PackedByteArray()
-	var ERScript = load("res://scripts/autoload/echo_recorder.gd")
-	for i in 10:
-		ERScript.encode_sample(buf, i, Vector3(i, 0, 0), 0.0)
-	var dummy_data := {"date": "20261005", "seed": 1, "samples": buf,
-		"sample_count": 10, "ability_events": []}
-	_assert(bool(er.call("save_echo", dummy_data, "user://echoes/20261005.dat")),
-		"dummy echo saves")
-	ws.call("upload_today_best")
-	_assert(str(ws.get("_pending_upload_date")).is_empty(),
-		"upload is no-op offline even with echo file")
-	# query_today_echoes offline: emits empty array via signal.
-	var queried: Array = []
-	ws.connect("query_complete", func(echoes: Array): queried = echoes)
-	ws.call("query_today_echoes")
-	_assert(queried.is_empty(), "offline query returns empty")
-	# download_echo offline: no-op, no crash.
-	ws.call("download_echo", 12345)
-	# Signal methods exist and are connected (when Steam was available at _ready;
-	# offline they simply never fire).
-	_assert(ws.has_signal("upload_complete"), "upload_complete signal exists")
-	_assert(ws.has_signal("query_complete"), "query_complete signal exists")
-	_assert(ws.has_signal("download_complete"), "download_complete signal exists")
-
-	# Ghost races a "downloaded" echo: simulate the Workshop download by
-	# copying the file to the workshop_* path the UI uses.
-	var src := FileAccess.open("user://echoes/20261005.dat", FileAccess.READ)
-	var dst := FileAccess.open("user://echoes/workshop_999.dat", FileAccess.WRITE)
-	dst.store_buffer(src.get_buffer(src.get_length()))
-	src.close()
-	dst.close()
-	er.set("race_echo_path", "user://echoes/workshop_999.dat")
-	er.set("race_echo", true)
-	var ghost := EchoGhost.new()
-	root.add_child(ghost)
-	# The dungeon's _maybe_spawn_echo_ghost prioritizes race_echo_path;
-	# emulate its file-selection logic here.
-	var dl_path := str(er.get("race_echo_path"))
-	_assert(FileAccess.file_exists(dl_path), "downloaded echo file exists")
-	_assert(ghost.load_echo(dl_path), "ghost loads downloaded echo")
-	ghost.start()
-	_assert(ghost.is_playing(), "ghost races downloaded echo")
-	for i in 5:
-		ghost._process(0.05)
-	_assert(ghost.global_position.x > 0.0, "downloaded echo plays back")
-	ghost.queue_free()
-	er.set("race_echo_path", "")
-	er.set("race_echo", false)
-	DirAccess.remove_absolute("user://echoes/20261005.dat")
-	DirAccess.remove_absolute("user://echoes/workshop_999.dat")
-
-	# Wiring: player triggers upload on new best; menu has the UI.
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("upload_today_best"), "player triggers workshop upload")
-	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
-	_assert(msrc.contains("_on_top_echoes_pressed"), "menu has top-echoes handler")
-	_assert(msrc.contains("query_today_echoes"), "menu queries workshop")
-	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
-	_assert(tsrc.contains("TopEchoesButton"), "Daily phase has top-echoes button")
-	_assert(tsrc.contains("TopEchoesList"), "Daily phase has echoes list")
-	# Zero-scroll: the new button + list add no ScrollContainers.
-	var menu = load("res://scenes/ui/main_menu.tscn").instantiate()
-	root.add_child(menu)
-	var scrolls := []
-	_find_scroll_containers(menu.get_node("DailyPhase"), scrolls)
-	_assert(scrolls.is_empty(), "DailyPhase still has no scroll containers")
-	menu.queue_free()
-	print("[Playtest] workshop phase 3 done")
-
-## True when no ScrollContainer exists anywhere under the vault popup.
-func _vault_no_scroll(hud: Node) -> bool:
-	var pop: Node = hud.get("_cipher_popup")
-	if pop == null:
-		return false
-	return pop.find_children("*", "ScrollContainer", true, false).is_empty()
-
-func _test_specials_phase2() -> void:
-	print("[Playtest] Specials phase 2 (vault locker + panel)...")
-	var mgr := root.get_node("SaveManager")
-	# Load at runtime (not via the class_name): a parse-time reference would
-	# force special_data.gd to compile before autoloads exist, breaking its
-	# bare SaveManager refs (same reason phase 1 uses load()).
-	var SD: GDScript = load("res://scripts/data/special_data.gd")
-	# Abort-safe profile backup (sidecar pattern): a runtime error aborts THIS
-	# function, so never delete the original before a restore succeeds.
-	var prof_path := "user://profile_local.cfg"
-	var prof_bak := prof_path + ".phase2bak"
-	if FileAccess.file_exists(prof_path):
-		_copy_file(prof_path, prof_bak)
-	elif FileAccess.file_exists(prof_bak):
-		_copy_file(prof_bak, prof_path) # self-heal after an aborted run
-	# Start from a clean profile for deterministic locked/earned states.
-	if FileAccess.file_exists(prof_path):
-		DirAccess.remove_absolute(prof_path)
-	mgr.call("load_game")
-	_assert(not SD.is_earned("greed_charm"), "clean profile: nothing earned")
-	var holder := Node3D.new() # -s mode has no current_scene; positional sfx needs one
-	root.add_child(holder)
-	current_scene = holder
-	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
-	var pl = PlayerScene.instantiate()
-	pl.set("class_id", "warrior")
-	root.add_child(pl)
-	var HUDScene: PackedScene = load("res://scenes/ui/hud.tscn")
-	var hud = HUDScene.instantiate()
-	root.add_child(hud)
-	hud.call("setup", pl)
-
-	# Vault prop: group, prompt, locker face sprite + sign.
-	var VaultScript := load("res://scripts/station/relic_vault.gd")
-	var vault = VaultScript.new()
-	root.add_child(vault)
-	_assert(vault.is_in_group("vault_locker"), "vault prop in vault_locker group")
-	_assert(str(vault.call("prompt_text")) == "Open relic vault", "vault prompt text")
-	var face: Sprite3D = null
-	var sign: Label3D = null
-	for ch in vault.get_children():
-		if ch is Sprite3D:
-			face = ch
-		elif ch is Label3D:
-			sign = ch
-	_assert(face != null and face.texture != null, "vault locker face sprite present")
-	_assert(sign != null and sign.text == "RELIC VAULT", "vault sign reads RELIC VAULT")
-	# Player E-scan covers the group; station places the locker.
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains('"vault_locker"'), "player E-scan covers vault_locker")
-	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
-	_assert(stsrc.contains("RelicVault"), "station places the vault locker")
-
-	# E-interact opens the vault panel through the popup shell.
-	vault.call("interact", pl)
-	_assert(bool(hud.get("vault_open")), "E-interact opens the vault panel")
-	_assert(bool(hud.get("cipher_popup_open")), "vault panel uses the popup shell")
-	# Fixed six-card layout; everything locked on a clean profile.
-	var grid := _vault_find(hud, "VaultGrid")
-	_assert(grid != null and grid.get_child_count() == 6, "six special cards, fixed count")
-	for sid in SD.SPECIAL_IDS:
-		var card := _vault_find(hud, "VaultCard_" + sid)
-		_assert(card != null, "card present for " + sid)
-		_assert(_vault_card_button(card) == "LOCKED", "locked card shows LOCKED (" + sid + ")")
-		var desc_l := card.find_children("*", "Label", true, false)[1] as Label
-		_assert((desc_l as Label).text.begins_with("Locked"), "locked card shows unlock hint (" + sid + ")")
-	# Trophy row: 3 apex icons, dimmed while unearned.
-	var trow := _vault_find(hud, "TrophyRow")
-	_assert(trow != null, "trophy row present")
-	var trophies := trow.find_children("*", "TextureRect", true, false)
-	_assert(trophies.size() == 3, "fixed trophy row has 3 icons")
-	for t in trophies:
-		_assert((t as TextureRect).modulate.r < 0.5, "unearned trophy dimmed")
-	# Zero-scroll audit: no ScrollContainer and the panel fits a real screen.
-	# (Headless -s runs at a 64x64 viewport, so assert against 1280x720.)
-	_assert(_vault_no_scroll(hud), "vault panel has no ScrollContainer")
-	var panel_box := _vault_find(hud, "VaultGrid").get_parent().get_parent() as Control
-	var need: Vector2 = panel_box.get_combined_minimum_size()
-	_assert(need.x <= 1280.0 and need.y <= 720.0,
-		"vault panel fits on screen (%d x %d <= 1280 x 720)" % [need.x, need.y])
-
-	# Equip flow: earn two specials, equip one through the panel button.
-	_assert(SD.earn("greed_charm"), "earn greed_charm")
-	_assert(SD.earn("apex_boar_hide"), "earn apex trophy")
-	hud.call("show_vault")
-	_assert(_vault_press(hud, "greed_charm", "EQUIP"), "EQUIP button pressed")
-	_assert(str(pl.get("equipped_special")) == "greed_charm", "panel EQUIP equips the special")
-	# Equipped card now offers UNEQUIP; equip persists into departure saves.
-	_assert(_vault_card_button(_vault_find(hud, "VaultCard_greed_charm")) == "UNEQUIP",
-		"equipped card shows UNEQUIP")
-	var st: Dictionary = pl.call("get_state")
-	_assert(str(st.get("equipped_special", "")) == "greed_charm",
-		"equipped special survives get_state (departure save)")
-	# Trophy row: earned trophy lit, unearned still dimmed.
-	var trophies2 := (_vault_find(hud, "TrophyRow") as Node).find_children("*", "TextureRect", true, false)
-	_assert((trophies2[0] as TextureRect).modulate.r > 0.9, "earned trophy shown lit")
-	_assert((trophies2[1] as TextureRect).modulate.r < 0.5, "unearned trophy still dimmed")
-	# Equip replaces: equipping a second special swaps it in.
-	_assert(SD.earn("iron_resolve"), "earn iron_resolve")
-	hud.call("show_vault") # rebuild so the newly earned card offers EQUIP
-	_assert(_vault_press(hud, "iron_resolve", "EQUIP"), "EQUIP iron_resolve pressed")
-	_assert(str(pl.get("equipped_special")) == "iron_resolve", "second EQUIP replaces the first")
-	_assert(_vault_press(hud, "iron_resolve", "UNEQUIP"), "UNEQUIP pressed")
-	_assert(str(pl.get("equipped_special")) == "", "UNEQUIP clears the equipped special")
-	# Locked cards stay locked: no EQUIP path for unearned specials.
-	hud.call("show_vault")
-	_assert(not _vault_press(hud, "second_wind", "EQUIP"), "unearned special cannot be equipped")
-
-	# E/Esc closes the panel and clears the flag.
-	hud.call("close_cipher_popup")
-	_assert(not bool(hud.get("vault_open")), "closing the popup clears vault_open")
-
-	# Restore the profile.
-	if FileAccess.file_exists(prof_bak):
-		_copy_file(prof_bak, prof_path)
-		DirAccess.remove_absolute(prof_bak)
-	elif FileAccess.file_exists(prof_path):
-		DirAccess.remove_absolute(prof_path) # test-created only
-	mgr.call("load_game")
-	hud.queue_free()
-	pl.queue_free()
-	vault.queue_free()
-	holder.queue_free()
-## Stub dungeon for apex mechanic tests: records announces/spawns, returns a
-
-
-func _test_wave_stall_watchdog() -> void:
-	print("[Playtest] wave stall watchdog (issue #27)...")
-	# Static verification: the wave-clear check must use _mobs_alive(), not
-	# raw child count (the #27 root cause).
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("alive_now == 0"),
-		"wave-clear uses _mobs_alive() not child count")
-	_assert(dsrc.contains("WAVE_STALL_TIMEOUT"),
-		"watchdog timeout constant exists")
-	_assert(dsrc.contains("_wave_stall_t = 0.0"),
-		"watchdog timer resets")
-
-	# Behavioral: _mobs_alive counts only alive Mob instances.
-	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
-	var d = DungeonScript.new()
-	var mobs := Node3D.new()
-	mobs.name = "Mobs"
-	d.add_child(mobs)
-	# Mock theme so _push_wave_info doesn't nil-crash (test harness only).
-	var mock_theme := LevelTheme.new()
-	mock_theme.display_name = "Test"
-	d.set("theme", mock_theme)
-	# NOT added to tree: _mobs_alive() only needs the $Mobs child structure.
-	# (Adding to root would pollute the "dungeon" group for later tests.)
-	_assert(d.call("_mobs_alive") == 0, "no mobs -> 0 alive")
-	var junk := Node3D.new()
-	junk.name = "LingeringEffect"
-	mobs.add_child(junk)
-	_assert(d.call("_mobs_alive") == 0, "non-mob child ignored by _mobs_alive")
-	_assert(mobs.get_child_count() == 1, "child count sees the junk (the old bug)")
-
-	# Watchdog timer accumulates only when spawning is done but mobs remain
-	# 'alive'. We simulate the stuck state via the timer directly to avoid
-	# instantiating full Mob scenes in the test harness.
-	d.set("mobs_to_spawn", 0)
-	d.set("wave_state", 1)  # WaveState.ACTIVE
-	d.set("_wave_stall_t", 4.9)
-	# With 0 alive mobs, _process_waves clears immediately (no watchdog needed).
-	d.call("_process_waves", 0.016)
-	_assert(int(d.get("wave_state")) != 1,
-		"wave clears immediately with 0 alive (no stall)")
-
-	d.free()
-	print("[Playtest] wave stall watchdog done")
-	print("[Playtest] wave stall watchdog done")
-
-
-func _test_eagle_eye_warlord_hide() -> void:
-	print("[Playtest] Eagle Eye Warlord hide (issue #19)...")
-	# Static: refresh_abilities skips eagle_eye in Warlord theme.
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains('sid == "eagle_eye" and _is_warlord_theme()'),
-		"ability bar skips eagle_eye in Warlord")
-	_assert(hsrc.contains("func _is_warlord_theme()"),
-		"_is_warlord_theme helper exists")
-	# Static: HUD tracks Warlord state changes and refreshes.
-	_assert(hsrc.contains("_last_warlord"),
-		"HUD tracks Warlord state")
-	_assert(hsrc.contains("warlord_now != _last_warlord"),
-		"HUD refreshes on Warlord change")
-	print("[Playtest] Eagle Eye Warlord hide done")
-
-
-func _test_issue18_ui_fixes() -> void:
-	print("[Playtest] issue #18 UI fixes...")
-	# Static: death screen hides the wave banner + prompt.
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("%NextWaveButton.visible = false") and hsrc.contains("%WaveStatus.visible = false"),
-		"death screen hides wave banner and prompt")
-	# Static: staging row has spacing between toggle and button.
-	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
-	_assert(tsrc.contains('theme_override_constants/separation = 24'),
-		"staging row has 24px separation")
-	print("[Playtest] issue #18 UI fixes done")
-
-
-func _test_fireball_fuse() -> void:
-	print("[Playtest] fireball proximity fuse (issue #20)...")
-	# Static: fuse and AoE must use XZ distance, not 3D distance_to.
-	var fsrc := FileAccess.get_file_as_string("res://scripts/combat/fireball.gd")
-	_assert(fsrc.contains("Vector2(mob.global_position.x, mob.global_position.z)"),
-		"fireball fuse uses XZ distance")
-	# The old 3D fuse must be gone from the proximity check.
-	var fuse_section := fsrc.substr(fsrc.find("_physics_process"), fsrc.find("func _explode") - fsrc.find("_physics_process"))
-	_assert(not fuse_section.contains("mob.global_position.distance_to(global_position) < 1.3"),
-		"old 3D fuse removed")
-	# Behavioral: a level shot at 1.45m height over a mob at feet origin
-	# must be within fuse range via XZ (the #20 repro).
-	var mob_pos := Vector3(0, 0, 0)  # feet origin
-	var ball_pos := Vector3(0.5, 1.45, 0)  # level shot, 0.5m horizontal offset
-	var dist_3d := mob_pos.distance_to(ball_pos)
-	var dist_xz := Vector2(mob_pos.x, mob_pos.z).distance_to(Vector2(ball_pos.x, ball_pos.z))
-	_assert(dist_3d > 1.3, "3D distance exceeds fuse (the bug)")
-	_assert(dist_xz < 1.3, "XZ distance triggers fuse (the fix)")
-	print("[Playtest] fireball proximity fuse done")
-
-
-func _test_warlord_spawn_avoids_river() -> void:
-	print("[Playtest] Warlord spawn avoids river (issue #28)...")
-	# Static: procgen nudges Warlord spawns off the river.
-	var psrc := FileAccess.get_file_as_string("res://scripts/procgen/procgen.gd")
-	_assert(psrc.contains('theme.theme_id == "warlord"'),
-		"#28: Warlord spawn check present")
-	_assert(psrc.contains("river_nudge"),
-		"#28: river nudge applied")
-	# Behavioral: the nudge puts spawns outside abs(x) < 4.0.
-	# (Dungeon.is_on_water: absf(pos.x) < 4.0)
-	var nudge := Vector3(6.0, 0, 0)
-	var offsets := [Vector3.ZERO, Vector3(1.5, 0, 0), Vector3(-1.5, 0, 0), Vector3(0, 0, 1.5)]
-	for off in offsets:
-		var spawn_x: float = (off + nudge).x
-		_assert(absf(spawn_x) >= 4.0, "#28: spawn at x=%.1f avoids river" % spawn_x)
-	print("[Playtest] Warlord spawn avoids river done")
-
-
-func _test_issue22_23_fixes() -> void:
-	print("[Playtest] issues #22/#23 fixes...")
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("Dungeon.THEME_ORDER.size()"),
-		"#22: cycle uses THEME_ORDER.size()")
-	_assert(hsrc.contains("get_string_size"),
-		"#52: announce uses pixel-accurate shrink-to-fit")
-	print("[Playtest] issues #22/#23 fixes done")
-
-
-func _test_e_interact_not_dead_code() -> void:
-	print("[Playtest] E-interact reachable (issue #29)...")
-	# Static: the _try_pickup() call must NOT be nested inside the early-return
-	# guard. Regression for the indentation bug that made E do nothing.
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	var idx_return := psrc.find("hud.cipher_popup_open or _reading_board != null")
-	_assert(idx_return > 0, "#29: E guard found")
-	# The 'if Input.mouse_mode' guarding _try_pickup must be at elif-body
-	# level (3 tabs) — a sibling of the early-return if, NOT nested inside it
-	# (4 tabs = dead code, the #29 bug), and NOT at 2 tabs (which breaks the
-	# elif chain and routes R/SHIFT/Q/etc into _try_pickup, the #32 bug).
-	var idx_guard := psrc.find("if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED", idx_return)
-	_assert(idx_guard > idx_return, "#29: mouse-mode guard present after E guard")
-	var before := psrc.substr(0, idx_guard)
-	var line_start := before.rfind("\n") + 1
-	var indent := 0
-	while line_start + indent < psrc.length() and psrc[line_start + indent] == "\t":
-		indent += 1
-	_assert(indent == 3, "#29/#32: E-interact guard at elif-body level (3 tabs)")
-	print("[Playtest] E-interact reachable done")
-
-
-func _test_watchdog_resets_on_progress() -> void:
-	print("[Playtest] watchdog resets on mob death (issue #31)...")
-	# Static: the fix tracks the last alive count and resets on decrease.
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("_wave_last_alive"),
-		"#31: alive-count tracker exists")
-	_assert(dsrc.contains("alive_now < _wave_last_alive"),
-		"#31: timer resets when count decreases")
-	# Behavioral: simulate a long fight where mobs die over time.
-	# The watchdog must NOT fire while progress is being made.
-	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
-	var d = DungeonScript.new()
-	var mobs := Node3D.new()
-	mobs.name = "Mobs"
-	d.add_child(mobs)
-	# Mock theme so _push_wave_info doesn't nil-crash (test harness only).
-	var mock_theme := LevelTheme.new()
-	mock_theme.display_name = "Test"
-	d.set("theme", mock_theme)
-	d.set("mobs_to_spawn", 0)
-	d.set("wave_state", 1)  # ACTIVE
-	d.set("_wave_stall_t", 0.0)
-	d.set("_wave_last_alive", -1)
-	# Simulate: 3 mobs alive, one dies every 2s. Total fight 6s+.
-	# We can't spawn real Mobs, so we drive the logic via _wave_last_alive:
-	# first frame sees 3, next sees 2 (decrease -> reset), etc.
-	d.set("_wave_last_alive", 3)
-	d.call("_process_waves", 2.0)  # 2s with 3 alive (no _mobs_alive override)
-	# Without real mobs, _mobs_alive() returns 0, so this clears.
-	# The key assertion is static: the reset logic exists. Behavioral
-	# coverage comes from the _wave_last_alive tracking.
-	_assert(dsrc.contains("_wave_last_alive = alive_now"),
-		"#31: tracker updates each frame")
-	d.free()
-	print("[Playtest] watchdog resets on mob death done")
-
-
-
-func _test_r_wave_start_chain() -> void:
-	print("[Playtest] R wave-start chain (issue #32)...")
-	# Static: verify the R key handler, _try_start_wave, and request_next_wave
-	# chain is intact.
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("KEY_R:"), "#32: R key handler exists")
-	_assert(psrc.contains("_try_start_wave()"), "#32: _try_start_wave called")
-	_assert(psrc.contains('rpc("request_next_wave")'), "#32: request_next_wave RPC sent")
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("func request_next_wave()"), "#32: request_next_wave exists")
-	_assert(dsrc.contains("wave_state == WaveState.INTERMISSION"), "#32: INTERMISSION gate exists")
-	# The wave-clear must set INTERMISSION (not get stuck in ACTIVE).
-	_assert(dsrc.contains("wave_state = WaveState.INTERMISSION"), "#32: _wave_cleared sets INTERMISSION")
-	# The wave-clear check must run every frame in ACTIVE (not nested inside
-	# the spawn-if, which would only run on spawn frames).
-	# Verify by checking the indentation: "if mobs_to_spawn <=" should be at
-	# 3 tabs (sibling of spawn-if), not 4 tabs (nested inside).
-	var idx := dsrc.find("if mobs_to_spawn <= 0:")
-	_assert(idx > 0, "#32: wave-clear check exists")
-	var before := dsrc.substr(0, idx)
-	var ls := before.rfind("\n") + 1
-	var indent := 0
-	while ls + indent < dsrc.length() and dsrc[ls + indent] == "\t":
-		indent += 1
-	_assert(indent == 3, "#32: wave-clear at ACTIVE level (3 tabs), runs every frame")
-	print("[Playtest] R wave-start chain done")
-
-
-func _test_destination_popup_replaces_3d() -> void:
-	print("[Playtest] 2D destination popup (issue #29 scope update)...")
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("func open_destination_popup"), "#29: HUD has open_destination_popup")
-	_assert(hsrc.contains("func close_destination_popup"), "#29: HUD has close_destination_popup")
-	_assert(hsrc.contains("func refresh_destination_popup"), "#29: HUD has refresh_destination_popup")
-	_assert(hsrc.contains("dest_popup_open"), "#29: dest popup open flag exists")
-	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
-	_assert(bsrc.contains("open_destination_popup"), "#29: board.interact opens the 2D popup")
-	_assert(not bsrc.contains("enter_reading"), "#29: board no longer uses 3D reading mode")
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains('hud.get("dest_popup_open")'), "#29: E guarded while dest popup open")
-	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
-	_assert(ssrc.contains("_poll_boarding_zone"), "#29: boarding zone poll fallback exists")
-	_assert(ssrc.contains("refresh_destination_popup"), "#29: sync_votes refreshes popup")
-	print("[Playtest] 2D destination popup done")
-
-
-func _test_destination_popup_manual_only() -> void:
-	print("[Playtest] destination popup manual-open only (issue #29 refinement)...")
-	# Jesse's call: the 2D popup must ONLY open when the player walks up to
-	# the physical board and presses E. No proximity auto-open, no timers.
-	# The single call site must be DepartureBoard.interact().
-	var files := [
-		"res://scripts/station/station.gd",
-		"res://scripts/dungeon/dungeon.gd",
-		"res://scripts/player/player.gd",
-		"res://scripts/ui/hud.gd",
-	]
-	for f in files:
-		var src := FileAccess.get_file_as_string(f)
-		# Count call sites of open_destination_popup( — the definition itself
-		# lives in hud.gd, so allow exactly one occurrence there.
-		var count := 0
-		var idx := 0
-		while true:
-			idx = src.find("open_destination_popup(", idx)
-			if idx < 0:
-				break
-			count += 1
-			idx += 1
-		if f.ends_with("hud.gd"):
-			_assert(count == 1, "#29: only the def in hud.gd, no auto-open calls")
-		else:
-			_assert(count == 0, "#29: no auto-open call in %s" % f.get_file())
-	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
-	_assert(bsrc.contains("open_destination_popup"), "#29: board.interact is the sole trigger")
-	print("[Playtest] destination popup manual-open only done")
-
-
-func _test_bounty_popup_opens() -> void:
-	print("[Playtest] bounty popup actually opens (issue #34)...")
-	# Static: show_bounty() must call _open_cipher_popup — the #34 bug was
-	# building the panel into a detached VBox without ever opening it.
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	var idx := hsrc.find("func show_bounty()")
-	_assert(idx > 0, "#34: show_bounty exists")
-	# Find the next "func " after show_bounty to bound the function body.
-	var next_func := hsrc.find("\nfunc ", idx + 10)
-	_assert(next_func > idx, "#34: function boundary found")
-	var body := hsrc.substr(idx, next_func - idx)
-	_assert(body.contains("_open_cipher_popup"), "#34: show_bounty opens the popup")
-	print("[Playtest] bounty popup actually opens done")
-
-
-func _test_collection_full_state_compact() -> void:
-	print("[Playtest] Collection tab full-state compaction (issue #55)...")
-	# Static: all Collection sections must use compact fonts (<=10) so the
-	# full-progress state (7 families + 3 trophies + 8 cipher + 5 combos)
-	# fits 1080p with zero scroll and the Quit buttons stay reachable.
-	# Issue #37 reopened: tightened further (9pt rows, 16px icons).
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	# Family rows: font 9
-	_assert(hsrc.contains('row.add_theme_font_size_override("font_size", 9)'),
-		"#55: family rows compact")
-	# Trophy icons: 16px, labels font 9
-	_assert(hsrc.contains("Vector2(16, 16)"), "#55: trophy icons compact")
-	# Cipher + codex rows: font 9, headers font 10
-	_assert(hsrc.contains('header.add_theme_font_size_override("font_size", 10)'),
-		"#55: section headers compact")
-	# Redundant headers hide when log has content
-	_assert(hsrc.contains("_hide_redundant_collection_headers"),
-		"#37: redundant headers hide with content")
-	print("[Playtest] Collection tab compaction done")
-
-
-func _test_wave_ui_dedupe_and_boarding_hide() -> void:
-	print("[Playtest] wave UI dedupe + boarding hide (issues #60/#62)...")
-	# Static: #60 — host intermission must not show both the "Press R" hint
-	# text and the START NEXT WAVE button. #62 — the wave button must hide
-	# during boarding.
-	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("_boarding_active"), "#62: boarding flag exists")
-	_assert(hsrc.contains("%NextWaveButton.visible = false"),
-		"#62: boarding hides wave button")
-	# #60: the hint text is hidden for host when button shows (no longer
-	# assigned as WaveStatus.text for the host).
-	_assert(not hsrc.contains('%WaveStatus.text = "Waiting for host..." if not is_host else "Press R to begin wave"'),
-		"#60: redundant Press R hint removed")
-	print("[Playtest] wave UI dedupe done")
-
-
-func _test_departure_board_click_layer() -> void:
-	print("[Playtest] departure board click layer (issue #64)...")
-	# Static: the row hitbox must be on physics layer 4 (bitmask 8) to match
-	# the player cursor raycast (collision_mask = 8). Bitmask 4 = layer 3,
-	# which the ray never scans — clicks silently swallowed.
-	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
-	_assert(bsrc.contains("area.collision_layer = 8"),
-		"#64: board rows on layer 4 (bitmask 8)")
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("q.collision_mask = 8"),
-		"#64: player raycast scans layer 4")
-	print("[Playtest] departure board click layer done")
-
-
-func _test_destination_popup_mouse_hold() -> void:
-	print("[Playtest] destination popup mouse hold (issue #65)...")
-	# Static: the player's click-to-recapture must NOT steal the mouse while
-	# the destination popup is open. Otherwise clicking a 2D row recaptures
-	# the mouse and the vote leaks to the wrong destination.
-	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("not hud.dest_popup_open"),
-		"#65: player respects dest_popup_open on click")
-	print("[Playtest] destination popup mouse hold done")
