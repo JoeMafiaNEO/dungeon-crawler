@@ -389,9 +389,26 @@ func _do_ascend() -> void:
 	# Increment own ascension count.
 	var new_count := SaveManager.add_ascension()
 	print("[Ascension] Ascended! Count: %d (+%d%% XP)" % [new_count, int((SaveManager.get_ascension_xp_mult() - 1.0) * 100.0)])
-	# TODO Phase 2: full run wipe + fresh Cycle 1 start. For Phase 1, the
-	# count and buff are live; the run continues (wipe path hooks in Phase 2).
-	# Reset the vote state so the board can be used again.
+	# Issue #11 Phase 2: full run wipe. Clear the current run slot
+	# (same wipe path as death — inventory, level, gold, bounties gone;
+	# profile achievements/unlocks/collections/trophies untouched).
+	var mode := NetworkManager.active_run_mode
+	var slot := NetworkManager.active_run_slot
+	if mode != "" and slot >= 0:
+		SaveManager.clear_run(mode, slot)
+	# Reset local player to fresh Cycle 1 state (level 1).
+	var player := get_tree().get_first_node_in_group("players")
+	if player != null and player.is_multiplayer_authority():
+		player.set("level", 1)
+		player.set("xp", 0)
+		# Clear inventory via the player's reset (if available).
+		if player.has_method("clear_inventory"):
+			player.clear_inventory()
+	# Update the HUD ascension indicator.
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("_update_ascension_indicator"):
+		hud._update_ascension_indicator()
+	# Reset the vote state so the board can be used again for the fresh run.
 	if multiplayer.is_server():
 		votes.clear()
 		_departing = false
