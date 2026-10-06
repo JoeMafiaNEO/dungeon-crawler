@@ -104,6 +104,7 @@ func _run() -> void:
 	_test_settings_phase1()
 	_test_settings_phase2()
 	_test_thrown_dagger_phase1()
+	_test_holy_light_nuke()
 
 	_print_results()
 	quit()
@@ -3653,6 +3654,21 @@ class RelicDungeonStub extends Node:
 		return null
 
 
+## Stub dungeon for Holy Light tests: carries a _layout for map-size math,
+## plus the announce RPCs mobs may trigger (apex gates).
+class HolyDungeonStub extends Node3D:
+	var _layout = {"grid_size": 48, "cell_size": 4.0}
+	var announces: Array = []
+
+	@rpc("any_peer", "call_local")
+	func announce(msg: String) -> void:
+		announces.append(msg)
+
+	@rpc("any_peer", "call_local")
+	func announce_key(key: String, args: Array = []) -> void:
+		announces.append(key)
+
+
 func _test_apex_relics() -> void:
 	print("[Playtest] Apex phase 3 relics + trophies...")
 	# --- Special registry (#6 API): 3 apex specials with effect_params.
@@ -4022,6 +4038,98 @@ func _test_thrown_dagger_hit_once() -> void:
 	_assert(tsrc.contains("_hit_mobs.clear()"), "hit set cleared on return")
 	_assert(tsrc.contains("_hit_mobs.has("), "hit check skips already-hit mobs")
 	print("[Playtest] Thrown dagger hit-once-per-leg done")
+
+
+func _test_holy_light_nuke() -> void:
+	print("[Playtest] Holy Light huge AoE nuke...")
+	var SD: GDScript = load("res://scripts/data/special_data.gd")
+	var holder := Node3D.new() # -s mode has no current_scene; positional sfx needs one
+	root.add_child(holder)
+	current_scene = holder
+	# Clear stale dungeon stubs (relic-test pattern): the nuke and apex
+	# announce RPCs target group[0], which must be our stub.
+	for n in get_nodes_in_group("dungeon"):
+		n.get_parent().remove_child(n)
+		n.free()
+	var stub := HolyDungeonStub.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var mage = PlayerScene.instantiate()
+	mage.set("class_id", "mage")
+	mage.set("bonus_aura", 20.0)
+	holder.add_child(mage)
+	_assert(SD.is_earned("holy_light"), "holy: aura-20 mage earns Holy Light")
+	_assert(SD.equip(mage, "holy_light"), "holy: equip succeeds")
+	var has_hl: bool = (mage.get("unlocked_abilities") as Array).any(
+		func(x): return x["id"] == "holy_light")
+	_assert(has_hl, "holy: key-7 ability granted when equipped")
+	# Mobs: inner (5m), edge (exactly 18m), just-outside (18.6m), far (25m).
+	# Tanky hp_scale so they survive to measure exact damage.
+	var sdata: Resource = load("res://data/mobs/slime.tres")
+	var spots := [5.0, 18.0, 18.6, 25.0]
+	var mobs := []
+	var hp0 := []
+	for d in spots:
+		var m = MobScene.instantiate()
+		m.setup(1, sdata, 200.0, 1.0, false, 1.0)
+		holder.add_child(m)
+		m.global_position = mage.global_position + Vector3(d, 0, 0)
+		mobs.append(m)
+		hp0.append(float(m.get("hp")))
+		_assert(bool(m.get("alive")), "holy: mob at %dm starts alive" % d)
+	# Expected nuke damage: 6x buffed mage damage.
+	var expected: float = float(mage.get("damage")) \
+		* float(mage.call("_buff_mult", "damage")) \
+		* float(mage.call("rank_mult")) * 6.0
+	_assert(expected > 0.0, "holy: expected damage positive")
+	mage.call("_cast_holy_light")
+	# Visual: the HolyLight node spawns under the dungeon, map-wide range.
+	var light_node: Node = root.find_child("HolyLight", true, false)
+	_assert(light_node != null, "holy: HolyLight node spawns on cast")
+	if light_node != null:
+		var parent_layout = light_node.get_parent().get("_layout")
+		var ms := 60.0
+		if parent_layout != null:
+			ms = float(parent_layout["grid_size"]) * float(parent_layout["cell_size"])
+		_assert(absf(float(light_node.get("omni_range")) - ms * 1.5) < 1.0,
+			"holy: light range covers map")
+	# Cooldown: applied and blocks a second cast (no double nuke).
+	_assert(float((mage.get("ability_cds") as Dictionary).get("holy_light", 0.0)) > 0.0,
+		"holy: 20s cooldown applied")
+	var hp_before := float(mobs[0].get("hp"))
+	mage.call("_cast_holy_light")
+	_assert(float(mobs[0].get("hp")) == hp_before, "holy: cooldown blocks recast damage")
+	var light_count := 0
+	var stack := [root]
+	while not stack.is_empty():
+		var sn: Node = stack.pop_back()
+		if str(sn.name) == "HolyLight":
+			light_count += 1
+		stack.append_array(sn.get_children())
+	_assert(light_count == 1, "holy: cooldown blocks second light")
+	# Damage by distance: 5m and 18m hit for ~6x, 18.6m and 25m untouched.
+	for i in range(4):
+		var dealt: float = hp0[i] - float(mobs[i].get("hp"))
+		if spots[i] <= 18.0:
+			_assert(dealt > 0.0, "holy: mob at %dm takes damage" % spots[i])
+			_assert(absf(dealt - expected) / expected < 0.05,
+				"holy: mob at %dm takes 6x (%.0f vs %.0f)" % [spots[i], dealt, expected])
+		else:
+			_assert(dealt == 0.0, "holy: mob at %dm untouched" % spots[i])
+	# Recast after clearing the cooldown does not error (dead mobs skipped).
+	(mage.get("ability_cds") as Dictionary)["holy_light"] = 0.0
+	mage.call("_cast_holy_light")
+	_assert(true, "holy: recast after cooldown does not error")
+	# Cleanup: stub out of the dungeon group so later tests see a clean tree.
+	stub.remove_from_group("dungeon")
+	stub.queue_free()
+	for m in mobs:
+		m.queue_free()
+	mage.queue_free()
+	holder.queue_free()
+	print("[Playtest] Holy Light huge AoE nuke done")
 
 
 ## Recursive ScrollContainer audit for the zero-scroll rule.

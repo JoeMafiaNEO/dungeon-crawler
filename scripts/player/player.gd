@@ -696,7 +696,7 @@ static func class_abilities(cid: String) -> Array:
 				{"id": "meteor", "name": "Meteor", "unlock": 8, "key": "4", "desc": "Delayed fiery impact"},
 				{"id": "barrage", "name": "Arcane Barrage", "unlock": 15, "key": "5", "desc": "Triple bolt spread"},
 				{"id": "blizzard", "name": "Blizzard", "unlock": 30, "key": "6", "desc": "Freezing storm, DoT + slow"},
-				{"id": "holy_light", "name": "Holy Light", "unlock": 999, "key": "7", "desc": "Lights up the whole map 10s (20s cd)", "aura_req": 20},
+				{"id": "holy_light", "name": "Holy Light", "unlock": 999, "key": "7", "desc": "Radiant nuke: 6x dmg in 18m + lights the map 10s (20s cd)", "aura_req": 20},
 			]
 		"warrior":
 			return [
@@ -2235,18 +2235,23 @@ func _cast_demolish() -> void:
 		hud.refresh_abilities(self)
 
 
-## Holy Light: bathes the whole map in radiant light for 10s. 20s cooldown.
+## Holy Light: huge radiant nuke around the caster (6x damage, 18m radius)
+## plus map-wide radiant light for 10s. 20s cooldown.
+const HOLY_LIGHT_RADIUS := 18.0
+const HOLY_LIGHT_DMG_MULT := 6.0
+
 func _cast_holy_light() -> void:
 	if float(ability_cds.get("holy_light", 0.0)) > 0.0:
 		if hud != null:
 			hud.toast("Holy Light on cooldown!")
 		return
 	ability_cds["holy_light"] = (20.0) * cooldown_mult()
-	rpc("spawn_holy_light")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * HOLY_LIGHT_DMG_MULT
+	rpc("spawn_holy_light", int(multiplayer.get_unique_id()), dmg)
 
 
 @rpc("any_peer", "call_local")
-func spawn_holy_light() -> void:
+func spawn_holy_light(owner: int, dmg: float) -> void:
 	var dungeons := get_tree().get_nodes_in_group("dungeon")
 	if dungeons.is_empty():
 		return
@@ -2256,6 +2261,11 @@ func spawn_holy_light() -> void:
 	var map_size := 60.0
 	if layout != null:
 		map_size = float(layout.grid_size) * layout.cell_size
+	var at := global_position
+	# Radiant detonation visuals: gold/white bursts + radius ring.
+	Effects.burst(dungeon, at + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.5), 80, 12.0)
+	Effects.burst(dungeon, at + Vector3(0, 1.0, 0), Color(1.0, 1.0, 0.95), 40, 8.0)
+	Effects.telegraph_ring(dungeon, at, HOLY_LIGHT_RADIUS, Color(1.0, 0.9, 0.5))
 	# Brilliant light from above, covering the entire map.
 	var light := OmniLight3D.new()
 	light.name = "HolyLight"
@@ -2274,6 +2284,14 @@ func spawn_holy_light() -> void:
 	tw.tween_interval(10.0)
 	tw.tween_property(light, "light_energy", 0.0, 2.0)
 	tw.tween_callback(light.queue_free)
+	# Server-authoritative AoE damage (meteor pattern).
+	if multiplayer.is_server():
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var m := n as Mob
+			if m == null or not m.alive:
+				continue
+			if m.global_position.distance_to(at) <= HOLY_LIGHT_RADIUS:
+				m.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, at)
 
 
 func _cast_fireball() -> void:
