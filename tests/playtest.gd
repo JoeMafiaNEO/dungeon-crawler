@@ -79,6 +79,7 @@ func _run() -> void:
 	_test_potion_quick_slot()
 	_test_positioning_fixes()
 	_test_lan_multiplayer_phase1()
+	_test_lan_lobby_fixes()
 	_test_shieldbearer()
 	_test_splitter()
 	_test_gravewarden()
@@ -4870,3 +4871,39 @@ func _test_lan_multiplayer_phase1() -> void:
 	_assert(msrc.contains("_build_join_lan_ui"), "join LAN UI builder exists")
 	_assert(msrc.contains("KickButton"), "kick button exists")
 	print("[Playtest] LAN multiplayer Phase 1 done")
+
+
+## LAN lobby fixes: start button works on LAN, roster syncs to clients.
+## (Static checks: autoload singletons aren't visible as identifiers in -s
+## script mode, so this suite verifies the wiring by source inspection —
+## the same convention as _test_lan_multiplayer_phase1.)
+func _test_lan_lobby_fixes() -> void:
+	print("[Playtest] LAN lobby fixes (start button + roster sync)...")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	# Fix 1: start_game must handle LAN before the Steam lobby_id gate.
+	var sg := nsrc.find("func start_game()")
+	var lan_branch := nsrc.find("if transport == Transport.LAN:", sg)
+	var lobby_gate := nsrc.find("if lobby_id == 0:", sg)
+	_assert(sg != -1 and lan_branch != -1 and lobby_gate != -1 and lan_branch < lobby_gate,
+		"start_game handles LAN before the lobby_id gate")
+	_assert(nsrc.find('rpc("load_dungeon"', sg) != -1, "start_game broadcasts dungeon load")
+	# Fix 2: host broadcasts the roster so clients' lobby menus stay current.
+	_assert(nsrc.contains("func lan_sync_roster"), "roster broadcast RPC exists")
+	_assert(nsrc.contains("func _broadcast_lan_roster"), "roster broadcast helper exists")
+	_assert(nsrc.contains("@rpc(\"authority\", \"call_remote\", \"reliable\")\nfunc lan_sync_roster"),
+		"roster broadcast is authority/reliable")
+	# Broadcast is wired into every membership change: announce, disconnect, kick.
+	var ann := nsrc.find("func lan_announce_name")
+	_assert(ann != -1 and nsrc.find("_broadcast_lan_roster()", ann) != -1,
+		"announce triggers roster broadcast")
+	var disc := nsrc.find("func _on_peer_disconnected")
+	_assert(disc != -1 and nsrc.find("lan_names.erase", disc) != -1,
+		"disconnect erases the name (no ghosts)")
+	_assert(disc != -1 and nsrc.find("_broadcast_lan_roster()", disc) != -1,
+		"disconnect triggers roster broadcast")
+	var kick := nsrc.find("func kick_peer")
+	_assert(kick != -1 and nsrc.find("_broadcast_lan_roster()", kick) != -1,
+		"kick triggers roster broadcast")
+	# The broadcast replaces the roster wholesale on clients.
+	_assert(nsrc.contains("lan_names = names.duplicate()"), "roster sync replaces names")
+	print("[Playtest] LAN lobby fixes done")

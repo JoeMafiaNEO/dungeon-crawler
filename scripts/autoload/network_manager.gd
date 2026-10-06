@@ -168,6 +168,23 @@ func lan_announce_name(player_name: String) -> void:
 	lan_names[sender] = player_name
 	_refresh_members()
 	lobby_members_changed.emit()
+	_broadcast_lan_roster()
+
+
+## Host -> all LAN clients: broadcast the full cosmetic-name roster.
+## Keeps every client's lobby menu current on join/leave/kick.
+@rpc("authority", "call_remote", "reliable")
+func lan_sync_roster(names: Dictionary) -> void:
+	lan_names = names.duplicate()
+	_refresh_members()
+	lobby_members_changed.emit()
+
+
+## Host-side: push the current LAN roster to every connected client.
+func _broadcast_lan_roster() -> void:
+	if not is_host or transport != Transport.LAN:
+		return
+	rpc("lan_sync_roster", lan_names)
 
 
 func _on_lan_peer_connected(id: int) -> void:
@@ -186,11 +203,19 @@ func kick_peer(peer_id: int) -> void:
 		lan_names.erase(peer_id)
 		_refresh_members()
 		lobby_members_changed.emit()
+		_broadcast_lan_roster()
 	# Steam: no kick API in Phase 1 (lobby owner can use Steam UI).
 
 
 func start_game() -> void:
-	if not is_host or lobby_id == 0:
+	if not is_host:
+		return
+	if transport == Transport.LAN:
+		# LAN has no Steam lobby: broadcast the dungeon load directly.
+		Dungeon.saved_player_state = {}
+		rpc("load_dungeon", "village", randi(), 1)
+		return
+	if lobby_id == 0:
 		return
 	Steam.setLobbyJoinable(lobby_id, false)
 	Dungeon.saved_player_state = {}
@@ -277,7 +302,11 @@ func _on_peer_connected(id: int) -> void:
 	lobby_members_changed.emit()
 
 
-func _on_peer_disconnected(_id: int) -> void:
+func _on_peer_disconnected(id: int) -> void:
+	if transport == Transport.LAN:
+		# Drop the name so ghosts don't linger in the lobby list.
+		lan_names.erase(id)
+		_broadcast_lan_roster()
 	_refresh_members()
 	lobby_members_changed.emit()
 
