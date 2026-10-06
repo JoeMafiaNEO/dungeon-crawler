@@ -1,7 +1,7 @@
 extends Node
 ## Central audio: music crossfading, pooled SFX (2D + positional 3D),
 ## volume persistence. All audio is synthesized in code (SoundSynth/MusicGen);
-## drop a file at res://assets/audio/sfx/<name>.ogg (or .wav) or
+## drop a file at res://assets/audio/sfx/<name>.ogg (or .wav/.mp3) or
 ## res://assets/audio/music/<theme>.ogg to override any generated sound.
 
 const POOL_SIZE := 12
@@ -149,8 +149,8 @@ func _load_volumes() -> void:
 func _get_sfx(sfx_name: String) -> AudioStream:
 	if _sfx_cache.has(sfx_name):
 		return _sfx_cache[sfx_name]
-	# File override first.
-	for ext in ["ogg", "wav"]:
+	# File override first (mp3 supported: Jesse's field recordings).
+	for ext in ["ogg", "wav", "mp3"]:
 		var path := "res://assets/audio/sfx/%s.%s" % [sfx_name, ext]
 		if ResourceLoader.exists(path):
 			var w := load(path) as AudioStream

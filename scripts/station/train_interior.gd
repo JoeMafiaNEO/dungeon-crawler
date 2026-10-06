@@ -28,9 +28,10 @@ static var ride_seconds := 25.0
 static var ride_seconds_override := 0.0
 
 ## Train audio policy (Jesse, 2026-10-05): his inside-old-train recording is
-## the ONLY train sound for now. The synth whistle/chug/rumble/brake cues
-## stay in the code but are silent. Flip back to true if he wants to expand
-## the train soundscape later.
+## the ride ambient and his brake recording is the brake sound — the only
+## train sounds for now. The synth whistle/chug/rumble cues stay in the code
+## but are silent. Flip back to true if he wants to expand the train
+## soundscape later.
 const USE_SYNTH_TRAIN_CUES := false
 
 ## Full ride length. The skip lever fast-forwards to ~2s remaining.
@@ -262,8 +263,9 @@ func begin_arrival() -> void:
 	_arrived = true
 	_riding = false
 	ride_active = false
-	if USE_SYNTH_TRAIN_CUES:
-		AudioManager.sfx("train_brake")
+	# Jesse's brake recording (assets/audio/sfx/train_brake.mp3) overrides the
+	# synth via the file-override path, so this always plays his sound.
+	AudioManager.sfx("train_brake")
 	if _local_hud != null:
 		_local_hud.announce("NOW ARRIVING: " + _ride_dest, Dungeon.arrival_tint(ride_theme_id))
 		if _local_hud.has_method("hide_station_timer"):

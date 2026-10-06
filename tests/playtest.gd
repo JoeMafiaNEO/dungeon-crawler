@@ -1184,6 +1184,11 @@ func _test_train_ambient() -> void:
 	# flipping the const.
 	_assert(tsrc.contains("const USE_SYNTH_TRAIN_CUES := false"),
 		"synth train cues gated off, recording is the only train sound")
+	# Jesse's brake recording overrides the synth brake via the SFX file path.
+	_assert(FileAccess.file_exists("res://assets/audio/sfx/train_brake.mp3"),
+		"brake recording mp3 in repo")
+	_assert(amsrc2.contains('["ogg", "wav", "mp3"]'),
+		"sfx file override checks mp3")
 
 
 func _test_station_annex() -> void:
