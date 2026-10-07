@@ -4114,7 +4114,7 @@ func _test_holy_light_heal() -> void:
 	_assert(light_count == 1, "holy: cooldown blocks second light")
 	# Heal: caster + in-range ally gain 15% max HP; far ally and mob untouched.
 	_assert(absf(float(mage.get("hp")) - max_hp * 0.65) < 1.0,
-		"holy: caster healed 15% (%.0f)" % float(mage.get("hp")))
+		"holy: caster healed 15%% (%.0f)" % float(mage.get("hp")))
 	_assert(absf(float(ally.get("hp")) - ally_max * 0.65) < 1.0,
 		"holy: ally at 10m healed 15%")
 	_assert(float(far.get("hp")) == far_max * 0.5, "holy: ally at 20m not healed")
