@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://tools/foundry_shots/foundry_shots.gd" id="1"]
+
+[node name="FoundryShots" type="Node"]
+script = ExtResource("1")
