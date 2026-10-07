@@ -4,6 +4,11 @@ extends Node
 
 signal steam_ready
 
+## Steam app ID is passed explicitly to steamInit so no steam_appid.txt file
+## is needed next to the executable (verified: SDK never touches the file
+## when a nonzero app ID is passed).
+const STEAM_APP_ID := 3441590
+
 var initialized: bool = false
 var steam_id: int = 0
 var persona_name: String = "Player"
@@ -15,7 +20,8 @@ func _ready() -> void:
 		push_warning("[SteamManager] Steam singleton not found; running without Steam.")
 		return
 	# GodotSteam 4.14+ returns a bool from steamInit; older versions returned a Dictionary.
-	var result = Steam.steamInit()
+	# App ID is passed explicitly — no steam_appid.txt file required.
+	var result = Steam.steamInit(STEAM_APP_ID)
 	if result is Dictionary:
 		initialized = int(result.get("status", 0)) == 1
 	else:
