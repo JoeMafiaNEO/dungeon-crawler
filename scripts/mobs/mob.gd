@@ -681,7 +681,7 @@ func _check_apex_triggers() -> void:
 				rpc("apex_enrage_fx", global_position)
 				var dungeon := get_tree().get_first_node_in_group("dungeon")
 				if dungeon != null:
-					dungeon.rpc("announce_key", "BOSS_ENRAGED", [data.boss_title.to_upper()])
+					dungeon.rpc("announce_text", "%s IS ENRAGED!" % [data.boss_title.to_upper()])
 		"adds":
 			while _adds_fired < _adds_gates.size() and frac <= _adds_gates[_adds_fired]:
 				_adds_fired += 1
@@ -699,7 +699,7 @@ func _summon_apex_adds() -> void:
 	if dungeon == null:
 		return
 	rpc("summon_fx", global_position)
-	dungeon.rpc("announce_key", "BOSS_CALLS_GUARD", [data.boss_title.to_upper()])
+	dungeon.rpc("announce_text", "%s CALLS ITS GUARD!" % [data.boss_title.to_upper()])
 	for i in 2:
 		var pos := global_position + Vector3(randf_range(-3.0, 3.0), 0.5, randf_range(-3.0, 3.0))
 		dungeon.server_spawn_mob("skeleton", pos, true)
@@ -990,7 +990,7 @@ func _play_death() -> void:
 		Effects.burst(get_parent(), global_position + Vector3(0, 1.0, 0), Color(0.8, 0.15, 0.1), 40, 6.0)
 		var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 		if dungeon != null:
-			dungeon.rpc("announce_key", "BOSS_SLAIN", [data.boss_title.to_upper()])
+			dungeon.rpc("announce_text", "%s SLAIN!" % [data.boss_title.to_upper()])
 	else:
 		AudioManager.sfx("mob_die", global_position)
 		Effects.burst(get_parent(), global_position + Vector3(0, 0.8, 0), Color(0.5, 0.1, 0.1), 22, 4.5)

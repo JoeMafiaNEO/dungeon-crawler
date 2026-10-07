@@ -24,7 +24,7 @@ func setup(p: Player) -> void:
 	p.leveled_up.connect(_on_leveled_up)
 	_on_health_changed(p.hp, p.max_hp)
 	_on_xp_changed(p.xp, p.xp_next, p.level)
-	%LevelLabel.text = tr("LV") % [p.level, p.class_data.display_name]
+	%LevelLabel.text = "Lv %d %s" % [p.level, p.class_data.display_name]
 	refresh_loadout(p)
 	refresh_abilities(p)
 	# Volume sliders reflect saved settings.
@@ -39,7 +39,7 @@ func setup(p: Player) -> void:
 func _on_health_changed(hp: float, max_hp: float) -> void:
 	%HPBar.max_value = max_hp
 	%HPBar.value = hp
-	%HPLabel.text = tr("FRACTION") % [int(hp), int(max_hp)]
+	%HPLabel.text = "%d / %d" % [int(hp), int(max_hp)]
 	_hp_frac = hp / maxf(1.0, max_hp)
 
 
@@ -161,7 +161,7 @@ func _build_potion_slot() -> void:
 	_potion_button.offset_top = -76.0
 	_potion_button.offset_right = -232.0
 	_potion_button.offset_bottom = -12.0
-	_potion_button.tooltip_text = tr("LEFT_CLICK_CYCLE_POTION")
+	_potion_button.tooltip_text = "Left-click: cycle potion type. H: drink."
 	_potion_button.pressed.connect(_cycle_potion)
 	# Count label (bottom-right of the slot).
 	_potion_count_label = Label.new()
@@ -178,7 +178,7 @@ func _build_potion_slot() -> void:
 	_potion_button.add_child(_potion_count_label)
 	# Key hint label (top-left).
 	var key_hint := Label.new()
-	key_hint.text = tr("KEY_HINT_H")
+	key_hint.text = "[H]"
 	key_hint.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	key_hint.offset_left = 4.0
 	key_hint.offset_top = 2.0
@@ -231,7 +231,7 @@ func refresh_potion_slot() -> void:
 		_potion_button.modulate = Color(0.4, 0.4, 0.4, 0.6)
 		_potion_count_label.text = ""
 		_potion_button.text = "—"
-		_potion_button.tooltip_text = tr("POTIONS_BUY_FROM_THE")
+		_potion_button.tooltip_text = "No potions. Buy from the station vendor."
 		return
 	# Show equipped type.
 	var color: Color = POTION_COLORS[equipped]
@@ -250,8 +250,8 @@ func refresh_potion_slot() -> void:
 	sbp.bg_color = color.darkened(0.7)
 	_potion_button.add_theme_stylebox_override("pressed", sbp)
 	_potion_button.text = POTION_NAMES[equipped]
-	_potion_count_label.text = tr("COUNT_X") % int(counts[equipped])
-	_potion_button.tooltip_text = tr("POTION_LEFT_CLICK_CYCLE") % [POTION_NAMES[equipped], int(counts[equipped])]
+	_potion_count_label.text = "x%d" % int(counts[equipped])
+	_potion_button.tooltip_text = "%s Potion x%d — Left-click: cycle. H: drink." % [POTION_NAMES[equipped], int(counts[equipped])]
 
 
 ## Left-click: cycle to the next potion type the player actually has.
@@ -381,7 +381,7 @@ func _compact_stats_tab(vbox: VBoxContainer) -> void:
 	if hint != null:
 		hint.add_theme_font_size_override("font_size", 12)
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		hint.text = tr("WASD_MOVE_CLICK_ATTACK")
+		hint.text = "WASD move · Click attack · Shift dash · Q ability · G ping · R start wave"
 	# Slimmer stat labels so two columns fit the 480px panel.
 	for pn in ["StatPair1", "StatPair2"]:
 		var pair := vbox.get_node_or_null(pn) as HBoxContainer
@@ -521,7 +521,7 @@ func _on_leveled_up(level: int) -> void:
 
 
 func set_level(level: int, p: Node) -> void:
-	%LevelLabel.text = tr("LV") % [level, (p.get("class_data") as ClassData).display_name]
+	%LevelLabel.text = "Lv %d %s" % [level, (p.get("class_data") as ClassData).display_name]
 
 
 ## All carried items apply. Shows total items, stack count, stacked multipliers.
@@ -584,7 +584,7 @@ func show_vendor() -> void:
 	vendor_open = true
 	var vb := _cipher_panel()
 	var title := Label.new()
-	title.text = tr("VENDOR")
+	title.text = "Vendor"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
@@ -607,18 +607,18 @@ func show_vendor() -> void:
 		nl.add_theme_font_size_override("font_size", 14)
 		row.add_child(nl)
 		var pl := Label.new()
-		pl.text = tr("PRICE_DOLLARS") % price
+		pl.text = "$%d" % price
 		pl.custom_minimum_size = Vector2(64, 0)
 		pl.add_theme_font_size_override("font_size", 14)
 		pl.add_theme_color_override("font_color", Color(0.55, 1.0, 0.6))
 		row.add_child(pl)
 		var buy := Button.new()
-		buy.text = tr("BUY")
+		buy.text = "BUY"
 		buy.pressed.connect(_on_vendor_buy.bind(st, item_id))
 		row.add_child(buy)
 		vb.add_child(row)
 	var close_hint := Label.new()
-	close_hint.text = tr("ESC_CLOSE")
+	close_hint.text = "E / Esc — close"
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -628,7 +628,7 @@ func show_vendor() -> void:
 
 func refresh_vendor_cash() -> void:
 	if _vendor_cash_label != null and is_instance_valid(_vendor_cash_label) and _player != null:
-		_vendor_cash_label.text = tr("YOUR_CASH") % int(_player.get("supermarket_cash"))
+		_vendor_cash_label.text = "Your cash: $%d" % int(_player.get("supermarket_cash"))
 
 
 func _on_vendor_buy(st: Node, item_id: String) -> void:
@@ -684,7 +684,7 @@ func show_bounty() -> void:
 	AudioManager.sfx("bounty_accept")
 	var vb := _cipher_panel()
 	var title := Label.new()
-	title.text = tr("BOUNTY_BOARD")
+	title.text = "Bounty Board"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
@@ -692,7 +692,7 @@ func show_bounty() -> void:
 	for b in bounties:
 		vb.add_child(BountyUI.make_card(b, progress))
 	var expiry := Label.new()
-	expiry.text = tr("UNCLAIMED_BOUNTIES_EXPIRE_DEPARTURE")
+	expiry.text = "Unclaimed bounties expire at departure."
 	expiry.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	expiry.add_theme_font_size_override("font_size", 12)
 	expiry.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
@@ -718,13 +718,13 @@ func show_vault() -> void:
 func _build_vault_panel() -> void:
 	var vb := _cipher_panel()
 	var title := Label.new()
-	title.text = tr("RELIC_VAULT")
+	title.text = "RELIC VAULT"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 20)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.40))
 	vb.add_child(title)
 	var sub := Label.new()
-	sub.text = tr("EQUIP_ONE_SPECIAL_PER")
+	sub.text = "Equip one special per run — effects apply immediately."
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_font_size_override("font_size", 13)
 	sub.add_theme_color_override("font_color", Color(0.75, 0.75, 0.80))
@@ -732,10 +732,10 @@ func _build_vault_panel() -> void:
 	var cur := str(_player.get("equipped_special"))
 	var eq := Label.new()
 	if cur == "":
-		eq.text = tr("EQUIPPED_NONE")
+		eq.text = "Equipped: none"
 	else:
 		var cur_data := SpecialData.get_special(cur)
-		eq.text = tr("EQUIPPED") % (cur_data.display_name if cur_data != null else cur)
+		eq.text = "Equipped: %s" % (cur_data.display_name if cur_data != null else cur)
 	eq.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	eq.add_theme_font_size_override("font_size", 14)
 	eq.add_theme_color_override("font_color", Color(0.60, 1.0, 0.65))
@@ -754,7 +754,7 @@ func _build_vault_panel() -> void:
 	trow.alignment = BoxContainer.ALIGNMENT_CENTER
 	trow.add_theme_constant_override("separation", 12)
 	var tlabel := Label.new()
-	tlabel.text = tr("TROPHIES")
+	tlabel.text = "TROPHIES"
 	tlabel.add_theme_font_size_override("font_size", 13)
 	tlabel.add_theme_color_override("font_color", Color(1.0, 0.85, 0.40))
 	trow.add_child(tlabel)
@@ -770,7 +770,7 @@ func _build_vault_panel() -> void:
 		trow.add_child(t)
 	vb.add_child(trow)
 	var close_hint := Label.new()
-	close_hint.text = tr("ESC_CLOSE")
+	close_hint.text = "E / Esc — close"
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -834,13 +834,13 @@ func _vault_card(sid: String) -> Control:
 	vb.add_child(desc)
 	var btn := Button.new()
 	if not earned:
-		btn.text = tr("LOCKED")
+		btn.text = "LOCKED"
 		btn.disabled = true
 	elif equipped:
-		btn.text = tr("UNEQUIP")
+		btn.text = "UNEQUIP"
 		btn.pressed.connect(_on_vault_unequip)
 	else:
-		btn.text = tr("EQUIP")
+		btn.text = "EQUIP"
 		btn.pressed.connect(_on_vault_equip.bind(sid))
 	vb.add_child(btn)
 	if not earned:
@@ -968,13 +968,13 @@ func open_destination_popup(station: Node, destinations: Array, next_level: int)
 	vb.add_theme_constant_override("separation", 8)
 	panel.add_child(vb)
 	var title := Label.new()
-	title.text = tr("SELECT_DESTINATION_2")
+	title.text = "SELECT DESTINATION"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 22)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	vb.add_child(title)
 	var hint := Label.new()
-	hint.text = tr("CLICK_DESTINATION_VOTE_UNANIMOUS")
+	hint.text = "Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes)"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 13)
 	hint.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
@@ -1090,7 +1090,7 @@ func show_poem_popup(idx: int) -> void:
 	var p: Dictionary = poems[idx]
 	var vb := _cipher_panel()
 	var title := Label.new()
-	title.text = tr("OLD_NOTE_FRAGMENT") % (idx + 1)
+	title.text = "Old Note — fragment %d/8" % (idx + 1)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
@@ -1109,13 +1109,13 @@ func show_poem_popup(idx: int) -> void:
 	cipher.add_theme_color_override("font_color", Color(1.0, 0.9, 0.3))
 	vb.add_child(cipher)
 	var hint := Label.new()
-	hint.text = tr("THE_MASON_SHIFTS_HIS") % int(p["shift"])
+	hint.text = "(the mason shifts his letters forward — count back %d)" % int(p["shift"])
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 12)
 	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
 	vb.add_child(hint)
 	var close_hint := Label.new()
-	close_hint.text = tr("ESC_CLOSE")
+	close_hint.text = "E / Esc — close"
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -1128,19 +1128,19 @@ func show_poem_popup(idx: int) -> void:
 func show_lockbox_popup() -> void:
 	var vb := _cipher_panel()
 	var title := Label.new()
-	title.text = tr("BRASS_LOCKBOX")
+	title.text = "Brass Lockbox"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	vb.add_child(title)
 	var desc := Label.new()
-	desc.text = tr("BRASS_LOCKBOX_ETCHED_WITH")
+	desc.text = "A brass lockbox etched with mason's marks."
 	desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	desc.add_theme_font_size_override("font_size", 13)
 	desc.add_theme_color_override("font_color", Color(0.85, 0.8, 0.7))
 	vb.add_child(desc)
 	var entry := LineEdit.new()
-	entry.placeholder_text = tr("ENTER_THE_MASON_KEY")
+	entry.placeholder_text = "Enter the mason's key..."
 	entry.custom_minimum_size = Vector2(320, 0)
 	entry.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(entry)
@@ -1150,11 +1150,11 @@ func show_lockbox_popup() -> void:
 	feedback.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
 	vb.add_child(feedback)
 	var submit := Button.new()
-	submit.text = tr("UNLOCK")
+	submit.text = "Unlock"
 	submit.pressed.connect(_on_lockbox_submit.bind(entry, feedback))
 	vb.add_child(submit)
 	var close_hint := Label.new()
-	close_hint.text = tr("ESC_CLOSE")
+	close_hint.text = "E / Esc — close"
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -1175,13 +1175,13 @@ func _on_lockbox_submit(_text: String, entry: LineEdit, feedback: Label) -> void
 			toast("SECRET CLASS UNLOCKED: Architect")
 			var prog: Dictionary = SaveManager.get_achievement_progress("drafted")
 			if not prog.is_empty():
-				show_toast(tr("ACHIEVEMENT_UNLOCKED") % [prog["name"], prog["desc"]])
+				show_toast("ACHIEVEMENT: %s — %s" % [prog["name"], prog["desc"]])
 		else:
 			toast("The Architect is already unlocked.")
 	else:
 		AudioManager.sfx("ui_error")
 		var n := SaveManager.get_cipher_fragments().size()
-		feedback.text = tr("THE_LOCKBOX_CLICKS_SHUT") % n
+		feedback.text = "The lockbox clicks shut. (%d/8 fragments)" % n
 		entry.select_all()
 
 
@@ -1217,11 +1217,11 @@ func show_pause() -> void:
 	# Save & Quit label depends on host/client role.
 	if _save_quit_btn != null:
 		if multiplayer.get_peers().size() == 0:
-			_save_quit_btn.text = tr("SAVE_QUIT_MENU")
+			_save_quit_btn.text = "Save & Quit to Menu"
 		elif multiplayer.is_server():
-			_save_quit_btn.text = tr("SAVE_QUIT_SAVES_RUN")
+			_save_quit_btn.text = "Save & Quit (saves run)"
 		else:
-			_save_quit_btn.text = tr("DISCONNECT_HOST_HOLDS_THE")
+			_save_quit_btn.text = "Disconnect (host holds the save)"
 
 
 func hide_pause() -> void:
@@ -1347,7 +1347,7 @@ func _refresh_spec_list() -> void:
 	var spec_locked := plevel < Player.SPECIALIZATION_UNLOCK_LEVEL
 	if spec_locked:
 		var hint := Label.new()
-		hint.text = tr("SPECIALIZATION_UNLOCKS_LEVEL_CURRENTLY") % [Player.SPECIALIZATION_UNLOCK_LEVEL, plevel]
+		hint.text = "Specialization unlocks at level %d (currently %d)." % [Player.SPECIALIZATION_UNLOCK_LEVEL, plevel]
 		hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.75))
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		%SpecList.add_child(hint)
@@ -1363,20 +1363,20 @@ func _refresh_spec_list() -> void:
 		var lbl := Label.new()
 		var aff := float(_player.get("affinity").get(sid, 0.0))
 		var fam := Player.family_of(sid)
-		lbl.text = tr("STR_7460") % [str(a["name"]), fam.capitalize(), aff]
+		lbl.text = "%s [%s] — %.0f" % [str(a["name"]), fam.capitalize(), aff]
 		if str(_player.get("specialization")) == sid:
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		row.add_child(lbl)
 		var btn := Button.new()
 		if str(_player.get("specialization")) == sid:
-			btn.text = tr("RESPEC")
+			btn.text = "Respec"
 			btn.pressed.connect(_on_respec_pressed)
 		else:
-			btn.text = tr("SPECIALIZE")
+			btn.text = "Specialize"
 			btn.pressed.connect(_on_specialize_pressed.bind(sid))
 			if spec_locked:
 				btn.disabled = true
-				btn.tooltip_text = tr("UNLOCKS_LEVEL") % Player.SPECIALIZATION_UNLOCK_LEVEL
+				btn.tooltip_text = "Unlocks at level %d" % Player.SPECIALIZATION_UNLOCK_LEVEL
 		row.add_child(btn)
 		%SpecList.add_child(row)
 
@@ -1406,11 +1406,11 @@ func _on_respec_pressed() -> void:
 func refresh_stats() -> void:
 	if _player == null:
 		return
-	%StatPointsLabel.text = tr("STAT_POINTS") % _player.stat_points
-	%DmgVal.text = tr("DMG") % int(_player.bonus_damage)
-	%HpVal.text = tr("HP") % int(_player.bonus_health)
-	%SpdVal.text = tr("SPD") % _player.bonus_speed
-	%AuraVal.text = tr("AURA") % int(_player.bonus_aura)
+	%StatPointsLabel.text = "Stat points: %d" % _player.stat_points
+	%DmgVal.text = "+%d dmg" % int(_player.bonus_damage)
+	%HpVal.text = "+%d hp" % int(_player.bonus_health)
+	%SpdVal.text = "+%.1f spd" % _player.bonus_speed
+	%AuraVal.text = "+%d aura" % int(_player.bonus_aura)
 	var is_mage := str(_player.get("class_id")) == "mage"
 	%AuraRow.visible = is_mage
 	_refresh_spec_list()
@@ -1434,7 +1434,7 @@ func _refresh_family_panel() -> void:
 	var spec := String(_player.get("specialization"))
 	if spec == "":
 		var lbl := Label.new()
-		lbl.text = tr("SPECIALIZE_SKILL_BEGIN_FAMILY")
+		lbl.text = "Specialize in a skill to begin a family collection."
 		lbl.add_theme_font_size_override("font_size", 12)
 		lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1449,7 +1449,7 @@ func _refresh_family_panel() -> void:
 	var coll: Dictionary = _player.get("family_collection").get(fid, {"traits": [], "signature": false})
 	# Family name + affinity bar.
 	var title := Label.new()
-	title.text = tr("FAMILY") % [String(fam["name"]), aff]
+	title.text = "%s Family — %.0f/100" % [String(fam["name"]), aff]
 	title.add_theme_font_size_override("font_size", 13)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1476,10 +1476,10 @@ func _refresh_family_panel() -> void:
 		var tid := String(tdata["id"])
 		var row := Label.new()
 		if tid in earned:
-			row.text = tr("STR_7106") % [m, String(tdata["name"])]
+			row.text = "◆%d %s" % [m, String(tdata["name"])]
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		else:
-			row.text = tr("STR_8234") % [m, String(tdata["name"])]
+			row.text = "◇%d %s" % [m, String(tdata["name"])]
 			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		row.tooltip_text = String(tdata["desc"])
 		row.add_theme_font_size_override("font_size", 11)
@@ -1489,12 +1489,12 @@ func _refresh_family_panel() -> void:
 	var sig: Dictionary = fam["signature"]
 	var sig_row := Label.new()
 	if bool(coll.get("signature", false)):
-		sig_row.text = tr("STR_3474") % String(sig["name"])
+		sig_row.text = "◆100 %s" % String(sig["name"])
 		sig_row.tooltip_text = String(sig["desc"])
 		sig_row.add_theme_color_override("font_color", Color(0.9, 0.6, 1.0))
 	else:
 		sig_row.text = "◇100 ???"
-		sig_row.tooltip_text = tr("REACH_AFFINITY")
+		sig_row.tooltip_text = "Reach 100 affinity"
 		sig_row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 	sig_row.add_theme_font_size_override("font_size", 11)
 	sig_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1571,7 +1571,7 @@ func _hide_redundant_collection_headers() -> void:
 func _refresh_trophy_section() -> void:
 	var trophies: Array = SaveManager.get_apex_trophies()
 	var header := Label.new()
-	header.text = tr("APEX_TROPHIES") % trophies.size()
+	header.text = "Apex Trophies — %d/3" % trophies.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	header.add_theme_font_size_override("font_size", 10)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
@@ -1594,10 +1594,10 @@ func _refresh_trophy_section() -> void:
 		row.add_child(icon)
 		var label := Label.new()
 		if earned:
-			label.text = tr("STR_6149") % [sp.display_name, sp.effect_summary]
+			label.text = "%s — %s" % [sp.display_name, sp.effect_summary]
 			label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		else:
-			label.text = tr("STR_1557") % sp.unlock_hint
+			label.text = "??? — %s" % sp.unlock_hint
 			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		label.add_theme_font_size_override("font_size", 9)
 		row.add_child(label)
@@ -1610,7 +1610,7 @@ func _refresh_trophy_section() -> void:
 func _refresh_cipher_section() -> void:
 	var frags: Array = SaveManager.get_cipher_fragments()
 	var header := Label.new()
-	header.text = tr("ARCHITECT_CIPHER") % frags.size()
+	header.text = "Architect Cipher — %d/8" % frags.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	header.add_theme_font_size_override("font_size", 10)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
@@ -1623,7 +1623,7 @@ func _refresh_cipher_section() -> void:
 			continue
 		var p: Dictionary = CipherPoems.POEMS[idx]
 		var row := Label.new()
-		row.text = tr("THE_VERSE_SPEAKS") % [
+		row.text = "%s. %s — the verse speaks of %s" % [
 			CipherPoems.roman(idx), str(p["cipher"]), CipherPoems.shift_word(int(p["shift"]))]
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		row.add_theme_font_size_override("font_size", 9)
@@ -1636,7 +1636,7 @@ func _refresh_cipher_section() -> void:
 func _refresh_combo_codex() -> void:
 	var found: Array = SaveManager.get_combos_discovered()
 	var header := Label.new()
-	header.text = tr("COMBO_FINISHERS") % found.size()
+	header.text = "Combo Finishers — %d/5" % found.size()
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	header.add_theme_font_size_override("font_size", 10)
 	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
@@ -1645,10 +1645,10 @@ func _refresh_combo_codex() -> void:
 		var fid := str(f["id"])
 		var row := Label.new()
 		if fid in found:
-			row.text = tr("STR_8975") % [str(f["name"]), str(f["trigger_desc"])]
+			row.text = "◆ %s — %s" % [str(f["name"]), str(f["trigger_desc"])]
 			row.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		else:
-			row.text = tr("STR_6869") % str(f["hint"])
+			row.text = "◇ ??? — %s" % str(f["hint"])
 			row.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		row.add_theme_font_size_override("font_size", 9)
@@ -1676,7 +1676,7 @@ func _on_next_wave_pressed() -> void:
 
 ## Supermarket: update cash display.
 func set_market_cash(cash: int, goal: int) -> void:
-	%MarketLabel.text = tr("CASH") % [cash, goal]
+	%MarketLabel.text = "Cash: $%d / $%d" % [cash, goal]
 
 
 func _on_stat_pressed(stat: String) -> void:
@@ -1700,13 +1700,13 @@ func set_wave(info: Dictionary) -> void:
 	if is_warlord:
 		%MarketLabel.visible = false
 		return
-	%WaveLabel.text = tr("WAVE") % [level, str(info.get("theme_name", "")), cycle_str, int(info.get("wave", 0)), int(info.get("total", 5))]
+	%WaveLabel.text = "Lv %d · %s%s · Wave %d/%d" % [level, str(info.get("theme_name", "")), cycle_str, int(info.get("wave", 0)), int(info.get("total", 5))]
 	# Supermarket mode: show cash instead of waves.
 	var is_market := str(info.get("theme_id", "")) == "supermarket"
 	%MarketLabel.visible = is_market
 	if is_market:
-		%WaveLabel.text = tr("LV_2") % [level, str(info.get("theme_name", "")), cycle_str]
-		%WaveStatus.text = tr("WALK_THROUGH_CHECKOUT_SELL")
+		%WaveLabel.text = "Lv %d · %s%s" % [level, str(info.get("theme_name", "")), cycle_str]
+		%WaveStatus.text = "Walk through CHECKOUT to sell loot and unlock the gate!"
 		%NextWaveButton.visible = false
 		return
 	# Host-only Next Wave button during intermission.
@@ -1722,15 +1722,15 @@ func set_wave(info: Dictionary) -> void:
 				%WaveStatus.visible = false
 			else:
 				%WaveStatus.visible = not is_warlord
-				%WaveStatus.text = tr("WAITING_FOR_HOST")
+				%WaveStatus.text = "Waiting for host..."
 		1: # active
-			%WaveStatus.text = tr("MOBS_LEFT") % int(info.get("mobs_left", 0))
+			%WaveStatus.text = "Mobs left: %d" % int(info.get("mobs_left", 0))
 		_:
 			var kn := int(info.get("keys_needed", 0))
 			if kn > 0:
-				%WaveStatus.text = tr("KEYS") % [int(info.get("keys_found", 0)), kn]
+				%WaveStatus.text = "Keys: %d/%d" % [int(info.get("keys_found", 0)), kn]
 			else:
-				%WaveStatus.text = tr("CLEARED")
+				%WaveStatus.text = "Cleared!"
 
 
 func announce(text: String, tint: Color = Color(1.0, 1.0, 1.0)) -> void:
@@ -1790,7 +1790,7 @@ func fade_in(dur: float) -> void:
 ## Top-center gold countdown, driven by the server's station_timer_sync.
 func show_station_timer(sec: float) -> void:
 	var s := int(ceil(maxf(sec, 0.0)))
-	%StationTimerLabel.text = tr("TRAIN_DEPARTS_BOARD") % [s / 60, s % 60]
+	%StationTimerLabel.text = "TRAIN DEPARTS IN %d:%02d — BOARD!" % [s / 60, s % 60]
 	%StationTimerLabel.visible = true
 
 
@@ -1803,7 +1803,7 @@ func hide_station_timer() -> void:
 ## roster. Reuses the station timer label — no new UI chrome.
 func show_boarding_timer(sec: float, aboard_count: int, living_count: int) -> void:
 	var s := int(ceil(maxf(sec, 0.0)))
-	%StationTimerLabel.text = tr("ALL_ABOARD_TRAIN_LEAVES") % [s / 60, s % 60, aboard_count, living_count]
+	%StationTimerLabel.text = "ALL ABOARD — TRAIN LEAVES IN %d:%02d (%d/%d)" % [s / 60, s % 60, aboard_count, living_count]
 	%StationTimerLabel.visible = true
 	# Issue #62: boarding started — hide the wave button immediately.
 	_boarding_active = true
@@ -1814,7 +1814,7 @@ func show_boarding_timer(sec: float, aboard_count: int, living_count: int) -> vo
 ## the station timer label — no new UI chrome. Hide via hide_station_timer.
 func show_ride_status(title: String, sec: float) -> void:
 	var s := int(ceil(maxf(sec, 0.0)))
-	%StationTimerLabel.text = tr("STR_877") % [title, s / 60, s % 60]
+	%StationTimerLabel.text = "%s — %d:%02d" % [title, s / 60, s % 60]
 	%StationTimerLabel.visible = true
 
 
@@ -1826,7 +1826,7 @@ func show_downed(seconds: float) -> void:
 
 
 func update_downed(seconds: float) -> void:
-	%DownedLabel.text = tr("DOWNED_TEAMMATE_REVIVE_BLEED") % int(ceil(seconds))
+	%DownedLabel.text = "DOWNED\nTeammate revive or bleed-out in %ds" % int(ceil(seconds))
 
 
 func hide_downed() -> void:
@@ -1848,11 +1848,11 @@ func show_death_screen(stats: Dictionary) -> void:
 	hide_pause()
 	var cause := str(stats.get("cause", ""))
 	if cause.is_empty():
-		%DeathCauseLabel.text = tr("THE_DUNGEON_CLAIMED_YOU")
+		%DeathCauseLabel.text = "The dungeon claimed you."
 	else:
-		%DeathCauseLabel.text = tr("SLAIN") % cause
+		%DeathCauseLabel.text = "Slain by %s" % cause
 	var secs := int(stats.get("time_sec", 0))
-	%DeathStatsLabel.text = tr("TIME_SURVIVED_KILLS_LEVEL") % [
+	%DeathStatsLabel.text = "Time survived: %s\nKills: %d\nLevel reached: %d\nCycle reached: %d\nDamage dealt: %d" % [
 		_fmt_run_time(secs),
 		int(stats.get("kills", 0)),
 		int(stats.get("level", 1)),
@@ -1935,13 +1935,13 @@ func refresh_abilities(p) -> void:
 		var vb := VBoxContainer.new()
 		vb.add_theme_constant_override("separation", 0)
 		var key_l := Label.new()
-		key_l.text = tr("STR_4651") % String(a["key"])
+		key_l.text = "[%s]" % String(a["key"])
 		key_l.add_theme_font_size_override("font_size", 11)
 		key_l.add_theme_color_override("font_color", Color(0.8, 0.7, 0.4))
 		key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vb.add_child(key_l)
 		var name_l := Label.new()
-		name_l.text = tr("ABILITY_NAME_RANK") % [String(a["name"]), p.rank_roman()]
+		name_l.text = "%s %s" % [String(a["name"]), p.rank_roman()]
 		name_l.add_theme_font_size_override("font_size", 13)
 		name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		if fam != "" and not is_spec:
@@ -1981,18 +1981,18 @@ func refresh_abilities(p) -> void:
 		if p.class_id == "warrior":
 			var sig_cd: float = float(p.ability_cds.get(sid, 0.0))
 			if sid in ["sanctuary_totem", "doom_totem"] and sig_cd > 0.0:
-				status_l.text = tr("STR_699") % sig_cd
+				status_l.text = "%.0fs" % sig_cd
 				status_l.add_theme_color_override("font_color", Color(1, 0.5, 0.4))
 			else:
-				status_l.text = tr("COUNT_X") % p.totem_charges if i == p.selected_ability else ""
+				status_l.text = "x%d" % p.totem_charges if i == p.selected_ability else ""
 				status_l.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
 		else:
 			var cd: float = float(p.ability_cds.get(sid, 0.0))
 			if cd > 0.0:
-				status_l.text = tr("STR_699") % cd
+				status_l.text = "%.0fs" % cd
 				status_l.add_theme_color_override("font_color", Color(1, 0.5, 0.4))
 			elif sid == "eagle_eye" and p.eagle_eye_used_wave == _wave_number():
-				status_l.text = tr("USED")
+				status_l.text = "used"
 				status_l.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 		vb.add_child(status_l)
 		slot.add_child(vb)
@@ -2036,10 +2036,10 @@ func refresh_abilities(p) -> void:
 			status_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			var cd: float = float(p.ability_cds.get(ssid, 0.0))
 			if cd > 0.0:
-				status_l.text = tr("STR_699") % cd
+				status_l.text = "%.0fs" % cd
 				status_l.add_theme_color_override("font_color", Color(1, 0.5, 0.4))
 			else:
-				status_l.text = tr("READY")
+				status_l.text = "READY"
 				status_l.add_theme_color_override("font_color", Color(0.6, 1.0, 0.6))
 			vb.add_child(status_l)
 			slot.add_child(vb)

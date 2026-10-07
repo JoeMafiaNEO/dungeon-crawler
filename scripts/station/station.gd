@@ -356,7 +356,7 @@ func station_timer_sync(time_left: float) -> void:
 func vote_reset_notice() -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("show_toast"):
-		hud.show_toast(tr("NO_AGREEMENT"))
+		hud.show_toast("No agreement — vote again.")
 
 
 ## Server-authoritative departure (issue #3 Phase 2): resolve the
@@ -532,7 +532,7 @@ func boarding_sync(time_left: float, aboard_now: Dictionary, living: Array) -> v
 func boarding_locked() -> void:
 	_boarding_locked = true
 	if _board_label != null:
-		_board_label.text = tr("DOORS_LOCKED")
+		_board_label.text = "DOORS LOCKED"
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("hide_station_timer"):
 		hud.hide_station_timer()
@@ -749,7 +749,7 @@ func _build_station_embedded() -> void:
 	_ring.position = Vector3(-1, 0.06, -2.0)
 	add_child(_ring)
 	var board_label := Label3D.new()
-	board_label.text = tr("BOARD_HERE")
+	board_label.text = "BOARD HERE"
 	board_label.font_size = 96
 	board_label.modulate = Color(1.0, 0.85, 0.40)
 	board_label.outline_size = 12
@@ -761,7 +761,7 @@ func _build_station_embedded() -> void:
 	# Heal pad (Phase 4): glowing green disc + REST sign + heal trigger.
 	_cyl(self, 2.0, 2.0, 0.10, Vector3(-9.5, 0.06, 3.5), heal_glow)
 	var rest_label := Label3D.new()
-	rest_label.text = tr("REST")
+	rest_label.text = "REST"
 	rest_label.font_size = 72
 	rest_label.modulate = Color(0.45, 1.0, 0.55)
 	rest_label.outline_size = 10
@@ -837,7 +837,7 @@ func apply_dressing(theme_id: String) -> void:
 		for child in _dressing.get_children():
 			child.visible = (child.name == tid)
 	if _boarding_sign != null:
-		_boarding_sign.text = tr("NOW_BOARDING") % [Station.theme_display_name(tid).to_upper()]
+		_boarding_sign.text = "NOW BOARDING: %s" % [Station.theme_display_name(tid).to_upper()]
 
 
 ## Prop set builder: one Node3D per theme under Dressing. All procedural,

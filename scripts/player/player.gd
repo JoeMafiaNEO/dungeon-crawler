@@ -2916,7 +2916,7 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 		second_wind_used = true
 		health_changed.emit(hp, max_hp)
 		if hud != null:
-			hud.show_toast(tr("SECOND_WIND"))
+			hud.show_toast("SECOND WIND! Iron Resolve holds you at 1 HP.")
 		AudioManager.sfx("unlock")
 		return
 	if hp <= 0.0:
@@ -3098,7 +3098,7 @@ func gain_xp(amount: int, track_kill: bool = true) -> void:
 		if hud != null:
 			hud.toast("Level up! +3 stat points (Esc to spend).")
 			if not new_ability.is_empty():
-				hud.toast(tr("NEW_ABILITY_UNLOCKED") % [String(new_ability["name"])])
+				hud.toast("New ability unlocked: %s!" % [String(new_ability["name"])])
 				AudioManager.sfx("ability_unlock")
 			hud.refresh_loadout(self)
 
@@ -3248,7 +3248,7 @@ func rpc_earn_special(special_id: String) -> void:
 	if SpecialData.earn(special_id):
 		var data := SpecialData.get_special(special_id)
 		if data != null and hud != null:
-			hud.show_toast(tr("SPECIAL_EARNED") % [data.display_name, data.description])
+			hud.show_toast("SPECIAL EARNED: %s — %s" % [data.display_name, data.description])
 		AudioManager.sfx("relic_pickup")
 
 
@@ -3374,7 +3374,7 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: fl
 func show_bounty_complete(bounty_name: String, cash: int, xp: int) -> void:
 	if hud == null:
 		return
-	hud.show_toast(tr("BOUNTY_COMPLETE") % [bounty_name, cash, xp])
+	hud.show_toast("BOUNTY COMPLETE: %s (+$%d +%d XP)" % [bounty_name, cash, xp])
 	AudioManager.sfx("bounty_complete")
 
 
@@ -3385,5 +3385,5 @@ func show_achievement_unlock(achievement_ids: Array) -> void:	# Shows achievemen
 	for ach_id in achievement_ids:
 		var progress: Dictionary = SaveManager.get_achievement_progress(str(ach_id))
 		if not progress.is_empty():
-			hud.show_toast(tr("ACHIEVEMENT_UNLOCKED") % [progress["name"], progress["desc"]])
+			hud.show_toast("ACHIEVEMENT: %s — %s" % [progress["name"], progress["desc"]])
 			AudioManager.sfx("unlock")

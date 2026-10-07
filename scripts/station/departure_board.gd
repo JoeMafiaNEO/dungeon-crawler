@@ -93,7 +93,7 @@ func _build() -> void:
 	_box(Vector3(0.12, BOARD_H + 0.16, 0.14), Vector3(2.36, 2.0, 0), gold)
 	# Header (fixed to the board, not billboarded — it should feel physical).
 	var header := Label3D.new()
-	header.text = tr("DEPARTURES")
+	header.text = "DEPARTURES"
 	header.font_size = 96
 	header.pixel_size = 0.006
 	header.modulate = Color(1.0, 0.82, 0.35)
@@ -118,7 +118,7 @@ func _build() -> void:
 	add_child(light)
 	# Unanimous-boarding rule, posted on a plaque between the posts.
 	var hint := Label3D.new()
-	hint.text = tr("ALL_LIVING_PLAYERS_MUST")
+	hint.text = "ALL LIVING PLAYERS MUST AGREE ON A DESTINATION"
 	hint.font_size = 36
 	hint.pixel_size = 0.0032
 	hint.modulate = Color(1.0, 0.82, 0.35)
@@ -211,4 +211,4 @@ func set_tallies(votes: Dictionary) -> void:
 		counts[t] = int(counts.get(t, 0)) + 1
 	for tid in _rows:
 		var r: Dictionary = _rows[tid]
-		(r["label"] as Label3D).text = tr("STR_4691") % [r["base_text"], int(counts.get(tid, 0))]
+		(r["label"] as Label3D).text = "%s  [%d]" % [r["base_text"], int(counts.get(tid, 0))]

@@ -430,7 +430,7 @@ func _reclaim_faction(peer_id: int, faction_id: int) -> void:
 	var node := get_player_node(peer_id)
 	if node != null:
 		node.set("rts_faction", faction_id)
-	rpc("announce_key", "PEER_REJOINED", [NetworkManager.member_name(peer_id)])
+	rpc("announce_text", "%s has rejoined the battle!" % [NetworkManager.member_name(peer_id)])
 
 
 @rpc("any_peer", "call_local")
@@ -581,7 +581,7 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
 		if arrived_by_train:
 			arrived_by_train = false
 		else:
-			_local_hud.announce(tr("NOW_ARRIVING") % [theme.display_name],
+			_local_hud.announce("NOW ARRIVING: %s" % [theme.display_name],
 				Dungeon.arrival_tint(theme.theme_id))
 			AudioManager.sfx("train_brake")
 	if multiplayer.is_server():
@@ -624,7 +624,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 				var ai := AIWarlord.new()
 				ai.faction_id = fi
 				add_child(ai)
-				rpc("announce_key", "FACTION_AI_CONTROLLED", [_rts_manager.get_civ(fi).display_name])
+				rpc("announce_text", "%s's faction is now AI-controlled." % [_rts_manager.get_civ(fi).display_name])
 				break
 
 
@@ -850,8 +850,8 @@ func _setup_warlord() -> void:
 	if _season_manager != null:
 		rts_hud.set_season_manager(_season_manager)
 
-	rpc("announce_key", "WARLORD_DOMAIN", [])
-	rpc("announce_key", "WARLORD_CONTROLS", [])
+	rpc("announce_text", "WARLORD'S DOMAIN — Last faction standing wins!")
+	rpc("announce_text", "Press TAB for command view. B to build. Right-click to order units.")
 
 	# Tell clients to build their local RTS stack (manager + camera + HUD).
 	for p in get_tree().get_nodes_in_group("players"):
@@ -1186,7 +1186,7 @@ func spawn_rts_node(res_type: String, pos: Vector3) -> void:
 
 
 func _on_warlord_winner(winner_faction: int) -> void:
-	rpc("announce_key", "VICTORY", [])
+	rpc("announce_text", "VICTORY!")
 	rpc("complete_level_objective")
 
 
@@ -1308,7 +1308,7 @@ func spawn_checkout(pos: Vector3) -> void:
 	ring.position.y = 0.1
 	root.add_child(ring)
 	var label := Label3D.new()
-	label.text = tr("CHECKOUT_WALK_THROUGH_SELL")
+	label.text = "CHECKOUT\n(walk through to sell)"
 	label.position = Vector3(0, 2.6, 0)
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	root.add_child(label)
@@ -1344,7 +1344,7 @@ func _spawn_potion_shop() -> void:
 @rpc("any_peer", "call_local")
 func spawn_shop_sign(pos: Vector3) -> void:
 	var label := Label3D.new()
-	label.text = tr("POTION_SHOP")
+	label.text = "POTION SHOP"
 	label.font_size = 64
 	label.position = pos + Vector3(0, 3.0, 0)
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -1400,7 +1400,7 @@ func spawn_shop_pedestal(pos: Vector3, item_id: String, price: int, color: Color
 	bob.tween_property(bottle, "position:y", 1.6, 1.0)
 	# Price label.
 	var label := Label3D.new()
-	label.text = tr("BUY_2") % label_text
+	label.text = "%s\n(E to buy)" % label_text
 	label.font_size = 32
 	label.position = Vector3(0, 2.5, 0)
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -1471,7 +1471,7 @@ func _check_gate_unlock() -> void:
 	# (Issue #2 Phase 5: the old sealed-portal gate is gone — reaching the
 	# earnings goal clears the level outright, securing the run's gains.)
 	if gate_unlocked(market_earned_visit, market_cash_goal):
-		rpc("announce_key", "GATE_UNLOCKED", [])
+		rpc("announce_text", "GATE UNLOCKED!")
 		rpc("complete_level_objective")
 
 
@@ -1601,7 +1601,7 @@ func _start_wave() -> void:
 		_director.start_wave(wave)
 		_wave_composition = _director.get_wave_composition()
 		mobs_to_spawn = _wave_composition.size()
-		rpc("announce_key", "WAVE_N", [wave])
+		rpc("announce_text", "WAVE %d" % [wave], "horn")
 
 
 ## Host-only: manually trigger the next wave during intermission.
@@ -1670,19 +1670,19 @@ func _wave_cleared() -> void:
 		if is_apex:
 			# Apex arena (issue #5): no key hunt — the boss-death hook already
 			# cleared the level when the apex boss fell.
-			rpc("announce_key", "THEME_CLEARED", [theme.display_name.to_upper()])
+			rpc("announce_text", "%s CLEARED!" % [theme.display_name.to_upper()], "clear")
 			return
 		# Keys spawn: the party must find every key to clear the level.
 		_keys_needed = theme.puzzle_key_count
 		_keys_found = 0
 		for spot in _key_spots():
 			rpc("spawn_key", spot)
-		rpc("announce_key", "THEME_CLEARED_KEYS", [theme.display_name.to_upper(), _keys_needed])
+		rpc("announce_text", "%s CLEARED! Find %d keys to clear the level!" % [theme.display_name.to_upper(), _keys_needed], "clear")
 		rpc("update_key_count", 0, _keys_needed)
 	else:
 		wave_state = WaveState.INTERMISSION
 		wave_timer = INTERMISSION_TIME
-		rpc("announce_key", "WAVE_CLEARED", [])
+		rpc("announce_text", "Wave cleared!", "clear")
 	_push_wave_info()
 	rpc_unreliable_wave()
 
@@ -1780,17 +1780,13 @@ func announce(text: String) -> void:
 		AudioManager.sfx("wave_clear")
 
 
-## Issue #33 Phase 2: key-based announce for localization. Each client
-## renders the announcement in their own locale via tr().
+## Announce a pre-formatted English banner to all peers (localization
+## reverted 2026-10-06: callers format the text before sending).
 @rpc("any_peer", "call_local")
-func announce_key(key: String, args: Array = []) -> void:
-	var text := tr(key)
-	if not args.is_empty():
-		text = text % args
-	# SFX based on key (not translated text) so it works in all locales.
-	if key == "WAVE_N":
+func announce_text(text: String, sfx: String = "") -> void:
+	if sfx == "horn":
 		AudioManager.sfx("wave_horn")
-	elif key in ["THEME_CLEARED", "THEME_CLEARED_KEYS", "WAVE_CLEARED"]:
+	elif sfx == "clear":
 		AudioManager.sfx("wave_clear")
 	announce(text)
 
@@ -1805,9 +1801,9 @@ func announce_combo(finisher_id: String, is_new: bool = false) -> void:
 	if fin.is_empty():
 		return
 	if _local_hud != null:
-		_local_hud.announce(tr("FINISHER_BANNER") % [str(fin["name"]).to_upper()], Color(1.0, 0.85, 0.3))
+		_local_hud.announce("%s!" % [str(fin["name"]).to_upper()], Color(1.0, 0.85, 0.3))
 		if is_new:
-			_local_hud.show_toast(tr("CODEX_UPDATED") % [str(fin["name"])])
+			_local_hud.show_toast("Codex updated: %s discovered!" % [str(fin["name"])])
 	# Per-finisher fanfare: the 5 distinct SFX supersede the old shared
 	# thunderclap (which stays registered as-is). First discovery also
 	# plays the codex_discover sting.
@@ -1835,7 +1831,7 @@ func spawn_mob(mob_id: int, type_id: String, pos: Vector3, hp_scale: float = 1.0
 	$Mobs.add_child(m)
 	if data.is_boss:
 		_boss = m
-		rpc("announce_key", "BOSS_WARNING", [data.boss_title])
+		rpc("announce_text", "WARNING: %s" % [data.boss_title])
 		if _local_hud != null:
 			_local_hud.show_boss_card(data.boss_title)
 		AudioManager.sfx("apex_roar" if is_apex else "boss_roar", pos)
@@ -2085,7 +2081,7 @@ func update_key_count(found: int, needed: int) -> void:
 func complete_level_objective() -> void:
 	level_cleared = true
 	AudioManager.sfx("unlock")
-	rpc("announce_key", "LEVEL_CLEARED_GAINS", [])
+	rpc("announce_text", "Level cleared — gains secured.")
 	# Bounty Board (issue #7): surviving no_death bounties complete now.
 	_bounty_level_cleared()
 
@@ -2151,7 +2147,7 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	# forfeits everything gained in it. Restore first, then ride and save.
 	if not level_cleared:
 		_apply_forfeits()
-		rpc("announce_key", "LEFT_EARLY", [])
+		rpc("announce_text", "Left early!\nLevel gains forfeited.")
 	else:
 		# Relic Vault (issue #6): level cleared without dying — bump the
 		# no-death streak on every living player's OWN instance (call_local +
@@ -2709,4 +2705,4 @@ func check_party_wipe() -> void:
 			if bool(p.get("alive")):
 				return  # someone's still standing
 	SaveManager.clear_run(SaveManager.MODE_MP, NetworkManager.active_run_slot)
-	rpc("announce_key", "PARTY_WIPED", [])
+	rpc("announce_text", "Party wiped! The run has been erased.")
