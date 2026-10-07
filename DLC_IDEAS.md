@@ -1,5 +1,18 @@
 # hintergald — DLC ideas
 
+## Jesse's lead direction (2026-10-07): Mob Packs + Visual Pack
+Two DLC lines, both content-first:
+- **Mob Packs** — new mob families with distinct AI behaviors, sprites, and
+  SFX, droppable into existing themes via set_allowed_mobs(). Example packs:
+  aquatic (dash eels, shield crabs, charming sirens), undead legion
+  (skeleton variants, a necromancer mob that raises the fallen), constructs
+  (armor-phase golems). 4–6 mobs per pack keeps art/audio scoped.
+- **Visual Pack** — overall visual upgrade layer (scope TBD: new tilesets
+  for existing themes? weather/atmosphere effects? lighting passes? cosmetic
+  skins?). Cheapest version is atmosphere: rain, embers, fog, day/night
+  lighting, new CRT filter options — no sprite rework required.
+
+
 Brainstorming branch. Nothing here is scoped, specced, or scheduled —
 this is the raw idea pool. Picks get the full SPEC/DESIGN/PHASES treatment later.
 
