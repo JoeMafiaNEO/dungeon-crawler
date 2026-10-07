@@ -17,6 +17,7 @@ Two DLC lines, both content-first:
   - Thornwood: overgrown forest dungeon, fireflies, god rays through canopy
   - Clockwork Spire: brass and gearwork, steam vents, rhythmic machine pulse lighting
   - Void Rift: cosmic dark, floating debris, starfield voids between platforms
+  Status: APPROVED by Jesse (2026-10-07) — all seven themes.
 
 ## 1. "Unfinished Business" (the held trio)
 Issues #12 (Player Trading), #13 (Endless Delve), #14 (Workshop Mod Support)
