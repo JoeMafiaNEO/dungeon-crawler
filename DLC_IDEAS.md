@@ -7,10 +7,16 @@ Two DLC lines, both content-first:
   aquatic (dash eels, shield crabs, charming sirens), undead legion
   (skeleton variants, a necromancer mob that raises the fallen), constructs
   (armor-phase golems). 4–6 mobs per pack keeps art/audio scoped.
-- **Visual Pack** — overall visual upgrade layer (scope TBD: new tilesets
-  for existing themes? weather/atmosphere effects? lighting passes? cosmetic
-  skins?). Cheapest version is atmosphere: rain, embers, fog, day/night
-  lighting, new CRT filter options — no sprite rework required.
+- **Visual Pack** — atmosphere layer: new tilesets, weather, lighting,
+  and atmosphere per theme. No sprite rework, no gameplay changes — pure
+  mood. Per-theme sketch:
+  - Village Outskirts: rain, overcast light, muddy tileset variant
+  - The Dungeon: torch flicker, dust motes, damp stone tileset
+  - The Depths: ember particles, lava glow, obsidian tileset
+  - Supermarket: fluorescent flicker, grungy tileset variant
+  - Warlord: smoke, war-torn tileset, red alert lighting
+  - Station/Annex: warm lamplight, platform steam
+  - Global: new CRT filter options, optional day/night cycle
 
 
 Brainstorming branch. Nothing here is scoped, specced, or scheduled —
