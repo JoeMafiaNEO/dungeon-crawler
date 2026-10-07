@@ -48,4 +48,4 @@ environment/defaults/default_clear_color=Color(0.02, 0.02, 0.04, 1)
 
 [localization]
 
-translations/translations=PackedStringArray("res://translations/strings.en.translation")
+translations/translations=PackedStringArray("res://translations/strings.en.translation", "res://translations/strings.es.translation", "res://translations/strings.fr.translation", "res://translations/strings.de.translation")
