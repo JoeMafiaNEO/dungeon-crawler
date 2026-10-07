@@ -2463,10 +2463,10 @@ func _build_torches() -> void:
 ## Issue #84 Phase 1: drifting motes — lightweight theme-driven ambient particles.
 ## Gated by theme.ambient_motes so base themes pay nothing.
 func _build_motes() -> void:
-	if theme == null or not bool(theme.get("ambient_motes", false)):
+	if theme == null or not theme.ambient_motes:
 		return
-	var count := int(theme.get("mote_count", 50))
-	var color: Color = theme.get("mote_color", Color(0.5, 0.9, 0.8, 0.6))
+	var count := theme.mote_count
+	var color: Color = theme.mote_color
 	var motes := GPUParticles3D.new()
 	motes.name = "AmbientMotes"
 	motes.amount = count
