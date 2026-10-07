@@ -92,6 +92,7 @@ func _run() -> void:
 	_test_warlord_seasons()
 	_test_warlord_seasons_phase2()
 	_test_dlc_bundle1_phase1()
+	_test_dlc_bundle1_phase2()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5369,3 +5370,38 @@ func _test_dlc_bundle1_phase1() -> void:
 	_assert(stsrc.contains("sunken_crypt"),
 		"station has sunken_crypt board stars")
 	print("[Playtest] DLC Bundle 1 Phase 1 done")
+
+
+## Issue #84 Phase 2: Data-only mobs (mire_eel, crypt_crab).
+func _test_dlc_bundle1_phase2() -> void:
+	print("[Playtest] DLC Bundle 1 Phase 2 (issue #84)...")
+	# Mire eel: disruptor with telegraphed line dash (reuses charge).
+	var eelsrc := FileAccess.get_file_as_string("res://data/mobs/mire_eel.tres")
+	_assert(eelsrc.contains('id = "mire_eel"'),
+		"mire_eel.tres exists")
+	_assert(eelsrc.contains('special_id = "charge"'),
+		"eel reuses charge special (telegraphed dash)")
+	_assert(float(eelsrc.get_slice("move_speed = ", 1).get_slice("\n", 0)) > 5.0,
+		"eel is fast")
+	_assert(float(eelsrc.get_slice("health = ", 1).get_slice("\n", 0)) < 50.0,
+		"eel is fragile")
+	# Crypt crab: frontal shield (reuses shieldbearer fields).
+	var crabsrc := FileAccess.get_file_as_string("res://data/mobs/crypt_crab.tres")
+	_assert(crabsrc.contains('id = "crypt_crab"'),
+		"crypt_crab.tres exists")
+	_assert(crabsrc.contains("frontal_block = true"),
+		"crab has frontal block")
+	_assert(crabsrc.contains("block_arc_deg = 100.0"),
+		"crab block_arc 100deg")
+	_assert(crabsrc.contains("block_mult = 0.15"),
+		"crab block_mult 0.15")
+	# Both wired through theme mob_mix.
+	var tsrc := FileAccess.get_file_as_string("res://data/levels/theme_sunken_crypt.tres")
+	_assert(tsrc.contains("mire_eel") and tsrc.contains("crypt_crab"),
+		"both mobs in sunken_crypt mob_mix")
+	# Sprites exist.
+	_assert(FileAccess.file_exists("res://assets/sprites/mire_eel.png"),
+		"mire_eel.png sprite exists")
+	_assert(FileAccess.file_exists("res://assets/sprites/crypt_crab.png"),
+		"crypt_crab.png sprite exists")
+	print("[Playtest] DLC Bundle 1 Phase 2 done")

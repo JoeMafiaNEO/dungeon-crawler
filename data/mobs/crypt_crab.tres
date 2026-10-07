@@ -1,0 +1,44 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/crypt_crab.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/iron_sword.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="6"]
+[ext_resource type="Resource" path="res://data/items/stone_shield.tres" id="7"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 1.0
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_3"]
+script = ExtResource("1")
+item = ExtResource("7")
+weight = 1.5
+
+[resource]
+script = ExtResource("2")
+id = "crypt_crab"
+display_name = "Crypt Crab"
+health = 110.0
+damage = 13.0
+move_speed = 2.0
+attack_range = 1.9
+attack_cooldown = 1.4
+xp_reward = 28
+drop_chance = 0.4
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3")]
+frames = [ExtResource("3")]
+loot_luck = 1.0
+bonus_drops = 0
+; Issue #84 Phase 2: melee with frontal shield — flank to kill.
+; Reuses frontal_block fields from shieldbearer.
+frontal_block = true
+block_arc_deg = 100.0
+block_mult = 0.15

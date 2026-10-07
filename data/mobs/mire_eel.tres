@@ -1,0 +1,44 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/mire_eel.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/worn_dagger.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="6"]
+[ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="7"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 1.5
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_3"]
+script = ExtResource("1")
+item = ExtResource("7")
+weight = 1.0
+
+[resource]
+script = ExtResource("2")
+id = "mire_eel"
+display_name = "Mire Eel"
+health = 40.0
+damage = 14.0
+move_speed = 5.5
+attack_range = 1.6
+attack_cooldown = 1.0
+xp_reward = 22
+drop_chance = 0.35
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3")]
+frames = [ExtResource("3")]
+loot_luck = 0.8
+bonus_drops = 0
+; Issue #84 Phase 2: disruptor — telegraphed line dash (reuses charge special).
+; Fast, fragile.
+special_id = "charge"
+special_cooldown = 5.0
+special_damage_mult = 1.8
