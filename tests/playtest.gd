@@ -93,6 +93,7 @@ func _run() -> void:
 	_test_warlord_seasons_phase2()
 	_test_dlc_bundle1_phase1()
 	_test_dlc_bundle1_phase2()
+	_test_dlc_bundle1_phase3()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5405,3 +5406,50 @@ func _test_dlc_bundle1_phase2() -> void:
 	_assert(FileAccess.file_exists("res://assets/sprites/crypt_crab.png"),
 		"crypt_crab.png sprite exists")
 	print("[Playtest] DLC Bundle 1 Phase 2 done")
+
+
+## Issue #84 Phase 3: New mechanics (siren song, angler stealth-lunge).
+func _test_dlc_bundle1_phase3() -> void:
+	print("[Playtest] DLC Bundle 1 Phase 3 (issue #84)...")
+	# Siren: song fields.
+	var sirensrc := FileAccess.get_file_as_string("res://data/mobs/siren.tres")
+	_assert(sirensrc.contains('id = "siren"'),
+		"siren.tres exists")
+	_assert(sirensrc.contains('special_id = "song"'),
+		"siren uses song special")
+	_assert(sirensrc.contains("song_radius = 10.0"),
+		"siren song_radius 10m")
+	_assert(sirensrc.contains("song_slow_mult = 0.6"),
+		"siren 40% slow")
+	_assert(sirensrc.contains("song_duration = 3.0"),
+		"siren channels 3s")
+	# Angler: stealth-lunge fields.
+	var anglersrc := FileAccess.get_file_as_string("res://data/mobs/angler.tres")
+	_assert(anglersrc.contains('id = "angler"'),
+		"angler.tres exists")
+	_assert(anglersrc.contains("stealth_lunge = true"),
+		"angler has stealth_lunge")
+	_assert(anglersrc.contains("lunge_range = 8.0"),
+		"angler lunge_range 8m")
+	_assert(anglersrc.contains("lunge_telegraph = 0.8"),
+		"angler 0.8s telegraph")
+	_assert(anglersrc.contains('special_id = "charge"'),
+		"angler reuses charge for lunge")
+	# MobData has the new fields.
+	var mdsrc := FileAccess.get_file_as_string("res://scripts/data/mob_data.gd")
+	_assert(mdsrc.contains("song_radius") and mdsrc.contains("stealth_lunge"),
+		"MobData has song + stealth fields")
+	# Player has slow support.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("slow_t") and psrc.contains("apply_slow"),
+		"player has slow support")
+	# Both in theme mob_mix.
+	var tsrc := FileAccess.get_file_as_string("res://data/levels/theme_sunken_crypt.tres")
+	_assert(tsrc.contains("siren") and tsrc.contains("angler"),
+		"siren + angler in mob_mix")
+	# Sprites exist.
+	_assert(FileAccess.file_exists("res://assets/sprites/siren.png"),
+		"siren.png exists")
+	_assert(FileAccess.file_exists("res://assets/sprites/angler.png"),
+		"angler.png exists")
+	print("[Playtest] DLC Bundle 1 Phase 3 done")

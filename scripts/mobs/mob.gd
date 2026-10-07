@@ -67,6 +67,14 @@ var _pending_special := ""
 var _charge_t := 0.0
 var _charge_dir := Vector3.ZERO
 var _charge_hit: Array = []
+# --- Issue #84 Phase 3: siren song ---
+## Song state: _song_t = seconds remaining in current song (0 = not singing).
+var _song_t := 0.0
+var _song_cd := 0.0
+# --- Issue #84 Phase 3: angler stealth-lunge ---
+## Stealth state: true = invisible + untargetable.
+var _stealthed := false
+var _lunge_telegraph := 0.0
 # --- Apex mechanics (issue #5 Phase 2; only active when data.apex_id != "") ---
 ## Phaseshift untargetability: take_damage ignores all hits while true.
 var untargetable := false
@@ -155,6 +163,9 @@ func _ready() -> void:
 		$Label3D.text = data.display_name
 	_sprite.scale = _base_scale
 	_remote_pos = global_position
+	# Issue #84 Phase 3: anglers spawn stealthed.
+	if data.stealth_lunge:
+		_enter_stealth()
 	if not multiplayer.is_server():
 		set_physics_process(false)
 
@@ -162,6 +173,12 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if not alive:
 		return
+	# Issue #84 Phase 3: siren song ticks (server-authoritative slow).
+	_tick_song(delta)
+	if _song_cd > 0.0:
+		_song_cd -= delta
+	# Issue #84 Phase 3: angler stealth-lunge state machine.
+	_tick_stealth(delta)
 	# Shieldbearer (issue #67): stagger timer ticks down; shield raises when done.
 	if _stagger_t > 0.0:
 		_stagger_t -= delta
@@ -602,6 +619,11 @@ func _boss_think(delta: float) -> bool:
 				if dist > 4.0 and dist < 22.0:
 					_begin_telegraph("charge", 0.6)
 					return true
+			# Issue #84 Phase 3: siren song (slowing song, telegraphed).
+			"song":
+				if data.song_radius > 0.0 and _song_cd <= 0.0:
+					_begin_song()
+					return true
 	return false
 
 
@@ -609,6 +631,101 @@ func _begin_telegraph(special: String, duration: float) -> void:
 	_pending_special = special
 	_telegraph = duration
 	AudioManager.sfx("boss_roar", global_position)
+
+
+## Issue #84 Phase 3: begin siren song. Channels song_duration seconds,
+## applying slow to players within song_radius. Telegraphed by audio cue.
+func _begin_song() -> void:
+	_song_t = data.song_duration
+	_song_cd = data.song_cooldown
+	_special_cd = data.song_cooldown
+	# Telegraph: audio cue + visual (sprite pulses).
+	AudioManager.sfx("siren_song", global_position)
+	_sprite.modulate = Color(0.7, 1.0, 1.0)  # Cyan tint while singing.
+
+
+## Issue #84 Phase 3: tick active song. Server-authoritative: applies slow
+## to players in radius each tick. Called from _physics_process.
+func _tick_song(delta: float) -> void:
+	if _song_t <= 0.0:
+		return
+	_song_t -= delta
+	if _song_t <= 0.0:
+		_song_t = 0.0
+		_sprite.modulate = Color.WHITE
+		return
+	# Apply slow to players in radius (server-side).
+	if not is_multiplayer_authority():
+		return
+	var players := get_tree().get_nodes_in_group("players")
+	for p in players:
+		if not is_instance_valid(p) or not p.alive:
+			continue
+		var dist := global_position.distance_to(p.global_position)
+		if dist <= data.song_radius:
+			p.apply_slow.rpc(0.5, data.song_slow_mult)
+
+
+## Issue #84 Phase 3: end song when siren dies.
+func _end_song() -> void:
+	if _song_t > 0.0:
+		_song_t = 0.0
+		_sprite.modulate = Color.WHITE
+
+
+## Issue #84 Phase 3: angler stealth-lunge state machine.
+## Starts stealthed (invisible + untargetable). When player within lunge_range:
+## break stealth -> 0.8s telegraph (lure brightens) -> charge lunge.
+func _tick_stealth(delta: float) -> void:
+	if not data.stealth_lunge:
+		return
+	if not is_multiplayer_authority():
+		return
+	# Already lunging or telegraphing: tick telegraph.
+	if _lunge_telegraph > 0.0:
+		_lunge_telegraph -= delta
+		# Brighten during telegraph (lure light).
+		var bright := 1.0 - (_lunge_telegraph / data.lunge_telegraph)
+		_sprite.modulate = Color(1.0 + bright, 1.0 + bright, 0.7 + bright * 0.5)
+		if _lunge_telegraph <= 0.0:
+			_lunge_telegraph = 0.0
+			# Fire the lunge: reuse charge execution.
+			_begin_telegraph("charge", 0.1)
+		return
+	# Stealthed: check for players in range.
+	if _stealthed:
+		var players := get_tree().get_nodes_in_group("players")
+		for p in players:
+			if not is_instance_valid(p) or not p.alive:
+				continue
+			var dist := global_position.distance_to(p.global_position)
+			if dist <= data.lunge_range:
+				_break_stealth()
+				break
+		return
+	# Not stealthed and not telegraphing: enter stealth if no players nearby.
+	# (Only at spawn; after lunging, remain visible.)
+	if _target == null:
+		_enter_stealth()
+
+
+## Enter stealth: invisible + untargetable.
+func _enter_stealth() -> void:
+	if _stealthed:
+		return
+	_stealthed = true
+	untargetable = true
+	_sprite.modulate = Color(1, 1, 1, 0.15)  # Nearly invisible.
+
+
+## Break stealth: become visible, start telegraph.
+func _break_stealth() -> void:
+	if not _stealthed:
+		return
+	_stealthed = false
+	untargetable = false
+	_lunge_telegraph = data.lunge_telegraph
+	AudioManager.sfx("angler_lure", global_position)
 
 
 func _fire_special() -> void:
@@ -982,6 +1099,8 @@ func play_death() -> void:
 
 
 func _play_death() -> void:
+	# Issue #84 Phase 3: killing the siren ends the song.
+	_end_song()
 	alive = false
 	remove_from_group("mobs")
 	if data.is_boss:

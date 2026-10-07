@@ -36,6 +36,9 @@ var attack_cooldown := 0.5
 var move_speed := 5.0
 var attack_range := 2.8
 var xp_mult := 1.0
+## Issue #84 Phase 3: slow effect (from siren song). Server-applied.
+var slow_t := 0.0
+var slow_mult := 1.0
 # Every carried item applies its bonuses and multipliers. Death wipes them all.
 # Inventory is an Array of stacks: { "item": ItemData, "count": int }.
 # Same-type items combine into one stack; every copy contributes fully.
@@ -1778,6 +1781,12 @@ func _physics_process(delta: float) -> void:
 		return
 	if not alive:
 		return
+	# Issue #84 Phase 3: slow timer tick.
+	if slow_t > 0.0:
+		slow_t -= delta
+		if slow_t <= 0.0:
+			slow_t = 0.0
+			slow_mult = 1.0
 	if is_multiplayer_authority():
 		_tick_revive_channel(delta)
 		var ix := 0.0
@@ -1833,8 +1842,9 @@ func _physics_process(delta: float) -> void:
 			if _camera != null:
 				_camera.fov = lerpf(_camera.fov, 82.0, delta * 12.0)
 		else:
-			velocity.x = move_vec.x * move_speed * _buff_mult("speed")
-			velocity.z = move_vec.z * move_speed * _buff_mult("speed")
+			var slow_m := slow_mult if slow_t > 0.0 else 1.0
+			velocity.x = move_vec.x * move_speed * _buff_mult("speed") * slow_m
+			velocity.z = move_vec.z * move_speed * _buff_mult("speed") * slow_m
 			if _camera != null:
 				_camera.fov = lerpf(_camera.fov, 75.0, delta * 8.0)
 		if _jump_queued:
@@ -2875,6 +2885,16 @@ func _check_buff_expiry() -> void:
 			_buff_announced[stat] = false
 			if hud != null:
 				hud.toast("%s boost wore off." % stat.capitalize())
+
+
+## Issue #84 Phase 3: apply slow effect (from siren song). Server-authoritative:
+## the mob calls this on the server, which RPCs to the owning peer.
+@rpc("any_peer", "call_local")
+func apply_slow(duration: float, mult: float) -> void:
+	if not is_multiplayer_authority():
+		return
+	slow_t = maxf(slow_t, duration)
+	slow_mult = minf(slow_mult, mult) if slow_t > 0.0 else mult
 
 
 @rpc("any_peer", "call_local")

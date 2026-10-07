@@ -64,3 +64,21 @@ extends Resource
 @export var support_heal_ps: float = 6.0
 ## Damage multiplier applied to allies in the aura.
 @export var support_dmg_mult: float = 1.25
+
+# --- Siren song (issue #84 Phase 3): slowing song ---
+## Radius of the song effect (players within are slowed).
+@export var song_radius: float = 0.0
+## Movement multiplier applied to slowed players (0.6 = 40% slow).
+@export var song_slow_mult: float = 0.6
+## How long the song channels (seconds).
+@export var song_duration: float = 3.0
+## Cooldown between songs (seconds).
+@export var song_cooldown: float = 12.0
+
+# --- Angler stealth-lunge (issue #84 Phase 3) ---
+## If true, mob is invisible + untargetable until player within lunge_range.
+@export var stealth_lunge: bool = false
+## Range at which stealth breaks and telegraph begins.
+@export var lunge_range: float = 8.0
+## Telegraph duration before the lunge (seconds).
+@export var lunge_telegraph: float = 0.8
