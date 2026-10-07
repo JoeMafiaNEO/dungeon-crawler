@@ -7,20 +7,16 @@ Two DLC lines, both content-first:
   aquatic (dash eels, shield crabs, charming sirens), undead legion
   (skeleton variants, a necromancer mob that raises the fallen), constructs
   (armor-phase golems). 4–6 mobs per pack keeps art/audio scoped.
-- **Visual Pack** — atmosphere layer: new tilesets, weather, lighting,
-  and atmosphere per theme. No sprite rework, no gameplay changes — pure
-  mood. Per-theme sketch:
-  - Village Outskirts: rain, overcast light, muddy tileset variant
-  - The Dungeon: torch flicker, dust motes, damp stone tileset
-  - The Depths: ember particles, lava glow, obsidian tileset
-  - Supermarket: fluorescent flicker, grungy tileset variant
-  - Warlord: smoke, war-torn tileset, red alert lighting
-  - Station/Annex: warm lamplight, platform steam
-  - Global: new CRT filter options, optional day/night cycle
-
-
-Brainstorming branch. Nothing here is scoped, specced, or scheduled —
-this is the raw idea pool. Picks get the full SPEC/DESIGN/PHASES treatment later.
+- **Visual Pack** — unique new visual themes (not reskins of existing
+  zones). Each theme = tileset + weather + lighting + atmosphere, built with
+  the same theme system the game already uses. Candidate themes:
+  - Sunken Crypt: flooded halls, bioluminescent glow, drifting motes
+  - Ember Foundry: forge floors, molten channels, heat shimmer, ember fall
+  - Frostbite Peaks: blizzard, aurora sky, crunching snow tileset
+  - Night Bazaar: lantern-lit market streets, paper lanterns swaying, warm pools of light
+  - Thornwood: overgrown forest dungeon, fireflies, god rays through canopy
+  - Clockwork Spire: brass and gearwork, steam vents, rhythmic machine pulse lighting
+  - Void Rift: cosmic dark, floating debris, starfield voids between platforms
 
 ## 1. "Unfinished Business" (the held trio)
 Issues #12 (Player Trading), #13 (Endless Delve), #14 (Workshop Mod Support)
