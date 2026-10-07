@@ -15,6 +15,10 @@ func _load_dir(path: String) -> void:
 		push_warning("[ItemDB] Could not open %s" % path)
 		return
 	for file_name in dir.get_files():
+		# Exported builds store resources as *.tres.remap; strip the remap
+		# suffix and load the base .tres path (the loader resolves it).
+		if file_name.ends_with(".remap"):
+			file_name = file_name.get_basename()
 		if not file_name.ends_with(".tres"):
 			continue
 		var item := load(path + "/" + file_name) as ItemData
