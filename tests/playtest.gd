@@ -94,6 +94,7 @@ func _run() -> void:
 	_test_dlc_bundle1_phase1()
 	_test_dlc_bundle1_phase2()
 	_test_dlc_bundle1_phase3()
+	_test_dlc_bundle2_phase1()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5453,3 +5454,49 @@ func _test_dlc_bundle1_phase3() -> void:
 	_assert(FileAccess.file_exists("res://assets/sprites/angler.png"),
 		"angler.png exists")
 	print("[Playtest] DLC Bundle 1 Phase 3 done")
+
+
+## Issue #85 Phase 1: DLC Bundle 2 theme plumbing.
+func _test_dlc_bundle2_phase1() -> void:
+	print("[Playtest] DLC Bundle 2 Phase 1 (issue #85)...")
+	# SteamManager has Ember Foundry DLC ownership check.
+	var smsrc := FileAccess.get_file_as_string("res://scripts/autoload/steam_manager.gd")
+	_assert(smsrc.contains("DLC_EMBER_FOUNDRY_APP_ID"),
+		"SteamManager has Ember Foundry app ID")
+	_assert(smsrc.contains("is_ember_foundry_owned"),
+		"SteamManager has is_ember_foundry_owned()")
+	# Board DLC row: second DLC row alongside sunken_crypt, only when owned.
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains('_is_dlc_owned("ember_foundry")'),
+		"departure board checks ember_foundry ownership")
+	_assert(bsrc.contains('dests.append("ember_foundry")'),
+		"board appends ember_foundry when owned")
+	_assert(bsrc.contains('"ember_foundry":'),
+		"_is_dlc_owned handles ember_foundry")
+	# Theme file exists with correct properties.
+	var tsrc := FileAccess.get_file_as_string("res://data/levels/theme_ember_foundry.tres")
+	_assert(tsrc.contains('theme_id = "ember_foundry"'),
+		"ember_foundry theme exists")
+	_assert(tsrc.contains("ambient_motes = true"),
+		"theme enables ambient particles")
+	_assert(tsrc.contains("mote_fall = true"),
+		"theme enables ember fall (downward)")
+	# LevelTheme supports mote_fall.
+	var ltsrc := FileAccess.get_file_as_string("res://scripts/procgen/level_theme.gd")
+	_assert(ltsrc.contains("mote_fall"),
+		"LevelTheme has mote_fall flag")
+	# _build_motes handles fall direction.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("theme.mote_fall"),
+		"_build_motes respects mote_fall")
+	# Danger tier 3 wiring.
+	_assert(dsrc.contains('"ember_foundry": 3'),
+		"ember_foundry danger tier 3")
+	# THEME_ORDER untouched (base 5-theme rotation, no DLC).
+	_assert(dsrc.contains('THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket", "warlord"]'),
+		"THEME_ORDER unchanged (no DLC)")
+	# Board stars for DLC row.
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(stsrc.contains('"ember_foundry":'),
+		"station has ember_foundry board stars")
+	print("[Playtest] DLC Bundle 2 Phase 1 done")

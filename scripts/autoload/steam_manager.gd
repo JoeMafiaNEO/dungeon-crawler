@@ -45,19 +45,29 @@ func _process(_delta: float) -> void:
 ## initialized (headless, no Steam, etc.) — base game unaffected.
 ## DLC App IDs (to be assigned by Jesse on Steamworks):
 ##   Sunken Crypt (Bundle 1): 3441591 (placeholder)
+##   Ember Foundry (Bundle 2): 3441592 (placeholder)
 const DLC_SUNKEN_CRYPT_APP_ID := 3441591
+const DLC_EMBER_FOUNDRY_APP_ID := 3441592
 
 ## For tests: mock override. If set, is_dlc_owned returns this instead of
 ## querying Steam. Reset to -1 for real behavior.
+## Issue #85: per-DLC mock dict so Bundle 1 and Bundle 2 can be mocked independently.
 var _dlc_mock := -1
+var _dlc_mock_by_app := {}
 
 func set_dlc_mock(owned: bool) -> void:
 	_dlc_mock = 1 if owned else 0
 
+func set_dlc_mock_for(app_id: int, owned: bool) -> void:
+	_dlc_mock_by_app[app_id] = owned
+
 func clear_dlc_mock() -> void:
 	_dlc_mock = -1
+	_dlc_mock_by_app.clear()
 
 func is_dlc_owned(app_id: int) -> bool:
+	if _dlc_mock_by_app.has(app_id):
+		return bool(_dlc_mock_by_app[app_id])
 	if _dlc_mock >= 0:
 		return _dlc_mock == 1
 	if not initialized:
@@ -69,3 +79,7 @@ func is_dlc_owned(app_id: int) -> bool:
 
 func is_sunken_crypt_owned() -> bool:
 	return is_dlc_owned(DLC_SUNKEN_CRYPT_APP_ID)
+
+## Issue #85 Phase 1: Ember Foundry DLC ownership check.
+func is_ember_foundry_owned() -> bool:
+	return is_dlc_owned(DLC_EMBER_FOUNDRY_APP_ID)

@@ -47,6 +47,9 @@ extends Resource
 @export var ambient_motes: bool = false
 @export var mote_color: Color = Color(0.5, 0.9, 0.8, 0.6)
 @export var mote_count: int = 50
+# --- Issue #85 Phase 1: ember fall direction ---
+## If true, motes fall downward (embers) instead of drifting up.
+@export var mote_fall: bool = false
 
 # --- Gameplay ---
 ## Mob mix: { "mob_id": weight }.

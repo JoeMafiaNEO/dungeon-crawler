@@ -109,6 +109,9 @@ func _build() -> void:
 	# Issue #84 Phase 1: DLC row appended after base rows, only when owned.
 	if _is_dlc_owned("sunken_crypt"):
 		dests.append("sunken_crypt")
+	# Issue #85 Phase 1: second DLC row (Ember Foundry), same gating path.
+	if _is_dlc_owned("ember_foundry"):
+		dests.append("ember_foundry")
 	for theme_id in dests:
 		var tid := str(theme_id)
 		_build_row(tid, y, slate, next_level, party_level)
@@ -230,4 +233,6 @@ func _is_dlc_owned(theme_id: String) -> bool:
 	match theme_id:
 		"sunken_crypt":
 			return bool(sm.call("is_sunken_crypt_owned"))
+		"ember_foundry":
+			return bool(sm.call("is_ember_foundry_owned"))
 	return false

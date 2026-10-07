@@ -32,7 +32,7 @@ const THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket
 ## Danger model (Phase 3): base tier per theme × depth scaling.
 ## Single source of truth for mob HP/damage, XP, and loot sell values.
 ## Risk/reward: picking a harder destination pays more if you survive.
-const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4, "sunken_crypt": 3}
+const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4, "sunken_crypt": 3, "ember_foundry": 3}
 const TIER_MULT := {1: 1.0, 2: 1.3, 3: 1.7, 4: 2.2}
 
 ## Apex arena (issue #5): every 3rd cycle the warlord board row becomes the
@@ -2480,11 +2480,19 @@ func _build_motes() -> void:
 	var pm := ParticleProcessMaterial.new()
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	pm.emission_box_extents = Vector3(map_size/2, 3.0, map_size/2)
-	pm.direction = Vector3(0, 1, 0)
-	pm.spread = 15.0
-	pm.initial_velocity_min = 0.1
-	pm.initial_velocity_max = 0.4
-	pm.gravity = Vector3(0, 0.05, 0)  # Gentle upward drift.
+	# Issue #85 Phase 1: ember fall — motes fall down instead of drifting up.
+	if theme.mote_fall:
+		pm.direction = Vector3(0, -1, 0)
+		pm.spread = 10.0
+		pm.initial_velocity_min = 0.5
+		pm.initial_velocity_max = 1.2
+		pm.gravity = Vector3(0, -1.5, 0)  # Falling embers accelerate down.
+	else:
+		pm.direction = Vector3(0, 1, 0)
+		pm.spread = 15.0
+		pm.initial_velocity_min = 0.1
+		pm.initial_velocity_max = 0.4
+		pm.gravity = Vector3(0, 0.05, 0)  # Gentle upward drift.
 	pm.damping_min = 0.0
 	pm.damping_max = 0.2
 	pm.scale_min = 0.03
