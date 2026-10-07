@@ -105,7 +105,11 @@ func _build() -> void:
 	var next_level := Station.next_level_number
 	var party_level := _party_level(next_level)
 	var y := 2.88
-	for theme_id in Dungeon.board_destinations(next_level):
+	var dests: Array = Dungeon.board_destinations(next_level)
+	# Issue #84 Phase 1: DLC row appended after base rows, only when owned.
+	if _is_dlc_owned("sunken_crypt"):
+		dests.append("sunken_crypt")
+	for theme_id in dests:
 		var tid := str(theme_id)
 		_build_row(tid, y, slate, next_level, party_level)
 		y -= 0.54
@@ -212,3 +216,18 @@ func set_tallies(votes: Dictionary) -> void:
 	for tid in _rows:
 		var r: Dictionary = _rows[tid]
 		(r["label"] as Label3D).text = "%s  [%d]" % [r["base_text"], int(counts.get(tid, 0))]
+
+
+## Issue #84 Phase 1: DLC ownership check for board rows.
+## Returns false if SteamManager isn't available (headless, tests, no Steam).
+func _is_dlc_owned(theme_id: String) -> bool:
+	# SteamManager is an autoload; guard for contexts where it doesn't exist.
+	if not has_node("/root/SteamManager"):
+		return false
+	var sm = get_node("/root/SteamManager")
+	if sm == null or not sm.has_method("is_dlc_owned"):
+		return false
+	match theme_id:
+		"sunken_crypt":
+			return bool(sm.call("is_sunken_crypt_owned"))
+	return false

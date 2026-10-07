@@ -41,6 +41,13 @@ extends Resource
 @export var torch_light_color: Color = Color(1.0, 0.55, 0.25)
 @export var torch_light_energy: float = 2.0
 
+# --- Issue #84 Phase 1: drifting motes (ambient particles) ---
+## If true, spawn a lightweight GPUParticles3D ambient mote system.
+## Gated by theme flag so base themes pay nothing.
+@export var ambient_motes: bool = false
+@export var mote_color: Color = Color(0.5, 0.9, 0.8, 0.6)
+@export var mote_count: int = 50
+
 # --- Gameplay ---
 ## Mob mix: { "mob_id": weight }.
 @export var mob_mix: Dictionary = {}

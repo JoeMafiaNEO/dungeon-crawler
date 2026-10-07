@@ -91,6 +91,7 @@ func _run() -> void:
 	_test_ascension()
 	_test_warlord_seasons()
 	_test_warlord_seasons_phase2()
+	_test_dlc_bundle1_phase1()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5325,3 +5326,46 @@ func _test_warlord_seasons_phase2() -> void:
 	_assert(dsrc.contains("seasons_enabled"),
 		"dungeon has seasons_enabled flag")
 	print("[Playtest] Warlord Seasons Phase 2 done")
+
+
+## Issue #84 Phase 1: DLC Bundle 1 theme plumbing.
+func _test_dlc_bundle1_phase1() -> void:
+	print("[Playtest] DLC Bundle 1 Phase 1 (issue #84)...")
+	# SteamManager has DLC ownership check.
+	var smsrc := FileAccess.get_file_as_string("res://scripts/autoload/steam_manager.gd")
+	_assert(smsrc.contains("is_dlc_owned"),
+		"SteamManager has is_dlc_owned()")
+	_assert(smsrc.contains("isDLCInstalled"),
+		"uses GodotSteam isDLCInstalled API")
+	_assert(smsrc.contains("set_dlc_mock") and smsrc.contains("clear_dlc_mock"),
+		"DLC mock helpers for tests")
+	# Board DLC row: only when owned.
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("_is_dlc_owned"),
+		"departure board has DLC ownership check")
+	_assert(bsrc.contains("sunken_crypt"),
+		"board appends sunken_crypt when owned")
+	# Theme file exists with correct properties.
+	var tsrc := FileAccess.get_file_as_string("res://data/levels/theme_sunken_crypt.tres")
+	_assert(tsrc.contains("theme_id = \"sunken_crypt\""),
+		"sunken_crypt theme exists")
+	_assert(tsrc.contains("ambient_motes = true"),
+		"theme enables drifting motes")
+	# LevelTheme supports motes.
+	var ltsrc := FileAccess.get_file_as_string("res://scripts/procgen/level_theme.gd")
+	_assert(ltsrc.contains("ambient_motes"),
+		"LevelTheme has ambient_motes flag")
+	# Danger tier 3 wiring.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("\"sunken_crypt\": 3"),
+		"sunken_crypt danger tier 3")
+	# THEME_ORDER untouched (base 5-theme rotation).
+	_assert(dsrc.contains('THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket", "warlord"]'),
+		"THEME_ORDER unchanged (no DLC)")
+	_assert(not dsrc.contains('"sunken_crypt"' + ",") or dsrc.contains('THEME_ORDER: Array[String] = ["village"'),
+		"DLC not in THEME_ORDER")
+	# Board stars for DLC row.
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(stsrc.contains("sunken_crypt"),
+		"station has sunken_crypt board stars")
+	print("[Playtest] DLC Bundle 1 Phase 1 done")

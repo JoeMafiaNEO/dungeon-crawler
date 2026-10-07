@@ -32,7 +32,7 @@ const THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket
 ## Danger model (Phase 3): base tier per theme × depth scaling.
 ## Single source of truth for mob HP/damage, XP, and loot sell values.
 ## Risk/reward: picking a harder destination pays more if you survive.
-const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4}
+const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4, "sunken_crypt": 3}
 const TIER_MULT := {1: 1.0, 2: 1.3, 3: 1.7, 4: 2.2}
 
 ## Apex arena (issue #5): every 3rd cycle the warlord board row becomes the
@@ -2100,6 +2100,7 @@ func _build_arena_from_layout() -> void:
 	_build_obstacles()
 	_build_props()
 	_build_torches()
+	_build_motes()  # Issue #84: theme-driven ambient particles.
 	StationAnnex.build(self, _annex_plan, _layout)
 	_build_station_annex_content()
 	spawn_points = _layout.player_spawns
@@ -2457,6 +2458,54 @@ func _build_torches() -> void:
 		var sparks := Effects.make_flame()
 		sparks.position = pos + Vector3(0, 0.35, 0)
 		add_child(sparks)
+
+
+## Issue #84 Phase 1: drifting motes — lightweight theme-driven ambient particles.
+## Gated by theme.ambient_motes so base themes pay nothing.
+func _build_motes() -> void:
+	if theme == null or not bool(theme.get("ambient_motes", false)):
+		return
+	var count := int(theme.get("mote_count", 50))
+	var color: Color = theme.get("mote_color", Color(0.5, 0.9, 0.8, 0.6))
+	var motes := GPUParticles3D.new()
+	motes.name = "AmbientMotes"
+	motes.amount = count
+	motes.lifetime = 8.0
+	motes.preprocess = 8.0
+	motes.explosiveness = 0.0
+	motes.randomness = 0.8
+	# Emission: box covering the map.
+	var map_size := float(theme.grid_size * theme.cell_size)
+	motes.visibility_aabb = AABB(Vector3(-map_size/2, 0, -map_size/2), Vector3(map_size, 8, map_size))
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(map_size/2, 3.0, map_size/2)
+	pm.direction = Vector3(0, 1, 0)
+	pm.spread = 15.0
+	pm.initial_velocity_min = 0.1
+	pm.initial_velocity_max = 0.4
+	pm.gravity = Vector3(0, 0.05, 0)  # Gentle upward drift.
+	pm.damping_min = 0.0
+	pm.damping_max = 0.2
+	pm.scale_min = 0.03
+	pm.scale_max = 0.08
+	pm.color = color
+	motes.process_material = pm
+	# Simple billboard quad.
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.1, 0.1)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = color
+	mat.emission_enabled = true
+	mat.emission = Color(color.r, color.g, color.b)
+	mat.emission_energy_multiplier = 1.5
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	quad.material = mat
+	motes.draw_pass_1 = quad
+	motes.position = Vector3(0, 1.0, 0)
+	add_child(motes)
 
 
 # --- Multiplayer save ---

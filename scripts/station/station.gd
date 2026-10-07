@@ -35,6 +35,7 @@ const BOARD_STARS := {
 	"village": "★☆☆☆", "dungeon": "★★☆☆", "depths": "★★★☆",
 	"supermarket": "★☆☆☆", "warlord": "★★★★",
 	"apex": "★★★★★",
+	"sunken_crypt": "★★★☆",
 }
 
 ## Per-theme station dressing: platform lamp tint (Phase 5).

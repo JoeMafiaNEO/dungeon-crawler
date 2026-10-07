@@ -1,0 +1,41 @@
+[gd_resource type="Resource" script_class="LevelTheme" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/procgen/level_theme.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+theme_id = "sunken_crypt"
+display_name = "Sunken Crypt"
+grid_size = 24
+cell_size = 2.0
+clear_radius = 3
+obstacle_blobs_min = 5
+obstacle_blobs_max = 8
+ground_color = Color(0.05, 0.25, 0.28, 1)
+wall_color = Color(0.08, 0.2, 0.24, 1)
+obstacle_color = Color(0.1, 0.28, 0.3, 1)
+sky_color = Color(0.01, 0.05, 0.08, 1)
+fog_color = Color(0.03, 0.12, 0.16, 1)
+fog_density = 0.05
+ambient_color = Color(0.2, 0.5, 0.5, 1)
+ambient_energy = 0.35
+sun_color = Color(0.5, 0.9, 0.85, 1)
+sun_energy = 0.0
+sun_direction = Vector3(-0.45, -1, -0.35)
+obstacle_entries = Array[Dictionary]([{ "type": "stalagmite", "weight": 3.0, "size": 1 }, { "type": "rock", "weight": 2.0, "size": 1 }, { "type": "crystal", "weight": 2.5, "size": 1 }])
+prop_entries = Array[Dictionary]([{ "type": "crystal", "weight": 3.0 }, { "type": "glowshroom", "weight": 2.5 }, { "type": "bones", "weight": 1.5 }, { "type": "coral", "weight": 2.0 }, { "type": "rock", "weight": 1.0 }])
+props_min = 12
+props_max = 20
+torch_count = 8
+torch_light_color = Color(0.3, 0.9, 0.75, 1)
+torch_light_energy = 1.8
+mob_mix = { "skeleton": 2.0, "drowned": 3.0, "cultist": 2.0, "bat": 1.5, "wraith": 2.5 }
+hp_scale = 1.5
+dmg_scale = 1.35
+puzzle_key_count = 4
+maze_walls = true
+boss_id = "boss_drowned_king"
+; Issue #84 Phase 1: drifting motes (theme-driven ambient particles).
+ambient_motes = true
+mote_color = Color(0.4, 0.9, 0.8, 0.6)
+mote_count = 60
