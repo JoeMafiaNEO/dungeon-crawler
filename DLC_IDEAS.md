@@ -27,6 +27,7 @@ Two DLC lines, both content-first:
   - Void Rift → **Cosmic Pack**: Riftling (short teleports), Null Hound
     (ability-disrupt howl), Star Eater (gravity pull), Eventide Horror
     (mini-boss, phase shifts)
+  Status: APPROVED by Jesse (2026-10-07) — all seven packs, bundled with their themes.
 
 - **Visual Pack** — unique new visual themes (not reskins of existing
   zones). Each theme = tileset + weather + lighting + atmosphere, built with
