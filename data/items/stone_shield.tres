@@ -1,0 +1,19 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/stone_shield.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "stone_shield"
+display_name = "Stone Shield"
+description = "A tower shield hewn from crypt rock. Heavy, but it holds."
+icon = ExtResource("2")
+slot = 1
+rarity = 1
+damage_bonus = 0.0
+health_bonus = 40.0
+speed_bonus = 0.0
+damage_mult = 1.0
+health_mult = 1.10
+world_model = ""
