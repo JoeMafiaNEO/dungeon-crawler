@@ -95,6 +95,7 @@ func _run() -> void:
 	_test_dlc_bundle1_phase2()
 	_test_dlc_bundle1_phase3()
 	_test_dlc_bundle2_phase1()
+	_test_dlc_bundle2_phase2()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5500,3 +5501,63 @@ func _test_dlc_bundle2_phase1() -> void:
 	_assert(stsrc.contains('"ember_foundry":'),
 		"station has ember_foundry board stars")
 	print("[Playtest] DLC Bundle 2 Phase 1 done")
+
+
+## Issue #85 Phase 2: Reuse-path mobs (bellows_hound, slag_spitter).
+func _test_dlc_bundle2_phase2() -> void:
+	print("[Playtest] DLC Bundle 2 Phase 2 (issue #85)...")
+	# Bellows hound: disruptor with charge + DAMAGING fire trail.
+	var houndsrc := FileAccess.get_file_as_string("res://data/mobs/bellows_hound.tres")
+	_assert(houndsrc.contains('id = "bellows_hound"'),
+		"bellows_hound.tres exists")
+	_assert(houndsrc.contains('special_id = "charge"'),
+		"hound reuses charge special (telegraphed dash)")
+	_assert(houndsrc.contains("trail_damage = "),
+		"hound has trail_damage field")
+	_assert(float(houndsrc.get_slice("trail_damage = ", 1).get_slice("\n", 0)) > 0.0,
+		"hound trail_damage > 0")
+	_assert(houndsrc.contains("trail_duration = "),
+		"hound has trail_duration field")
+	# MobData has trail fields.
+	var mdsrc := FileAccess.get_file_as_string("res://scripts/data/mob_data.gd")
+	_assert(mdsrc.contains("trail_damage"),
+		"MobData has trail_damage")
+	_assert(mdsrc.contains("trail_duration"),
+		"MobData has trail_duration")
+	# mob.gd: trail drops decals + server-side hotspot damage.
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("_tick_hot_spots"),
+		"mob has _tick_hot_spots for damaging trails")
+	_assert(msrc.contains("_hot_spots"),
+		"mob tracks hotspot array")
+	# Slag spitter: ranged with lava_glob projectile variant.
+	var spitsrc := FileAccess.get_file_as_string("res://data/mobs/slag_spitter.tres")
+	_assert(spitsrc.contains('id = "slag_spitter"'),
+		"slag_spitter.tres exists")
+	_assert(spitsrc.contains("ranged = true"),
+		"spitter is ranged")
+	_assert(spitsrc.contains('projectile_kind = "lava_glob"'),
+		"spitter uses lava_glob projectile variant")
+	# MobData has projectile_kind.
+	_assert(mdsrc.contains("projectile_kind"),
+		"MobData has projectile_kind")
+	# enemy_arrow.gd: lava_glob visual + scorch on impact.
+	var easrc := FileAccess.get_file_as_string("res://scripts/combat/enemy_arrow.gd")
+	_assert(easrc.contains("lava_glob"),
+		"enemy_arrow handles lava_glob variant")
+	_assert(easrc.contains("_build_lava_glob"),
+		"enemy_arrow builds lava glob visual")
+	# dungeon.gd spawn_arrow passes projectile_kind.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("projectile_kind"),
+		"spawn_arrow accepts projectile_kind")
+	# Both wired through theme mob_mix.
+	var tsrc := FileAccess.get_file_as_string("res://data/levels/theme_ember_foundry.tres")
+	_assert(tsrc.contains("bellows_hound") and tsrc.contains("slag_spitter"),
+		"both mobs in ember_foundry mob_mix")
+	# Sprites exist.
+	_assert(FileAccess.file_exists("res://assets/sprites/bellows_hound.png"),
+		"bellows_hound.png sprite exists")
+	_assert(FileAccess.file_exists("res://assets/sprites/slag_spitter.png"),
+		"slag_spitter.png sprite exists")
+	print("[Playtest] DLC Bundle 2 Phase 2 done")

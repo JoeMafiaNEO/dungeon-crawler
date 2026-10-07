@@ -89,6 +89,8 @@ var _shift_fired := 0
 var _phaseshift_t := 0.0
 ## Fire trail (enrage charge): seconds until the next scorch decal drop.
 var _trail_tick := 0.0
+## Issue #85 Phase 2: damaging fire trail hotspots [{pos, expiry}]. Server-side.
+var _hot_spots: Array = []
 ## Expanding shockwave rings (apex slam): [{radius, max_radius, speed, hit}].
 var _shockwaves: Array = []
 
@@ -173,6 +175,8 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if not alive:
 		return
+	# Issue #85 Phase 2: damaging fire trail hotspots (server-side).
+	_tick_hot_spots(delta)
 	# Issue #84 Phase 3: siren song ticks (server-authoritative slow).
 	_tick_song(delta)
 	if _song_cd > 0.0:
@@ -402,7 +406,7 @@ func _fire_arrow(dir: Vector3) -> void:
 	var from := global_position + Vector3(0, 1.4, 0) + dir * 0.6
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null:
-		dungeon.rpc("spawn_arrow", from, dir, data.damage * dmg_scale * _dmg_mult(), data.projectile_speed, data.display_name)
+		dungeon.rpc("spawn_arrow", from, dir, data.damage * dmg_scale * _dmg_mult(), data.projectile_speed, data.display_name, data.projectile_kind)
 	AudioManager.sfx("bow_shot", global_position)
 
 
@@ -593,11 +597,18 @@ func _boss_think(delta: float) -> bool:
 	if _charge_t > 0.0:
 		_charge_t -= delta
 		# Apex enrage: the charge leaves a 4s fire trail (visual scorch decals).
-		if data.apex_id == "enrage":
+		# Issue #85: bellows_hound also drops trail decals when trail_damage > 0.
+		if data.apex_id == "enrage" or data.trail_damage > 0.0:
 			_trail_tick -= delta
 			if _trail_tick <= 0.0:
 				_trail_tick = 0.15
 				rpc("trail_scorch", global_position)
+				# Server tracks hotspots for damaging trails.
+				if multiplayer.is_server() and data.trail_damage > 0.0:
+					_hot_spots.append({
+						"pos": Vector2(global_position.x, global_position.z),
+						"expiry": Time.get_ticks_msec() / 1000.0 + data.trail_duration,
+					})
 		velocity.x = _charge_dir.x * data.move_speed * 4.5 * _move_speed_mult()
 		velocity.z = _charge_dir.z * data.move_speed * 4.5 * _move_speed_mult()
 		_check_charge_hits()
@@ -642,6 +653,35 @@ func _begin_song() -> void:
 	# Telegraph: audio cue + visual (sprite pulses).
 	AudioManager.sfx("siren_song", global_position)
 	_sprite.modulate = Color(0.7, 1.0, 1.0)  # Cyan tint while singing.
+
+
+## Issue #85 Phase 2: tick damaging fire trail hotspots. Server-authoritative:
+## players standing in a fresh (non-expired) hotspot take trail_damage DPS.
+## Called from _physics_process.
+func _tick_hot_spots(delta: float) -> void:
+	if _hot_spots.is_empty():
+		return
+	if not multiplayer.is_server():
+		_hot_spots.clear()
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	# Prune expired.
+	_hot_spots = _hot_spots.filter(func(h): return float(h["expiry"]) > now)
+	if _hot_spots.is_empty():
+		return
+	var dmg := data.trail_damage * delta
+	if dmg <= 0.0:
+		return
+	for node in get_tree().get_nodes_in_group("players"):
+		var p := node as Player
+		if p == null or not p.alive:
+			continue
+		var pp := Vector2(p.global_position.x, p.global_position.z)
+		for h in _hot_spots:
+			var hp := h["pos"] as Vector2
+			if pp.distance_to(hp) < 1.4:  # Scorch decal radius.
+				p.rpc_id(p.get_multiplayer_authority(), "take_damage", dmg, data.display_name)
+				break
 
 
 ## Issue #84 Phase 3: tick active song. Server-authoritative: applies slow

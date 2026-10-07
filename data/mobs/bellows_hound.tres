@@ -1,0 +1,45 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/bellows_hound.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/worn_dagger.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="6"]
+[ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="7"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 1.5
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_3"]
+script = ExtResource("1")
+item = ExtResource("7")
+weight = 1.0
+
+[resource]
+script = ExtResource("2")
+id = "bellows_hound"
+display_name = "Bellows Hound"
+health = 65.0
+damage = 12.0
+move_speed = 5.0
+attack_range = 1.8
+attack_cooldown = 1.2
+xp_reward = 28
+drop_chance = 0.35
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3")]
+frames = [ExtResource("3")]
+loot_luck = 1.0
+bonus_drops = 0
+; Issue #85 Phase 2: disruptor — telegraphed charge (reuses charge special)
+; plus DAMAGING fire trail (trail_damage DPS on fresh decals, server-side).
+special_id = "charge"
+special_cooldown = 7.0
+trail_damage = 8.0
+trail_duration = 2.0

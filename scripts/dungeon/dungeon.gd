@@ -1842,9 +1842,9 @@ func spawn_mob(mob_id: int, type_id: String, pos: Vector3, hp_scale: float = 1.0
 ## Fires an enemy arrow on all peers. Each peer simulates its own copy;
 ## only the server applies damage (see EnemyArrow).
 @rpc("any_peer", "call_local")
-func spawn_arrow(origin: Vector3, dir: Vector3, damage: float, speed: float, shooter_name: String = "Goblin Archer") -> void:
+func spawn_arrow(origin: Vector3, dir: Vector3, damage: float, speed: float, shooter_name: String = "Goblin Archer", projectile_kind: String = "") -> void:
 	var arrow := EnemyArrow.new()
-	arrow.setup(dir.normalized() * speed, damage)
+	arrow.setup(dir.normalized() * speed, damage, projectile_kind)
 	arrow.attacker_name = shooter_name
 	add_child(arrow)
 	arrow.global_position = origin

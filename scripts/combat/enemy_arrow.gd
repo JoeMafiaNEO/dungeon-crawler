@@ -8,17 +8,31 @@ var velocity := Vector3.ZERO
 var damage := 8.0
 ## Mob display name, passed to the victim's death-cause tracking.
 var attacker_name := "Goblin Archer"
+## Issue #85 Phase 2: visual variant ("", "lava_glob").
+var projectile_kind := ""
 
 var _life := 3.0
 var _dead := false
 
 
-func setup(p_velocity: Vector3, p_damage: float) -> void:
+func setup(p_velocity: Vector3, p_damage: float, p_kind: String = "") -> void:
 	velocity = p_velocity
 	damage = p_damage
+	projectile_kind = p_kind
 
 
 func _ready() -> void:
+	if projectile_kind == "lava_glob":
+		_build_lava_glob()
+	else:
+		_build_arrow()
+	# Orient along flight direction.
+	if velocity.length() > 0.01:
+		rotation.y = atan2(velocity.x, velocity.z)
+
+
+## Default wooden arrow visual.
+func _build_arrow() -> void:
 	# Simple wooden arrow: shaft + head.
 	var shaft := MeshInstance3D.new()
 	var shaft_mesh := BoxMesh.new()
@@ -37,9 +51,22 @@ func _ready() -> void:
 	head.mesh = head_mesh
 	head.position = Vector3(0, 0, 0.4)
 	add_child(head)
-	# Orient along flight direction.
-	if velocity.length() > 0.01:
-		rotation.y = atan2(velocity.x, velocity.z)
+
+
+## Issue #85 Phase 2: lava glob visual — emissive orange sphere.
+func _build_lava_glob() -> void:
+	var glob := MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.22
+	sphere.height = 0.44
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.45, 0.1)
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.35, 0.05)
+	mat.emission_energy_multiplier = 2.5
+	sphere.material = mat
+	glob.mesh = sphere
+	add_child(glob)
 
 
 func _physics_process(delta: float) -> void:
@@ -78,5 +105,10 @@ func _break() -> void:
 		return
 	_dead = true
 	if is_inside_tree():
-		Effects.burst(get_parent(), global_position, Color(0.6, 0.5, 0.35), 6)
+		if projectile_kind == "lava_glob":
+			# Visual only: scorch decal on impact.
+			Effects.scorch(get_parent(), global_position, 1.0)
+			Effects.burst(get_parent(), global_position, Color(1.0, 0.5, 0.15), 8)
+		else:
+			Effects.burst(get_parent(), global_position, Color(0.6, 0.5, 0.35), 6)
 	queue_free()

@@ -82,3 +82,13 @@ extends Resource
 @export var lunge_range: float = 8.0
 ## Telegraph duration before the lunge (seconds).
 @export var lunge_telegraph: float = 0.8
+
+# --- Bellows Hound fire trail (issue #85 Phase 2) ---
+## DPS dealt to players standing in fresh trail decals (0 = no damaging trail).
+@export var trail_damage: float = 0.0
+## Seconds a trail decal stays "hot" (damaging). Visual lasts longer.
+@export var trail_duration: float = 2.0
+
+# --- Slag Spitter lava glob (issue #85 Phase 2) ---
+## Projectile visual variant: "" = default arrow, "lava_glob" = emissive orange sphere.
+@export var projectile_kind: String = ""
