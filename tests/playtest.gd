@@ -96,6 +96,7 @@ func _run() -> void:
 	_test_dlc_bundle1_phase3()
 	_test_dlc_bundle2_phase1()
 	_test_dlc_bundle2_phase2()
+	_test_dlc_bundle2_phase3()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5561,3 +5562,70 @@ func _test_dlc_bundle2_phase2() -> void:
 	_assert(FileAccess.file_exists("res://assets/sprites/slag_spitter.png"),
 		"slag_spitter.png sprite exists")
 	print("[Playtest] DLC Bundle 2 Phase 2 done")
+
+
+## Issue #85 Phase 3: New mechanics (cinder_imp explosion, forge_golem armor).
+func _test_dlc_bundle2_phase3() -> void:
+	print("[Playtest] DLC Bundle 2 Phase 3 (issue #85)...")
+	# Cinder imp: swarmer with explode_on_death.
+	var impsrc := FileAccess.get_file_as_string("res://data/mobs/cinder_imp.tres")
+	_assert(impsrc.contains('id = "cinder_imp"'),
+		"cinder_imp.tres exists")
+	_assert(impsrc.contains("explode_on_death = true"),
+		"imp explodes on death")
+	_assert(impsrc.contains("explode_radius = 2.5"),
+		"imp explosion radius 2.5m")
+	_assert(impsrc.contains("explode_fuse = 0.5"),
+		"imp fuse 0.5s")
+	_assert(float(impsrc.get_slice("move_speed = ", 1).get_slice("\n", 0)) > 6.0,
+		"imp is fast")
+	_assert(float(impsrc.get_slice("health = ", 1).get_slice("\n", 0)) < 30.0,
+		"imp is fragile")
+	# MobData has explosion fields.
+	var mdsrc := FileAccess.get_file_as_string("res://scripts/data/mob_data.gd")
+	_assert(mdsrc.contains("explode_on_death"),
+		"MobData has explode_on_death")
+	_assert(mdsrc.contains("explode_radius"),
+		"MobData has explode_radius")
+	_assert(mdsrc.contains("explode_damage_mult"),
+		"MobData has explode_damage_mult")
+	_assert(mdsrc.contains("explode_fuse"),
+		"MobData has explode_fuse")
+	# mob.gd: fuse + detonation logic.
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("_begin_fuse"),
+		"mob has _begin_fuse")
+	_assert(msrc.contains("_tick_fuse"),
+		"mob has _tick_fuse")
+	_assert(msrc.contains("_detonate"),
+		"mob has _detonate")
+	# Forge golem: brute with armor phases + slam.
+	var golemsrc := FileAccess.get_file_as_string("res://data/mobs/forge_golem.tres")
+	_assert(golemsrc.contains('id = "forge_golem"'),
+		"forge_golem.tres exists")
+	_assert(golemsrc.contains('special_id = "slam"'),
+		"golem uses slam special (existing AoE)")
+	_assert(golemsrc.contains("armor_phases = "),
+		"golem has armor_phases")
+	_assert(golemsrc.contains('"hp_frac": 0.66'),
+		"golem phase at 66% HP")
+	_assert(golemsrc.contains('"hp_frac": 0.33'),
+		"golem phase at 33% HP")
+	# MobData has armor_phases.
+	_assert(mdsrc.contains("armor_phases"),
+		"MobData has armor_phases")
+	# mob.gd: armor application + visual tell.
+	_assert(msrc.contains("_apply_armor_phases"),
+		"mob has _apply_armor_phases")
+	_assert(msrc.contains("_update_armor_visual"),
+		"mob has armor visual tell")
+	# Both wired through theme mob_mix.
+	var tsrc := FileAccess.get_file_as_string("res://data/levels/theme_ember_foundry.tres")
+	_assert(tsrc.contains("cinder_imp") and tsrc.contains("forge_golem"),
+		"both mobs in ember_foundry mob_mix")
+	# Sprites exist.
+	_assert(FileAccess.file_exists("res://assets/sprites/cinder_imp.png"),
+		"cinder_imp.png sprite exists")
+	_assert(FileAccess.file_exists("res://assets/sprites/forge_golem.png"),
+		"forge_golem.png sprite exists")
+	print("[Playtest] DLC Bundle 2 Phase 3 done")

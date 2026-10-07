@@ -1,0 +1,40 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/drop_entry.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/cinder_imp.png" id="3"]
+[ext_resource type="Resource" path="res://data/items/health_potion.tres" id="5"]
+[ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="6"]
+
+[sub_resource type="Resource" id="DropEntry_1"]
+script = ExtResource("1")
+item = ExtResource("5")
+weight = 2.0
+
+[sub_resource type="Resource" id="DropEntry_2"]
+script = ExtResource("1")
+item = ExtResource("6")
+weight = 1.0
+
+[resource]
+script = ExtResource("2")
+id = "cinder_imp"
+display_name = "Cinder Imp"
+health = 25.0
+damage = 8.0
+move_speed = 6.5
+attack_range = 1.5
+attack_cooldown = 0.9
+xp_reward = 18
+drop_chance = 0.3
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2")]
+frames = [ExtResource("3")]
+loot_luck = 0.8
+bonus_drops = 0
+; Issue #85 Phase 3: swarmer — explodes on death.
+; Fast, fragile; 0.5s fuse (flash telegraph) then AoE, server-side.
+; Anti-cheese: explosion hits PLAYERS only (no chain detonation).
+explode_on_death = true
+explode_radius = 2.5
+explode_damage_mult = 1.5
+explode_fuse = 0.5

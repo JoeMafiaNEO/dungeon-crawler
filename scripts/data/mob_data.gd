@@ -92,3 +92,18 @@ extends Resource
 # --- Slag Spitter lava glob (issue #85 Phase 2) ---
 ## Projectile visual variant: "" = default arrow, "lava_glob" = emissive orange sphere.
 @export var projectile_kind: String = ""
+
+# --- Cinder Imp explosion (issue #85 Phase 3) ---
+## If true, mob explodes on death after a fuse (server-side AoE to players).
+@export var explode_on_death: bool = false
+## Explosion radius in meters.
+@export var explode_radius: float = 2.5
+## Damage multiplier (x mob's damage) for the explosion.
+@export var explode_damage_mult: float = 1.5
+## Fuse duration in seconds (flash telegraph before detonation).
+@export var explode_fuse: float = 0.5
+
+# --- Forge Golem armor phases (issue #85 Phase 3) ---
+## Array of {hp_frac, damage_taken_mult} dicts, e.g. [{hp_frac: 0.66, ...}].
+## Applied in take_damage: below hp_frac, damage is multiplied.
+@export var armor_phases: Array = []

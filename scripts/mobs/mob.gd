@@ -91,6 +91,11 @@ var _phaseshift_t := 0.0
 var _trail_tick := 0.0
 ## Issue #85 Phase 2: damaging fire trail hotspots [{pos, expiry}]. Server-side.
 var _hot_spots: Array = []
+## Issue #85 Phase 3: cinder imp explosion — fuse active, seconds remaining.
+var _exploding := false
+var _fuse_t := 0.0
+## Issue #85 Phase 3: forge golem armor phase index (0 = unarmored).
+var _armor_phase := 0
 ## Expanding shockwave rings (apex slam): [{radius, max_radius, speed, hit}].
 var _shockwaves: Array = []
 
@@ -173,6 +178,10 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# Issue #85 Phase 3: explosion fuse ticks even when dead (telegraph).
+	if _exploding:
+		_tick_fuse(delta)
+		return
 	if not alive:
 		return
 	# Issue #85 Phase 2: damaging fire trail hotspots (server-side).
@@ -1022,6 +1031,10 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		return
 	if not alive:
 		return
+	# Issue #85 Phase 3: forge golem armor phases — damage reduction based
+	# on current HP fraction. Applied before other modifiers.
+	if not data.armor_phases.is_empty():
+		amount = _apply_armor_phases(amount)
 	# Phaseshift: the apex Horror is untargetable during its 2s window.
 	if untargetable:
 		return
@@ -1084,7 +1097,12 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 	if hp <= 0.0:
 		hp = 0.0
 		alive = false
-		rpc("play_death")
+		# Issue #85 Phase 3: cinder imp — start explosion fuse instead of
+		# immediate death. Server-side; fuse telegraphs on all peers.
+		if data.explode_on_death and multiplayer.is_server():
+			_begin_fuse()
+		else:
+			rpc("play_death")
 		_drop_and_reward(attacker)
 		# Splitter (issue #67 Phase 2): server-side spawn-on-death.
 		# Children have split_on_death=false (hard cap, no cascade).
@@ -1135,6 +1153,104 @@ func hit_react(pos: Vector3, amount: float, attacker: int) -> void:
 
 @rpc("any_peer", "call_local")
 func play_death() -> void:
+	_play_death()
+
+
+## Issue #85 Phase 3: start cinder imp explosion fuse (server-side).
+## The mob is already marked dead; the fuse telegraphs on all peers,
+## then detonates. Anti-cheese: explosion damages PLAYERS only —
+## deaths don't trigger deaths (no chain detonation).
+func _begin_fuse() -> void:
+	rpc("_start_fuse")
+
+
+@rpc("any_peer", "call_local")
+func _start_fuse() -> void:
+	_exploding = true
+	_fuse_t = data.explode_fuse
+	# Flash telegraph: handled per-tick in _tick_fuse.
+	AudioManager.sfx("fuse_sizzle", global_position)
+
+
+## Issue #85 Phase 3: apply forge golem armor phases.
+## Returns damage after phase-based reduction. Updates visual tell on phase change.
+func _apply_armor_phases(amount: float) -> float:
+	var max_hp := data.health
+	if max_hp <= 0.0:
+		return amount
+	var frac := hp / max_hp
+	var new_phase := 0
+	var mult := 1.0
+	# Phases sorted by hp_frac descending; find the deepest triggered phase.
+	for i in data.armor_phases.size():
+		var phase: Dictionary = data.armor_phases[i]
+		var threshold := float(phase.get("hp_frac", 1.0))
+		if frac <= threshold:
+			new_phase = i + 1
+			mult = float(phase.get("damage_taken_mult", 1.0))
+	if new_phase != _armor_phase:
+		_armor_phase = new_phase
+		_update_armor_visual()
+	return amount * mult
+
+
+## Issue #85 Phase 3: visual tell per armor phase (cracks glow / plating tint).
+func _update_armor_visual() -> void:
+	if _sprite == null:
+		return
+	match _armor_phase:
+		0:
+			_sprite.modulate = Color.WHITE
+		1:
+			# Cracks glow: warm orange tint.
+			_sprite.modulate = Color(1.0, 0.85, 0.7)
+			rpc("_armor_clank", global_position)
+		_:
+			# Heavy plating: deep red-orange tint.
+			_sprite.modulate = Color(1.0, 0.7, 0.55)
+			rpc("_armor_clank", global_position)
+
+
+@rpc("any_peer", "call_local")
+func _armor_clank(pos: Vector3) -> void:
+	AudioManager.sfx("armor_clank", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(1.0, 0.6, 0.2), 10, 4.0)
+
+
+## Tick the explosion fuse. Called from _physics_process even when dead.
+func _tick_fuse(delta: float) -> void:
+	_fuse_t -= delta
+	# Flash telegraph: rapid white-orange pulse, accelerating.
+	var speed := 20.0 if _fuse_t > 0.25 else 40.0
+	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 1000.0 * speed)
+	_sprite.modulate = Color(1.0, 0.4 + 0.6 * pulse, 0.2 + 0.3 * pulse)
+	# Scale up slightly as detonation nears.
+	var grow := 1.0 + (1.0 - _fuse_t / data.explode_fuse) * 0.3
+	_sprite.scale = _base_scale * Vector3(grow, grow, grow)
+	if _fuse_t <= 0.0:
+		_detonate()
+
+
+## Detonate the cinder imp. Fuse ticks on all peers; server applies AoE.
+## Each peer plays FX locally and cleans up.
+func _detonate() -> void:
+	_exploding = false
+	if multiplayer.is_server():
+		var dmg := data.damage * data.explode_damage_mult
+		var radius := data.explode_radius
+		var center := Vector2(global_position.x, global_position.z)
+		for node in get_tree().get_nodes_in_group("players"):
+			var p := node as Player
+			if p == null or not p.alive:
+				continue
+			var pp := Vector2(p.global_position.x, p.global_position.z)
+			if pp.distance_to(center) <= radius:
+				p.rpc_id(p.get_multiplayer_authority(), "take_damage", dmg, data.display_name)
+	# Visual + audio locally on each peer, then normal death cleanup.
+	AudioManager.sfx("explosion", global_position)
+	Effects.burst(get_parent(), global_position + Vector3(0, 0.8, 0), Color(1.0, 0.5, 0.15), 30, 7.0)
+	Effects.burst(get_parent(), global_position + Vector3(0, 0.5, 0), Color(1.0, 0.85, 0.4), 20, 5.0)
+	Effects.scorch(get_parent(), global_position, data.explode_radius)
 	_play_death()
 
 
