@@ -4969,13 +4969,19 @@ func _test_shieldbearer() -> void:
 	var meteor_src := FileAccess.get_file_as_string("res://scripts/combat/meteor.gd")
 	_assert(meteor_src.contains("bypass_block") or meteor_src.contains(", true)"),
 		"meteor passes bypass flag")
-	# Issue #79 regression: the shield overlay must be a MeshInstance3D.
-	# Sprite3D has no .mesh property, so the old overlay hit a SCRIPT ERROR
-	# on every Shieldbearer <redacted> spawn and never rendered.
-	_assert(mob_src.contains("_shield_visual = MeshInstance3D.new()"),
-		"shield overlay is MeshInstance3D (not Sprite3D)")
-	_assert(mob_src.contains("var _shield_visual: MeshInstance3D"),
-		"shield visual typed as MeshInstance3D")
+	# Issue #82 Phase 2: the shield overlay is the Art Director's .glb,
+	# not the old QuadMesh placeholder. Same node name + transform.
+	_assert(mob_src.contains('load("res://assets/models/shieldbearer_tower_shield.glb")'),
+		"shield overlay loads the tower-shield .glb")
+	_assert(mob_src.contains('_shield_visual.name = "ShieldOverlay"'),
+		"shield overlay keeps node name ShieldOverlay")
+	_assert(mob_src.contains("_shield_visual.position = Vector3(0, 1.0, 0.35)"),
+		"shield overlay keeps transform (0, 1.0, 0.35)")
+	_assert(not mob_src.contains("QuadMesh.new()"),
+		"QuadMesh placeholder code path deleted")
+	# Yaw-follow: shield mirrors _sprite.rotation.y each frame.
+	_assert(mob_src.contains("_shield_visual.rotation.y = _sprite.rotation.y"),
+		"shield yaws with the sprite")
 	print("[Playtest] Shieldbearer done")
 
 

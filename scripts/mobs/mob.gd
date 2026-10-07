@@ -33,7 +33,7 @@ var _base_scale := Vector3.ONE
 var _shield_up := true
 var _shield_drop_t := 0.0
 var _stagger_t := 0.0
-var _shield_visual: MeshInstance3D
+var _shield_visual: Node3D
 ## Shieldbearer windup: 0.9s opening where shield is down before the strike.
 var _windup_t := 0.0
 ## Elite mobs: 2.5x HP, 1.25x size, +1.5 loot luck, gold nameplate.
@@ -94,18 +94,13 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 	is_elite = p_elite and not p_data.is_boss
 	if is_elite:
 		hp_scale *= 2.5
-	# Shieldbearer (issue #67): tower-shield overlay. Visible when shield is up.
+	# Shieldbearer (issue #67, #82 Phase 2): tower-shield overlay.
+	# Visible when shield is up. Art Director's .glb (1.2m x 1.6m,
+	# centered pivot, front-facing +Z).
 	if data.frontal_block:
-		_shield_visual = MeshInstance3D.new()
+		var shield_scene: PackedScene = load("res://assets/models/shieldbearer_tower_shield.glb")
+		_shield_visual = shield_scene.instantiate()
 		_shield_visual.name = "ShieldOverlay"
-		# Placeholder: blue-grey quad. Art Director to provide SNES tower-shield sprite.
-		var quad := QuadMesh.new()
-		quad.size = Vector2(1.2, 1.6)
-		_shield_visual.mesh = quad
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = Color(0.45, 0.55, 0.70)
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		_shield_visual.material_override = mat
 		_shield_visual.position = Vector3(0, 1.0, 0.35)
 		add_child(_shield_visual)
 		_shield_up = true
@@ -193,6 +188,10 @@ func _physics_process(delta: float) -> void:
 	if _aura_ring != null and is_instance_valid(_aura_ring):
 		var pulse := 1.0 + 0.08 * sin(Time.get_ticks_msec() / 1000.0 * 4.0)
 		_aura_ring.scale = Vector3(pulse, 1.0, pulse)
+	# Issue #82 Phase 2: shield yaws with the sprite. The mob root never
+	# rotates — only _sprite does — so mirror its yaw onto the shield.
+	if _shield_visual != null and is_instance_valid(_shield_visual) and _sprite != null:
+		_shield_visual.rotation.y = _sprite.rotation.y
 	# Relentless marker ticks down alongside the slow.
 	if bulwark_slow_t > 0.0:
 		bulwark_slow_t -= delta
