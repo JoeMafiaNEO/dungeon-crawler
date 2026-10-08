@@ -2282,10 +2282,20 @@ var _hl_charge_t := 0.0
 var _hl_active_t := 0.0
 var _hl_reticle: MeshInstance3D = null
 var _hl_beam_root: Node3D = null
+## Issue #91 Phase 2: active beams by owner peer ID. Each entry:
+## {node, aim, target_aim, beam_mesh, light, rings, tick_t, owner}
+var _hl_beams := {}
+## Issue #91 Phase 2: 10Hz aim update timer (owner -> server, unreliable).
+var _hl_aim_send_t := 0.0
 
 ## Issue #91 Phase 1: per-frame update for the arm/charge/active state machine.
 ## Only the owning client runs this (visual + timing; server handles damage).
 func _hl_process(delta: float) -> void:
+	# Issue #91 Phase 2: all peers lerp remote beams toward target aim.
+	_hl_update_beam_visuals(delta)
+	# Issue #91 Phase 2: server runs 0.5s damage/heal ticks at latest aim.
+	if multiplayer.is_server():
+		_hl_server_tick(delta)
 	if _hl_state == HLState.IDLE:
 		return
 	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
@@ -2304,9 +2314,115 @@ func _hl_process(delta: float) -> void:
 			_hl_strike()
 	elif _hl_state == HLState.ACTIVE:
 		_hl_active_t += delta
+		# Issue #91 Phase 2: owner steers the beam; aim tracks cursor live.
+		_hl_aim = _hl_ground_aim()
+		var my_id := int(multiplayer.get_unique_id())
+		if _hl_beams.has(my_id):
+			var beam = _hl_beams[my_id]
+			var node: Node3D = beam.get("node")
+			if node != null and is_instance_valid(node):
+				node.global_position = _hl_aim
+			beam["aim"] = _hl_aim
+			beam["target_aim"] = _hl_aim
+		# 10Hz aim updates to server (unreliable).
+		_hl_aim_send_t += delta
+		if _hl_aim_send_t >= 0.1:
+			_hl_aim_send_t = 0.0
+			rpc_id(NetworkManager.server_id, "hl_aim_update", _hl_aim)
+		# Wind-down: beam narrows and dims.
+		if _hl_active_t >= HL_HOLD_TIME:
+			_hl_winddown(delta)
 		if _hl_active_t >= HL_HOLD_TIME + HL_WINDDOWN_TIME:
 			_hl_state = HLState.IDLE
 			_hl_active_t = 0.0
+
+
+## Issue #91 Phase 2: lerp all beam visuals toward their target aim points.
+## Owner moves directly (set in _hl_process); remotes lerp for smoothness.
+func _hl_update_beam_visuals(delta: float) -> void:
+	var my_id := int(multiplayer.get_unique_id())
+	for owner_id in _hl_beams.keys():
+		if owner_id == my_id:
+			continue  # Owner moves directly.
+		var beam = _hl_beams[owner_id]
+		var node: Node3D = beam.get("node")
+		if node == null or not is_instance_valid(node):
+			continue
+		var target: Vector3 = beam.get("target_aim", beam.get("aim"))
+		node.global_position = node.global_position.lerp(target, clampf(delta * 8.0, 0.0, 1.0))
+
+
+## Issue #91 Phase 2: wind-down — beam narrows and dims, decay SFX.
+func _hl_winddown(delta: float) -> void:
+	var my_id := int(multiplayer.get_unique_id())
+	if not _hl_beams.has(my_id):
+		return
+	var beam = _hl_beams[my_id]
+	# Play decay SFX once at wind-down start.
+	if not bool(beam.get("winddown_sfx", false)):
+		beam["winddown_sfx"] = true
+		AudioManager.sfx("holy_light_decay", _hl_aim)
+	var wind_t := _hl_active_t - HL_HOLD_TIME
+	var frac := clampf(wind_t / HL_WINDDOWN_TIME, 0.0, 1.0)
+	# Beam narrows.
+	var beam_mesh: MeshInstance3D = beam.get("beam_mesh")
+	if beam_mesh != null and is_instance_valid(beam_mesh):
+		var s := 1.0 - frac * 0.7
+		beam_mesh.scale = Vector3(s, 1.0, s)
+	# Light dims (tween also handles this; this is for the beam mesh).
+	var light: SpotLight3D = beam.get("light")
+	if light != null and is_instance_valid(light):
+		light.light_energy = 12.0 * (1.0 - frac)
+	# Rings dissolve upward.
+	var rings: Array = beam.get("rings", [])
+	for i in range(rings.size()):
+		var ring: MeshInstance3D = rings[i]
+		if ring != null and is_instance_valid(ring):
+			ring.position.y += delta * (2.0 + float(i))
+			var mat := ring.material_override as StandardMaterial3D
+			if mat != null:
+				var c := mat.albedo_color
+				c.a = 0.7 * (1.0 - frac)
+				mat.albedo_color = c
+
+
+## Issue #91 Phase 2: server runs 0.5s damage/heal ticks at the latest aim.
+func _hl_server_tick(delta: float) -> void:
+	for owner_id in _hl_beams.keys():
+		var beam = _hl_beams[owner_id]
+		var tick_t := float(beam.get("tick_t", 0.0)) + delta
+		if tick_t < 0.5:
+			beam["tick_t"] = tick_t
+			continue
+		beam["tick_t"] = 0.0
+		var aim: Vector3 = beam.get("aim", Vector3.ZERO)
+		# Damage: 1.0x mage base per tick in the 4m beam column.
+		var dmg := _hl_beam_damage()
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var mob := n as Mob
+			if mob == null or not bool(mob.get("alive")):
+				continue
+			var flat := Vector2(mob.global_position.x - aim.x, mob.global_position.z - aim.z)
+			if flat.length() <= 4.0:
+				mob.take_damage(dmg, owner_id, aim)
+		# Heal: 15% max HP to allies within 15m of the beam point.
+		for n in get_tree().get_nodes_in_group("players"):
+			var p := n as Player
+			if p == null or not bool(p.get("alive")):
+				continue
+			if p.global_position.distance_to(aim) <= HOLY_LIGHT_HEAL_RADIUS:
+				var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC
+				# In headless tests there's no multiplayer peer; call directly.
+				if multiplayer.multiplayer_peer == null:
+					p.call("heal", heal_amount)
+				else:
+					p.rpc_id(int(p.get_multiplayer_authority()), "heal", heal_amount)
+
+
+## Issue #91 Phase 2: beam damage per 0.5s tick (1.0x mage base).
+func _hl_beam_damage() -> float:
+	# Mage base damage; non-mages use their own base.
+	return damage * _buff_mult("damage")
 
 
 ## Issue #91 Phase 1: 7 arms/disarms Holy Light (no longer instant-cast).
@@ -2401,6 +2517,7 @@ func _hl_start_charge() -> void:
 func _hl_strike() -> void:
 	_hl_state = HLState.ACTIVE
 	_hl_active_t = 0.0
+	_hl_aim_send_t = 0.0
 	# 20s cooldown starts at STRIKE, not at arm.
 	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult()
 	if hud != null:
@@ -2409,12 +2526,48 @@ func _hl_strike() -> void:
 	if _hl_reticle != null and is_instance_valid(_hl_reticle):
 		_hl_reticle.queue_free()
 	_hl_reticle = null
-	rpc("spawn_holy_light", _hl_aim)
+	rpc("spawn_holy_light", _hl_aim, int(multiplayer.get_unique_id()))
 	AudioManager.sfx("holy_light_impact", _hl_aim)
 
 
+## Issue #91 Phase 2: owner sends aim updates to server at 10Hz (unreliable).
+@rpc("any_peer", "unreliable")
+func hl_aim_update(aim: Vector3) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	if _hl_beams.has(sender):
+		_hl_beams[sender]["aim"] = aim
+		_hl_beams[sender]["target_aim"] = aim
+		# Rebroadcast to all peers for remote lerp.
+		rpc("hl_beam_aim", sender, aim)
+
+
+## Issue #91 Phase 2: server rebroadcasts beam aim; remotes lerp toward it.
+@rpc("any_peer", "unreliable")
+func hl_beam_aim(owner_id: int, aim: Vector3) -> void:
+	if _hl_beams.has(owner_id):
+		_hl_beams[owner_id]["target_aim"] = aim
+
+
+## Issue #91 Phase 2: end a beam early (death/disconnect/manual).
+@rpc("any_peer", "call_local", "reliable")
+func hl_end_beam(owner_id: int) -> void:
+	if _hl_beams.has(owner_id):
+		var beam = _hl_beams[owner_id]
+		var node: Node = beam.get("node")
+		if node != null and is_instance_valid(node):
+			node.queue_free()
+		_hl_beams.erase(owner_id)
+	if owner_id == int(multiplayer.get_unique_id()):
+		_hl_state = HLState.IDLE
+		_hl_active_t = 0.0
+
+
 @rpc("any_peer", "call_local")
-func spawn_holy_light(aim_point: Vector3) -> void:
+func spawn_holy_light(aim_point: Vector3, owner_id: int = 0) -> void:
 	var dungeons := get_tree().get_nodes_in_group("dungeon")
 	if dungeons.is_empty():
 		return
@@ -2424,11 +2577,39 @@ func spawn_holy_light(aim_point: Vector3) -> void:
 	var map_size := 60.0
 	if layout != null:
 		map_size = float(layout.grid_size) * layout.cell_size
-	# Issue #90: SpotLight3D cone aimed down at the player (replaces OmniLight3D).
-	# Position high above, cone covering the map.
+	if owner_id == 0:
+		owner_id = int(multiplayer.get_unique_id())
+	# Issue #91 Phase 2: beam container for steering. All visuals are
+	# children; moving the container moves the beam.
+	var beam_root := Node3D.new()
+	beam_root.name = "HolyLightBeam_%d" % owner_id
+	beam_root.position = center
+	dungeon.add_child(beam_root)
+	# Track for steering (owner moves directly, remotes lerp).
+	_hl_beams[owner_id] = {"node": beam_root, "aim": center, "target_aim": center}
+	# Issue #91 Phase 2: central beam cylinder (emissive gold, r=1.2m).
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 1.2
+	cyl.bottom_radius = 1.2
+	cyl.height = 24.0
+	cyl.radial_segments = 24
+	var beam_mesh := MeshInstance3D.new()
+	beam_mesh.name = "BeamCore"
+	beam_mesh.mesh = cyl
+	var beam_mat := StandardMaterial3D.new()
+	beam_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beam_mat.albedo_color = Color(1.0, 0.9, 0.5, 0.85)
+	beam_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam_mat.emission_enabled = true
+	beam_mat.emission = Color(1.0, 0.85, 0.4)
+	beam_mat.emission_energy_multiplier = 2.0
+	beam_mesh.material_override = beam_mat
+	beam_mesh.position = Vector3(0, 12.0, 0)
+	beam_root.add_child(beam_mesh)
+	# Issue #90: SpotLight3D cone aimed down at the beam point.
 	var light := SpotLight3D.new()
 	light.name = "HolyLight"
-	light.position = center + Vector3(0, 30.0, 0)
+	light.position = Vector3(0, 30.0, 0)
 	# Aim straight down: SpotLight3D shines along -Z, rotate -90° on X.
 	light.rotation_degrees = Vector3(-90, 0, 0)
 	light.light_color = Color(1.0, 0.9, 0.55)  # Warm golden.
@@ -2436,7 +2617,7 @@ func spawn_holy_light(aim_point: Vector3) -> void:
 	light.spot_range = map_size * 2.0
 	light.spot_angle = 45.0  # Wide cone for map-wide coverage.
 	light.shadow_enabled = false
-	dungeon.add_child(light)
+	beam_root.add_child(light)
 	# Issue #90: 3D yellow rings escalating into the sky (pillar effect).
 	var rings: Array[MeshInstance3D] = []
 	var ring_mat := StandardMaterial3D.new()
@@ -2453,11 +2634,15 @@ func spawn_holy_light(aim_point: Vector3) -> void:
 		var ring := MeshInstance3D.new()
 		ring.mesh = torus
 		ring.material_override = ring_mat
-		# Stack vertically, escalating into the sky.
-		ring.position = center + Vector3(0, 2.0 + float(i) * 4.0, 0)
+		# Stack vertically, escalating into the sky (relative to beam root).
+		ring.position = Vector3(0, 2.0 + float(i) * 4.0, 0)
 		ring.scale = Vector3.ONE * (1.0 + float(i) * 0.3)
-		dungeon.add_child(ring)
+		beam_root.add_child(ring)
 		rings.append(ring)
+	# Store beam parts for wind-down narrowing.
+	_hl_beams[owner_id]["beam_mesh"] = beam_mesh
+	_hl_beams[owner_id]["light"] = light
+	_hl_beams[owner_id]["rings"] = rings
 	AudioManager.sfx("holy_light", center)
 	if hud != null:
 		hud.toast("HOLY LIGHT!")
@@ -2477,16 +2662,8 @@ func spawn_holy_light(aim_point: Vector3) -> void:
 		rtw.tween_property(ring, "transparency", 1.0, HL_WINDDOWN_TIME)
 		rtw.tween_callback(ring.queue_free)
 	tw.tween_callback(light.queue_free)
-	# Server picks heal targets; the heal RPC applies on each owner's client
-	# (totem heal-aura pattern).
-	if multiplayer.is_server():
-		for n in get_tree().get_nodes_in_group("players"):
-			var p := n as Player
-			if p == null or not bool(p.get("alive")):
-				continue
-			if p.global_position.distance_to(global_position) <= HOLY_LIGHT_HEAL_RADIUS:
-				p.rpc_id(int(p.get_multiplayer_authority()), "heal",
-					float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC)
+	# Issue #91 Phase 2: heal now follows the beam via _hl_server_tick()
+	# (0.5s ticks at the latest aim point, not a one-time at strike).
 
 
 func _cast_fireball() -> void:
@@ -3190,8 +3367,11 @@ func _do_death() -> void:
 ## the toast + 3s respawn path is kept.
 func die() -> void:
 	# Issue #91 Phase 1: death disarms Holy Light.
+	# Issue #91 Phase 2: death also ends an active beam.
 	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
 		_hl_disarm()
+	if _hl_state == HLState.ACTIVE:
+		rpc("hl_end_beam", int(multiplayer.get_unique_id()))
 	# Bounty Board (issue #7): a death fails this player's no_death bounty.
 	# Server-authoritative: clients route through the server.
 	var bdgn := get_tree().get_first_node_in_group("dungeon")

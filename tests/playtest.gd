@@ -97,6 +97,7 @@ func _run() -> void:
 	_test_warlord_seasons_phase2()
 	_test_issue86_fixes()
 	_test_holy_light_v2_phase1()
+	_test_holy_light_v2_phase2()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4051,12 +4052,17 @@ func _test_holy_light_heal() -> void:
 	mage.call("_hl_start_charge")
 	_assert(int(mage.get("_hl_state")) == 2, "holy: LMB starts charge (CHARGING=2)")
 	mage.set("_hl_charge_t", 1.0)
+	# Set aim to mage position for deterministic test (no camera in headless).
+	mage.set("_hl_aim", mage.global_position)
 	mage.call("_hl_strike")
 	# Visual: the HolyLight node spawns under the dungeon, map-wide range.
 	var light_node: Node = root.find_child("HolyLight", true, false)
 	_assert(light_node != null, "holy: HolyLight node spawns on strike")
 	if light_node != null:
-		var parent_layout = light_node.get_parent().get("_layout")
+		# Light is now under the beam container; layout is on the grandparent (dungeon).
+		var beam_root := light_node.get_parent()
+		var dgn := beam_root.get_parent() if beam_root != null else null
+		var parent_layout = dgn.get("_layout") if dgn != null else null
 		var ms := 60.0
 		if parent_layout != null:
 			ms = float(parent_layout["grid_size"]) * float(parent_layout["cell_size"])
@@ -4076,13 +4082,17 @@ func _test_holy_light_heal() -> void:
 			light_count += 1
 		stack.append_array(sn.get_children())
 	_assert(light_count == 1, "holy: cooldown blocks second light")
+	# Heal: Phase 2 — server ticks heal allies within 15m of the beam point.
+	# Trigger a tick manually (0.5s).
+	mage.call("_hl_server_tick", 0.5)
 	# Heal: caster + in-range ally gain 15% max HP; far ally and mob untouched.
 	_assert(absf(float(mage.get("hp")) - max_hp * 0.65) < 1.0,
 		"holy: caster healed 15%% (%.0f)" % float(mage.get("hp")))
 	_assert(absf(float(ally.get("hp")) - ally_max * 0.65) < 1.0,
 		"holy: ally at 10m healed 15%")
 	_assert(float(far.get("hp")) == far_max * 0.5, "holy: ally at 20m not healed")
-	_assert(float(mob.get("hp")) == mob_hp0, "holy: mob takes no damage")
+	# Phase 2: mob in the 4m beam column takes damage (1.0x base per tick).
+	_assert(float(mob.get("hp")) < mob_hp0, "holy: mob in beam takes damage")
 	# Cleanup.
 	stub.remove_from_group("dungeon")
 	stub.queue_free()
@@ -5506,10 +5516,56 @@ func _test_holy_light_v2_phase1() -> void:
 		"aim range 25m")
 	_assert(psrc.contains("HolyLightReticle"),
 		"gold reticle created")
-	# spawn_holy_light takes the aim point.
-	_assert(psrc.contains("func spawn_holy_light(aim_point: Vector3)"),
+	# spawn_holy_light takes the aim point and owner.
+	_assert(psrc.contains("func spawn_holy_light(aim_point: Vector3"),
 		"spawn_holy_light takes aim point")
 	# Timing: no more tween stacking (~21s bug).
 	_assert(not psrc.contains("tween_interval(10.0)"),
 		"old 10s tween interval removed (was stacking to ~21s)")
 	print("[Playtest] Holy Light v2 Phase 1 done")
+
+
+func _test_holy_light_v2_phase2() -> void:
+	print("[Playtest] Holy Light v2 Phase 2 (issue #91)...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	# Beam container for steering.
+	_assert(psrc.contains("_hl_beams"),
+		"beam tracking dictionary exists")
+	_assert(psrc.contains("HolyLightBeam_"),
+		"beam containers named per owner")
+	# Central beam cylinder (gold, r=1.2m).
+	_assert(psrc.contains("BeamCore"),
+		"central beam cylinder exists")
+	_assert(psrc.contains("top_radius = 1.2"),
+		"beam radius 1.2m")
+	# 10Hz aim updates (unreliable RPC).
+	_assert(psrc.contains("func hl_aim_update"),
+		"hl_aim_update RPC exists")
+	_assert(psrc.contains("@rpc(\"any_peer\", \"unreliable\")"),
+		"aim updates are unreliable")
+	_assert(psrc.contains("_hl_aim_send_t"),
+		"10Hz aim send timer")
+	# Server rebroadcast for remote lerp.
+	_assert(psrc.contains("func hl_beam_aim"),
+		"hl_beam_aim rebroadcast exists")
+	_assert(psrc.contains("target_aim"),
+		"remote lerp target tracked")
+	# Server 0.5s damage ticks at latest aim (not strike point).
+	_assert(psrc.contains("func _hl_server_tick"),
+		"server tick function exists")
+	_assert(psrc.contains("tick_t"),
+		"0.5s tick timer")
+	_assert(psrc.contains("flat.length() <= 4.0"),
+		"4m beam column damage")
+	# Heal follows beam point.
+	_assert(psrc.contains("distance_to(aim)"),
+		"heal centered on beam aim point")
+	# Wind-down: beam narrows, decay SFX.
+	_assert(psrc.contains("func _hl_winddown"),
+		"wind-down function exists")
+	_assert(psrc.contains("holy_light_decay"),
+		"decay SFX played")
+	# Death/disconnect cleanup.
+	_assert(psrc.contains("func hl_end_beam"),
+		"hl_end_beam RPC exists")
+	print("[Playtest] Holy Light v2 Phase 2 done")
