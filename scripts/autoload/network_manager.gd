@@ -38,21 +38,35 @@ var active_run_slot: int = 0
 
 
 func _ready() -> void:
-	if transport == Transport.LAN or not SteamManager.initialized:
-		# LAN mode: skip Steam lobby signals, but still track peers.
-		multiplayer.peer_connected.connect(_on_peer_connected)
-		multiplayer.peer_disconnected.connect(_on_peer_disconnected)
-		multiplayer.connected_to_server.connect(_on_connected_to_server)
-		multiplayer.connection_failed.connect(_on_connection_failed)
+	# Issue #86 Bug 1: the old code took the LAN branch if Steam wasn't
+	# initialized yet at _ready() time, never connecting the Steam lobby
+	# signals. Joining a Steam lobby then hung on "Joining..." forever
+	# because _on_lobby_joined never fired. Fix: always connect the
+	# multiplayer signals; connect Steam signals now if initialized, or
+	# when SteamManager emits steam_ready.
+	multiplayer.peer_connected.connect(_on_peer_connected)
+	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	multiplayer.connected_to_server.connect(_on_connected_to_server)
+	multiplayer.connection_failed.connect(_on_connection_failed)
+	if transport == Transport.LAN:
+		# LAN mode: skip Steam lobby signals.
+		return
+	if SteamManager.initialized:
+		_connect_steam_signals()
+	else:
+		SteamManager.steam_ready.connect(_connect_steam_signals)
+
+
+## Connect the Steam lobby signals (idempotent).
+func _connect_steam_signals() -> void:
+	if transport == Transport.LAN:
+		return
+	if Steam.lobby_created.is_connected(_on_lobby_created):
 		return
 	Steam.lobby_created.connect(_on_lobby_created)
 	Steam.lobby_match_list.connect(_on_lobby_match_list)
 	Steam.lobby_joined.connect(_on_lobby_joined)
 	Steam.lobby_chat_update.connect(_on_lobby_chat_update)
-	multiplayer.peer_connected.connect(_on_peer_connected)
-	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
-	multiplayer.connected_to_server.connect(_on_connected_to_server)
-	multiplayer.connection_failed.connect(_on_connection_failed)
 
 
 # --- Hosting ---

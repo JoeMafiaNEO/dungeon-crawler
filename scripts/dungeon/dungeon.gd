@@ -159,6 +159,8 @@ var _season_manager: Node = null
 var seasons_enabled := true
 var _warlord_setup_pending := false
 var _construction_check_tick := 0.0
+## Issue #86 Bug 2: handshake retry timer. -1.0 = inactive.
+var _handshake_timer := -1.0
 var market_cash_goal := 500
 ## Per-visit supermarket earnings (server). The gate unlocks on earnings, not
 ## held cash, so spending at vendors can never re-lock it (Phase 4: cash is
@@ -294,8 +296,14 @@ func _ready() -> void:
 	else:
 		# Pull-based: the server pushes new arrivals to everyone already in
 		# the game, and each newcomer pulls the full world state once loaded.
-		rpc_id(NetworkManager.server_id, "register_class", NetworkManager.selected_class_id)
-		rpc_id(NetworkManager.server_id, "request_state")
+		# Issue #86 Bug 2: after train disembark, clients can send
+		# register_class before the server has loaded dungeon.tscn (the
+		# server only changes scene when the host disembarks). The RPC then
+		# has no dungeon node to land on and is lost -> black screen (no
+		# player -> no camera). Retry until the local player spawns.
+		_send_handshake()
+		_handshake_timer = 0.0
+		set_process(true)
 
 
 func get_spawn_point() -> Vector3:
@@ -347,6 +355,17 @@ func sync_equipped_special(peer_id: int, special_id: String) -> void:
 			p.set("equipped_special", special_id)
 			p.call("_apply_equipped_special")
 			return
+
+
+## Issue #86 Bug 2: send the register_class + request_state handshake.
+## Called once from _ready() and retried by _process() until the local
+## player spawns (covers the train-disembark race where the server hasn't
+## loaded dungeon.tscn yet when the first handshake goes out).
+func _send_handshake() -> void:
+	if multiplayer.is_server():
+		return
+	rpc_id(NetworkManager.server_id, "register_class", NetworkManager.selected_class_id)
+	rpc_id(NetworkManager.server_id, "request_state")
 
 
 @rpc("any_peer", "call_local")
@@ -669,6 +688,23 @@ func _hp_scale() -> float:
 func _process(delta: float) -> void:
 	# Sim clock for the RTS economy (respawns etc.) — tracks time_scale.
 	sim_time += delta
+	# Issue #86 Bug 2: retry the server handshake until the local player
+	# spawns. The first attempt can be lost if the server hasn't finished
+	# loading dungeon.tscn (train disembark race).
+	if _handshake_timer >= 0.0 and not multiplayer.is_server():
+		_handshake_timer += delta
+		if _handshake_timer >= 2.0:
+			_handshake_timer = 0.0
+			var me_found := false
+			var my_id := multiplayer.get_unique_id()
+			for p in get_tree().get_nodes_in_group("players"):
+				if int(p.get_multiplayer_authority()) == my_id:
+					me_found = true
+					break
+			if me_found:
+				_handshake_timer = -1.0
+			else:
+				_send_handshake()
 	# Torch flicker runs on every peer; pure ambience.
 	var t := Time.get_ticks_msec() / 1000.0
 	for i in _torch_lights.size():

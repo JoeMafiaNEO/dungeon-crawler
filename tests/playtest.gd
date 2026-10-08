@@ -91,6 +91,7 @@ func _run() -> void:
 	_test_ascension()
 	_test_warlord_seasons()
 	_test_warlord_seasons_phase2()
+	_test_issue86_fixes()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5331,3 +5332,28 @@ func _test_warlord_seasons_phase2() -> void:
 	_assert(dsrc.contains("seasons_enabled"),
 		"dungeon has seasons_enabled flag")
 	print("[Playtest] Warlord Seasons Phase 2 done")
+
+
+func _test_issue86_fixes() -> void:
+	print("[Playtest] Issue #86 (Steam join + LAN disembark)...")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	# Bug 1: Steam lobby signals must be connected even if Steam wasn't
+	# initialized at _ready() time. The old early-return branch skipped them.
+	_assert(nsrc.contains("_connect_steam_signals"),
+		"NetworkManager has _connect_steam_signals()")
+	_assert(nsrc.contains("steam_ready.connect(_connect_steam_signals)"),
+		"Steam signals connected when SteamManager emits steam_ready")
+	_assert(nsrc.contains("is_connected(_on_lobby_created)"),
+		"_connect_steam_signals is idempotent")
+	# The multiplayer signals are always connected (not gated on Steam init).
+	_assert(nsrc.contains("multiplayer.connected_to_server.connect(_on_connected_to_server)"),
+		"connected_to_server always connected")
+	# Bug 2: dungeon handshake retry for the train-disembark race.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func _send_handshake()"),
+		"dungeon has _send_handshake()")
+	_assert(dsrc.contains("_handshake_timer"),
+		"dungeon tracks _handshake_timer")
+	_assert(dsrc.contains("_send_handshake()") and dsrc.contains("2.0"),
+		"handshake retried on 2s interval until local player spawns")
+	print("[Playtest] Issue #86 done")
