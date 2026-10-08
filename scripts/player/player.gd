@@ -627,7 +627,7 @@ func _input(event: InputEvent) -> void:
 		elif k.physical_keycode == KEY_R:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_start_wave()
-		elif k.physical_keycode >= KEY_1 and k.physical_keycode <= KEY_6:
+		elif k.physical_keycode >= KEY_1 and k.physical_keycode <= KEY_7:
 			if class_id in ["mage", "architect"] and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_select_ability(k.physical_keycode - KEY_1)
 		elif k.physical_keycode == KEY_8:
@@ -3172,6 +3172,9 @@ func spend_point(stat: String) -> bool:
 				# only while it is equipped for the run.
 				SpecialData.earn_for(self, "holy_light")
 				refresh_abilities()
+				# Issue #88: communicate the equip requirement in-game.
+				if hud != null and equipped_special != "holy_light":
+					hud.toast("Holy Light earned! Equip it in the Relic Vault (station annex) to use [7].")
 		_:
 			return false
 	stat_points -= 1

@@ -33,6 +33,7 @@ func _run() -> void:
 	_test_pause_tabs()
 	_test_pause_stats_zero_scroll()
 	_test_ability_bar_selected_highlight()
+	_test_holy_light_key7()
 	_test_switch_class_refresh()
 	_test_architect()
 	_test_cipher_unlock()
@@ -5397,3 +5398,19 @@ func _test_issue86_fixes() -> void:
 	_assert(dsrc.contains("_send_handshake()") and dsrc.contains("2.0"),
 		"handshake retried on 2s interval until local player spawns")
 	print("[Playtest] Issue #86 done")
+
+
+## Issue #88: Holy Light trigger broken.
+func _test_holy_light_key7() -> void:
+	print("[Playtest] Issue #88 Holy Light...")
+	# KEY_7 handler exists in player._input().
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("KEY_1 and k.physical_keycode <= KEY_7"),
+		"player handles KEY_1 through KEY_7")
+	# Holy Light ability def has key "7".
+	_assert(psrc.contains('"key": "7"') and psrc.contains("holy_light"),
+		"Holy Light def uses key 7")
+	# Equip requirement communicated via toast on earn.
+	_assert(psrc.contains("Equip it in the Relic Vault"),
+		"earn toast communicates equip requirement")
+	print("[Playtest] Issue #88 done")
