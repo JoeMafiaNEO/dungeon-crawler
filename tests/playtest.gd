@@ -35,6 +35,7 @@ func _run() -> void:
 	_test_ability_bar_selected_highlight()
 	_test_holy_light_key7()
 	_test_holy_light_key7_label()
+	_test_holy_light_visual()
 	_test_switch_class_refresh()
 	_test_architect()
 	_test_cipher_unlock()
@@ -5429,3 +5430,26 @@ func _test_holy_light_key7_label() -> void:
 	_assert(not psrc.contains("_select_ability(k.physical_keycode - KEY_1)"),
 		"no raw-index ability mapping remains")
 	print("[Playtest] Issue #89 done")
+
+
+## Issue #90: Holy Light visual rework (SpotLight3D + rings + brightness).
+func _test_holy_light_visual() -> void:
+	print("[Playtest] Issue #90 Holy Light visual...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("SpotLight3D.new()"),
+		"Holy Light uses SpotLight3D")
+	_assert(not psrc.contains("OmniLight3D.new()\n\tlight.name = \"HolyLight\""),
+		"OmniLight3D removed from Holy Light")
+	_assert(psrc.contains("TorusMesh.new()"),
+		"yellow rings use TorusMesh")
+	_assert(psrc.contains("spot_angle"),
+		"spotlight has cone angle")
+	# Brightness cranked (was 4.0, now 12.0).
+	_assert(psrc.contains('"light_energy", 12.0'),
+		"brightness cranked to 12.0")
+	# Heal/cooldown/duration untouched.
+	_assert(psrc.contains("HOLY_LIGHT_HEAL_RADIUS") and psrc.contains("HOLY_LIGHT_HEAL_FRAC"),
+		"heal logic untouched")
+	_assert(psrc.contains('ability_cds["holy_light"]'),
+		"cooldown untouched")
+	print("[Playtest] Issue #90 done")

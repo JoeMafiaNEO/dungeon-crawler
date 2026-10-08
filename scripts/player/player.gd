@@ -2274,24 +2274,59 @@ func spawn_holy_light() -> void:
 	var map_size := 60.0
 	if layout != null:
 		map_size = float(layout.grid_size) * layout.cell_size
-	# Brilliant light from above, covering the entire map.
-	var light := OmniLight3D.new()
+	# Issue #90: SpotLight3D cone aimed down at the player (replaces OmniLight3D).
+	# Position high above, cone covering the map.
+	var light := SpotLight3D.new()
 	light.name = "HolyLight"
-	light.position = center + Vector3(0, 25.0, 0)
-	light.light_color = Color(1.0, 0.95, 0.8)
+	light.position = center + Vector3(0, 30.0, 0)
+	# Aim straight down: SpotLight3D shines along -Z, rotate -90° on X.
+	light.rotation_degrees = Vector3(-90, 0, 0)
+	light.light_color = Color(1.0, 0.9, 0.55)  # Warm golden.
 	light.light_energy = 0.0
-	light.omni_range = map_size * 1.5
+	light.spot_range = map_size * 2.0
+	light.spot_angle = 45.0  # Wide cone for map-wide coverage.
 	light.shadow_enabled = false
 	dungeon.add_child(light)
+	# Issue #90: 3D yellow rings escalating into the sky (pillar effect).
+	var rings: Array[MeshInstance3D] = []
+	var ring_mat := StandardMaterial3D.new()
+	ring_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ring_mat.albedo_color = Color(1.0, 0.85, 0.3, 0.7)
+	ring_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ring_mat.no_depth_test = false
+	for i in range(5):
+		var torus := TorusMesh.new()
+		torus.inner_radius = 1.5 + float(i) * 0.8
+		torus.outer_radius = 1.8 + float(i) * 0.8
+		torus.rings = 32
+		torus.ring_segments = 12
+		var ring := MeshInstance3D.new()
+		ring.mesh = torus
+		ring.material_override = ring_mat
+		# Stack vertically, escalating into the sky.
+		ring.position = center + Vector3(0, 2.0 + float(i) * 4.0, 0)
+		ring.scale = Vector3.ONE * (1.0 + float(i) * 0.3)
+		dungeon.add_child(ring)
+		rings.append(ring)
 	AudioManager.sfx("holy_light", center)
 	if hud != null:
 		hud.toast("HOLY LIGHT!")
-	# Fade in, hold 10s, fade out.
+	# Fade in, hold 10s, fade out. Brightness cranked for "map-wide light".
 	var tw := light.create_tween()
-	tw.tween_property(light, "light_energy", 4.0, 1.0)
+	tw.set_parallel(true)
+	tw.tween_property(light, "light_energy", 12.0, 1.0)
+	for ring in rings:
+		tw.tween_property(ring, "scale", ring.scale * 1.5, 10.0)
+	tw.set_parallel(false)
 	tw.tween_interval(10.0)
+	tw.set_parallel(true)
 	tw.tween_property(light, "light_energy", 0.0, 2.0)
+	for ring in rings:
+		tw.tween_property(ring, "transparency", 1.0, 2.0)
+	tw.set_parallel(false)
 	tw.tween_callback(light.queue_free)
+	for ring in rings:
+		tw.tween_callback(ring.queue_free)
 	# Server picks heal targets; the heal RPC applies on each owner's client
 	# (totem heal-aura pattern).
 	if multiplayer.is_server():
