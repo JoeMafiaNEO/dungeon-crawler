@@ -4014,9 +4014,13 @@ func _test_holy_light_heal() -> void:
 	mage.set("class_id", "mage")
 	mage.set("bonus_aura", 20.0)
 	holder.add_child(mage)
+	# Trigger the aura earn synchronously (_push_aura is deferred in _ready,
+	# and the vault may be clean on a fresh run).
+	mage.call("_push_aura")
 	_assert(SD.is_earned("holy_light"), "holy: aura-20 mage earns Holy Light")
 	_assert(SD.equip(mage, "holy_light"), "holy: equip succeeds")
-	var has_hl: bool = (mage.get("unlocked_abilities") as Array).any(
+	var hl_abilities: Array = mage.get("unlocked_abilities") as Array
+	var has_hl: bool = hl_abilities != null and hl_abilities.any(
 		func(x): return x["id"] == "holy_light")
 	_assert(has_hl, "holy: key-7 ability granted when equipped")
 	# Wound the mage + an in-range ally; park a far ally at 20m (outside 15m).
