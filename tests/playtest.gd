@@ -4048,7 +4048,7 @@ func _test_holy_light_heal() -> void:
 		var ms := 60.0
 		if parent_layout != null:
 			ms = float(parent_layout["grid_size"]) * float(parent_layout["cell_size"])
-		_assert(absf(float(light_node.get("omni_range")) - ms * 1.5) < 1.0,
+		_assert(absf(float(light_node.get("spot_range")) - ms * 2.0) < 1.0,
 			"holy: light range covers map")
 	# Cooldown: applied and blocks a second cast.
 	_assert(float((mage.get("ability_cds") as Dictionary).get("holy_light", 0.0)) > 0.0,
@@ -5227,10 +5227,11 @@ func _test_sprite_orientation() -> void:
 	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(src.contains("_sprite.rotation.y = _yaw"),
 		"remote peers yaw the sprite")
-	# Issue #78: no material_override assignment — the StandardMaterial3D
+	# Issue #78: no material_override on the PLAYER SPRITE — the StandardMaterial3D
 	# (cull disabled) broke AnimatedSprite3D texture rendering
-	# (white quads on remote players).
-	_assert(not src.contains(".material_override ="),
+	# (white quads on remote players). Scoped to _sprite; other nodes
+	# (e.g. Holy Light rings) may use it.
+	_assert(not src.contains("_sprite.material_override"),
 		"no material_override on player sprite (issue #78)")
 	# Mark indicators stay billboarded.
 	_assert(src.contains("mark.billboard = BaseMaterial3D.BILLBOARD_ENABLED"),
