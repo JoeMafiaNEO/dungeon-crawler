@@ -25,7 +25,7 @@ func _ready() -> void:
 	NetworkManager.is_host = true
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = _theme_id
-	Dungeon.next_seed = 424242
+	Dungeon.next_seed = 987654
 	Dungeon.next_level_number = 1
 	var packed := load("res://scenes/dungeon/dungeon.tscn") as PackedScene
 	var inst := packed.instantiate()
@@ -35,9 +35,54 @@ func _ready() -> void:
 	get_tree().current_scene = inst
 	# Let the level build and the player spawn.
 	await get_tree().create_timer(6.0).timeout
-	_aim_showcase_camera()
-	await get_tree().create_timer(1.0).timeout
+	if args.size() > 2:
+		# Mob showcase: keep the natural spawn facing (proven clear lane
+		# with the showcase seed) and line the mobs up ahead.
+		_spawn_showcase_mobs(args)
+	else:
+		_aim_showcase_camera()
+	# Short settle for mob showcases (they aggro toward the player);
+	# the full beat for empty level shots.
+	await get_tree().create_timer(0.15 if args.size() > 2 else 1.2).timeout
 	_capture()
+
+
+## Spawns showcase mobs (args[2:] = mob ids) in an arc in front of the
+## player so the level shot shows the theme's roster.
+func _spawn_showcase_mobs(args: PackedStringArray) -> void:
+	if args.size() <= 2:
+		return
+	var mob_ids: Array = []
+	for i in range(2, args.size()):
+		mob_ids.append(args[i])
+	var dungeon: Node = get_tree().get_first_node_in_group("dungeon")
+	var player: Node3D = null
+	for n in get_tree().get_nodes_in_group("players"):
+		player = n as Node3D
+		break
+	if dungeon == null or player == null or not dungeon.has_method("server_spawn_mob"):
+		push_error("[LevelShots] cannot spawn mobs")
+		return
+	var fwd: Vector3 = -player.global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized()
+	var right: Vector3 = fwd.cross(Vector3.UP).normalized()
+	var n := float(mob_ids.size())
+	for i in mob_ids.size():
+		# Lineup sits slightly left of center: the sword viewmodel owns the
+		# right third of the frame.
+		var lateral: float = (float(i) - (n - 1.0) / 2.0) * 3.2 - 3.0
+		var pos: Vector3 = player.global_position + fwd * 8.0 + right * lateral
+		pos.y = 0.5
+		dungeon.call("server_spawn_mob", str(mob_ids[i]), pos)
+		print("[LevelShots] spawned ", mob_ids[i], " at ", pos)
+	# Hide the frontal-block placeholder quad (blue-grey debug visual) so
+	# the lineup shows the mob art, not the stand-in.
+	await get_tree().process_frame
+	for m in dungeon.get_tree().get_nodes_in_group("mobs"):
+		if m.has_method("_update_shield_visual"):
+			m.set("_shield_up", false)
+			m.call("_update_shield_visual")
 
 
 func _aim_showcase_camera() -> void:
