@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://hlshots91phase3"]
+
+[ext_resource type="Script" path="res://tools/hl_shots/hl_shots.gd" id="1"]
+
+[node name="HLShots" type="Node"]
+script = ExtResource("1")

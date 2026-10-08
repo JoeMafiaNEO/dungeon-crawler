@@ -191,6 +191,47 @@ static func holy_light() -> AudioStreamWAV:
 	]))
 
 
+## Issue #91 Phase 3: Holy Light v2 SFX set (positional synth).
+static func holy_light_arm() -> AudioStreamWAV:
+	# Short bright shimmer on arm.
+	return _wav(_mix([
+		_tone(880.0, 880.0, 0.15, "sine", 25.0, 0.5),
+		_tone(1320.0, 1320.0, 0.12, "triangle", 25.0, 0.3),
+	]))
+
+
+static func holy_light_disarm() -> AudioStreamWAV:
+	# Soft descending fade on disarm/cancel.
+	return _wav(_mix([
+		_tone(660.0, 440.0, 0.25, "sine", 20.0, 0.4),
+	]))
+
+
+static func holy_light_riser() -> AudioStreamWAV:
+	# 1s rising charge tone (matches HL_CHARGE_TIME).
+	return _wav(_mix([
+		_tone(220.0, 880.0, 1.0, "sine", 25.0, 0.5),
+		_tone(330.0, 1320.0, 1.0, "triangle", 25.0, 0.3),
+	]))
+
+
+static func holy_light_impact() -> AudioStreamWAV:
+	# Strike: bright boom + radiant shimmer.
+	return _wav(_mix([
+		_tone(110.0, 55.0, 0.4, "sine", 30.0, 0.7),
+		_tone(523.0, 523.0, 0.8, "sine", 20.0, 0.5),
+		_tone(784.0, 1046.0, 0.8, "triangle", 20.0, 0.4),
+	]))
+
+
+static func holy_light_decay() -> AudioStreamWAV:
+	# 2s descending wind-down tone (matches HL_WINDDOWN_TIME).
+	return _wav(_mix([
+		_tone(880.0, 220.0, 2.0, "sine", 20.0, 0.4),
+		_tone(1320.0, 330.0, 2.0, "triangle", 20.0, 0.25),
+	]))
+
+
 static func cash_register() -> AudioStreamWAV:
 	# Cha-ching!
 	return _wav(_mix([

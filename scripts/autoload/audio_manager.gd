@@ -12,6 +12,10 @@ var _music_cache: Dictionary = {}
 var _sfx_builders: Dictionary = {}
 var _pool: Array = []
 var _pool_i := 0
+## Issue #91 Phase 3: when true, Holy Light SFX use Jesse's own recordings
+## from res://assets/audio/sfx/holy_light_recording/<name>.mp3 (or .ogg/.wav)
+## instead of the synth. Same pattern as the train soundscape file overrides.
+var holy_light_use_recording := false
 var _mus_a: AudioStreamPlayer
 var _mus_b: AudioStreamPlayer
 var _mus_active: AudioStreamPlayer
@@ -43,6 +47,8 @@ func _ready() -> void:
 			"all_aboard", "board_chime", "door_lock", "countdown_tick",
 			"vote_cast", "apex_announce", "apex_roar",
 			"cash_register", "holy_light", "holy_light_cast",
+			"holy_light_arm", "holy_light_disarm", "holy_light_riser",
+			"holy_light_impact", "holy_light_decay",
 			"thunderclap",
 			"relic_pickup", "vault_open", "vault_close", "relic_equip",
 			"bounty_accept", "bounty_complete", "bounty_toast",
@@ -150,6 +156,16 @@ func _load_volumes() -> void:
 func _get_sfx(sfx_name: String) -> AudioStream:
 	if _sfx_cache.has(sfx_name):
 		return _sfx_cache[sfx_name]
+	# Issue #91 Phase 3: Jesse's Holy Light recordings override the synth
+	# when holy_light_use_recording is true.
+	if holy_light_use_recording and sfx_name.begins_with("holy_light"):
+		for ext in ["ogg", "wav", "mp3"]:
+			var rpath := "res://assets/audio/sfx/holy_light_recording/%s.%s" % [sfx_name, ext]
+			if ResourceLoader.exists(rpath):
+				var rw := load(rpath) as AudioStream
+				if rw != null:
+					_sfx_cache[sfx_name] = rw
+					return rw
 	# File override first (mp3 supported: Jesse's field recordings).
 	for ext in ["ogg", "wav", "mp3"]:
 		var path := "res://assets/audio/sfx/%s.%s" % [sfx_name, ext]

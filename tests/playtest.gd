@@ -98,6 +98,7 @@ func _run() -> void:
 	_test_issue86_fixes()
 	_test_holy_light_v2_phase1()
 	_test_holy_light_v2_phase2()
+	_test_holy_light_v2_phase3()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -5573,3 +5574,28 @@ func _test_holy_light_v2_phase2() -> void:
 	_assert(psrc.contains("func hl_end_beam"),
 		"hl_end_beam RPC exists")
 	print("[Playtest] Holy Light v2 Phase 2 done")
+
+
+func _test_holy_light_v2_phase3() -> void:
+	print("[Playtest] Holy Light v2 Phase 3 (issue #91)...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var asrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/audio/sound_synth.gd")
+	# All 5 SFX names resolve (arm/disarm/riser/impact/decay).
+	for sfx in ["holy_light_arm", "holy_light_disarm", "holy_light_riser",
+			"holy_light_impact", "holy_light_decay"]:
+		_assert(psrc.contains(sfx) or ssrc.contains("func " + sfx),
+			"SFX exists: " + sfx)
+		_assert(asrc.contains('"' + sfx + '"'),
+			"SFX registered: " + sfx)
+	# Recording flag for Jesse's own recordings.
+	_assert(asrc.contains("holy_light_use_recording"),
+		"holy_light_use_recording flag exists")
+	_assert(asrc.contains("holy_light_recording/"),
+		"recording file path pattern")
+	# Riser is 1.0s (matches charge), decay is 2.0s (matches wind-down).
+	_assert(ssrc.contains("_tone(220.0, 880.0, 1.0"),
+		"riser 1.0s matches charge time")
+	_assert(ssrc.contains("_tone(880.0, 220.0, 2.0"),
+		"decay 2.0s matches wind-down")
+	print("[Playtest] Holy Light v2 Phase 3 done")
