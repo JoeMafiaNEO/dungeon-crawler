@@ -32,6 +32,7 @@ func _run() -> void:
 	_test_specialization_level_gate()
 	_test_pause_tabs()
 	_test_pause_stats_zero_scroll()
+	_test_ability_bar_selected_highlight()
 	_test_switch_class_refresh()
 	_test_architect()
 	_test_cipher_unlock()
@@ -2263,6 +2264,45 @@ func _test_pause_stats_zero_scroll() -> void:
 	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
 	_assert(tsrc.contains('name="StatPair1"'), "Scene defines StatPair1")
 	_assert(tsrc.contains('name="StatPair2"'), "Scene defines StatPair2")
+
+
+func _test_ability_bar_selected_highlight() -> void:
+	print("[Playtest] Ability bar selected highlight...")
+	# Issue #87: the selected gold border/bg lived in the final else branch,
+	# so the elif fam != "" branch swallowed it for every family skill.
+	var PlayerScript = load("res://scripts/player/player.gd")
+	var p = PlayerScript.new()
+	p.class_id = "mage"
+	p.level = 5
+	p.specialization = ""
+	p.selected_ability = 1
+	p.unlocked_abilities = []
+	for a in PlayerScript.class_abilities("mage"):
+		if int(a["unlock"]) <= 5:
+			p.unlocked_abilities.append(a)
+	_assert(p.unlocked_abilities.size() == 3, "mage level 5 has 3 abilities")
+	_assert(String(PlayerScript.family_of("fireball")) == "fire", "fireball in fire family")
+	_assert(String(PlayerScript.family_of("frost")) == "frost", "frost in frost family")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	hud.refresh_abilities(p)
+	var bar = hud.get_node("%AbilityBar")
+	var slots := []
+	for child in bar.get_children():
+		if child is PanelContainer:
+			slots.append(child)
+	_assert(slots.size() == 3, "3 ability slots rendered")
+	var gold := Color(0.8, 0.65, 0.25, 1.0)
+	for i in slots.size():
+		var sb: StyleBoxFlat = slots[i].get_theme_stylebox("panel")
+		if i == 1:
+			_assert(sb.border_color == gold, "selected family skill gets gold border")
+			_assert(sb.bg_color == Color(0.25, 0.2, 0.08, 0.9), "selected family skill gets warm bg")
+		else:
+			_assert(sb.border_color != gold, "non-selected slot %d has no gold border" % i)
+	hud.queue_free()
+	p.free()
 
 
 func _test_switch_class_refresh() -> void:

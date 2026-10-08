@@ -1923,8 +1923,12 @@ func refresh_abilities(p) -> void:
 			sb.bg_color = Color(0.05, 0.05, 0.07, 0.6)
 			sb.border_color = Color(0.25, 0.25, 0.3, 0.5)
 		else:
-			sb.bg_color = Color(0.08, 0.08, 0.1, 0.75) if i != p.selected_ability else Color(0.25, 0.2, 0.08, 0.9)
-			sb.border_color = Color(0.8, 0.65, 0.25, 1.0) if i == p.selected_ability else Color(0.35, 0.35, 0.4, 0.8)
+			sb.bg_color = Color(0.08, 0.08, 0.1, 0.75)
+			sb.border_color = Color(0.35, 0.35, 0.4, 0.8)
+		# Selected slot always gets the gold highlight on top of any family tint.
+		if i == p.selected_ability:
+			sb.bg_color = Color(0.25, 0.2, 0.08, 0.9)
+			sb.border_color = Color(0.8, 0.65, 0.25, 1.0)
 		sb.set_border_width_all(2)
 		sb.set_corner_radius_all(4)
 		sb.content_margin_left = 8
