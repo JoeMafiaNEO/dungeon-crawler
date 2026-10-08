@@ -564,12 +564,20 @@ func _input(event: InputEvent) -> void:
 					if rts_cam == null or not bool(rts_cam.get("active")):
 						Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 			elif _cooldown <= 0.0:
+				# Issue #91 Phase 1: LMB while Holy Light is armed starts the charge.
+				if _hl_state == HLState.ARMED:
+					_hl_start_charge()
+					return
 				# Issue #69 Phase 1: LMB while charging throws the dagger.
 				if _charging and class_id == "rogue":
 					_throw_dagger()
 				else:
 					_do_attack()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT:
+			# Issue #91 Phase 1: RMB disarms Holy Light / cancels charge (free).
+			if mb.pressed and (_hl_state == HLState.ARMED or _hl_state == HLState.CHARGING):
+				_hl_disarm()
+				return
 			# Issue #69 Phase 1: RMB hold charges the thrown dagger (rogue only).
 			if class_id == "rogue" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 				if mb.pressed:
@@ -590,6 +598,11 @@ func _input(event: InputEvent) -> void:
 		if not k.pressed or k.echo:
 			return
 		if k.physical_keycode == KEY_ESCAPE:
+			# Issue #91 Phase 1: Esc disarms Holy Light / cancels charge (free).
+			if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
+				_hl_disarm()
+				get_viewport().set_input_as_handled()
+				return
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 				if hud != null:
@@ -1903,6 +1916,7 @@ func _physics_process(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	if is_multiplayer_authority():
+		_hl_process(delta)
 		if _reading_board != null:
 			_update_board_hover()
 			# Walking away from the board steps out of reading mode.
@@ -2253,24 +2267,160 @@ func _cast_demolish() -> void:
 ## caster + nearby allies (15% max HP, 15m). 20s cooldown. No damage.
 const HOLY_LIGHT_HEAL_RADIUS := 15.0
 const HOLY_LIGHT_HEAL_FRAC := 0.15
+## Issue #91 Phase 1: Holy Light v2 arm/charge/strike state machine.
+## Timing: 1.0s charge + 10s hold + 2s wind-down = 13s total. Cooldown (20s)
+## starts at STRIKE, not at arm. Arming/disarming/cancelling is free.
+const HL_CHARGE_TIME := 1.0
+const HL_HOLD_TIME := 10.0
+const HL_WINDDOWN_TIME := 2.0
+const HL_COOLDOWN := 20.0
+const HL_AIM_RANGE := 25.0
+enum HLState { IDLE, ARMED, CHARGING, ACTIVE }
+var _hl_state: int = HLState.IDLE
+var _hl_aim := Vector3.ZERO
+var _hl_charge_t := 0.0
+var _hl_active_t := 0.0
+var _hl_reticle: MeshInstance3D = null
+var _hl_beam_root: Node3D = null
 
+## Issue #91 Phase 1: per-frame update for the arm/charge/active state machine.
+## Only the owning client runs this (visual + timing; server handles damage).
+func _hl_process(delta: float) -> void:
+	if _hl_state == HLState.IDLE:
+		return
+	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
+		# Aim tracks the cursor live.
+		_hl_aim = _hl_ground_aim()
+		if _hl_reticle != null and is_instance_valid(_hl_reticle):
+			_hl_reticle.global_position = _hl_aim + Vector3(0, 0.15, 0)
+			if _hl_state == HLState.CHARGING:
+				# Reticle pulses and tightens during charge.
+				var p := 1.0 - (_hl_charge_t / HL_CHARGE_TIME) * 0.3
+				var pulse := 1.0 + 0.1 * sin(Time.get_ticks_msec() / 1000.0 * 12.0)
+				_hl_reticle.scale = Vector3.ONE * p * pulse
+	if _hl_state == HLState.CHARGING:
+		_hl_charge_t += delta
+		if _hl_charge_t >= HL_CHARGE_TIME:
+			_hl_strike()
+	elif _hl_state == HLState.ACTIVE:
+		_hl_active_t += delta
+		if _hl_active_t >= HL_HOLD_TIME + HL_WINDDOWN_TIME:
+			_hl_state = HLState.IDLE
+			_hl_active_t = 0.0
+
+
+## Issue #91 Phase 1: 7 arms/disarms Holy Light (no longer instant-cast).
+## Arming is free; the 20s cooldown starts at STRIKE, not at arm.
 func _cast_holy_light() -> void:
+	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
+		_hl_disarm()
+		return
+	if _hl_state != HLState.IDLE:
+		return
 	if float(ability_cds.get("holy_light", 0.0)) > 0.0:
 		if hud != null:
 			hud.toast("Holy Light on cooldown!")
 		return
-	ability_cds["holy_light"] = (20.0) * cooldown_mult()
-	rpc("spawn_holy_light")
+	_hl_arm()
+
+
+## Enter the armed state: gold reticle follows the crosshair ground point.
+func _hl_arm() -> void:
+	_hl_state = HLState.ARMED
+	_hl_aim = _hl_ground_aim()
+	_hl_make_reticle()
+	AudioManager.sfx("holy_light_arm")
+	if hud != null:
+		hud.toast("Holy Light armed — click to charge")
+
+
+## Disarm from ARMED or CHARGING. Free: nothing spent, no cooldown.
+func _hl_disarm() -> void:
+	_hl_state = HLState.IDLE
+	_hl_charge_t = 0.0
+	if _hl_reticle != null and is_instance_valid(_hl_reticle):
+		_hl_reticle.queue_free()
+	_hl_reticle = null
+	AudioManager.sfx("holy_light_disarm")
+
+
+## Cursor raycast onto the ground at Holy Light range (25m).
+func _hl_ground_aim() -> Vector3:
+	if _camera == null:
+		return global_position
+	var from: Vector3 = _camera.global_position
+	var dir := -_camera.global_transform.basis.z
+	var target := from + dir * HL_AIM_RANGE
+	var params := PhysicsRayQueryParameters3D.create(from, target)
+	var space := get_world_3d().direct_space_state
+	var hit := space.intersect_ray(params)
+	var point: Vector3 = hit["position"] if not hit.is_empty() else target
+	point.y = maxf(point.y, 0.1)
+	# Clamp to 25m from the player.
+	var flat := Vector2(point.x - global_position.x, point.z - global_position.z)
+	if flat.length() > HL_AIM_RANGE:
+		flat = flat.normalized() * HL_AIM_RANGE
+		point.x = global_position.x + flat.x
+		point.z = global_position.z + flat.y
+	return point
+
+
+## Gold reticle (flat torus) at the aim point.
+func _hl_make_reticle() -> void:
+	if _hl_reticle != null and is_instance_valid(_hl_reticle):
+		return
+	var torus := TorusMesh.new()
+	torus.inner_radius = 1.0
+	torus.outer_radius = 1.2
+	torus.rings = 32
+	torus.ring_segments = 8
+	_hl_reticle = MeshInstance3D.new()
+	_hl_reticle.name = "HolyLightReticle"
+	_hl_reticle.mesh = torus
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(1.0, 0.85, 0.3, 0.9)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_hl_reticle.material_override = mat
+	# Lay flat on the ground.
+	_hl_reticle.rotation_degrees = Vector3(90, 0, 0)
+	get_parent().add_child(_hl_reticle)
+	_hl_reticle.global_position = _hl_aim + Vector3(0, 0.15, 0)
+
+
+## LMB while armed: begin the 1.0s charge.
+func _hl_start_charge() -> void:
+	if _hl_state != HLState.ARMED:
+		return
+	_hl_state = HLState.CHARGING
+	_hl_charge_t = 0.0
+	AudioManager.sfx("holy_light_riser")
+
+
+## Charge complete: strike the beam at the aim point. Cooldown starts NOW.
+func _hl_strike() -> void:
+	_hl_state = HLState.ACTIVE
+	_hl_active_t = 0.0
+	# 20s cooldown starts at STRIKE, not at arm.
+	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult()
+	if hud != null:
+		hud.refresh_abilities(self)
+	# Clear the reticle; the beam takes over.
+	if _hl_reticle != null and is_instance_valid(_hl_reticle):
+		_hl_reticle.queue_free()
+	_hl_reticle = null
+	rpc("spawn_holy_light", _hl_aim)
+	AudioManager.sfx("holy_light_impact", _hl_aim)
 
 
 @rpc("any_peer", "call_local")
-func spawn_holy_light() -> void:
+func spawn_holy_light(aim_point: Vector3) -> void:
 	var dungeons := get_tree().get_nodes_in_group("dungeon")
 	if dungeons.is_empty():
 		return
 	var dungeon = dungeons[0]
 	var layout = dungeon.get("_layout")
-	var center := Vector3.ZERO
+	var center := aim_point
 	var map_size := 60.0
 	if layout != null:
 		map_size = float(layout.grid_size) * layout.cell_size
@@ -2311,22 +2461,22 @@ func spawn_holy_light() -> void:
 	AudioManager.sfx("holy_light", center)
 	if hud != null:
 		hud.toast("HOLY LIGHT!")
-	# Fade in, hold 10s, fade out. Brightness cranked for "map-wide light".
+	# Issue #91 Phase 1: exact timing — 10s hold + 2s wind-down.
+	# The old tween stacked to ~21s (parallel 10s ring scale + 10s interval
+	# + 2s fade). Now: 0.5s fade-in within the 10s hold, then 2s wind-down.
+	# Total beam lifetime: 12s. With the 1s charge: 13s total.
 	var tw := light.create_tween()
-	tw.set_parallel(true)
-	tw.tween_property(light, "light_energy", 12.0, 1.0)
-	for ring in rings:
-		tw.tween_property(ring, "scale", ring.scale * 1.5, 10.0)
-	tw.set_parallel(false)
-	tw.tween_interval(10.0)
-	tw.set_parallel(true)
-	tw.tween_property(light, "light_energy", 0.0, 2.0)
-	for ring in rings:
-		tw.tween_property(ring, "transparency", 1.0, 2.0)
-	tw.set_parallel(false)
+	tw.tween_property(light, "light_energy", 12.0, 0.5)
+	tw.tween_interval(HL_HOLD_TIME - 0.5)
+	tw.tween_property(light, "light_energy", 0.0, HL_WINDDOWN_TIME)
 	tw.tween_callback(light.queue_free)
+	# Fade rings during wind-down.
 	for ring in rings:
-		tw.tween_callback(ring.queue_free)
+		var rtw := ring.create_tween()
+		rtw.tween_interval(HL_HOLD_TIME)
+		rtw.tween_property(ring, "transparency", 1.0, HL_WINDDOWN_TIME)
+		rtw.tween_callback(ring.queue_free)
+	tw.tween_callback(light.queue_free)
 	# Server picks heal targets; the heal RPC applies on each owner's client
 	# (totem heal-aura pattern).
 	if multiplayer.is_server():
@@ -3039,6 +3189,9 @@ func _do_death() -> void:
 ## with run stats (no auto-respawn). In co-op the party keeps playing, so
 ## the toast + 3s respawn path is kept.
 func die() -> void:
+	# Issue #91 Phase 1: death disarms Holy Light.
+	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
+		_hl_disarm()
 	# Bounty Board (issue #7): a death fails this player's no_death bounty.
 	# Server-authoritative: clients route through the server.
 	var bdgn := get_tree().get_first_node_in_group("dungeon")

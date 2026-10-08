@@ -96,6 +96,7 @@ func _run() -> void:
 	_test_warlord_seasons()
 	_test_warlord_seasons_phase2()
 	_test_issue86_fixes()
+	_test_holy_light_v2_phase1()
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_bounty_phase1()
@@ -4039,10 +4040,21 @@ func _test_holy_light_heal() -> void:
 	holder.add_child(mob)
 	mob.global_position = mage.global_position + Vector3(3, 0, 0)
 	var mob_hp0 := float(mob.get("hp"))
+	# Issue #91 Phase 1: 7 arms (no light spawns, no cooldown at arm).
 	mage.call("_cast_holy_light")
+	_assert(int(mage.get("_hl_state")) == 1, "holy: 7 arms Holy Light (ARMED=1)")
+	_assert(float((mage.get("ability_cds") as Dictionary).get("holy_light", 0.0)) == 0.0,
+		"holy: arming spends nothing (no cooldown)")
+	var pre_light: Node = root.find_child("HolyLight", true, false)
+	_assert(pre_light == null, "holy: no light spawns at arm")
+	# LMB starts charge; simulate charge completion -> strike.
+	mage.call("_hl_start_charge")
+	_assert(int(mage.get("_hl_state")) == 2, "holy: LMB starts charge (CHARGING=2)")
+	mage.set("_hl_charge_t", 1.0)
+	mage.call("_hl_strike")
 	# Visual: the HolyLight node spawns under the dungeon, map-wide range.
 	var light_node: Node = root.find_child("HolyLight", true, false)
-	_assert(light_node != null, "holy: HolyLight node spawns on cast")
+	_assert(light_node != null, "holy: HolyLight node spawns on strike")
 	if light_node != null:
 		var parent_layout = light_node.get_parent().get("_layout")
 		var ms := 60.0
@@ -4050,9 +4062,9 @@ func _test_holy_light_heal() -> void:
 			ms = float(parent_layout["grid_size"]) * float(parent_layout["cell_size"])
 		_assert(absf(float(light_node.get("spot_range")) - ms * 2.0) < 1.0,
 			"holy: light range covers map")
-	# Cooldown: applied and blocks a second cast.
+	# Cooldown: applied at STRIKE (not at arm), blocks re-arm.
 	_assert(float((mage.get("ability_cds") as Dictionary).get("holy_light", 0.0)) > 0.0,
-		"holy: 20s cooldown applied")
+		"holy: 20s cooldown applied at strike")
 	var hp_before := float(mage.get("hp"))
 	mage.call("_cast_holy_light")
 	_assert(float(mage.get("hp")) == hp_before, "holy: cooldown blocks recast heal")
@@ -5454,3 +5466,50 @@ func _test_holy_light_visual() -> void:
 	_assert(psrc.contains('ability_cds["holy_light"]'),
 		"cooldown untouched")
 	print("[Playtest] Issue #90 done")
+
+
+func _test_holy_light_v2_phase1() -> void:
+	print("[Playtest] Holy Light v2 Phase 1 (issue #91)...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	# State machine exists.
+	_assert(psrc.contains("enum HLState { IDLE, ARMED, CHARGING, ACTIVE }"),
+		"HL state machine: IDLE/ARMED/CHARGING/ACTIVE")
+	_assert(psrc.contains("const HL_CHARGE_TIME := 1.0"),
+		"charge time exactly 1.0s")
+	_assert(psrc.contains("const HL_HOLD_TIME := 10.0"),
+		"hold time exactly 10s")
+	_assert(psrc.contains("const HL_WINDDOWN_TIME := 2.0"),
+		"wind-down exactly 2s")
+	_assert(psrc.contains("const HL_COOLDOWN := 20.0"),
+		"cooldown 20s")
+	# Arming is free: _cast_holy_light arms/disarms, no cooldown set at arm.
+	_assert(psrc.contains("func _hl_arm()"),
+		"_hl_arm() exists")
+	_assert(psrc.contains("func _hl_disarm()"),
+		"_hl_disarm() exists (free disarm)")
+	# Cooldown starts at STRIKE, not at arm.
+	_assert(psrc.contains("ability_cds[\"holy_light\"] = HL_COOLDOWN"),
+		"cooldown set at strike")
+	# Cancel paths: right-click and Esc disarm.
+	_assert(psrc.contains("_hl_state == HLState.ARMED or _hl_state == HLState.CHARGING"),
+		"RMB/Esc cancel paths check armed/charging state")
+	# Death disarms.
+	_assert(psrc.contains("death disarms Holy Light"),
+		"death disarms")
+	# Charge -> strike transition.
+	_assert(psrc.contains("func _hl_start_charge()"),
+		"_hl_start_charge() exists")
+	_assert(psrc.contains("func _hl_strike()"),
+		"_hl_strike() exists")
+	# Reticle: gold, 25m range.
+	_assert(psrc.contains("const HL_AIM_RANGE := 25.0"),
+		"aim range 25m")
+	_assert(psrc.contains("HolyLightReticle"),
+		"gold reticle created")
+	# spawn_holy_light takes the aim point.
+	_assert(psrc.contains("func spawn_holy_light(aim_point: Vector3)"),
+		"spawn_holy_light takes aim point")
+	# Timing: no more tween stacking (~21s bug).
+	_assert(not psrc.contains("tween_interval(10.0)"),
+		"old 10s tween interval removed (was stacking to ~21s)")
+	print("[Playtest] Holy Light v2 Phase 1 done")
