@@ -657,12 +657,10 @@ func _team_avg_damage() -> float:
 
 ## Mob HP multiplier: danger model (tier × depth) × host difficulty × team
 ## damage adaptation. At 15 avg damage the adaptation is 1.0x; scales
-## linearly beyond that.
+## linearly beyond that. Uncapped per Jesse (2026-10-07): mob HP fully
+## mirrors team damage, so high-DPS builds face proportionally tankier mobs.
 func _hp_scale() -> float:
 	var adapt := _team_avg_damage() / 15.0
-	# Bounded: 0.85x-1.75x (roadmap). Difficulty comes from composition,
-	# positioning, elites, and attack cadence — not HP mirroring.
-	adapt = clampf(adapt, 0.85, 1.75)
 	return _danger_mult() * NetworkManager.host_difficulty * adapt
 
 
