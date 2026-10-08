@@ -34,6 +34,7 @@ func _run() -> void:
 	_test_pause_stats_zero_scroll()
 	_test_ability_bar_selected_highlight()
 	_test_holy_light_key7()
+	_test_holy_light_key7_label()
 	_test_switch_class_refresh()
 	_test_architect()
 	_test_cipher_unlock()
@@ -5414,3 +5415,17 @@ func _test_holy_light_key7() -> void:
 	_assert(psrc.contains("Equip it in the Relic Vault"),
 		"earn toast communicates equip requirement")
 	print("[Playtest] Issue #88 done")
+
+
+## Issue #89: Holy Light 7-key for sub-30 players (map by key label).
+func _test_holy_light_key7_label() -> void:
+	print("[Playtest] Issue #89 Holy Light key label...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("_select_ability_by_key"),
+		"label-based ability selection exists")
+	_assert(psrc.contains('_select_ability_by_key(str(k.physical_keycode - KEY_1 + 1))'),
+		"input maps keys 1-7 by label")
+	# The old raw-index path for KEY_7 is gone.
+	_assert(not psrc.contains("_select_ability(k.physical_keycode - KEY_1)"),
+		"no raw-index ability mapping remains")
+	print("[Playtest] Issue #89 done")

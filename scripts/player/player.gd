@@ -629,7 +629,10 @@ func _input(event: InputEvent) -> void:
 				_try_start_wave()
 		elif k.physical_keycode >= KEY_1 and k.physical_keycode <= KEY_7:
 			if class_id in ["mage", "architect"] and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_select_ability(k.physical_keycode - KEY_1)
+				# Issue #89: map by ability "key" label, not raw index.
+				# Holy Light ("7") joins unlocked_abilities at whatever index
+				# it lands on, not index 6.
+				_select_ability_by_key(str(k.physical_keycode - KEY_1 + 1))
 		elif k.physical_keycode == KEY_8:
 			if class_id == "mage" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_activate_mage_signature()
@@ -898,6 +901,17 @@ func _select_ability(idx: int) -> void:
 		AudioManager.sfx("ui_click")
 		if hud != null:
 			hud.refresh_abilities(self)
+
+
+## Issue #89: select ability by its "key" label (e.g. "7" for Holy Light).
+## Raw index mapping breaks for specials: Holy Light joins unlocked_abilities
+## at whatever index it lands on (often 2 at 20 Aura), not index 6.
+func _select_ability_by_key(key_label: String) -> void:
+	for i in range(unlocked_abilities.size()):
+		var a: Dictionary = unlocked_abilities[i]
+		if str(a.get("key", "")) == key_label:
+			_select_ability(i)
+			return
 
 
 func _selected_ability_id() -> String:
