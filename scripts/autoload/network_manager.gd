@@ -487,6 +487,11 @@ func start_continued_run() -> void:
 	if not is_host or lobby_id == 0:
 		return
 	Steam.setLobbyJoinable(lobby_id, false)
+	var run := _continued_run
+	# Broadcast the dungeon load to all clients (they pull state via
+	# register_class, and the server matches them against the saved roster).
+	# Without this the host loads alone and clients sit in staging forever.
+	rpc("load_dungeon", str(run.get("theme_id", "village")), int(run.get("seed", randi())), int(run.get("level_number", 1)))
 	_continue_load_level()
 
 
