@@ -83,6 +83,13 @@ var _last_ride_sec := -1
 var _chug_timer := 0.0
 var _disembarked := {} # peer_id -> true (server-side)
 var _disembarked_local := false
+## Self-pull grace period after arrival (issue #92). The server's
+## _run_disembark_window coroutine dies when the host's own disembark frees
+## the train scene, so a client that never walks through the door would be
+## stranded forever — its request_disembark RPC targets the server's (now
+## freed) train node and is dropped. Every peer therefore pulls ITSELF
+## through after this delay. Instance var (not const) so tests can shorten it.
+var _disembark_fallback_delay := DISEMBARK_WINDOW + 5.0
 var _scenery_root: Node3D = null
 var _scenery_mats: Array = []
 var _platform_root: Node3D = null
@@ -281,10 +288,25 @@ func begin_arrival() -> void:
 	_disembark_area.monitoring = true
 	if multiplayer.is_server():
 		_run_disembark_window()
+	# Self-pull safety net (issue #92): runs on every peer, survives the host
+	# leaving early. If the server's sweep already pulled us, this no-ops.
+	_run_disembark_fallback()
 
 
-## Server: after the disembark window, pull any stragglers through the door
-## so the run can never soft-lock in the car.
+## Every peer pulls itself through the door after the grace period, so the
+## run can never soft-lock in the car even when the host's early disembark
+## kills the server's straggler sweep (frees the train node mid-timer).
+func _run_disembark_fallback() -> void:
+	await get_tree().create_timer(_disembark_fallback_delay).timeout
+	if _disembarked_local:
+		return
+	do_disembark()
+
+
+## Server: after the disembark window, pull any stragglers through the door.
+## Best-effort only (issue #92): this coroutine dies if the host's own
+## disembark frees the train scene first — every peer's _run_disembark_fallback
+## is the real guarantee.
 func _run_disembark_window() -> void:
 	await get_tree().create_timer(DISEMBARK_WINDOW).timeout
 	for pid in passenger_classes.keys():

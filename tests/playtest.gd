@@ -57,6 +57,7 @@ func _run() -> void:
 	_test_train_interior()
 	_test_boarding_flow()
 	_test_train_ride()
+	await _test_train_disembark_fallback()
 	_test_train_dressing()
 	_test_cycle_scaling()
 	_test_ai_director()
@@ -1800,6 +1801,41 @@ func _test_train_ride() -> void:
 	_assert(hsrc.contains("func show_ride_status"), "ride: HUD ride status")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains('"skip_lever"'), "ride: skip lever in player interact groups")
+
+
+## Stub flag for the issue #92 fallback test: a real car is used, but the
+## test only exercises the no-op path (already disembarked), so the scene
+## change in do_disembark is never reached.
+func _test_train_disembark_fallback() -> void:
+	print("[Playtest] Train disembark self-pull fallback (issue #92)...")
+	# Wiring (source): every peer starts the self-pull at arrival; the
+	# fallback calls do_disembark locally when still in the car.
+	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	var apos := isrc.find("func begin_arrival")
+	_assert(apos > 0, "fallback: begin_arrival exists")
+	var ablock := isrc.substr(apos, 2200)
+	_assert(ablock.contains("_run_disembark_fallback()"), "fallback: arrival starts the self-pull")
+	_assert(isrc.contains("func _run_disembark_fallback"), "fallback: _run_disembark_fallback exists")
+	var fpos := isrc.find("func _run_disembark_fallback")
+	var fblock := isrc.substr(fpos, 600)
+	_assert(fblock.contains("do_disembark()"), "fallback: self-pull calls do_disembark")
+	_assert(fblock.contains("_disembarked_local"), "fallback: self-pull respects the disembarked flag")
+	_assert(isrc.contains("_disembark_fallback_delay"), "fallback: grace period is overridable for tests")
+	# Functional (safe): with _disembarked_local already true, the fallback
+	# must no-op — i.e. it must NOT request a scene change. do_disembark's
+	# scene hop is call_deferred, so any erroneous call would still be
+	# observable via current_scene changing by the next frame.
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	var car = InteriorScript.new()
+	root.add_child(car)
+	car._disembark_fallback_delay = 0.05
+	car._disembarked_local = true
+	var before: Node = current_scene
+	car._run_disembark_fallback()
+	await create_timer(0.4).timeout
+	_assert(current_scene == before, "fallback: no scene change when already disembarked")
+	car.queue_free()
+	print("[Playtest] Train disembark self-pull fallback done")
 
 
 func _test_train_dressing() -> void:
