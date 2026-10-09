@@ -301,6 +301,11 @@ func do_disembark() -> void:
 	if _disembarked_local:
 		return
 	_disembarked_local = true
+	# Scrub our player node from the train on all peers (Jesse 2026-10-08):
+	# without this a ghost body is left at the exit, blocking the door for
+	# everyone still aboard. The multiplayer peer outlives the scene change,
+	# so the RPC flushes even as we hop.
+	rpc("scrub_passenger", multiplayer.get_unique_id())
 	# State capture (per peer, local): without this the hop wipes progression.
 	var me := _my_player()
 	if me != null:
@@ -312,6 +317,15 @@ func do_disembark() -> void:
 		get_tree().call_deferred("change_scene_to_packed", ps)
 	else:
 		get_tree().call_deferred("change_scene_to_file", DUNGEON_SCENE)
+
+
+## Remove a disembarked peer's player node from the train (all peers).
+## Called via RPC by the departing peer before its scene hop.
+@rpc("any_peer", "call_local")
+func scrub_passenger(peer_id: int) -> void:
+	var node := get_node_or_null("Player_%d" % peer_id)
+	if node != null:
+		node.queue_free()
 
 
 func _dest_display_name() -> String:

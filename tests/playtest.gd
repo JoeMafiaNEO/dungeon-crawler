@@ -1824,6 +1824,13 @@ func _test_train_disembark_fallback() -> void:
 	var dblock := isrc.substr(dpos, 1200)
 	_assert(dblock.contains("_disembarked_local"), "disembark: hop is idempotent")
 	_assert(dblock.contains("load_threaded_get(DUNGEON_SCENE)"), "disembark: uses the preloaded scene")
+	# Ghost scrub (Jesse 2026-10-08): the hopper RPCs scrub_passenger so its
+	# train body is freed on all peers instead of blocking the exit.
+	_assert(dblock.contains('rpc("scrub_passenger"'), "disembark: hop scrubs the passenger node")
+	_assert(isrc.contains("func scrub_passenger"), "disembark: scrub_passenger exists")
+	var spos := isrc.find("func scrub_passenger")
+	var sblock := isrc.substr(spos, 400)
+	_assert(sblock.contains("queue_free()"), "disembark: scrub frees the node")
 	# No auto-pull mechanisms: no sweep, no fallback, no timers.
 	_assert(not isrc.contains("func _run_disembark_window"), "disembark: server sweep removed")
 	_assert(not isrc.contains("func _run_disembark_fallback"), "disembark: self-pull fallback removed")
