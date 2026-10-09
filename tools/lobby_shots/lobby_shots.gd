@@ -47,6 +47,11 @@ func _ready() -> void:
 	annex.set_lobby_doors(true)
 	await get_tree().create_timer(2.0).timeout
 	await _snap(Vector3(hc.x - 1.0, 1.6, hc.z + 1.5), Vector3(hc.x - 1.0, 1.3, hc.z - 2.25), "lobby_doors_open.png")
+	# 6. Phase 4: arrival walk-out — first-person view from a lobby spawn spot,
+	# looking north through the open doorway into the hall.
+	var spots: Array = annex.lobby_spawn_spots_global()
+	var eye: Vector3 = spots[1] + Vector3(0, 1.6, 0)
+	await _snap(eye, Vector3(hc.x - 1.0, 1.4, hc.z - 6.0), "lobby_arrival_walkout.png")
 	print("[LobbyShots] done")
 	get_tree().quit()
 

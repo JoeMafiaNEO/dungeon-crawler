@@ -58,6 +58,8 @@ func _run() -> void:
 	_test_annex_forfeit()
 	_test_train_interior()
 	_test_depart_flow()
+	_test_lobby_full_cycle_2peer()
+	_test_disconnect_mid_boarding()
 	_test_train_ride()
 	_test_train_disembark_fallback()
 	_test_train_dressing()
@@ -440,6 +442,22 @@ func _test_save_scratch_runs_dir() -> void:
 	var SaveScript = load("res://scripts/autoload/save_manager.gd")
 	var mgr = SaveScript.new()
 	var scratch := "user://runs_scratch_test"
+	# Hermetic: another test's aborted run may have left real pollution behind
+	# (self-perpetuating via backup/restore). Stash any real solo_1.cfg in an
+	# on-disk sidecar (abort-safe) and restore it at the end.
+	var real_slot := "user://runs/solo_1.cfg"
+	var real_sidecar := real_slot + ".bak"
+	var had_real := false
+	var real_bak := PackedByteArray()
+	if FileAccess.file_exists(real_sidecar) and not FileAccess.file_exists(real_slot):
+		DirAccess.rename_absolute(real_sidecar, real_slot)
+	if FileAccess.file_exists(real_slot):
+		had_real = true
+		real_bak = FileAccess.get_file_as_bytes(real_slot)
+		var sf := FileAccess.open(real_sidecar, FileAccess.WRITE)
+		sf.store_buffer(real_bak)
+		sf.close()
+		DirAccess.remove_absolute(real_slot)
 	# Ensure a clean slate; never touch real user://runs.
 	if DirAccess.dir_exists_absolute(scratch):
 		for f in DirAccess.get_files_at(scratch):
@@ -479,6 +497,12 @@ func _test_save_scratch_runs_dir() -> void:
 	DirAccess.remove_absolute(scratch)
 	_assert(not DirAccess.dir_exists_absolute(scratch),
 		"scratch: dir cleaned up")
+	if had_real:
+		var rf := FileAccess.open(real_slot, FileAccess.WRITE)
+		rf.store_buffer(real_bak)
+		rf.close()
+	if FileAccess.file_exists(real_sidecar):
+		DirAccess.remove_absolute(real_sidecar)
 	mgr.free()
 
 
@@ -2192,6 +2216,134 @@ func _test_depart_flow() -> void:
 	_assert(not hsrc.contains("func show_boarding_timer"), "retired: show_boarding_timer gone")
 	_assert(hsrc.contains("func show_now_boarding"), "hud: show_now_boarding replaces it")
 
+## Two-peer sim of the full issue #93 cycle (validation): vote -> walk into
+## lobby -> depart lever -> doors close -> departure_resolved -> arrival
+## spawns inside the new lobby -> settle opens doors -> walk out.
+func _test_lobby_full_cycle_2peer() -> void:
+	print("[Playtest] Lobby full cycle 2-peer sim (issue #93 phase 4)...")
+	var StationScript := load("res://scripts/station/station.gd")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	var layout = ProcGenScript.generate(theme, 555)
+	var plan: Dictionary = AnnexScript.plan(555, layout)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var annex = AnnexScript.build(holder, plan, layout)
+	# Isolate the players group: earlier tests leave queue_free'd stragglers.
+	for n in get_nodes_in_group("players"):
+		n.remove_from_group("players")
+	# Two living peers.
+	var p1 := FakeLobbyPeer.new()
+	p1.set_multiplayer_authority(10)
+	var p2 := FakeLobbyPeer.new()
+	p2.set_multiplayer_authority(11)
+	root.add_child(p1)
+	root.add_child(p2)
+	p1.add_to_group("players")
+	p2.add_to_group("players")
+	var st = StationScript.new()
+	root.add_child(st)
+	st.annex = annex
+	var captured := []
+	st.departure_resolved.connect(func(tid): captured.append(tid))
+	# 1. Unanimous vote -> doors open.
+	st.votes = {10: "dungeon", 11: "dungeon"}
+	st.depart()
+	_assert(annex.doors_open, "cycle: vote resolve opens doors")
+	# 2. Both walk into the lobby (spawn spots are inside lobby bounds).
+	var bounds: AABB = annex.lobby_bounds()
+	for sp in annex.lobby_spawn_spots():
+		var s: Vector3 = sp
+		_assert(bounds.has_point(s), "cycle: lobby spawn spot inside lobby")
+	var hc: Vector3 = annex.hall_center()
+	var to_hall := func(w: Vector3) -> Vector3:
+		return annex.to_local(w) - Vector3(hc.x, 0.0, hc.z)
+	var gspots: Array = annex.lobby_spawn_spots_global()
+	p1.global_position = gspots[0]
+	p2.global_position = gspots[1]
+	_assert(bounds.has_point(to_hall.call(p1.global_position)), "cycle: peer 10 inside lobby")
+	_assert(bounds.has_point(to_hall.call(p2.global_position)), "cycle: peer 11 inside lobby")
+	# 3. Lever pull by a living peer -> doors close.
+	var res: Dictionary = st.record_depart(10)
+	_assert(bool(res.get("ok", false)), "cycle: peer 10 pulls the lever")
+	st._apply_depart_close()
+	_assert(not annex.doors_open, "cycle: doors close for departure")
+	# 4. Completion fires the ride handoff with the voted theme.
+	st._complete_departure()
+	_assert(captured == ["dungeon"], "cycle: departure_resolved(dungeon)")
+	# 5. Arrival: a fresh annex spawns both inside its lobby, doors closed.
+	var holder2 := Node3D.new()
+	root.add_child(holder2)
+	var annex2 = AnnexScript.build(holder2, plan, layout)
+	_assert(not annex2.doors_open, "cycle: arrival doors closed")
+	var spots2: Array = annex2.lobby_spawn_spots_global()
+	_assert(spots2.size() >= 2, "cycle: 2+ arrival spots")
+	var b2: AABB = annex2.lobby_bounds()
+	var hc2: Vector3 = annex2.hall_center()
+	var to_hall2 := func(w: Vector3) -> Vector3:
+		return annex2.to_local(w) - Vector3(hc2.x, 0.0, hc2.z)
+	p1.global_position = spots2[0]
+	p2.global_position = spots2[1]
+	_assert(b2.has_point(to_hall2.call(p1.global_position)), "cycle: peer 10 arrives in lobby")
+	_assert(b2.has_point(to_hall2.call(p2.global_position)), "cycle: peer 11 arrives in lobby")
+	# 6. Settle opens the doors; the doorway is walkable again.
+	annex2._process(1.1)
+	_assert(annex2.doors_open, "cycle: settle opens doors")
+	_assert(annex2.get_node_or_null("LobbyDoorBlocker") == null, "cycle: blocker freed after settle")
+	p1.remove_from_group("players")
+	p2.remove_from_group("players")
+	holder.queue_free()
+	holder2.queue_free()
+	st.queue_free()
+	p1.queue_free()
+	p2.queue_free()
+
+
+## Disconnect mid-boarding must not soft-lock: a peer inside the lobby drops,
+## the remaining peer can still pull the lever and depart. Also: unanimity
+## ignores stale votes from non-living peers.
+func _test_disconnect_mid_boarding() -> void:
+	print("[Playtest] Disconnect mid-boarding (issue #93 phase 4)...")
+	var StationScript := load("res://scripts/station/station.gd")
+	var p1 := FakeLobbyPeer.new()
+	p1.set_multiplayer_authority(10)
+	var p2 := FakeLobbyPeer.new()
+	p2.set_multiplayer_authority(11)
+	for n in get_nodes_in_group("players"):
+		n.remove_from_group("players")
+	root.add_child(p1)
+	root.add_child(p2)
+	p1.add_to_group("players")
+	p2.add_to_group("players")
+	var st = StationScript.new()
+	root.add_child(st)
+	_assert(st._living_peer_ids().size() == 2, "disc: 2 living peers")
+	# Vote resolves while both are present.
+	st.votes = {10: "depths", 11: "depths"}
+	st.depart()
+	_assert(bool(st.get("_departing")), "disc: vote resolved, departing")
+	# Peer 11 disconnects mid-boarding: server despawns their node.
+	p2.get_parent().remove_child(p2)
+	p2.queue_free()
+	var living: Array = st._living_peer_ids()
+	_assert(living == [10], "disc: leaver no longer living")
+	# The remaining peer pulls the lever: no soft-lock.
+	var res: Dictionary = st.record_depart(10)
+	_assert(bool(res.get("ok", false)), "disc: remaining peer departs")
+	# Stale votes from the leaver can't block the NEXT vote's unanimity.
+	st.votes = {10: "village", 11: "depths"}
+	_assert(StationScript.resolve_destination(st.votes, [10]) == "village",
+		"disc: unanimity ignores leaver's stale vote")
+	# Disconnect DURING voting: unanimity needs only the survivors.
+	var st2 = StationScript.new()
+	root.add_child(st2)
+	_assert(StationScript.resolve_destination({10: "dungeon"}, [10]) == "dungeon",
+		"disc: survivor alone reaches unanimity")
+	st.queue_free()
+	st2.queue_free()
+	p1.queue_free()
+
 func _test_cycle_scaling() -> void:
 	print("[Playtest] Cycle scaling...")
 	# Apply the EXACT formulas from dungeon.gd to the real theme resources.
@@ -3819,6 +3971,12 @@ class RelicDungeonStub extends Node:
 
 	func get_player_node(_peer_id: int) -> Node:
 		return null
+
+
+## Stub player for lobby MP sims: just alive + a peer id, so
+## Station._living_peer_ids() sees it without a full Player scene.
+class FakeLobbyPeer extends Node3D:
+	var alive := true
 
 
 ## Stub dungeon for Holy Light tests: carries a _layout for map-size math,
