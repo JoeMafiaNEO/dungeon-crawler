@@ -560,6 +560,12 @@ func _on_refresh_pressed() -> void:
 
 func _on_join_selected_pressed() -> void:
 	AudioManager.sfx("ui_click")
+	if _lan_mode_join:
+		# Jesse 2026-10-08: the Steam list must be hidden in LAN mode, but if
+		# it ever isn't, don't silently fire a Steam join — redirect to the
+		# LAN form instead of hanging on "Joining...".
+		%JoinStatusLabel.text = "LAN mode: enter the host IP below and press Join LAN Game."
+		return
 	var selected: PackedInt32Array = %LobbyList.get_selected_items()
 	if selected.is_empty():
 		%JoinStatusLabel.text = "Select a lobby first."

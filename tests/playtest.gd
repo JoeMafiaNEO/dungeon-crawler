@@ -2012,6 +2012,14 @@ func _test_train_disembark_fallback() -> void:
 	var spos := isrc.find("func scrub_passenger")
 	var sblock := isrc.substr(spos, 400)
 	_assert(sblock.contains("queue_free()"), "disembark: scrub frees the node")
+	# Join timeout (Jesse 2026-10-08): stuck joins must fail loudly, not hang.
+	var nmsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nmsrc.contains("JOIN_TIMEOUT_S"), "join: timeout constant exists")
+	_assert(nmsrc.contains("_join_timeout = JOIN_TIMEOUT_S"), "join: timeout armed on join")
+	_assert(nmsrc.contains("_join_timeout = 0.0"), "join: timeout cancelled on connect")
+	_assert(nmsrc.contains("timed out"), "join: timeout emits a failure")
+	var mmsrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(mmsrc.contains("_lan_mode_join"), "join: LAN-mode guard exists on Join Selected")
 	# No auto-pull mechanisms: no sweep, no fallback, no timers.
 	_assert(not isrc.contains("func _run_disembark_window"), "disembark: server sweep removed")
 	_assert(not isrc.contains("func _run_disembark_fallback"), "disembark: self-pull fallback removed")

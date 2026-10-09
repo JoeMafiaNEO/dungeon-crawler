@@ -28,6 +28,11 @@ var is_host: bool = false
 var host_difficulty: float = 1.0
 var host_loot_mult: float = 1.0
 var server_id: int = 1
+## Join timeout (Jesse 2026-10-08): if the P2P connection doesn't establish
+## within JOIN_TIMEOUT_S, fail with an error instead of hanging on "Joining..."
+## forever. Reset on every join attempt; cancelled on successful connect.
+const JOIN_TIMEOUT_S := 15.0
+var _join_timeout: float = 0.0
 var selected_class_id: String = "warrior"
 var lobby_members: Array[int] = []
 ## Active run slot (issue #4): every in-run save/clear targets this
@@ -53,6 +58,16 @@ func _ready() -> void:
 		return
 	if SteamManager.initialized:
 		_connect_steam_signals()
+
+
+func _process(delta: float) -> void:
+	# Join timeout: fail loudly instead of hanging on "Joining..." forever.
+	if _join_timeout > 0.0:
+		_join_timeout -= delta
+		if _join_timeout <= 0.0:
+			_join_timeout = 0.0
+			_reset_peer()
+			connection_failed.emit("Couldn't reach the host (timed out).")
 	else:
 		SteamManager.steam_ready.connect(_connect_steam_signals)
 
@@ -164,6 +179,7 @@ func join_lan(address: String, port: int = LAN_PORT, player_name: String = "") -
 	is_host = false
 	# server_id is set by the handshake (host's actual peer ID).
 	server_id = 1
+	_join_timeout = JOIN_TIMEOUT_S
 
 
 ## Host -> client: sync difficulty/loot config on LAN join (single RPC).
@@ -269,7 +285,9 @@ func _on_lobby_match_list(lobbies: Array) -> void:
 
 func join_lobby(id: int) -> void:
 	if not SteamManager.initialized:
+		connection_failed.emit("Steam isn't running. Open Steam, then try again.")
 		return
+	_join_timeout = JOIN_TIMEOUT_S
 	Steam.joinLobby(id)
 
 
@@ -295,6 +313,7 @@ func _on_lobby_joined(joined_id: int, _permissions: int, _locked: bool, response
 
 
 func _on_connected_to_server() -> void:
+	_join_timeout = 0.0
 	if transport == Transport.LAN:
 		# ENet: server is always peer 1. Announce our cosmetic name.
 		server_id = 1
@@ -304,6 +323,7 @@ func _on_connected_to_server() -> void:
 
 
 func _on_connection_failed() -> void:
+	_join_timeout = 0.0
 	connection_failed.emit("Connection to host failed.")
 
 
