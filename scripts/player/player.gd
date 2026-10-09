@@ -3037,11 +3037,11 @@ func _update_pickup_prompt() -> void:
 
 
 ## Nearest cipher note, lockbox, departure board, vendor stall, train
-## skip lever, or bounty board within E range.
+## skip lever, bounty board, vault locker, or depart lever within E range.
 func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker"]:
+	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:

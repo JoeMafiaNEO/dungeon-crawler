@@ -1799,11 +1799,11 @@ func hide_station_timer() -> void:
 	_boarding_active = false
 
 
-## Boarding countdown (issue #3 Phase 2): ALL ABOARD window with the aboard
-## roster. Reuses the station timer label — no new UI chrome.
-func show_boarding_timer(sec: float, aboard_count: int, living_count: int) -> void:
-	var s := int(ceil(maxf(sec, 0.0)))
-	%StationTimerLabel.text = "ALL ABOARD — TRAIN LEAVES IN %d:%02d (%d/%d)" % [s / 60, s % 60, aboard_count, living_count]
+## Boarding status (issue #93 Phase 3): the vote resolved, the lobby doors
+## are open, and the party is waiting on the depart lever. Reuses the
+## station timer label — no new UI chrome. Hide via hide_station_timer.
+func show_now_boarding(theme_id: String) -> void:
+	%StationTimerLabel.text = "NOW BOARDING: %s — pull the depart lever" % theme_id.to_upper()
 	%StationTimerLabel.visible = true
 	# Issue #62: boarding started — hide the wave button immediately.
 	_boarding_active = true

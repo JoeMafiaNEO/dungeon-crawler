@@ -57,7 +57,7 @@ func _run() -> void:
 	_test_annex_departure()
 	_test_annex_forfeit()
 	_test_train_interior()
-	_test_boarding_flow()
+	_test_depart_flow()
 	_test_train_ride()
 	_test_train_disembark_fallback()
 	_test_train_dressing()
@@ -1099,17 +1099,18 @@ func _test_station_mp_vote_flow() -> void:
 	st.votes = {10: "dungeon", 11: "village"}
 	st.depart([10, 11])
 	_assert(captured.is_empty(), "split vote: depart() emits nothing")
-	_assert(not st._boarding_active, "split vote: no boarding started")
-	# ...and on unanimity it enters ALL ABOARD (issue #3 Phase 2) instead of
-	# emitting directly; boarding completion emits departure_resolved.
+	_assert(not st.get("_departing"), "split vote: no departure started")
+	# ...and on unanimity it opens the lobby doors (issue #93 Phase 3)
+	# instead of emitting directly; the depart lever completes the
+	# departure via departure_resolved.
 	st.votes = {10: "dungeon", 11: "dungeon"}
 	st.depart([10, 11])
-	_assert(captured.is_empty(), "unanimous: depart() starts boarding, emits nothing yet")
-	_assert(st._boarding_active, "unanimous: ALL ABOARD active")
-	_assert(st._boarding_theme == "dungeon", "boarding carries the voted theme")
-	st._finish_boarding([10, 11])
-	_assert(captured == ["dungeon"], "boarding complete: departure_resolved emitted")
-	_assert(st._boarding_locked, "boarding complete: train door locked")
+	_assert(captured.is_empty(), "unanimous: depart() opens doors, emits nothing yet")
+	_assert(st.get("_depart_theme") == "dungeon", "departure carries the voted theme")
+	_assert(bool(st.record_depart(10, [10, 11])["ok"]), "lever pull accepted")
+	st._complete_departure()
+	_assert(captured == ["dungeon"], "lever: departure_resolved emitted")
+	_assert(not bool(st.record_depart(11, [10, 11])["ok"]), "lever: second pull rejected")
 	# sync_votes payload applies on the client path (no board in test tree).
 	root.add_child(st5)
 	st5.sync_votes({10: "village", 11: "dungeon"})
@@ -1434,7 +1435,7 @@ func _test_lobby_doors() -> void:
 	var annex4 = AnnexScript.build(holder4, plan, layout)
 	st.annex = annex4
 	_assert(not annex4.doors_open, "wiring: doors closed before vote resolve")
-	st._start_boarding("dungeon", [10, 11])
+	st._open_lobby_for_boarding("dungeon")
 	_assert(annex4.doors_open, "wiring: vote resolve opens lobby doors")
 	holder4.queue_free()
 	holder.queue_free()
@@ -1565,8 +1566,11 @@ func _test_station_embedded() -> void:
 	holder.add_child(st) # _ready runs the embedded build
 
 	# 1. Content nodes exist as descendants.
-	for nname in ["Train", "DepartureBoard", "VendorStall", "HealPad", "BoardingZone", "Sleepers"]:
+	for nname in ["Train", "DepartureBoard", "VendorStall", "HealPad", "Sleepers"]:
 		_assert(st.get_node_or_null(nname) != null, "embedded: %s built" % nname)
+	# Issue #93 Phase 3: the BoardingZone aboard-marker is retired; the
+	# depart lever (built by the annex, in the lobby) is the new flow node.
+	_assert(annex.get_node_or_null("DepartLever") != null, "embedded: DepartLever built in lobby")
 	var sign = st.get("_boarding_sign")
 	_assert(sign != null and ("NOW BOARDING" in str(sign.text) or "NOW_BOARDING" in str(sign.text)),
 		"embedded: NOW BOARDING sign set")
@@ -1595,8 +1599,9 @@ func _test_station_embedded() -> void:
 	_assert(float(st.get("_time_left")) == StationScript.DEPART_TIME,
 		"embedded: timer reset to full duration")
 
-	# 4. Unanimous resolve enters ALL ABOARD (issue #3 Phase 2); boarding
-	# completion emits departure_resolved (server path); split does not.
+	# 4. Unanimous resolve opens the lobby doors (issue #93 Phase 3); the
+	# depart lever completes the departure via departure_resolved (server
+	# path); split does not.
 	var captured := []
 	st.departure_resolved.connect(func(tid): captured.append(tid))
 	st.votes = {10: "dungeon", 11: "dungeon"}
@@ -1604,10 +1609,11 @@ func _test_station_embedded() -> void:
 	_assert(captured.is_empty(), "embedded: partial votes emit nothing")
 	st.votes = {10: "dungeon", 11: "dungeon", 12: "dungeon"}
 	st.depart([10, 11, 12])
-	_assert(captured.is_empty(), "embedded: unanimous starts boarding, emits nothing yet")
-	_assert(bool(st.get("_boarding_active")), "embedded: ALL ABOARD active")
-	st._finish_boarding([10, 11, 12])
-	_assert(captured == ["dungeon"], "embedded: boarding complete emits departure_resolved")
+	_assert(captured.is_empty(), "embedded: unanimous opens doors, emits nothing yet")
+	_assert(st.get("_depart_theme") == "dungeon", "embedded: departure carries the voted theme")
+	_assert(bool(st.record_depart(10, [10, 11, 12])["ok"]), "embedded: lever pull accepted")
+	st._complete_departure()
+	_assert(captured == ["dungeon"], "embedded: lever completes departure_resolved")
 
 	# 5. Split vote never emits, even from the host's own pick.
 	var st2 = StationScript.new()
@@ -2093,125 +2099,98 @@ func _test_train_dressing() -> void:
 		"dress: ride start applies destination dressing")
 
 
-func _test_boarding_flow() -> void:
-	print("[Playtest] Boarding flow (issue #3 Phase 2: ALL ABOARD)...")
+func _test_depart_flow() -> void:
+	print("[Playtest] Depart flow (issue #93 Phase 3: lever -> doors -> ride)...")
 	var StationScript := load("res://scripts/station/station.gd")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
 	var living := [10, 11, 12]
 	var st = StationScript.new()
 	root.add_child(st)
 	var captured := []
 	st.departure_resolved.connect(func(tid): captured.append(tid))
 
-	# Boarding is idle before a unanimous vote resolves.
-	_assert(not st._boarding_active, "boarding: idle before depart")
-	_assert(not bool(st.record_boarding(10, living)["ok"]), "boarding: rejected while idle")
+	# Depart lever is idle before a unanimous vote resolves.
+	_assert(not bool(st.record_depart(10, living)["ok"]), "depart: rejected while idle")
+	_assert(captured.is_empty(), "depart: nothing emitted while idle")
 
-	# Unanimous vote -> ALL ABOARD with a 45s timer, no departure yet.
+	# Unanimous vote -> doors-open boarding phase, no departure yet.
 	st.votes = {10: "depths", 11: "depths", 12: "depths"}
 	st.depart(living)
-	_assert(st._boarding_active, "boarding: ALL ABOARD entered on depart")
-	_assert(st._boarding_time_left <= StationScript.BOARD_TIME, "boarding: 45s timer running")
-	_assert(not st._boarding_locked, "boarding: door unlocked while boarding")
-	_assert(st._boarding_theme == "depths", "boarding: carries the voted theme")
-	_assert(captured.is_empty(), "boarding: no departure_resolved yet")
+	_assert(st.get("_depart_theme") == "depths", "depart: carries the voted theme")
+	_assert(not bool(st.get("_depart_requested")), "depart: lever not yet pulled")
+	_assert(captured.is_empty(), "depart: no departure_resolved yet")
 
-	# Walk-through boarding: one peer boards, still waiting on the rest.
-	_assert(bool(st.record_boarding(10, living)["ok"]), "boarding: peer 10 boards")
-	_assert(st.aboard == {10: true}, "boarding: roster tracks peer 10")
-	_assert(not st._all_aboard(living), "boarding: 1/3 not all aboard")
-	_assert(not bool(st.record_boarding(99, living)["ok"]), "boarding: non-living rejected")
-	_assert(bool(st.record_boarding(10, living)["ok"]), "boarding: re-board idempotent")
+	# Lever validation: non-living peer rejected, double-pull rejected.
+	_assert(not bool(st.record_depart(99, living)["ok"]), "depart: non-living rejected")
+	_assert(bool(st.record_depart(10, living)["ok"]), "depart: living player pulls lever")
+	_assert(not bool(st.record_depart(11, living)["ok"]), "depart: second pull rejected")
+	_assert(bool(st.get("_depart_requested")), "depart: depart requested")
 
-	# Last player boards -> all aboard -> early departure, timer cancelled.
-	st.record_boarding(11, living)
-	st.record_boarding(12, living)
-	_assert(st._all_aboard(living), "boarding: 3/3 all aboard")
-	st._finish_boarding(living)
-	_assert(captured == ["depths"], "boarding: all-aboard emits departure_resolved")
-	_assert(not st._boarding_active, "boarding: timer cancelled after all aboard")
-	_assert(st._boarding_locked, "boarding: door locked after all aboard")
-	_assert(not bool(st.record_boarding(10, living)["ok"]), "boarding: locked door rejects")
-	st.queue_free()
+	# Completion emits departure_resolved with the voted theme.
+	st._complete_departure()
+	_assert(captured == ["depths"], "depart: completion emits departure_resolved")
 
-	# Timer expiry ends boarding and emits (stragglers ride via pull-aboard).
+	# Fresh station: lever before vote resolve does nothing.
 	var st2 = StationScript.new()
 	root.add_child(st2)
 	var captured2 := []
 	st2.departure_resolved.connect(func(tid): captured2.append(tid))
 	st2.votes = {10: "village", 11: "village"}
 	st2.depart([10, 11])
-	st2._boarding_time_left = 0.01
-	st2._tick_boarding(0.02)
-	_assert(captured2 == ["village"], "boarding: expiry emits departure_resolved")
-	_assert(st2._boarding_locked, "boarding: door locked on expiry")
-	_assert(not st2._boarding_active, "boarding: timer stops on expiry")
+	st2._complete_departure()
+	_assert(captured2 == ["village"], "depart: vote -> lever -> departure_resolved")
+	st.queue_free()
 	st2.queue_free()
 
-	# Stragglers are marked aboard when boarding completes.
-	var st4 = StationScript.new()
-	root.add_child(st4)
-	st4.votes = {10: "village", 11: "village"}
-	st4.depart([10, 11])
-	st4.record_boarding(10, [10, 11])
-	st4._finish_boarding([10, 11])
-	_assert(st4.aboard.has(11), "boarding: straggler marked aboard on completion")
-	st4.queue_free()
-
-	# Solo: the single living player boarding ends the window immediately.
+	# Vote-resolve opens the lobby doors (station -> annex wiring).
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	var layout = ProcGenScript.generate(theme, 777)
+	var plan: Dictionary = AnnexScript.plan(777, layout)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var annex = AnnexScript.build(holder, plan, layout)
 	var st3 = StationScript.new()
 	root.add_child(st3)
-	var captured3 := []
-	st3.departure_resolved.connect(func(tid): captured3.append(tid))
-	st3.votes = {7: "dungeon"}
-	st3.depart([7])
-	st3.record_boarding(7, [7])
-	_assert(st3._all_aboard([7]), "boarding: solo 1/1 all aboard")
-	st3._finish_boarding([7])
-	_assert(captured3 == ["dungeon"], "boarding: solo departs on door entry")
+	st3.annex = annex
+	_assert(not annex.doors_open, "depart: doors closed before vote resolve")
+	st3.votes = {10: "dungeon", 11: "dungeon"}
+	st3.depart([10, 11])
+	_assert(annex.doors_open, "depart: vote resolve opens lobby doors")
+	# Lever pull closes the doors for the ride.
+	st3.record_depart(10, [10, 11])
+	st3._apply_depart_close()
+	_assert(not annex.doors_open, "depart: lever pull closes lobby doors")
+	holder.queue_free()
 	st3.queue_free()
 
-	# The request_board RPC stays thin and delegates to record_boarding.
-	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
-	_assert(ssrc.contains("record_boarding(sender)"), "boarding: request_board delegates")
-	_assert(ssrc.contains("boarding_sync"), "boarding: roster sync rpc exists")
-	# Interior door lock: locked cars never open their doors.
-	var InteriorScript := load("res://scripts/station/train_interior.gd")
-	InteriorScript.doors_locked = true
-	var car = InteriorScript.new()
-	car._build_car()
-	car.open_doors()
-	_assert(not car._doors_open, "interior: locked doors stay closed")
-	car.lock_doors()
-	_assert(InteriorScript.doors_locked, "interior: lock_doors sets the lock")
-	car.free()
-	InteriorScript.doors_locked = false
-	# Dungeon hands the lock to the interior on boarding.
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("InteriorScript.doors_locked = true"), "boarding: dungeon locks car doors")
-
-	# Boarding SFX triggers (sound audit): all_aboard on the banner,
-	# board_chime on a successful boarding, door_lock when boarding
-	# completes, countdown ticks in the final seconds, vote_cast on voting.
+	# Departure SFX triggers (sound audit, retargeted): all_aboard on the
+	# doors-open banner, board_chime on a successful lever pull, door_lock
+	# when the doors shut for departure, vote_cast on voting.
 	var SoundScript := load("res://scripts/audio/sound_synth.gd")
-	for sfx in ["all_aboard", "board_chime", "door_lock", "countdown_tick", "vote_cast"]:
-		_assert(SoundScript.call(sfx) is AudioStreamWAV, "boarding sfx builds: %s" % sfx)
+	for sfx in ["all_aboard", "board_chime", "door_lock", "vote_cast"]:
+		_assert(SoundScript.call(sfx) is AudioStreamWAV, "depart sfx builds: %s" % sfx)
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
 	var ab_pos := ssrc.find("func announce_boarding")
-	_assert(ab_pos > 0 and ssrc.substr(ab_pos, 300).contains('sfx("all_aboard")'),
+	_assert(ab_pos > 0 and ssrc.substr(ab_pos, 400).contains('sfx("all_aboard")'),
 		"sfx: all_aboard in announce_boarding")
-	var rb_pos := ssrc.find("func request_board")
-	_assert(rb_pos > 0 and ssrc.substr(rb_pos, 700).contains('sfx("board_chime")'),
-		"sfx: board_chime on request_board success")
-	var fb_pos := ssrc.find("func _finish_boarding")
-	_assert(fb_pos > 0 and ssrc.substr(fb_pos, 700).contains('sfx("door_lock")'),
-		"sfx: door_lock in _finish_boarding")
-	var bs_pos := ssrc.find("func boarding_sync")
-	_assert(bs_pos > 0 and ssrc.substr(bs_pos, 600).contains('sfx("countdown_tick")'),
-		"sfx: countdown_tick in final boarding seconds")
+	var rd_pos := ssrc.find("func request_depart")
+	_assert(rd_pos > 0 and ssrc.substr(rd_pos, 700).contains('sfx("board_chime")'),
+		"sfx: board_chime on request_depart success")
+	var cd_pos := ssrc.find("func _complete_departure")
+	_assert(cd_pos > 0 and ssrc.substr(cd_pos, 300).contains('sfx("door_lock")'),
+		"sfx: door_lock in _complete_departure")
 	var vsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
 	var sv_pos := vsrc.find("func set_my_vote")
 	_assert(sv_pos > 0 and vsrc.substr(sv_pos, 300).contains('sfx("vote_cast")'),
 		"sfx: vote_cast in set_my_vote")
-
+	# The retired 45s-window SFX trigger is gone with boarding_sync.
+	_assert(not ssrc.contains("func boarding_sync"), "retired: boarding_sync gone")
+	_assert(not ssrc.contains("func request_board"), "retired: request_board gone")
+	_assert(not ssrc.contains("func _finish_boarding"), "retired: _finish_boarding gone")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(not hsrc.contains("func show_boarding_timer"), "retired: show_boarding_timer gone")
+	_assert(hsrc.contains("func show_now_boarding"), "hud: show_now_boarding replaces it")
 
 func _test_cycle_scaling() -> void:
 	print("[Playtest] Cycle scaling...")
@@ -5088,7 +5067,9 @@ func _test_destination_popup_replaces_3d() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains('hud.get("dest_popup_open")'), "#29: E guarded while dest popup open")
 	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
-	_assert(ssrc.contains("_poll_boarding_zone"), "#29: boarding zone poll fallback exists")
+	# Issue #93 Phase 3: the BoardingZone aboard-marker (and its #29 poll
+	# fallback) is retired — the lobby doorway + depart lever replace it.
+	_assert(not ssrc.contains("_poll_boarding_zone"), "#93: boarding zone poll fallback retired")
 	_assert(ssrc.contains("refresh_destination_popup"), "#29: sync_votes refreshes popup")
 	print("[Playtest] 2D destination popup done")
 
@@ -5200,7 +5181,7 @@ func _test_destination_popup_mouse_hold() -> void:
 	_assert(psrc.contains("not hud.dest_popup_open"),
 		"#65: player respects dest_popup_open on click")
 	# Issue #71: boarding must auto-dismiss the destination popup so it
-	# can't cover the BOARD HERE instruction during the 45s window.
+	# can't cover the doorway instruction once the vote resolves.
 	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
 	_assert(stsrc.contains("close_destination_popup"),
 		"#71: announce_boarding closes the destination popup")

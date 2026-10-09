@@ -17,8 +17,9 @@ const RelicVaultScript := preload("res://scripts/station/relic_vault.gd")
 const DEPART_TIME := 45.0
 const HEAL_TICK := 0.5
 const HEAL_RADIUS := 2.2
-## Boarding window after a unanimous vote (issue #3 Phase 2).
-const BOARD_TIME := 45.0
+## Door-close animation window after the depart lever is pulled (issue #93
+## Phase 3): doors shut, then departure_resolved fires and the ride begins.
+const DEPART_CLOSE_TIME := 2.0
 
 ## Vendor stock (server-authoritative, picked fresh every station visit).
 const VENDOR_POTIONS := [
@@ -67,17 +68,12 @@ var _time_left := DEPART_TIME
 var _timer_running := true
 var _departing := false
 var _last_sync_sec := -1
-## Issue #3 Phase 2 boarding: after a unanimous vote the station enters ALL
-## ABOARD (45s boarding timer); walking through the train door marks a peer
-## aboard; all living aboard (or timer expiry) completes boarding and the
-## dungeon's ride begins.
-var _boarding_active := false
-var _boarding_locked := false
-var _boarding_time_left := BOARD_TIME
-var _boarding_theme := ""
-## peer_id -> true for boarded players (server-authoritative).
-var aboard := {}
-var _boarding_zone: Area3D = null
+## Issue #93 Phase 3: after a unanimous vote the station opens the lobby
+## doors and waits for the depart lever — player-paced, no timer. The vote
+## resolves into _depart_theme; the lever pull completes the departure via
+## departure_resolved.
+var _depart_theme := ""
+var _depart_requested := false
 var _board_label: Label3D = null
 var _ring: MeshInstance3D
 var _heal_pad: Area3D
@@ -109,19 +105,13 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-	# Gold boarding-ring pulse (all peers, pure ambience).
+	# Gold doorway-ring pulse (all peers, pure ambience).
 	if _ring != null:
 		var s := 1.0 + sin(Time.get_ticks_msec() / 300.0) * 0.04
 		_ring.scale = Vector3(s, 1, s)
-	# Issue #29: poll fallback for the BOARD HERE zone. The Area3D
-	# body_entered signal can miss (physics flake); if the local player is
-	# standing in the zone during ALL ABOARD, report them boarded.
-	_poll_boarding_zone()
 	if not multiplayer.is_server():
 		return
-	if _boarding_active:
-		_tick_boarding(delta)
-	elif not _departing and _timer_running:
+	if not _departing and _timer_running:
 		_time_left -= delta
 		var sec := int(ceil(maxf(_time_left, 0.0)))
 		if sec != _last_sync_sec:
@@ -359,11 +349,12 @@ func vote_reset_notice() -> void:
 		hud.show_toast("No agreement — vote again.")
 
 
-## Server-authoritative departure (issue #3 Phase 2): resolve the
-## destination, re-dress, then enter ALL ABOARD — the 45s boarding window.
-## The dungeon's ride only begins when boarding completes (all living players
-## aboard, or timer expiry), via _finish_boarding -> departure_resolved.
-## living_override lets tests drive the flow without a scene tree of players.
+## Server-authoritative departure (issue #93 Phase 3): resolve the
+## destination, re-dress, then open the lobby doors and wait for the depart
+## lever — player-paced, no timer. The lever pull completes the departure
+## via _complete_departure -> departure_resolved, and the dungeon's ride
+## begins. living_override lets tests drive the flow without a scene tree
+## of players.
 func depart(living_override: Array = []) -> void:
 	if _departing or not multiplayer.is_server():
 		return
@@ -378,7 +369,7 @@ func depart(living_override: Array = []) -> void:
 		return
 	_departing = true
 	apply_dressing(theme_id)
-	_start_boarding(theme_id, living)
+	_open_lobby_for_boarding(theme_id)
 
 
 ## Issue #11 Phase 1: ASCEND execution. Each player increments their OWN
@@ -415,167 +406,90 @@ func _do_ascend() -> void:
 		rpc("sync_votes", votes)
 
 
-## ALL ABOARD: banner + 45s server-authoritative boarding timer + aboard
-## roster on every peer's HUD. Walk through the train door to board.
-func _start_boarding(theme_id: String, living: Array) -> void:
-	_boarding_active = true
-	_boarding_locked = false
-	_boarding_theme = theme_id
-	_boarding_time_left = BOARD_TIME
-	_last_sync_sec = -1
-	aboard.clear()
-	rpc("announce_boarding")
-	rpc("boarding_sync", BOARD_TIME, aboard, living)
+## Vote resolved: open the lobby doors, announce ALL ABOARD, and wait for
+## the depart lever (issue #93 Phase 3). Player-paced — no timer, no roster.
+func _open_lobby_for_boarding(theme_id: String) -> void:
+	_depart_theme = theme_id
+	_depart_requested = false
+	rpc("announce_boarding", theme_id)
 	# Issue #93 Phase 2: vote resolve opens the lobby doors.
 	if annex != null:
 		annex.set_lobby_doors(true)
 
 
-## Boarding timer tick (server). Expiry pulls the stragglers aboard.
-func _tick_boarding(delta: float) -> void:
-	_boarding_time_left -= delta
-	var sec := int(ceil(maxf(_boarding_time_left, 0.0)))
-	if sec != _last_sync_sec:
-		_last_sync_sec = sec
-		rpc("boarding_sync", maxf(_boarding_time_left, 0.0), aboard, _living_peer_ids())
-	if _boarding_time_left <= 0.0:
-		_finish_boarding()
-
-
-## Record a boarding from a peer. Pure logic (no RPC): the request_board RPC
-## wrapper handles networking + the all-aboard early departure.
+## Record a depart-lever pull from a peer. Pure logic (no RPC): the
+## request_depart RPC wrapper handles networking. The vote must have
+## resolved and no depart may already be in flight.
 ## living_override lets tests drive the flow without a scene tree.
 ## Returns {"ok": bool, ...}.
-func record_boarding(peer_id: int, living_override: Array = []) -> Dictionary:
-	if not _boarding_active or _boarding_locked:
-		return {"ok": false, "reason": "not_boarding"}
+func record_depart(peer_id: int, living_override: Array = []) -> Dictionary:
+	if not _departing or _depart_requested:
+		return {"ok": false, "reason": "not_ready"}
 	var living := living_override if not living_override.is_empty() else _living_peer_ids()
 	if not peer_id in living:
 		return {"ok": false, "reason": "not_living"}
-	aboard[peer_id] = true
+	_depart_requested = true
 	return {"ok": true}
 
 
-## True when every living player has boarded. living_override lets tests
-## drive the flow without a scene tree of players.
-func _all_aboard(living_override: Array = []) -> bool:
-	var living := living_override if not living_override.is_empty() else _living_peer_ids()
-	if living.is_empty():
-		return false
-	for pid in living:
-		if not aboard.has(pid):
-			return false
-	return true
-
-
-## Board through the annex train door. Server records; every peer syncs the
-## roster for the HUD; all living aboard ends the timer early.
+## Depart lever pulled in the lobby. Server validates; any living player may
+## pull it. Stragglers outside are pulled into the lobby by the ride.
 @rpc("any_peer", "call_local")
-func request_board() -> void:
+func request_depart() -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	if sender == 0:
 		sender = multiplayer.get_unique_id()
-	var res: Dictionary = record_boarding(sender)
+	var res: Dictionary = record_depart(sender)
 	if not bool(res.get("ok", false)):
 		return
 	AudioManager.sfx("board_chime")
-	var living := _living_peer_ids()
-	rpc("boarding_sync", maxf(_boarding_time_left, 0.0), aboard, living)
-	if _all_aboard(living):
-		_finish_boarding(living)
+	if _board_label != null:
+		_board_label.text = "DEPARTING"
+	_begin_departure_close()
 
 
-## Boarding complete (all aboard, or timer expiry): stragglers are pulled
-## aboard by the dungeon's ride, doors close + lock, and the departure
-## resolves. living_override lets tests drive the flow without a scene tree.
-func _finish_boarding(living_override: Array = []) -> void:
-	if not _boarding_active or not multiplayer.is_server():
-		return
-	var living := living_override if not living_override.is_empty() else _living_peer_ids()
-	for pid in living:
-		aboard[pid] = true # stragglers ride too — the pull-aboard moves them
-	_boarding_active = false
-	_boarding_locked = true
+## Lever accepted: close the lobby doors, wait out the 2s door-close
+## animation, then complete the departure and hand off to the dungeon's
+## ride chain.
+func _begin_departure_close() -> void:
+	_apply_depart_close()
+	await get_tree().create_timer(DEPART_CLOSE_TIME).timeout
+	_complete_departure()
+
+
+## Door-close half of the departure (split out so tests can drive the door
+## state without the 2s timer).
+func _apply_depart_close() -> void:
+	if annex != null:
+		annex.set_lobby_doors(false)
+
+
+## Doors are shut: lock up, resolve the departure. The dungeon drives the
+## whistle / pull-aboard / fade ride and hops to the train interior.
+## Split out so tests can drive completion without the 2s timer.
+func _complete_departure() -> void:
 	AudioManager.sfx("door_lock")
-	rpc("boarding_sync", 0.0, aboard, living)
-	rpc("boarding_locked")
-	departure_resolved.emit(_boarding_theme)
+	departure_resolved.emit(_depart_theme)
 
 
-## ALL ABOARD banner on every peer.
+## ALL ABOARD banner on every peer, retargeted to the lobby doors opening
+## (issue #93 Phase 3): the vote resolved, walk in at your own pace.
 @rpc("any_peer", "call_local")
-func announce_boarding() -> void:
+func announce_boarding(theme_id: String) -> void:
 	AudioManager.sfx("all_aboard")
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("announce"):
 		hud.announce("ALL ABOARD!")
-	# Issue #71: the SELECT DESTINATION popup must not linger through the
-	# 45s boarding phase — it covered the BOARD HERE instruction.
+	# Issue #71: the SELECT DESTINATION popup must not linger past the vote
+	# — it covered the doorway instruction.
 	if hud != null and hud.has_method("close_destination_popup"):
 		hud.close_destination_popup()
-
-
-## Keep every peer's boarding HUD in sync: countdown + aboard roster.
-@rpc("any_peer", "call_local")
-func boarding_sync(time_left: float, aboard_now: Dictionary, living: Array) -> void:
-	aboard = aboard_now.duplicate()
-	# Final-seconds tick on every peer (driven by the server's per-second sync).
-	if time_left <= 5.0 and time_left > 0.0:
-		AudioManager.sfx("countdown_tick")
-	var hud := get_tree().get_first_node_in_group("hud")
-	if hud != null and hud.has_method("show_boarding_timer"):
-		hud.show_boarding_timer(time_left, aboard.size(), living.size())
-
-
-## Boarding over: lock the train door (no more walk-through boarding) and
-## hide the countdown. The ride starts on the dungeon side.
-@rpc("any_peer", "call_local")
-func boarding_locked() -> void:
-	_boarding_locked = true
+	if hud != null and hud.has_method("show_now_boarding"):
+		hud.show_now_boarding(theme_id)
 	if _board_label != null:
-		_board_label.text = "DOORS LOCKED"
-	var hud := get_tree().get_first_node_in_group("hud")
-	if hud != null and hud.has_method("hide_station_timer"):
-		hud.hide_station_timer()
-
-
-## Train-door walk-through: each peer reports its own player only.
-func _on_boarding_zone_body_entered(body: Node3D) -> void:
-	if _boarding_locked or not _boarding_active:
-		return
-	if not body.is_in_group("players"):
-		return
-	if int(body.get_multiplayer_authority()) != multiplayer.get_unique_id():
-		return
-	rpc("request_board")
-
-
-## Issue #29: poll fallback for the BOARD HERE zone. Runs on every peer;
-## if the local player is inside the zone box during ALL ABOARD, report
-## them boarded (idempotent — record_boarding just sets aboard[peer]=true).
-func _poll_boarding_zone() -> void:
-	if _boarding_locked or not _boarding_active:
-		return
-	if _boarding_zone == null:
-		return
-	var my_id := multiplayer.get_unique_id()
-	# Already boarded? Skip the scan.
-	if aboard.get(my_id, false):
-		return
-	var center := _boarding_zone.global_position
-	var half := Vector3(2.5, 1.25, 1.5) # matches the 5x2.5x3 BoxShape3D
-	for p in get_tree().get_nodes_in_group("players"):
-		var body := p as Node3D
-		if body == null:
-			continue
-		if int(body.get_multiplayer_authority()) != my_id:
-			continue
-		var d: Vector3 = body.global_position - center
-		if absf(d.x) <= half.x and absf(d.y) <= half.y and absf(d.z) <= half.z:
-			rpc("request_board")
-			return
+		_board_label.text = "NOW BOARDING: " + theme_id.to_upper()
 
 
 ## Departure ride for the annex (issue #2 Phase 3): re-dress for the
@@ -729,20 +643,9 @@ func _build_station_embedded() -> void:
 		_box(train, Vector3(0.7, 0.6, 0.1), Vector3(cx, 1.8, -3.28), win_glow)
 	_box(train, Vector3(0.6, 0.25, 0.25), Vector3(1.1, 1.1, -4.5), lamp_glow)    # headlamp
 
-	# Boarding zone: Area3D in front of the train doors + gold pulse ring.
-	# Walking through the door during ALL ABOARD marks the player boarded
-	# (issue #3 Phase 2).
-	var zone := Area3D.new()
-	zone.name = "BoardingZone"
-	zone.position = Vector3(-1, 1.0, -2.0)
-	var zcs := CollisionShape3D.new()
-	var zshape := BoxShape3D.new()
-	zshape.size = Vector3(5, 2.5, 3)
-	zcs.shape = zshape
-	zone.add_child(zcs)
-	zone.body_entered.connect(_on_boarding_zone_body_entered)
-	add_child(zone)
-	_boarding_zone = zone
+	# Doorway marker: gold pulse ring + destination signage at the lobby
+	# doorway (issue #93). The ring is pure ambience; the label shows
+	# NOW BOARDING once the vote resolves.
 	_ring = MeshInstance3D.new()
 	var torus := TorusMesh.new()
 	torus.inner_radius = 2.2

@@ -2236,13 +2236,23 @@ func _apply_forfeits() -> void:
 
 ## Boarding spots near the train doors (global), one per connected player.
 ## The server assigns; every peer moves its own player (see pull_aboard).
+## Straggler pull spots (issue #93 Phase 3): players outside the lobby at
+## depart time are pulled INTO the lobby. The server assigns; every peer
+## moves its own player (see pull_aboard).
 func _boarding_spots() -> Dictionary:
 	var spots := {}
 	var station := get_node_or_null("Station")
-	var locals := [
-		Vector3(-2.5, 0.1, -2.0), Vector3(0.5, 0.1, -2.0),
-		Vector3(-2.5, 0.1, -0.5), Vector3(0.5, 0.1, -0.5),
-	]
+	var annex := get_node_or_null("StationAnnex") as StationAnnex
+	var locals: Array = []
+	if annex != null and annex.has_method("lobby_spawn_spots"):
+		locals = annex.lobby_spawn_spots()
+		# Lobby spots sit at y=0; lift to boot height.
+		locals = locals.map(func(s): var v: Vector3 = s; v.y = 0.1; return v)
+	if locals.is_empty():
+		locals = [
+			Vector3(-2.5, 0.1, -2.0), Vector3(0.5, 0.1, -2.0),
+			Vector3(-2.5, 0.1, -0.5), Vector3(0.5, 0.1, -0.5),
+		]
 	var i := 0
 	var holders := get_node_or_null("Players")
 	if holders != null:
@@ -2310,17 +2320,24 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	# Fresh trip: the interior's late-_ready ride check must not see a stale
 	# ride_active from the previous ride (issue #3 Phase 3).
 	InteriorScript.ride_active = false
-	# Issue #3 Phase 2: boarding is over (all aboard or timer expiry) — the
+	# Issue #93 Phase 3: the depart lever completes the departure — the
 	# car doors stay closed + locked for the ride.
 	InteriorScript.doors_locked = true
 	get_tree().call_deferred("change_scene_to_file", "res://scenes/station/train_interior.tscn")
 
 
-## Train disembark (issue #3 Phase 3): spawn spots in the annex hall, around
-## its center. The hall is 24x14m; these offsets stay well inside it.
+## Train disembark (issue #93 Phase 3): the party steps out of the car into
+## the new level's boarding lobby — spawn at the lobby's interior spots so
+## players arrive inside, doors closed, and walk out on foot.
 func _annex_spawn_spots() -> Array[Vector3]:
 	var spots: Array[Vector3] = []
 	var annex := get_node_or_null("StationAnnex")
+	if annex != null and annex.has_method("lobby_spawn_spots_global"):
+		for s in annex.lobby_spawn_spots_global():
+			var v: Vector3 = s
+			v.y = 0.1
+			spots.append(v)
+		return spots
 	var c := Vector3.ZERO
 	if annex != null and annex.has_method("hall_center"):
 		c = annex.hall_center()

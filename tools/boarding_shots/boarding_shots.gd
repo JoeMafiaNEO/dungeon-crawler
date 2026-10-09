@@ -76,14 +76,37 @@ func _ready() -> void:
 		print("[BoardingShots] saved ", path)
 	else:
 		push_error("[BoardingShots] FAILED to save " + path)
-	# End-to-end: walk the player through the train door -> request_board ->
-	# all aboard (solo) -> ride -> interior scene.
+	# End-to-end (issue #93 Phase 3): walk the player into the lobby, pull
+	# the depart lever -> doors close -> ride -> interior scene.
 	var player := _find_player()
-	var zone := station.get_node_or_null("BoardingZone")
-	if player != null and zone != null:
-		player.global_position = (zone as Node3D).global_position
+	if player != null:
+		var lp: Vector3 = station.annex.lobby_spawn_spots()[0]
+		player.global_position = station.to_global(lp)
+		await get_tree().create_timer(1.0).timeout
+		print("[BoardingShots] doors_open=", station.annex.doors_open)
+		# Pull the lever through the real interact path.
+		var lever := _find_depart_lever()
+		if lever != null:
+			player.global_position = (lever as Node3D).global_position + Vector3(0, 0, 1.0)
+			# Face the lever (south, +z) for the prop shot.
+			player.set("_yaw", 3.14159)
+			player.rotation.y = 3.14159
+			await get_tree().create_timer(0.5).timeout
+			await get_tree().process_frame
+			await get_tree().process_frame
+			var img2 := get_viewport().get_texture().get_image()
+			if img2.save_png(_shot_dir + "/depart_lever.png") == OK:
+				print("[BoardingShots] saved ", _shot_dir + "/depart_lever.png")
+			lever.interact(player)
+			print("[BoardingShots] lever pulled, depart_requested=", station.get("_depart_requested"))
+		await get_tree().create_timer(1.0).timeout
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var img3 := get_viewport().get_texture().get_image()
+		if img3.save_png(_shot_dir + "/depart_doors_closing.png") == OK:
+			print("[BoardingShots] saved ", _shot_dir + "/depart_doors_closing.png")
 		await get_tree().create_timer(2.0).timeout
-		print("[BoardingShots] aboard=", station.aboard, " locked=", station.get("_boarding_locked"))
+		print("[BoardingShots] doors_open after depart=", station.annex.doors_open)
 		await get_tree().create_timer(6.0).timeout
 		var cur := get_tree().current_scene
 		print("[BoardingShots] current_scene=", cur.name if cur != null else "null")
@@ -108,6 +131,11 @@ func _cleanup_scratch() -> void:
 			DirAccess.remove_absolute(SCRATCH_RUNS_DIR.path_join(f))
 		DirAccess.remove_absolute(SCRATCH_RUNS_DIR)
 		print("[BoardingShots] removed scratch runs dir")
+
+
+func _find_depart_lever() -> Node:
+	var levers := get_tree().get_nodes_in_group("depart_lever")
+	return levers[0] if not levers.is_empty() else null
 
 
 func _find_player() -> Node:

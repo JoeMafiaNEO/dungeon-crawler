@@ -20,6 +20,12 @@ const CORRIDOR_W := 4.0
 const CORRIDOR_L := 6.0
 const DOOR_W := 4.0
 
+## Depart lever (issue #93 Phase 3): brass E-interact prop inside the lobby.
+const DepartLeverScript := preload("res://scripts/station/depart_lever.gd")
+## Lever spot, hall-local: inside the lobby near the doorway, clear of
+## benches, spawn spots, and the walk path.
+const LOBBY_LEVER_POS := Vector3(0.8, 0.0, -1.6)
+
 var attach_x := 0.0
 var arena_half := 24.0
 ## OmniLight3D lamps, exposed so Phase 2 can tint them per theme.
@@ -135,8 +141,8 @@ func lobby_bounds() -> AABB:
 	return AABB(Vector3(LOBBY_CX - hw, 0.0, LOBBY_CZ - hd), Vector3(hw * 2.0, LOBBY_H, hd * 2.0))
 
 
-## Interior arrival spawn spots, hall-local (issue #93 Phase 3 wires these
-## into the arrival hop). Kept clear of benches/straps by construction.
+## Interior arrival spawn spots, hall-local. Kept clear of benches/straps
+## by construction.
 func lobby_spawn_spots() -> Array:
 	return [
 		Vector3(LOBBY_CX - 2.0, 0.0, LOBBY_CZ),
@@ -144,6 +150,16 @@ func lobby_spawn_spots() -> Array:
 		Vector3(LOBBY_CX + 2.0, 0.0, LOBBY_CZ),
 		Vector3(LOBBY_CX, 0.0, LOBBY_CZ + 1.5),
 	]
+
+
+## Interior arrival spawn spots, world space (issue #93 Phase 3: the
+## arrival hop targets these so players land inside the lobby).
+func lobby_spawn_spots_global() -> Array:
+	var out := []
+	for s in lobby_spawn_spots():
+		var v: Vector3 = s
+		out.append(to_global(_hl(v.x, v.y, v.z)))
+	return out
 
 
 static func _doorway_blocked(layout: LevelLayout, cx: float) -> int:
@@ -387,8 +403,19 @@ func _build_lobby() -> void:
 		_visual(Vector3(1.5, 0.8, 0.14), _hl(wx, 1.8, cz + hd + wt * 0.5), win_glow).name = "LobbyWindow"
 
 	_build_lobby_doors(car_dark, brass)
+	_build_depart_lever()
 	# Doors start closed; the server opens them after the 1s arrival settle.
 	_settle_left = 1.0
+
+
+## Depart lever prop (issue #93 Phase 3): brass E-interact lever inside the
+## lobby. The station's request_depart validates server-side.
+func _build_depart_lever() -> void:
+	var lever = DepartLeverScript.new()
+	lever.position = _hl(LOBBY_LEVER_POS.x, LOBBY_LEVER_POS.y, LOBBY_LEVER_POS.z)
+	add_child(lever)
+	# NOTE (Phase 1 naming gotcha): .name AFTER add_child.
+	lever.name = "DepartLever"
 
 
 ## Sliding door panels on the lobby doorway (issue #93 Phase 2): two wood
