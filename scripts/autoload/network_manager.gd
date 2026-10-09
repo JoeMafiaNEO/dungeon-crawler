@@ -293,13 +293,18 @@ func join_lobby(id: int) -> void:
 
 func _on_lobby_joined(joined_id: int, _permissions: int, _locked: bool, response: int) -> void:
 	if response != 1:
+		_join_timeout = 0.0
 		connection_failed.emit("Couldn't join that lobby.")
 		return
 	lobby_id = joined_id
 	var owner: int = Steam.getLobbyOwner(lobby_id)
 	_reset_peer()
 	peer = SteamMultiplayerPeer.new()
-	if peer.create_client(owner) != OK:
+	# Jesse 2026-10-08: use connect_lobby(lobby_id), not create_client(owner).
+	# create_client hangs forever on "Joining..." — the lobby-based connect
+	# is the correct Steam P2P flow (LAN/ENet path is unaffected).
+	if peer.connect_lobby(lobby_id) != OK:
+		_join_timeout = 0.0
 		connection_failed.emit("Couldn't connect to the host.")
 		return
 	multiplayer.multiplayer_peer = peer

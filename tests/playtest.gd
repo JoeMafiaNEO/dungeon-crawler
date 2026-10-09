@@ -2020,6 +2020,9 @@ func _test_train_disembark_fallback() -> void:
 	_assert(nmsrc.contains("timed out"), "join: timeout emits a failure")
 	var mmsrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
 	_assert(mmsrc.contains("_lan_mode_join"), "join: LAN-mode guard exists on Join Selected")
+	# Steam lobby P2P (Jesse 2026-10-08): must use connect_lobby, not
+	# create_client — the latter hangs on "Joining..." forever.
+	_assert(nmsrc.contains("connect_lobby(lobby_id)"), "join: Steam uses connect_lobby")
 	# No auto-pull mechanisms: no sweep, no fallback, no timers.
 	_assert(not isrc.contains("func _run_disembark_window"), "disembark: server sweep removed")
 	_assert(not isrc.contains("func _run_disembark_fallback"), "disembark: self-pull fallback removed")
