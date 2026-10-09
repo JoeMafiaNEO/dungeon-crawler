@@ -88,8 +88,10 @@ var _disembarked_local := false
 ## the train scene, so a client that never walks through the door would be
 ## stranded forever — its request_disembark RPC targets the server's (now
 ## freed) train node and is dropped. Every peer therefore pulls ITSELF
-## through after this delay. Instance var (not const) so tests can shorten it.
-var _disembark_fallback_delay := DISEMBARK_WINDOW + 5.0
+## through after this delay. 12s: walking through the door takes ~5s, so an
+## idle peer is pulled promptly without yanking someone mid-walk.
+## Instance var (not const) so tests can shorten it.
+var _disembark_fallback_delay := 12.0
 var _scenery_root: Node3D = null
 var _scenery_mats: Array = []
 var _platform_root: Node3D = null
