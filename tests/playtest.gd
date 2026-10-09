@@ -52,6 +52,7 @@ func _run() -> void:
 	_test_audio_combat_cues()
 	_test_station_annex()
 	_test_lobby_room()
+	_test_lobby_doors()
 	_test_station_embedded()
 	_test_annex_departure()
 	_test_annex_forfeit()
@@ -1301,7 +1302,9 @@ func _test_lobby_room() -> void:
 			lamp_count += 1
 	_assert(lamp_count >= 6, "hall + lobby lamps (%d)" % lamp_count)
 
-	# 3. Doorway is open: probes through it must not sit inside any solid.
+	# 3. Doorway is open once the doors open (issue #93 Phase 2: doors start
+	# closed; probes through it must not sit inside any solid).
+	annex._apply_lobby_doors(true)
 	var solids: Array = []
 	for child in annex.get_children():
 		if child is StaticBody3D:
@@ -1344,6 +1347,98 @@ func _test_lobby_room() -> void:
 		_assert(not inside, "spawn spot not inside a solid (%s)" % str(s))
 
 	holder.queue_free()
+
+
+func _test_lobby_doors() -> void:
+	print("[Playtest] Lobby sliding doors (issue #93 phase 2)...")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	var layout = ProcGenScript.generate(theme, 12345)
+	var plan: Dictionary = AnnexScript.plan(12345, layout)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var annex = AnnexScript.build(holder, plan, layout)
+	var hc: Vector3 = annex.hall_center()
+
+	# 1. Doors start closed: blocker present, panels at closed positions.
+	_assert(not annex.doors_open, "lobby doors start closed")
+	_assert(annex._door_panels.size() == 2, "2 door panels built")
+	var blocker = annex.get_node_or_null("LobbyDoorBlocker")
+	_assert(blocker != null and blocker is StaticBody3D, "door blocker present while closed")
+	for d in annex._door_panels:
+		_assert(absf(d.position.x - (hc.x + float(d.get_meta("closed_x")))) < 0.01,
+			"panel starts at closed_x")
+
+	# 2. Closed doors block the doorway: probes through it sit inside the blocker.
+	var cs := blocker.get_child(0) as CollisionShape3D
+	var bb := cs.shape as BoxShape3D
+	var blocker_aabb := AABB(blocker.position - bb.size * 0.5, bb.size)
+	var blocked := 0
+	for px in [-1.8, -1.0, -0.2]:
+		if blocker_aabb.has_point(Vector3(hc.x + px, 1.0, hc.z - 2.25)):
+			blocked += 1
+	_assert(blocked == 3, "closed doors block the doorway (%d/3 probes)" % blocked)
+
+	# 3. Server RPC path opens: state flips, blocker freed, doorway walkable.
+	annex.set_lobby_doors(true)
+	_assert(annex.doors_open, "set_lobby_doors(true) opens (server is local in tests)")
+	_assert(annex.get_node_or_null("LobbyDoorBlocker") == null, "blocker freed when open")
+	var solids: Array = []
+	for child in annex.get_children():
+		if child is StaticBody3D:
+			var c := (child as StaticBody3D).get_child(0) as CollisionShape3D
+			var b := c.shape as BoxShape3D
+			solids.append(AABB(child.position - b.size * 0.5, b.size))
+	var door_blocked := 0
+	for px in [-1.8, -1.0, -0.2]:
+		var p := Vector3(hc.x + px, 1.0, hc.z - 2.25)
+		for aabb: AABB in solids:
+			if aabb.has_point(p):
+				door_blocked += 1
+	_assert(door_blocked == 0, "open doors: doorway walkable")
+
+	# 4. Closing re-blocks (idempotent: double close is a no-op).
+	annex.set_lobby_doors(false)
+	_assert(not annex.doors_open, "set_lobby_doors(false) closes")
+	_assert(annex.get_node_or_null("LobbyDoorBlocker") != null, "blocker rebuilt when closed")
+	annex.set_lobby_doors(false)
+	_assert(not annex.doors_open, "double close is a no-op")
+
+	# 5. Snap path (not in tree): panels jump to open/closed x exactly.
+	var holder2 := Node3D.new()
+	var annex2 = AnnexScript.build(holder2, plan, layout)
+	annex2._apply_lobby_doors(true)
+	for d in annex2._door_panels:
+		_assert(absf(d.position.x - float(d.get_meta("open_x"))) < 0.001,
+			"snap: panel at open_x when not in tree")
+	annex2._apply_lobby_doors(false)
+	for d in annex2._door_panels:
+		_assert(absf(d.position.x - float(d.get_meta("closed_x"))) < 0.001,
+			"snap: panel at closed_x when not in tree")
+	holder2.free()
+
+	# 6. Arrival settle: fresh annex opens 1s after build (server-driven).
+	var holder3 := Node3D.new()
+	root.add_child(holder3)
+	var annex3 = AnnexScript.build(holder3, plan, layout)
+	_assert(not annex3.doors_open, "arrival: doors closed on build")
+	annex3._process(1.1)
+	_assert(annex3.doors_open, "arrival: doors open after 1s settle")
+	# 7. Vote-resolve opens the lobby doors (station wiring).
+	var StationScript: GDScript = load("res://scripts/station/station.gd")
+	var st = StationScript.new()
+	root.add_child(st)
+	var holder4 := Node3D.new()
+	root.add_child(holder4)
+	var annex4 = AnnexScript.build(holder4, plan, layout)
+	st.annex = annex4
+	_assert(not annex4.doors_open, "wiring: doors closed before vote resolve")
+	st._start_boarding("dungeon", [10, 11])
+	_assert(annex4.doors_open, "wiring: vote resolve opens lobby doors")
+	holder4.queue_free()
+	holder.queue_free()
+	holder3.queue_free()
 
 
 func _test_station_annex() -> void:

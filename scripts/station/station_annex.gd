@@ -46,6 +46,20 @@ const LOBBY_WALL_T := 0.5
 const LOBBY_DOOR_W := 2.4
 const LOBBY_DOOR_X := -1.0
 const LOBBY_DOOR_H := 2.6
+## Sliding door panels (issue #93 Phase 2): tween duration per peer.
+const LOBBY_DOOR_TWEEN_S := 1.5
+const LOBBY_PANEL_W := 1.2
+const LOBBY_PANEL_T := 0.12
+
+## Lobby door state (issue #93 Phase 2): server-authoritative, RPC-synced.
+## Closed doors block the doorway via LobbyDoorBlocker; open doors free it.
+var doors_open := false
+var _door_panels: Array = []
+var _door_blocker: StaticBody3D = null
+var _door_tween: Tween = null
+## Arrival settle countdown; -1 = inactive. Doors start closed on build and
+## the server opens them 1s after the annex appears.
+var _settle_left := -1.0
 
 
 ## Deterministic annex placement from the level seed.
@@ -371,3 +385,123 @@ func _build_lobby() -> void:
 	for wx in [cx - 2.0, cx + 2.0]:
 		_visual(Vector3(1.8, 1.1, 0.12), _hl(wx, 1.8, cz + hd + wt * 0.5), car_dark).name = "LobbyWinFrame"
 		_visual(Vector3(1.5, 0.8, 0.14), _hl(wx, 1.8, cz + hd + wt * 0.5), win_glow).name = "LobbyWindow"
+
+	_build_lobby_doors(car_dark, brass)
+	# Doors start closed; the server opens them after the 1s arrival settle.
+	_settle_left = 1.0
+
+
+## Sliding door panels on the lobby doorway (issue #93 Phase 2): two wood
+## panels with brass leading edges that slide apart into the wall. Built
+## closed; state changes go through set_lobby_doors (server) ->
+## _rpc_lobby_doors (all peers, tween locally).
+func _build_lobby_doors(panel_mat: Material, brass: Material) -> void:
+	var cx := LOBBY_CX
+	var cz := LOBBY_CZ
+	var hd := LOBBY_D * 0.5
+	var wt := LOBBY_WALL_T
+	var nz := cz - hd - wt * 0.5
+	# Panels ride just inside the lobby, sliding in front of the interior
+	# face of the north wall segments.
+	var pz := nz + wt * 0.5 + LOBBY_PANEL_T * 0.5 + 0.1
+	for side in [-1.0, 1.0]:
+		var panel := MeshInstance3D.new()
+		var pm := BoxMesh.new()
+		pm.size = Vector3(LOBBY_PANEL_W, LOBBY_DOOR_H, LOBBY_PANEL_T)
+		pm.material = panel_mat
+		panel.mesh = pm
+		var closed_x: float = LOBBY_DOOR_X + side * LOBBY_PANEL_W * 0.5
+		panel.position = _hl(closed_x, LOBBY_DOOR_H * 0.5, pz)
+		panel.set_meta("closed_x", closed_x)
+		panel.set_meta("open_x", LOBBY_DOOR_X + side * (LOBBY_PANEL_W * 0.5 + 1.35))
+		# Brass leading-edge strip rides with the panel.
+		var strip := MeshInstance3D.new()
+		var sm := BoxMesh.new()
+		sm.size = Vector3(0.08, LOBBY_DOOR_H - 0.2, LOBBY_PANEL_T + 0.04)
+		sm.material = brass
+		strip.mesh = sm
+		strip.position = Vector3(-side * (LOBBY_PANEL_W * 0.5 - 0.04), 0, 0)
+		panel.add_child(strip)
+		add_child(panel)
+		# NOTE (Phase 1 naming gotcha): .name AFTER add_child.
+		panel.name = "LobbyDoorPanel"
+		_door_panels.append(panel)
+	_door_blocker_build()
+
+
+## Invisible collision filling the doorway while the doors are closed.
+func _door_blocker_build() -> void:
+	if _door_blocker != null:
+		if is_instance_valid(_door_blocker) and not _door_blocker.is_queued_for_deletion():
+			return
+		_door_blocker = null
+	var cz := LOBBY_CZ
+	var hd := LOBBY_D * 0.5
+	var wt := LOBBY_WALL_T
+	var nz := cz - hd - wt * 0.5
+	var body := StaticBody3D.new()
+	body.collision_layer = 1
+	body.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(LOBBY_DOOR_W, LOBBY_DOOR_H, wt)
+	cs.shape = shape
+	body.add_child(cs)
+	body.position = _hl(LOBBY_DOOR_X, LOBBY_DOOR_H * 0.5, nz)
+	add_child(body)
+	body.name = "LobbyDoorBlocker"
+	_door_blocker = body
+
+
+## Server entry: decide the lobby door state, broadcast to all peers.
+func set_lobby_doors(open: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	rpc("_rpc_lobby_doors", open)
+
+
+@rpc("any_peer", "call_local")
+func _rpc_lobby_doors(open: bool) -> void:
+	_apply_lobby_doors(open)
+
+
+## Local apply: state + SFX + tween (snap when not in the tree, so tests can
+## drive the state machine) + collision toggle. Idempotent.
+func _apply_lobby_doors(open: bool) -> void:
+	if doors_open == open:
+		return
+	doors_open = open
+	AudioManager.sfx("train_door_open" if open else "train_door_close")
+	if _door_tween != null and _door_tween.is_valid():
+		_door_tween.kill()
+	_door_tween = null
+	for d in _door_panels:
+		var tx: float = float(d.get_meta("open_x")) if open else float(d.get_meta("closed_x"))
+		if is_inside_tree():
+			if _door_tween == null:
+				_door_tween = create_tween().set_parallel()
+			_door_tween.tween_property(d, "position:x", tx, LOBBY_DOOR_TWEEN_S).set_trans(Tween.TRANS_SINE)
+		else:
+			d.position.x = tx
+	if open:
+		if _door_blocker != null and is_instance_valid(_door_blocker):
+			# Out of the tree immediately (no one-frame collision window,
+			# no name clash on a same-frame rebuild); actual free is deferred.
+			_door_blocker.get_parent().remove_child(_door_blocker)
+			_door_blocker.queue_free()
+		_door_blocker = null
+	else:
+		_door_blocker_build()
+
+
+func _process(delta: float) -> void:
+	# Arrival settle: doors start closed on build; the server opens them 1s
+	# after the annex appears.
+	if _settle_left < 0.0:
+		return
+	if not multiplayer.is_server():
+		return
+	_settle_left -= delta
+	if _settle_left <= 0.0:
+		_settle_left = -1.0
+		set_lobby_doors(true)

@@ -30,6 +30,9 @@ func _ready() -> void:
 	var annex = AnnexScript.build(holder, plan, layout)
 	var hc: Vector3 = annex.hall_center()
 	print("[LobbyShots] hall_center=", hc, " attach_x=", annex.attach_x)
+	# Freeze the 1s arrival settle so the closed shot is deterministic;
+	# the open shot drives the real tween path explicitly.
+	annex._settle_left = -1.0
 	await get_tree().process_frame
 	await get_tree().process_frame
 	# 1. Interior wide shot from the southwest corner.
@@ -38,6 +41,12 @@ func _ready() -> void:
 	await _snap(Vector3(hc.x - 1.0, 1.6, hc.z + 1.5), Vector3(hc.x - 1.0, 1.3, hc.z - 2.25), "lobby_doorway.png")
 	# 3. Context: lobby + train from above-southeast.
 	await _snap(Vector3(hc.x + 8.0, 2.5, hc.z + 5.0), Vector3(hc.x - 1.0, 1.0, hc.z - 3.0), "lobby_context.png")
+	# 4. Phase 2: doors closed on build (arrival state).
+	await _snap(Vector3(hc.x - 1.0, 1.6, hc.z + 1.5), Vector3(hc.x - 1.0, 1.3, hc.z - 2.25), "lobby_doors_closed.png")
+	# 5. Phase 2: doors open (real tween path, 1.5s + margin).
+	annex.set_lobby_doors(true)
+	await get_tree().create_timer(2.0).timeout
+	await _snap(Vector3(hc.x - 1.0, 1.6, hc.z + 1.5), Vector3(hc.x - 1.0, 1.3, hc.z - 2.25), "lobby_doors_open.png")
 	print("[LobbyShots] done")
 	get_tree().quit()
 

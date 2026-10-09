@@ -426,6 +426,9 @@ func _start_boarding(theme_id: String, living: Array) -> void:
 	aboard.clear()
 	rpc("announce_boarding")
 	rpc("boarding_sync", BOARD_TIME, aboard, living)
+	# Issue #93 Phase 2: vote resolve opens the lobby doors.
+	if annex != null:
+		annex.set_lobby_doors(true)
 
 
 ## Boarding timer tick (server). Expiry pulls the stragglers aboard.
