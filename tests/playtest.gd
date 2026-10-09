@@ -51,6 +51,7 @@ func _run() -> void:
 	_test_train_ambient()
 	_test_audio_combat_cues()
 	_test_station_annex()
+	_test_lobby_room()
 	_test_station_embedded()
 	_test_annex_departure()
 	_test_annex_forfeit()
@@ -1258,6 +1259,91 @@ func _test_audio_combat_cues() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains('sfx("dagger_throw")'), "dagger throw call site")
 	_assert(psrc.contains('sfx("dagger_catch")'), "dagger catch call site")
+
+
+func _test_lobby_room() -> void:
+	print("[Playtest] Boarding lobby room (issue #93 phase 1)...")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	var layout = ProcGenScript.generate(theme, 12345)
+	var plan: Dictionary = AnnexScript.plan(12345, layout)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var annex = AnnexScript.build(holder, plan, layout)
+	var hc: Vector3 = annex.hall_center()
+
+	# 1. Shell nodes exist: floor + 5 wall pieces + lintel + roof.
+	for n in ["LobbyFloor", "LobbyWallN_A", "LobbyWallN_B", "LobbyLintel",
+			"LobbyWallS", "LobbyWallW", "LobbyWallE", "LobbyRoof"]:
+		_assert(annex.get_node_or_null(n) != null, "lobby node %s built" % n)
+	_assert(annex.get_node("LobbyFloor") is StaticBody3D, "lobby floor is solid")
+	_assert(annex.get_node("LobbyWallN_A") is StaticBody3D, "lobby north wall solid")
+
+	# 2. Dressing present: benches, racks, straps, lamps, windows.
+	var benches := 0
+	var straps := 0
+	var wins := 0
+	for child in annex.get_children():
+		var nm := str(child.name)
+		if nm.begins_with("LobbyBench"):
+			benches += 1
+		elif nm.begins_with("LobbyStrap"):
+			straps += 1
+		elif nm.begins_with("LobbyWin"):
+			wins += 1
+	_assert(benches == 8, "4 benches + 4 backrests (%d)" % benches)
+	_assert(straps == 12, "6 straps + 6 handles (%d)" % straps)
+	_assert(wins == 8, "4 window frames + 4 panes (%d)" % wins)
+	var lamp_count := 0
+	for lamp in annex.lamps:
+		if lamp is OmniLight3D:
+			lamp_count += 1
+	_assert(lamp_count >= 6, "hall + lobby lamps (%d)" % lamp_count)
+
+	# 3. Doorway is open: probes through it must not sit inside any solid.
+	var solids: Array = []
+	for child in annex.get_children():
+		if child is StaticBody3D:
+			var c := (child as StaticBody3D).get_child(0) as CollisionShape3D
+			var b := c.shape as BoxShape3D
+			solids.append(AABB(child.position - b.size * 0.5, b.size))
+	var door_blocked := 0
+	for px in [-1.8, -1.0, -0.2]:
+		var p := Vector3(hc.x + px, 1.0, hc.z - 2.25)
+		for aabb: AABB in solids:
+			if aabb.has_point(p):
+				door_blocked += 1
+	_assert(door_blocked == 0, "lobby doorway walkable (%d blocked probes)" % door_blocked)
+
+	# 4. No overlaps with existing station content (hall-local coords).
+	var lb: AABB = annex.lobby_bounds()
+	var content := {
+		"vendor": AABB(Vector3(9, 0, -1.5), Vector3(2, 3, 3)),
+		"vault": AABB(Vector3(-11, 0, -1.5), Vector3(2, 3, 3)),
+		"heal": AABB(Vector3(-11.7, 0, 1.3), Vector3(4.4, 3, 4.4)),
+		"bounty": AABB(Vector3(1.54, 0, 4.09), Vector3(3.32, 3, 0.22)),
+		"departures": AABB(Vector3(5.3, 0, 4.09), Vector3(3.4, 3, 0.22)),
+		"train": AABB(Vector3(-3, 0, -5.7), Vector3(4, 3, 2.4)),
+	}
+	for key in content:
+		_assert(not lb.intersects(content[key]), "lobby clear of %s" % key)
+
+	# 5. Spawn spots: 4, inside the room, not inside any solid.
+	var spots: Array = annex.lobby_spawn_spots()
+	_assert(spots.size() == 4, "4 lobby spawn spots")
+	for sp in spots:
+		var s: Vector3 = sp
+		_assert(s.x >= -5.0 and s.x <= 3.0 and s.z >= -2.0 and s.z <= 3.0,
+			"spawn spot inside lobby (%s)" % str(s))
+		var p := Vector3(hc.x + s.x, 1.0, hc.z + s.z)
+		var inside := false
+		for aabb: AABB in solids:
+			if aabb.has_point(p):
+				inside = true
+		_assert(not inside, "spawn spot not inside a solid (%s)" % str(s))
+
+	holder.queue_free()
 
 
 func _test_station_annex() -> void:
