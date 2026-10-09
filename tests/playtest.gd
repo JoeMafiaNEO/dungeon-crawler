@@ -57,7 +57,7 @@ func _run() -> void:
 	_test_train_interior()
 	_test_boarding_flow()
 	_test_train_ride()
-	await _test_train_disembark_fallback()
+	_test_train_disembark_fallback()
 	_test_train_dressing()
 	_test_cycle_scaling()
 	_test_ai_director()
@@ -1502,13 +1502,13 @@ func _test_annex_departure() -> void:
 	_assert(hop.contains("train_interior.tscn"), "boarding: loads the interior scene")
 	_assert(hop.contains("NetworkManager.server_id"), "boarding: server-sender check")
 
-	# 3b. Interior exit (do_disembark, issue #3 Phase 3): server-sender check,
+	# 3b. Interior exit (do_disembark, issue #3 Phase 3, local since #92):
 	# state capture, dungeon scene load via the background-loaded packed scene.
 	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
 	var lv_start := isrc.find("func do_disembark")
-	_assert(lv_start > 0, "interior: do_disembark rpc exists")
+	_assert(lv_start > 0, "interior: do_disembark exists")
 	var lv := isrc.substr(lv_start, 900)
-	_assert(lv.contains("NetworkManager.server_id"), "interior exit: server-sender check")
+	_assert(not lv.contains("NetworkManager.server_id"), "interior exit: no server-sender check (local hop)")
 	_assert(lv.contains("saved_player_state = me.get_state()"), "interior exit: captures player state")
 	_assert(lv.contains("dungeon.tscn") or lv.contains("DUNGEON_SCENE"), "interior exit: loads the dungeon scene")
 
@@ -1703,7 +1703,6 @@ func _test_train_ride() -> void:
 	print("[Playtest] Train ride phase 3 (25s ride, skip, arrival, disembark)...")
 	var InteriorScript := load("res://scripts/station/train_interior.gd")
 	_assert(InteriorScript.RIDE_SECONDS == 25.0, "ride: 25s ride length")
-	_assert(InteriorScript.DISEMBARK_WINDOW == 20.0, "ride: 20s disembark window")
 
 	var car = InteriorScript.new()
 	car._build_car()
@@ -1786,7 +1785,7 @@ func _test_train_ride() -> void:
 	_assert(dblock.contains("load_threaded_get(DUNGEON_SCENE)"), "ride: disembark uses preloaded scene")
 	_assert(dblock.contains("change_scene_to_packed"), "ride: disembark swaps to packed scene")
 	_assert(isrc.contains("func request_skip_ride"), "ride: skip lever RPC exists")
-	_assert(isrc.contains("func _run_disembark_window"), "ride: straggler fallback exists")
+	_assert(not isrc.contains("func _run_disembark_window"), "ride: server sweep removed (voluntary disembark)")
 
 	# Dungeon side (source): annex spawn + single arrival beat.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
@@ -1803,39 +1802,38 @@ func _test_train_ride() -> void:
 	_assert(psrc.contains('"skip_lever"'), "ride: skip lever in player interact groups")
 
 
-## Stub flag for the issue #92 fallback test: a real car is used, but the
-## test only exercises the no-op path (already disembarked), so the scene
-## change in do_disembark is never reached.
+## Issue #92: voluntary local disembark. Every peer walks through the open
+## car door on its own schedule; do_disembark() runs locally (no server
+## round-trip, no timers, no pulls) and the hop is instant because the
+## dungeon scene was background-loaded during the ride.
 func _test_train_disembark_fallback() -> void:
-	print("[Playtest] Train disembark self-pull fallback (issue #92)...")
-	# Wiring (source): every peer starts the self-pull at arrival; the
-	# fallback calls do_disembark locally when still in the car.
+	print("[Playtest] Train voluntary disembark (issue #92)...")
 	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	# Door-walk hops locally: _on_disembark_body_entered calls do_disembark()
+	# directly instead of rpc'ing the server (whose train may be freed).
+	var epos := isrc.find("func _on_disembark_body_entered")
+	_assert(epos > 0, "disembark: door handler exists")
+	var eblock := isrc.substr(epos, 600)
+	_assert(eblock.contains("do_disembark()"), "disembark: door-walk hops locally")
+	_assert(not eblock.contains("request_disembark"), "disembark: no server round-trip on door-walk")
+	# do_disembark is a plain local function, not an RPC.
+	var dpos := isrc.find("func do_disembark")
+	_assert(dpos > 0, "disembark: do_disembark exists")
+	var pre := isrc.substr(maxi(0, dpos - 120), 120)
+	_assert(not pre.contains("@rpc"), "disembark: do_disembark is not an RPC")
+	var dblock := isrc.substr(dpos, 1200)
+	_assert(dblock.contains("_disembarked_local"), "disembark: hop is idempotent")
+	_assert(dblock.contains("load_threaded_get(DUNGEON_SCENE)"), "disembark: uses the preloaded scene")
+	# No auto-pull mechanisms: no sweep, no fallback, no timers.
+	_assert(not isrc.contains("func _run_disembark_window"), "disembark: server sweep removed")
+	_assert(not isrc.contains("func _run_disembark_fallback"), "disembark: self-pull fallback removed")
+	_assert(not isrc.contains("func request_disembark"), "disembark: request_disembark removed")
 	var apos := isrc.find("func begin_arrival")
-	_assert(apos > 0, "fallback: begin_arrival exists")
-	var ablock := isrc.substr(apos, 2200)
-	_assert(ablock.contains("_run_disembark_fallback()"), "fallback: arrival starts the self-pull")
-	_assert(isrc.contains("func _run_disembark_fallback"), "fallback: _run_disembark_fallback exists")
-	var fpos := isrc.find("func _run_disembark_fallback")
-	var fblock := isrc.substr(fpos, 600)
-	_assert(fblock.contains("do_disembark()"), "fallback: self-pull calls do_disembark")
-	_assert(fblock.contains("_disembarked_local"), "fallback: self-pull respects the disembarked flag")
-	_assert(isrc.contains("_disembark_fallback_delay"), "fallback: grace period is overridable for tests")
-	# Functional (safe): with _disembarked_local already true, the fallback
-	# must no-op — i.e. it must NOT request a scene change. do_disembark's
-	# scene hop is call_deferred, so any erroneous call would still be
-	# observable via current_scene changing by the next frame.
-	var InteriorScript := load("res://scripts/station/train_interior.gd")
-	var car = InteriorScript.new()
-	root.add_child(car)
-	car._disembark_fallback_delay = 0.05
-	car._disembarked_local = true
-	var before: Node = current_scene
-	car._run_disembark_fallback()
-	await create_timer(0.4).timeout
-	_assert(current_scene == before, "fallback: no scene change when already disembarked")
-	car.queue_free()
-	print("[Playtest] Train disembark self-pull fallback done")
+	_assert(apos > 0, "disembark: begin_arrival exists")
+	var ablock := isrc.substr(apos, 2000)
+	_assert(not ablock.contains("_run_disembark_window"), "disembark: arrival starts no sweep")
+	_assert(not ablock.contains("_run_disembark_fallback"), "disembark: arrival starts no fallback")
+	print("[Playtest] Train voluntary disembark done")
 
 
 func _test_train_dressing() -> void:
