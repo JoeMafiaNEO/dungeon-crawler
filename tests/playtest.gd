@@ -5275,6 +5275,8 @@ func _test_warlord_spawn_avoids_river() -> void:
 	# Map scale: sqrt(n/2) keeps area-per-faction constant (1.0 at 2 players).
 	_assert(dsrc.contains("sqrt(float(maxi(2, _warlord_expected_players())) / 2.0)"),
 		"warlord: map scales with player count")
+	_assert(dsrc.contains("func _warlord_assign_late_joiners()"),
+		"warlord: late joiners get a faction")
 	print("[Playtest] Warlord spawn avoids river done")
 
 

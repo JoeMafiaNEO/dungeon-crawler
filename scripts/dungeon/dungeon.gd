@@ -162,6 +162,8 @@ var _warlord_setup_pending := false
 ## fallback so a slow/disconnected loader can't stall the level forever).
 var _warlord_setup_wait := 0.0
 const WARLORD_SETUP_TIMEOUT := 15.0
+## Late-joiner check tick (Jesse 2026-10-10: slow loaders get a faction).
+var _warlord_late_join_tick := 0.0
 var _construction_check_tick := 0.0
 ## Issue #86 Bug 2: handshake retry timer. -1.0 = inactive.
 var _handshake_timer := -1.0
@@ -724,6 +726,13 @@ func _process(delta: float) -> void:
 			if not players.is_empty() and (players.size() >= expected or _warlord_setup_wait >= WARLORD_SETUP_TIMEOUT):
 				_warlord_setup_pending = false
 				_setup_warlord()
+		# Late joiners: a slow loader who finishes after setup gets a faction
+		# instead of wandering without a base (Jesse 2026-10-10).
+		if is_warlord and _rts_manager != null and not _warlord_setup_pending:
+			_warlord_late_join_tick += delta
+			if _warlord_late_join_tick >= 2.0:
+				_warlord_late_join_tick = 0.0
+				_warlord_assign_late_joiners()
 		if is_warlord and _rts_manager != null:
 			_construction_check_tick += delta
 			if _construction_check_tick >= 5.0:
@@ -823,6 +832,25 @@ func _warlord_wants_ai() -> bool:
 ## so 12 players aren't crowded (Jesse 2026-10-10). 1.0 at 2 factions.
 func _warlord_map_scale() -> float:
 	return sqrt(float(maxi(2, _warlord_expected_players())) / 2.0)
+
+
+## Jesse 2026-10-10: if a slow loader finishes after setup (or anyone joins
+## mid-level), they get a faction instead of wandering without a base.
+## Reconnects are handled by _reclaim_faction; this covers fresh late loads.
+func _warlord_assign_late_joiners() -> void:
+	if _rts_manager == null:
+		return
+	for p in get_tree().get_nodes_in_group("players"):
+		if int(p.get("rts_faction")) >= 0:
+			continue
+		var fid := 0
+		for existing in _rts_manager.factions:
+			fid = maxi(fid, int(existing) + 1)
+		var peer_id := int(p.get_multiplayer_authority())
+		_rts_manager.register_faction(fid, peer_id, str(p.get("class_id")))
+		p.set("rts_faction", fid)
+		_spawn_faction_base(fid, _faction_spawn_pos(fid))
+		rpc("announce_text", "%s has joined the battle!" % [NetworkManager.member_name(peer_id)])
 
 
 func _setup_warlord() -> void:
