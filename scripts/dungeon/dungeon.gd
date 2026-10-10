@@ -364,8 +364,8 @@ func sync_equipped_special(peer_id: int, special_id: String) -> void:
 func _send_handshake() -> void:
 	if multiplayer.is_server():
 		return
-	rpc_id(NetworkManager.server_id, "register_class", NetworkManager.selected_class_id)
-	rpc_id(NetworkManager.server_id, "request_state")
+	rpc_id(NetworkManager.server_peer_id, "register_class", NetworkManager.selected_class_id)
+	rpc_id(NetworkManager.server_peer_id, "request_state")
 
 
 @rpc("any_peer", "call_local")
@@ -914,7 +914,7 @@ func client_setup_warlord(my_faction: int, my_civ_id: String) -> void:
 	if multiplayer.is_server():
 		return
 	# Only the server should invoke this.
-	if multiplayer.get_remote_sender_id() != NetworkManager.server_id:
+	if multiplayer.get_remote_sender_id() != NetworkManager.server_peer_id:
 		return
 	print("[Warlord] Client setting up RTS (faction %d)..." % my_faction)
 	_rts_manager = RTSManager.new()
@@ -1644,7 +1644,7 @@ func request_next_wave() -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_id:
+	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
 	if wave_state == WaveState.INTERMISSION:
 		_start_wave()
@@ -1969,7 +1969,7 @@ func demolish_structures(owner: int) -> void:
 					if multiplayer.is_server():
 						mob.take_damage(dmg, owner, st.global_position)
 					else:
-						mob.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, st.global_position)
+						mob.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, st.global_position)
 		st.demolish()
 
 
@@ -2300,7 +2300,7 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 @rpc("any_peer", "call_local")
 func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary) -> void:
 	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_id:
+	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
 	var me := _my_player()
 	if me != null:
@@ -2607,7 +2607,7 @@ func rpc_request_save_state(slot_index: int) -> void:
 		"is_host": false,
 	}
 	# Steam IDs are the peer IDs — never hardcode server peer 1.
-	rpc_id(NetworkManager.server_id, "rpc_submit_save_state", state, slot_index)
+	rpc_id(NetworkManager.server_peer_id, "rpc_submit_save_state", state, slot_index)
 
 
 @rpc("any_peer")

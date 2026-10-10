@@ -278,7 +278,7 @@ func _on_train_button(utype: String) -> void:
 	if multiplayer.is_server():
 		_train_building.rpc_queue_unit(utype)
 	else:
-		_train_building.rpc_id(NetworkManager.server_id, "rpc_queue_unit", utype)
+		_train_building.rpc_id(NetworkManager.server_peer_id, "rpc_queue_unit", utype)
 	_refresh_train_buttons()
 
 
@@ -321,7 +321,7 @@ func _on_age_up_pressed() -> void:
 	if multiplayer.is_server():
 		_manager.rpc_age_up(_faction_id)
 	else:
-		_manager.rpc_id(NetworkManager.server_id, "rpc_age_up", _faction_id)
+		_manager.rpc_id(NetworkManager.server_peer_id, "rpc_age_up", _faction_id)
 
 
 func _refresh_age_button() -> void:

@@ -150,7 +150,7 @@ func _run_ride() -> void:
 @rpc("any_peer", "call_local")
 func ride_started(dest_name: String, seconds: float) -> void:
 	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_id:
+	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
 	ride_active = true
 	ride_dest_name = dest_name
@@ -240,7 +240,7 @@ func _apply_skip() -> void:
 @rpc("any_peer", "call_local")
 func ride_skip_notice() -> void:
 	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_id:
+	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
 	_apply_skip()
 	_skipping = true
@@ -253,7 +253,7 @@ func ride_skip_notice() -> void:
 @rpc("any_peer", "call_local")
 func begin_arrival() -> void:
 	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_id:
+	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
 	if _arrived:
 		return

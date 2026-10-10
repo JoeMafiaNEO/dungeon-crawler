@@ -1081,7 +1081,7 @@ func _activate_mark() -> void:
 	if multiplayer.is_server():
 		target.apply_mark(10.0, hamstring)
 	else:
-		target.rpc_id(NetworkManager.server_id, "apply_mark", 10.0, hamstring)
+		target.rpc_id(NetworkManager.server_peer_id, "apply_mark", 10.0, hamstring)
 	AudioManager.sfx("mark")
 	if hud != null:
 		hud.toast("Target marked! +50% damage.")
@@ -1188,7 +1188,7 @@ func _activate_fan() -> void:
 				if multiplayer.is_server():
 					m.take_damage(dmg, from, global_position)
 				else:
-					m.rpc_id(NetworkManager.server_id, "take_damage", dmg, from, global_position)
+					m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, from, global_position)
 				# Affinity: +2 per enemy hit, max +8/cast.
 				gain_affinity_capped("fan", 2.0, m.get_instance_id(), cast_id, 8.0)
 				# Combo Finisher: Shatter Cascade (issue #8) -- Fan of Knives
@@ -1290,7 +1290,7 @@ func cast_inferno(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 					if multiplayer.is_server():
 						m.take_damage(dmg, owner, point)
 					else:
-						m.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, point)
+						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, point)
 					m.apply_burn(3.0, dmg * 0.3, owner)
 		if i % 3 == 2 and is_inside_tree():
 			Effects.burst(get_parent(), point + Vector3(0, 1.0, 0), Color(1.0, 0.45, 0.1), 20, 7.0)
@@ -1372,7 +1372,7 @@ func cast_tempest(dmg: float, owner: int, seq: int) -> void:
 			if multiplayer.is_server():
 				target.take_damage(dmg, owner, global_position)
 			else:
-				target.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, global_position)
+				target.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, global_position)
 			rpc("chain_fx", sky, hit_pos)
 			AudioManager.sfx("lightning_zap", hit_pos)
 
@@ -1456,7 +1456,7 @@ func _activate_assassinate() -> void:
 	if multiplayer.is_server():
 		target.take_damage(strike, me, global_position)
 	else:
-		target.rpc_id(NetworkManager.server_id, "take_damage", strike, me, global_position)
+		target.rpc_id(NetworkManager.server_peer_id, "take_damage", strike, me, global_position)
 	Effects.burst(get_parent(), target.global_position + Vector3(0, 1.2, 0), Color(1.0, 0.85, 0.9), 30, 7.0)
 	AudioManager.sfx("fan")
 	if hud != null:
@@ -1496,7 +1496,7 @@ func _activate_execution() -> void:
 	if multiplayer.is_server():
 		target.take_damage(dmg, me, global_position)
 	else:
-		target.rpc_id(NetworkManager.server_id, "take_damage", dmg, me, global_position)
+		target.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, me, global_position)
 	Effects.burst(get_parent(), target.global_position + Vector3(0, 1.2, 0), Color(1.0, 0.15, 0.1), 35, 8.0)
 	if executed:
 		AudioManager.sfx("mob_die")
@@ -2046,7 +2046,7 @@ func _do_attack() -> void:
 		if multiplayer.is_server():
 			mob.take_damage(melee_dmg, from, global_position)
 		else:
-			mob.rpc_id(NetworkManager.server_id, "take_damage", melee_dmg, from, global_position)
+			mob.rpc_id(NetworkManager.server_peer_id, "take_damage", melee_dmg, from, global_position)
 		# Affinity: hit on marked target → +1 mark, per-enemy 5s cd.
 		if mob.is_marked():
 			gain_affinity("mark", 1.0, mob.get_instance_id())
@@ -2087,7 +2087,7 @@ func _throw_dagger() -> void:
 	if multiplayer.is_server():
 		_request_dagger_spawn(spawn_pos, dagger_vel, throw_dmg, from, throw_range)
 	else:
-		rpc_id(NetworkManager.server_id, "_request_dagger_spawn", spawn_pos, dagger_vel, throw_dmg, from, throw_range)
+		rpc_id(NetworkManager.server_peer_id, "_request_dagger_spawn", spawn_pos, dagger_vel, throw_dmg, from, throw_range)
 
 
 @rpc("any_peer", "call_local")
@@ -2130,7 +2130,7 @@ func _damage_rts_targets(fwd: Vector3, from: int) -> void:
 		if multiplayer.is_server():
 			node.rpc_take_damage(dmg, multiplayer.get_unique_id())
 		else:
-			node.rpc_id(NetworkManager.server_id, "rpc_take_damage", dmg,
+			node.rpc_id(NetworkManager.server_peer_id, "rpc_take_damage", dmg,
 				multiplayer.get_unique_id())
 	for node in get_tree().get_nodes_in_group("rts_buildings"):
 		if int(node.get("faction")) == rts_faction:
@@ -2145,7 +2145,7 @@ func _damage_rts_targets(fwd: Vector3, from: int) -> void:
 		if multiplayer.is_server():
 			node.rpc_take_damage(dmg, multiplayer.get_unique_id())
 		else:
-			node.rpc_id(NetworkManager.server_id, "rpc_take_damage", dmg,
+			node.rpc_id(NetworkManager.server_peer_id, "rpc_take_damage", dmg,
 				multiplayer.get_unique_id())
 
 
@@ -2382,7 +2382,7 @@ func _hl_process(delta: float) -> void:
 			if multiplayer.is_server():
 				hl_aim_update(_hl_aim)
 			else:
-				rpc_id(NetworkManager.server_id, "hl_aim_update", _hl_aim)
+				rpc_id(NetworkManager.server_peer_id, "hl_aim_update", _hl_aim)
 		# Wind-down: beam narrows and dims.
 		if _hl_active_t >= HL_HOLD_TIME:
 			_hl_winddown(delta)
@@ -2812,7 +2812,7 @@ func _cast_chain_lightning() -> void:
 		if multiplayer.is_server():
 			current.take_damage(zap_dmg, from, global_position)
 		else:
-			current.rpc_id(NetworkManager.server_id, "take_damage", zap_dmg, from, global_position)
+			current.rpc_id(NetworkManager.server_peer_id, "take_damage", zap_dmg, from, global_position)
 		# Affinity: +2 per enemy zapped, max +8/cast.
 		gain_affinity_capped("lightning", 2.0, current.get_instance_id(), cast_id, 8.0)
 		rpc("chain_fx", last_pos, mob_pos)
@@ -2965,7 +2965,7 @@ func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 					if multiplayer.is_server():
 						m.take_damage(dmg, owner, point)
 					else:
-						m.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, point)
+						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, point)
 					# Permafrost: slows last +2s.
 					var bdur := 1.0
 					if caster != null and caster.has_trait("permafrost"):
@@ -3452,7 +3452,7 @@ func die() -> void:
 		if multiplayer.is_server():
 			bdgn.bounty_death_local(multiplayer.get_unique_id())
 		else:
-			bdgn.rpc_id(NetworkManager.server_id, "notify_bounty_death")
+			bdgn.rpc_id(NetworkManager.server_peer_id, "notify_bounty_death")
 	if multiplayer.get_peers().size() == 0:
 		# Solo run over: the save point is gone.
 		# Record daily attempt if this was today's seed.
@@ -3490,7 +3490,7 @@ func die() -> void:
 		if multiplayer.is_server():
 			dgn.notify_player_died()
 		else:
-			dgn.rpc_id(NetworkManager.server_id, "notify_player_died")
+			dgn.rpc_id(NetworkManager.server_peer_id, "notify_player_died")
 	if hud != null:
 		hud.toast("You died! You lost all your items.")
 	await get_tree().create_timer(3.0).timeout

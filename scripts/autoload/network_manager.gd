@@ -28,6 +28,15 @@ var is_host: bool = false
 var host_difficulty: float = 1.0
 var host_loot_mult: float = 1.0
 var server_id: int = 1
+## Multiplayer peer ID of the server. ALWAYS 1 (Godot convention; the
+## SteamMultiplayerPeer docs confirm create_host() sets unique_id to 1).
+## Use this — NOT server_id — for rpc_id() targets and
+## get_remote_sender_id() comparisons. server_id is the 64-bit Steam ID on
+## Steam (used for Steam API calls and lobby UI); peer IDs are a separate
+## 32-bit namespace, so comparing or rpc'ing with server_id silently breaks
+## on Steam (Jesse 2026-10-10: R never started waves because the sender check
+## compared peer id 1 against the 64-bit Steam ID).
+var server_peer_id: int = 1
 ## Join timeout (Jesse 2026-10-08): if the P2P connection doesn't establish
 ## within JOIN_TIMEOUT_S, fail with an error instead of hanging on "Joining..."
 ## forever. Reset on every join attempt; cancelled on successful connect.

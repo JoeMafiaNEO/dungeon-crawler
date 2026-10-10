@@ -426,7 +426,7 @@ func _do_attack() -> void:
 		_target.damage(data.damage * dmg_scale * _dmg_mult())
 	elif _target.is_in_group("structures"):
 		# Architect structure: direct damage, server-side (no RPC target).
-		_target.take_structure_damage(data.damage * dmg_scale * _dmg_mult(), NetworkManager.server_id)
+		_target.take_structure_damage(data.damage * dmg_scale * _dmg_mult(), NetworkManager.server_peer_id)
 	else:
 		_target.rpc_id(_target.get_multiplayer_authority(), "take_damage", data.damage * dmg_scale * _dmg_mult(), data.display_name)
 

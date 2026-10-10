@@ -723,8 +723,8 @@ func _test_mp_slots() -> void:
 		"save request carries the slot")
 	_assert(dsrc.contains("if slot_index != _save_slot:"),
 		"stale submit ignored")
-	_assert(dsrc.contains("rpc_id(NetworkManager.server_id, \"rpc_submit_save_state\""),
-		"submit targets server_id")
+	_assert(dsrc.contains("rpc_id(NetworkManager.server_peer_id, \"rpc_submit_save_state\""),
+		"submit targets server peer id")
 	_assert(not dsrc.contains("rpc_id(1,"), "no hardcoded server peer 1 in dungeon.gd")
 	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
 	_assert(nsrc.contains("Dungeon.continued_roster = []"),
@@ -1720,7 +1720,7 @@ func _test_annex_departure() -> void:
 	_assert(hop.contains("Dungeon.next_level_number = new_level"), "boarding: sets next level")
 	_assert(hop.contains("passenger_classes = classes"), "boarding: hands off the roster")
 	_assert(hop.contains("train_interior.tscn"), "boarding: loads the interior scene")
-	_assert(hop.contains("NetworkManager.server_id"), "boarding: server-sender check")
+	_assert(hop.contains("NetworkManager.server_peer_id"), "boarding: server-sender check")
 
 	# 3b. Interior exit (do_disembark, issue #3 Phase 3, local since #92):
 	# state capture, dungeon scene load via the background-loaded packed scene.
@@ -2075,6 +2075,18 @@ func _test_train_disembark_fallback() -> void:
 		"steam: host dagger calls spawn directly")
 	_assert(psrc_steam.contains("mob.take_damage(melee_dmg, from, global_position)"),
 		"steam: host melee calls take_damage directly")
+	# Peer-ID namespace fix (Jesse 2026-10-10): SteamMultiplayerPeer peer IDs
+	# are NOT Steam IDs — the host is peer 1 (per GodotSteam docs), Steam64 is
+	# a separate namespace. rpc targets and sender checks must use
+	# server_peer_id, never the 64-bit server_id (R died here: the sender check
+	# compared peer id 1 against the 64-bit Steam ID and rejected the host).
+	_assert(nmsrc.contains("var server_peer_id: int = 1"),
+		"steam: server_peer_id declared")
+	_assert(not psrc_steam.contains("rpc_id(NetworkManager.server_id,"),
+		"steam: no rpc targets the 64-bit server_id")
+	var dgsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dgsrc.contains("sender != NetworkManager.server_peer_id"),
+		"steam: wave-start sender check uses peer id")
 	# No auto-pull mechanisms: no sweep, no fallback, no timers.
 	_assert(not isrc.contains("func _run_disembark_window"), "disembark: server sweep removed")
 	_assert(not isrc.contains("func _run_disembark_fallback"), "disembark: self-pull fallback removed")

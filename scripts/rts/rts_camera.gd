@@ -395,7 +395,7 @@ func _confirm_placement(screen_pos: Vector2) -> void:
 
 
 func _server_id() -> int:
-	return NetworkManager.server_id
+	return NetworkManager.server_peer_id
 
 
 func _find_rts_hud() -> Node:

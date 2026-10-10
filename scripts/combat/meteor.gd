@@ -122,7 +122,7 @@ func _impact() -> void:
 				if multiplayer.is_server():
 					m.take_damage(dmg, owner_peer, target, true)
 				else:
-					m.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, target, true)
+					m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner_peer, target, true)
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
 					m.apply_burn(3.0, dmg * 0.3, owner_peer)

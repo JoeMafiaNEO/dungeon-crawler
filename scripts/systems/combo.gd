@@ -255,7 +255,7 @@ static func apply_frost_nova(tree: SceneTree, center: Vector3, damage: float, at
 		if m.multiplayer.is_server():
 			m.call("take_damage", damage, attacker, center)
 		else:
-			m.rpc_id(NetworkManager.server_id, "take_damage", damage, attacker, center)
+			m.rpc_id(NetworkManager.server_peer_id, "take_damage", damage, attacker, center)
 
 
 ## Reciprocity Surge effect: 20% max-HP heal burst to all living allies.

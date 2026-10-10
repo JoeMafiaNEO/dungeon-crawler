@@ -264,7 +264,7 @@ func _spawn_unit(unit_type: String) -> void:
 func take_damage(amount: float, attacker: Node3D = null) -> void:
 	if not multiplayer.is_server():
 		# Client: route to server.
-		rpc_id(NetworkManager.server_id, "rpc_take_damage", amount,
+		rpc_id(NetworkManager.server_peer_id, "rpc_take_damage", amount,
 			attacker.get_multiplayer_authority() if attacker != null else 0)
 		return
 	_apply_damage(amount)

@@ -155,7 +155,7 @@ static func equip(player: Node, special_id: String) -> bool:
 		var dungeon := player.get_tree().get_first_node_in_group("dungeon")
 		var nm := _network_manager()
 		if dungeon != null and nm != null:
-			dungeon.rpc_id(int(nm.get("server_id")), "sync_equipped_special",
+			dungeon.rpc_id(int(nm.get("server_peer_id")), "sync_equipped_special",
 				int(player.get_multiplayer_authority()), special_id)
 	return true
 

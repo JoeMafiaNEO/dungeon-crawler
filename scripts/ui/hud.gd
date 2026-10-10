@@ -645,7 +645,7 @@ func _on_vendor_buy(st: Node, item_id: String) -> void:
 	if multiplayer.is_server():
 		st.buy_vendor_item(item_id)
 	else:
-		st.rpc_id(NetworkManager.server_id, "buy_vendor_item", item_id)
+		st.rpc_id(NetworkManager.server_peer_id, "buy_vendor_item", item_id)
 	AudioManager.sfx("ui_click")
 
 

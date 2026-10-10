@@ -198,7 +198,7 @@ func request_claim(claimer_peer: int) -> void:
 	if multiplayer.is_server():
 		claim(claimer_peer)
 	else:
-		rpc_id(NetworkManager.server_id, "claim", claimer_peer)
+		rpc_id(NetworkManager.server_peer_id, "claim", claimer_peer)
 
 
 @rpc("any_peer", "call_local")

@@ -82,7 +82,7 @@ func _physics_process(delta: float) -> void:
 				if multiplayer.is_server():
 					mob.take_damage(damage, owner_peer, global_position)
 				else:
-					mob.rpc_id(NetworkManager.server_id, "take_damage", damage, owner_peer, global_position)
+					mob.rpc_id(NetworkManager.server_peer_id, "take_damage", damage, owner_peer, global_position)
 				# Permafrost: slows last +2s.
 				var sdur := slow_duration
 				if caster != null and caster.has_trait("permafrost"):
