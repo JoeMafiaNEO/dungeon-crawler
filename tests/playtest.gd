@@ -2678,6 +2678,14 @@ func _test_mouse_legend() -> void:
 	var panel = hud.get_node("MouseLegend")
 	_assert(panel.anchor_left == 1.0 and panel.anchor_top == 1.0, "legend anchored bottom-right")
 	_assert(panel.mouse_filter == Control.MOUSE_FILTER_IGNORE, "legend never blocks input")
+	# Phase 3: Art Director's SNES sprite is the icon, with crisp nearest filtering;
+	# the procedural icon survives only as the missing-sprite fallback.
+	_assert(ResourceLoader.exists(hud.LEGEND_ICON_PATH, "Texture2D"), "legend icon sprite loads")
+	var icon_node = panel.get_child(0).get_child(0)
+	_assert(icon_node is TextureRect, "legend icon is the SNES sprite TextureRect")
+	if icon_node is TextureRect:
+		_assert(icon_node.texture_filter == CanvasItem.TEXTURE_FILTER_NEAREST, "icon uses nearest filter (crisp pixels)")
+		_assert(icon_node.mouse_filter == Control.MOUSE_FILTER_IGNORE, "icon never blocks input")
 	hud.queue_free()
 	p.free()
 

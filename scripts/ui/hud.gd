@@ -2191,6 +2191,7 @@ var _legend_mid: Label
 
 
 ## Tiny procedural mouse icon (Art Director ships the real SNES sprite in Phase 3).
+## Kept as the fallback if the sprite file is ever missing.
 class MouseIcon:
 	extends Control
 
@@ -2205,6 +2206,11 @@ class MouseIcon:
 		# Button split line + wheel.
 		draw_line(Vector2(w / 2, 6), Vector2(w / 2, h * 0.45), dark, 2.0)
 		draw_circle(Vector2(w / 2, h * 0.32), 3.0, dark)
+
+
+## Art Director's SNES mouse icon (Phase 3). Nearest filtering keeps the
+## pixel art crisp; falls back to the procedural MouseIcon if missing.
+const LEGEND_ICON_PATH := "res://assets/sprites/ui/mouse_legend_icon.png"
 
 
 func _build_mouse_legend() -> void:
@@ -2230,10 +2236,21 @@ func _build_mouse_legend() -> void:
 	hb.add_theme_constant_override("separation", 8)
 	hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(hb)
-	var icon := MouseIcon.new()
-	icon.custom_minimum_size = Vector2(26, 38)
-	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hb.add_child(icon)
+	if ResourceLoader.exists(LEGEND_ICON_PATH, "Texture2D"):
+		var icon := TextureRect.new()
+		icon.texture = load(LEGEND_ICON_PATH)
+		icon.custom_minimum_size = Vector2(38, 38)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hb.add_child(icon)
+	else:
+		# Sprite missing: fall back to the procedural icon rather than crashing.
+		var icon := MouseIcon.new()
+		icon.custom_minimum_size = Vector2(26, 38)
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hb.add_child(icon)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 2)
 	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE

@@ -5,10 +5,19 @@ extends Node
 var _shot_dir := "/tmp/mls"
 
 func _ready() -> void:
+	var crt := "on"
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--shot-dir="):
 			_shot_dir = arg.get_slice("=", 1)
+		elif arg.begins_with("--crt="):
+			crt = arg.get_slice("=", 1)
 	DirAccess.make_dir_recursive_absolute(_shot_dir)
+	# Issue #95 Phase 3: CRT legibility check. CRTManager is an autoload and
+	# defaults enabled; the flag forces it off for the comparison shot.
+	var crt_mgr = get_node_or_null("/root/CRTManager")
+	if crt_mgr != null:
+		crt_mgr.set_crt_enabled(crt != "off")
+		print("[MLS] crt_enabled=", crt_mgr.is_crt_enabled())
 	var PlayerScript = load("res://scripts/player/player.gd")
 	var p = PlayerScript.new()
 	p.class_id = "warrior"
