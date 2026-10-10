@@ -5277,6 +5277,20 @@ func _test_warlord_spawn_avoids_river() -> void:
 		"warlord: map scales with player count")
 	_assert(dsrc.contains("func _warlord_assign_late_joiners()"),
 		"warlord: late joiners get a faction")
+	# Faction colors: unique per faction, code-generated (Jesse 2026-10-10).
+	var rsrc := FileAccess.get_file_as_string("res://scripts/rts/rts_manager.gd")
+	_assert(rsrc.contains("FACTION_COLORS"),
+		"warlord: faction color palette exists")
+	_assert(RTSManager.faction_color(0) != RTSManager.faction_color(1),
+		"warlord: adjacent factions get distinct colors")
+	_assert(RTSManager.faction_color(12) == RTSManager.faction_color(0),
+		"warlord: palette wraps past 12")
+	var usrc := FileAccess.get_file_as_string("res://scripts/rts/unit.gd")
+	_assert(usrc.contains("FactionRing") and usrc.contains("RTSManager.faction_color(faction)"),
+		"warlord: units get a faction-colored ring")
+	var bsrc := FileAccess.get_file_as_string("res://scripts/rts/building.gd")
+	_assert(bsrc.contains("RTSManager.faction_color(faction)"),
+		"warlord: building banner uses faction color")
 	print("[Playtest] Warlord spawn avoids river done")
 
 

@@ -338,7 +338,9 @@ func _build_visuals() -> void:
 	var wood := Color(0.45, 0.3, 0.16)
 	var stone := Color(0.55, 0.55, 0.58)
 	var roof_c := Color(0.5, 0.16, 0.12)
-	var accent: Color = civ.color
+	# Faction banner: unique per-faction color (Jesse 2026-10-10), not the
+	# civ color, so every player's buildings are visually distinct.
+	var accent: Color = RTSManager.faction_color(faction)
 
 	var col := CollisionShape3D.new()
 	var shape := BoxShape3D.new()

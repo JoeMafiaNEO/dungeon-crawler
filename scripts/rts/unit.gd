@@ -172,6 +172,26 @@ func _build_visual() -> void:
 	add_child(sprite)
 	_sprite = sprite
 
+	# Faction ring: slight visual cue (Jesse 2026-10-10) — unique color per
+	# faction, code-generated (no art assets). Sits below the selection ring.
+	var fring := MeshInstance3D.new()
+	fring.name = "FactionRing"
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.32
+	tm.outer_radius = 0.44
+	fring.mesh = tm
+	var fmat := StandardMaterial3D.new()
+	var fcol := RTSManager.faction_color(faction)
+	fmat.albedo_color = fcol
+	fmat.emission_enabled = true
+	fmat.emission = fcol
+	fmat.emission_energy_multiplier = 0.6
+	fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	fring.material_override = fmat
+	fring.rotation = Vector3.ZERO
+	fring.position = Vector3(0, 0.05, 0)
+	add_child(fring)
+
 	# Collision (small capsule) — only create once.
 	if get_node_or_null("UnitCollision") == null:
 		var col := CollisionShape3D.new()

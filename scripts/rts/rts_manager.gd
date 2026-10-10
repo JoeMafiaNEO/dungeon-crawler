@@ -19,6 +19,28 @@ const AGE_COSTS := [
 const POP_CAPS := [30, 45, 60]
 const GATHER_BONUS := [1.0, 1.25, 1.5] # Per age.
 
+## Faction colors (Jesse 2026-10-10): unique per faction so units/buildings
+## are visually distinct. Code-generated (no art assets). 12 entries for the
+## 12-player cap; wraps if more ever exist.
+const FACTION_COLORS: Array[Color] = [
+	Color(0.90, 0.20, 0.20), # red
+	Color(0.20, 0.40, 0.90), # blue
+	Color(0.20, 0.80, 0.30), # green
+	Color(0.95, 0.85, 0.20), # yellow
+	Color(0.60, 0.30, 0.85), # purple
+	Color(0.95, 0.55, 0.15), # orange
+	Color(0.20, 0.85, 0.85), # cyan
+	Color(0.95, 0.40, 0.65), # pink
+	Color(0.90, 0.90, 0.90), # white
+	Color(0.55, 0.35, 0.20), # brown
+	Color(0.60, 0.90, 0.20), # lime
+	Color(0.20, 0.60, 0.55), # teal
+]
+
+
+static func faction_color(faction_id: int) -> Color:
+	return FACTION_COLORS[abs(faction_id) % FACTION_COLORS.size()]
+
 const UNIT_COSTS := {
 	"villager": {"wood": 0, "food": 50, "gold": 0, "stone": 0},
 	"spearman": {"wood": 0, "food": 60, "gold": 20, "stone": 0},
