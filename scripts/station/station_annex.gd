@@ -377,9 +377,9 @@ func _build_lobby() -> void:
 	# Hanging straps from the ceiling (visual).
 	var strap_mat := _mat(Color(0.25, 0.16, 0.10))
 	for sx in [cx - 2.0, cx, cx + 2.0]:
-		for sz in [cz - 1.0, cz + 1.0]:
-			_visual(Vector3(0.05, 0.5, 0.05), _hl(sx, 2.95, sz), strap_mat).name = "LobbyStrap"
-			_visual(Vector3(0.08, 0.25, 0.18), _hl(sx, 2.58, sz), strap_mat).name = "LobbyStrapHandle"
+		for strap_z in [cz - 1.0, cz + 1.0]:
+			_visual(Vector3(0.05, 0.5, 0.05), _hl(sx, 2.95, strap_z), strap_mat).name = "LobbyStrap"
+			_visual(Vector3(0.08, 0.25, 0.18), _hl(sx, 2.58, strap_z), strap_mat).name = "LobbyStrapHandle"
 
 	# Warm ceiling lamps (appended to lamps so station dressing can tint them).
 	for lz2 in [cz - 1.25, cz + 1.25]:
