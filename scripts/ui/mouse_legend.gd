@@ -8,16 +8,23 @@ extends RefCounted
 ## path (hud.refresh_mouse_legend) reads this table and knows nothing about
 ## classes. Labels verified against scripts/player/player.gd _input.
 
-## Phase 2 rows slot in here as new state tables:
-##   "charging": {"rogue": {"left": "Throw dagger", "right": "Release: cancel", ...}},
-##   "hl_armed": {"mage": {"left": "Start charge", "right": "Disarm", ...}},
-##   "hl_charging": {"mage": {"left": "", "right": "Disarm (cancel)", ...}},
+## Phase 2 states: rogue dagger charge + Holy Light arm/charge (mage).
+## Labels verified against scripts/player/player.gd _input (issue #91 v2).
 const REGISTRY := {
 	"standard": {
 		"warrior": {"left": "Attack", "right": "", "middle": "Ping"},
 		"mage": {"left": "Cast selected ability", "right": "", "middle": "Ping"},
 		"rogue": {"left": "Attack", "right": "Hold: charge dagger throw", "middle": "Ping"},
 		"architect": {"left": "Cast selected ability", "right": "", "middle": "Ping"},
+	},
+	"charging": {
+		"rogue": {"left": "Throw dagger", "right": "Release: cancel", "middle": "Ping"},
+	},
+	"hl_armed": {
+		"mage": {"left": "Start charge", "right": "Disarm", "middle": "Ping"},
+	},
+	"hl_charging": {
+		"mage": {"left": "", "right": "Disarm (cancel)", "middle": "Ping"},
 	},
 }
 

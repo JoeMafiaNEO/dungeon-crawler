@@ -29,6 +29,24 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await _snap("legend_rogue.png")
 	print("[MLS] rogue left='", hud._legend_left.text, "' right_visible=", hud._legend_right.visible, " right='", hud._legend_right.text, "'")
+	# Issue #95 Phase 2: dynamic states.
+	p._charging = true
+	hud.refresh_mouse_legend(p)
+	await get_tree().process_frame
+	await _snap("legend_rogue_charging.png")
+	print("[MLS] charging left='", hud._legend_left.text, "' right='", hud._legend_right.text, "'")
+	p._charging = false
+	p.class_id = "mage"
+	p._hl_state = PlayerScript.HLState.ARMED
+	hud.refresh_mouse_legend(p)
+	await get_tree().process_frame
+	await _snap("legend_mage_hlarmed.png")
+	print("[MLS] hl_armed left='", hud._legend_left.text, "' right='", hud._legend_right.text, "'")
+	p._hl_state = PlayerScript.HLState.CHARGING
+	hud.refresh_mouse_legend(p)
+	await get_tree().process_frame
+	await _snap("legend_mage_hlcharging.png")
+	print("[MLS] hl_charging left_visible=", hud._legend_left.visible, " right='", hud._legend_right.text, "'")
 	print("[MLS] done")
 	get_tree().quit()
 

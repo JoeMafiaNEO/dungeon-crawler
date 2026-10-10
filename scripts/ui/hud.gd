@@ -22,6 +22,9 @@ func setup(p: Player) -> void:
 	p.health_changed.connect(_on_health_changed)
 	p.xp_changed.connect(_on_xp_changed)
 	p.leveled_up.connect(_on_leveled_up)
+	# Issue #95 Phase 2: legend follows rogue charge / Holy Light states live.
+	if not p.click_state_changed.is_connected(_on_click_state_changed):
+		p.click_state_changed.connect(_on_click_state_changed)
 	_on_health_changed(p.hp, p.max_hp)
 	_on_xp_changed(p.xp, p.xp_next, p.level)
 	%LevelLabel.text = "Lv %d %s" % [p.level, p.class_data.display_name]
@@ -518,6 +521,12 @@ func _on_xp_changed(xp: int, xp_next: int, _level: int) -> void:
 
 func _on_leveled_up(level: int) -> void:
 	set_level(level, _player)
+
+
+## Issue #95 Phase 2: player click-action state changed (rogue charge,
+## Holy Light arm/charge) — re-render the legend immediately, no polling.
+func _on_click_state_changed() -> void:
+	refresh_mouse_legend(_player)
 
 
 func set_level(level: int, p: Node) -> void:
@@ -2246,13 +2255,19 @@ func _legend_row(parent: Control, btn: String) -> Label:
 
 
 ## Re-renders the legend from the registry. Called on ability refresh (covers
-## setup + class switch). Phase 2 will pass live states instead of "standard".
+## setup + class switch); the player emits click_state_changed for live
+## transitions (rogue charge, Holy Light arm/charge), wired in setup().
 func refresh_mouse_legend(p) -> void:
 	if _legend_left == null:
 		_build_mouse_legend()
 	var cid := str(p.get("class_id")) if p != null else ""
-	var row: Dictionary = MouseLegend.actions_for(cid, "standard")
-	_legend_left.text = "LMB  %s" % str(row["left"])
+	var state := "standard"
+	if p != null and p is Object and (p as Object).has_method("legend_state"):
+		state = str(p.legend_state())
+	var row: Dictionary = MouseLegend.actions_for(cid, state)
+	var lmb := str(row["left"])
+	_legend_left.visible = lmb != ""
+	_legend_left.text = "LMB  %s" % lmb
 	var rmb := str(row["right"])
 	_legend_right.visible = rmb != ""
 	_legend_right.text = "RMB  %s" % rmb

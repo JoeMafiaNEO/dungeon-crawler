@@ -10,6 +10,9 @@ signal health_changed(hp: float, max_hp: float)
 signal xp_changed(xp: int, xp_next: int, level: int)
 signal died
 signal leveled_up(level: int)
+## Issue #95 Phase 2: emitted when the player's click-action state changes
+## (rogue dagger charge, Holy Light arm/charge). The mouse legend subscribes.
+signal click_state_changed
 
 const GRAVITY := 20.0
 const JUMP_VELOCITY := 7.0
@@ -130,7 +133,14 @@ var _step_timer := 0.0
 ## Issue #69 Phase 1: Thrown dagger charge. Hold RMB 0→1 over 0.8s.
 ## LMB while charging throws; releasing RMB cancels silently.
 var _dagger_charge := 0.0
-var _charging := false
+## Issue #95 Phase 2: setter emits click_state_changed so the mouse legend
+## re-renders live. Only emits on actual change (no per-frame spam).
+var _charging := false:
+	set(v):
+		if _charging == v:
+			return
+		_charging = v
+		click_state_changed.emit()
 const DAGGER_CHARGE_TIME := 0.8
 const DAGGER_RANGE_MIN := 6.0
 const DAGGER_RANGE_MAX := 16.0
@@ -2276,7 +2286,14 @@ const HL_WINDDOWN_TIME := 2.0
 const HL_COOLDOWN := 20.0
 const HL_AIM_RANGE := 25.0
 enum HLState { IDLE, ARMED, CHARGING, ACTIVE }
-var _hl_state: int = HLState.IDLE
+## Issue #95 Phase 2: setter emits click_state_changed so the mouse legend
+## re-renders live. Only emits on actual change (no per-frame spam).
+var _hl_state: int = HLState.IDLE:
+	set(v):
+		if _hl_state == v:
+			return
+		_hl_state = v
+		click_state_changed.emit()
 var _hl_aim := Vector3.ZERO
 var _hl_charge_t := 0.0
 var _hl_active_t := 0.0
@@ -2438,6 +2455,19 @@ func _cast_holy_light() -> void:
 			hud.toast("Holy Light on cooldown!")
 		return
 	_hl_arm()
+
+
+## Issue #95 Phase 2: current mouse-legend state for the HUD. Data-driven —
+## the MouseLegend registry is keyed by (state, class_id), so new states
+## (or classes) are new data rows, never UI code changes.
+func legend_state() -> String:
+	if _charging and class_id == "rogue":
+		return "charging"
+	if _hl_state == HLState.CHARGING:
+		return "hl_charging"
+	if _hl_state == HLState.ARMED:
+		return "hl_armed"
+	return "standard"
 
 
 ## Enter the armed state: gold reticle follows the crosshair ground point.

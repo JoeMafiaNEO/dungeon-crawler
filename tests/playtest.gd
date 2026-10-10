@@ -34,6 +34,7 @@ func _run() -> void:
 	_test_pause_stats_zero_scroll()
 	_test_ability_bar_selected_highlight()
 	_test_mouse_legend()
+	_test_mouse_legend_states()
 	_test_holy_light_key7()
 	_test_holy_light_key7_label()
 	_test_holy_light_visual()
@@ -2654,7 +2655,7 @@ func _test_mouse_legend() -> void:
 	# Adaptability: unknown class/state fall back, never crash the renderer.
 	var u: Dictionary = MouseLegend.actions_for("necromancer", "standard")
 	_assert(str(u["left"]) == "Attack", "unknown class falls back to Attack")
-	var us: Dictionary = MouseLegend.actions_for("rogue", "charging")
+	var us: Dictionary = MouseLegend.actions_for("rogue", "flying")
 	_assert(str(us["right"]) == "Hold: charge dagger throw", "unknown state falls back to standard row")
 	_assert(MouseLegend.classes_for("standard").size() == 4, "registry covers 4 classes")
 	# Render path: HUD legend follows the player's class, RMB row hidden when empty.
@@ -2679,6 +2680,67 @@ func _test_mouse_legend() -> void:
 	_assert(panel.mouse_filter == Control.MOUSE_FILTER_IGNORE, "legend never blocks input")
 	hud.queue_free()
 	p.free()
+
+
+func _test_mouse_legend_states() -> void:
+	print("[Playtest] Mouse legend dynamic states...")
+	# Issue #95 Phase 2: registry rows for rogue charge + Holy Light arm/charge.
+	var c: Dictionary = MouseLegend.actions_for("rogue", "charging")
+	_assert(str(c["left"]) == "Throw dagger", "charging rogue LMB = Throw dagger")
+	_assert(str(c["right"]) == "Release: cancel", "charging rogue RMB = Release: cancel")
+	_assert(str(c["middle"]) == "Ping", "charging rogue MMB = Ping")
+	var ha: Dictionary = MouseLegend.actions_for("mage", "hl_armed")
+	_assert(str(ha["left"]) == "Start charge", "hl_armed mage LMB = Start charge")
+	_assert(str(ha["right"]) == "Disarm", "hl_armed mage RMB = Disarm")
+	var hc: Dictionary = MouseLegend.actions_for("mage", "hl_charging")
+	_assert(str(hc["left"]) == "", "hl_charging mage LMB empty (row hides)")
+	_assert(str(hc["right"]) == "Disarm (cancel)", "hl_charging mage RMB = Disarm (cancel)")
+	_assert("rogue" in MouseLegend.classes_for("charging"), "charging state covers rogue")
+	_assert("mage" in MouseLegend.classes_for("hl_armed"), "hl_armed state covers mage")
+	# Player publishes its legend state (data-driven; render path stays dumb).
+	var PlayerScript = load("res://scripts/player/player.gd")
+	var p = PlayerScript.new()
+	p.class_id = "rogue"
+	_assert(p.legend_state() == "standard", "rogue idle = standard")
+	p._charging = true
+	_assert(p.legend_state() == "charging", "rogue charging reported")
+	p._charging = false
+	p.class_id = "mage"
+	p._hl_state = PlayerScript.HLState.ARMED
+	_assert(p.legend_state() == "hl_armed", "mage HL armed reported")
+	p._hl_state = PlayerScript.HLState.CHARGING
+	_assert(p.legend_state() == "hl_charging", "mage HL charging reported")
+	p._hl_state = PlayerScript.HLState.IDLE
+	_assert(p.legend_state() == "standard", "mage HL idle = standard")
+	# Signal-driven: state changes emit click_state_changed (once per change).
+	var emitted := []
+	p.click_state_changed.connect(func(): emitted.append(1))
+	p._charging = true
+	_assert(emitted.size() == 1, "charging emits click_state_changed")
+	p._charging = true
+	_assert(emitted.size() == 1, "no duplicate emit when state unchanged")
+	p._hl_state = PlayerScript.HLState.ARMED
+	_assert(emitted.size() == 2, "HL arm emits click_state_changed")
+	p.free()
+	# HUD render path follows the live state, LMB row hides when empty.
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	var p2 = PlayerScript.new()
+	p2.class_id = "rogue"
+	p2._charging = true
+	hud.refresh_mouse_legend(p2)
+	_assert(hud._legend_left.text.contains("Throw dagger"), "HUD legend shows Throw dagger (charging)")
+	_assert(hud._legend_right.visible, "HUD legend RMB visible (charging)")
+	_assert(hud._legend_right.text.contains("Release: cancel"), "HUD legend RMB = Release: cancel")
+	p2.class_id = "mage"
+	p2._charging = false
+	p2._hl_state = PlayerScript.HLState.CHARGING
+	hud.refresh_mouse_legend(p2)
+	_assert(not hud._legend_left.visible, "HUD legend LMB hidden when empty (hl_charging)")
+	_assert(hud._legend_right.text.contains("Disarm (cancel)"), "HUD legend RMB = Disarm (cancel)")
+	p2.free()
+	hud.queue_free()
 
 
 func _test_ability_bar_selected_highlight() -> void:
