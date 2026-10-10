@@ -10,7 +10,7 @@ signal lobby_members_changed
 signal connection_failed(reason: String)
 
 const GAME_TAG := "dungeon-crawler"
-const MAX_PLAYERS := 4
+const MAX_PLAYERS := 12
 const LAN_PORT := 7777
 
 ## Issue #70: transport enum — STEAM (default) or LAN (ENet).
@@ -304,7 +304,7 @@ func _on_lobby_joined(joined_id: int, _permissions: int, _locked: bool, response
 	# Jesse 2026-10-08: use connect_lobby(lobby_id), not create_client(owner).
 	# create_client hangs forever on "Joining..." — the lobby-based connect
 	# is the correct Steam P2P flow (LAN/ENet path is unaffected).
-	if peer.connect_lobby(lobby_id) != OK:
+	if peer.connect_to_lobby(lobby_id) != OK:
 		_join_timeout = 0.0
 		connection_failed.emit("Couldn't connect to the host.")
 		return
