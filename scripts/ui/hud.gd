@@ -1207,11 +1207,11 @@ func flash_damage() -> void:
 
 
 func flash_dash() -> void:
-	# Brief cool streak across the screen on dash.
-	%DamageFlash.modulate = Color(0.6, 0.8, 1.0, 0.22)
+	# Brief cool streak across the screen on dash. Own rect (Jesse 2026-10-10):
+	# sharing DamageFlash let hit flashes hijack the dash fade and vice versa.
+	%DashFlash.modulate = Color(1, 1, 1, 0.22)
 	var tween := create_tween()
-	tween.tween_property(%DamageFlash, "modulate:a", 0.0, 0.25)
-	tween.tween_callback(func() -> void: %DamageFlash.modulate = Color(1, 0.25, 0.25, 0))
+	tween.tween_property(%DashFlash, "modulate:a", 0.0, 0.25)
 
 
 func show_pause() -> void:

@@ -68,6 +68,7 @@ func _run() -> void:
 	_test_cycle_scaling()
 	_test_ai_director()
 	_test_downed_marker()
+	_test_dash_flash_separate()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2463,6 +2464,20 @@ func _test_downed_marker() -> void:
 		"downed: marker renders through walls")
 	_assert(psrc.contains("not is_multiplayer_authority()"),
 		"downed: marker hidden on downed player's own instance")
+
+
+func _test_dash_flash_separate() -> void:
+	print("[Playtest] Dash flash rect...")
+	# Jesse 2026-10-10: dash and damage flashes need their own rects —
+	# sharing one let hit flashes hijack the dash fade and vice versa.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("%DashFlash"),
+		"dash: flash_dash uses its own DashFlash rect")
+	_assert(not hsrc.contains("%DamageFlash.modulate = Color(0.6, 0.8, 1.0"),
+		"dash: flash_dash no longer repaints the damage rect blue")
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
+	_assert(tsrc.contains("[node name=\"DashFlash\""),
+		"dash: DashFlash node exists in hud.tscn")
 
 
 func _print_results() -> void:
