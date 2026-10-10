@@ -67,6 +67,7 @@ func _run() -> void:
 	_test_train_dressing()
 	_test_cycle_scaling()
 	_test_ai_director()
+	_test_downed_marker()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2450,6 +2451,18 @@ func _test_ai_director() -> void:
 		tiers[int(entry["tier"])] += 1
 	_assert(tiers[1] + tiers[2] > 0,
 		"director: 12-player wave 10 buys upgrades (elites=%d champions=%d)" % [tiers[1], tiers[2]])
+
+
+func _test_downed_marker() -> void:
+	print("[Playtest] Downed marker...")
+	# World-space "!" marker so teammates spot downed players (Jesse 2026-10-10).
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("func _show_downed_marker()"),
+		"downed: marker builder exists")
+	_assert(psrc.contains("no_depth_test = true"),
+		"downed: marker renders through walls")
+	_assert(psrc.contains("not is_multiplayer_authority()"),
+		"downed: marker hidden on downed player's own instance")
 
 
 func _print_results() -> void:

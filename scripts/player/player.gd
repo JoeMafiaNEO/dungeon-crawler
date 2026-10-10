@@ -80,6 +80,8 @@ var hud: CanvasLayer
 var downed := false
 var _bleedout := 0.0
 var _revive_channel := 0.0
+## World-space downed marker (Label3D "!"), visible to teammates.
+var _downed_marker: Label3D = null
 const REVIVE_WINDOW := 30.0
 const REVIVE_CHANNEL := 3.0
 const REVIVE_RANGE := 3.5
@@ -1945,6 +1947,11 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	# Downed marker pulse (runs on every peer's instance).
+	if _downed_marker != null and _downed_marker.visible:
+		var t := Time.get_ticks_msec() / 1000.0
+		var s := 1.0 + 0.18 * sin(t * 6.0)
+		_downed_marker.scale = Vector3.ONE * s
 	if is_multiplayer_authority():
 		_hl_process(delta)
 		if _reading_board != null:
@@ -3397,8 +3404,36 @@ func _enter_downed() -> void:
 func set_downed(d: bool) -> void:
 	downed = d
 	if not d:
+		_hide_downed_marker()
 		return
-	# Remote visual: handled by nameplate/HUD on each peer's own instance.
+	# Downed marker: world-space "!" above the player so teammates can spot
+	# them in a fight (Jesse 2026-10-10). Code-generated, no art assets.
+	# Hidden on the downed player's own instance — they have the HUD timer.
+	if not is_multiplayer_authority():
+		_show_downed_marker()
+
+
+## Pulsing "!" marker above a downed teammate. Renders through walls
+## (no_depth_test) so they're findable in a chaotic fight.
+func _show_downed_marker() -> void:
+	if _downed_marker == null:
+		_downed_marker = Label3D.new()
+		_downed_marker.name = "DownedMarker"
+		_downed_marker.text = "!"
+		_downed_marker.font_size = 128
+		_downed_marker.modulate = Color(1.0, 0.25, 0.25)
+		_downed_marker.outline_size = 16
+		_downed_marker.outline_modulate = Color(0, 0, 0, 1)
+		_downed_marker.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_downed_marker.no_depth_test = true
+		_downed_marker.position = Vector3(0, 2.4, 0)
+		add_child(_downed_marker)
+	_downed_marker.visible = true
+
+
+func _hide_downed_marker() -> void:
+	if _downed_marker != null:
+		_downed_marker.visible = false
 
 
 ## Called on the downed player's authority by a teammate's revive channel.
