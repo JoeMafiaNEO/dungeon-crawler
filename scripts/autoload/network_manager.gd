@@ -69,7 +69,8 @@ func _process(delta: float) -> void:
 			_reset_peer()
 			connection_failed.emit("Couldn't reach the host (timed out).")
 	else:
-		SteamManager.steam_ready.connect(_connect_steam_signals)
+		if not SteamManager.steam_ready.is_connected(_connect_steam_signals):
+			SteamManager.steam_ready.connect(_connect_steam_signals)
 
 
 ## Connect the Steam lobby signals (idempotent).

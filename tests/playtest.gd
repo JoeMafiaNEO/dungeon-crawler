@@ -119,6 +119,7 @@ func _run() -> void:
 	_test_settings_phase2()
 	_test_thrown_dagger_phase1()
 	_test_holy_light_heal()
+	_test_steam_ready_once_only()
 
 	_print_results()
 	quit()
@@ -6086,3 +6087,25 @@ func _test_holy_light_v2_phase3() -> void:
 	_assert(ssrc.contains("_tone(880.0, 220.0, 2.0"),
 		"decay 2.0s matches wind-down")
 	print("[Playtest] Holy Light v2 Phase 3 done")
+
+
+func _test_steam_ready_once_only() -> void:
+	print("[Playtest] steam_ready once-only guard (issue #96)...")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("if not SteamManager.steam_ready.is_connected(_connect_steam_signals)"),
+		"once-only guard before steam_ready.connect")
+	# Drive 120 frames through _process; the wiring must stay exactly-one.
+	# (Before the guard, every frame re-connected and spammed "already connected" errors.)
+	# NOTE: autoload names don't resolve at compile time in -s script mode;
+	# grab the live singleton nodes from the tree instead.
+	var nm = root.get_node("NetworkManager")
+	var sm = root.get_node("SteamManager")
+	for i in 120:
+		nm._process(1.0 / 60.0)
+	var wiring := 0
+	for c in sm.steam_ready.get_connections():
+		if c["callable"] == Callable(nm, "_connect_steam_signals"):
+			wiring += 1
+	_assert(wiring == 1, "steam_ready wired exactly once after 120 frames")
+	_assert(sm.steam_ready.is_connected(Callable(nm, "_connect_steam_signals")),
+		"steam_ready is connected")
