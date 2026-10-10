@@ -21,6 +21,9 @@ const ENEMY_COSTS := {
 var credits: float = 0.0
 var credit_rate: float = 10.0  # Credits per second.
 var wave_number: int = 0
+## Player count multiplier (Jesse 2026-10-10, issue #101): wave credit budget
+## scales with the server's player count. Set by the dungeon before each wave.
+var player_count: int = 1
 ## Mob IDs the current theme allows. Empty = all.
 var allowed_mobs: Array = []
 
@@ -31,11 +34,12 @@ func set_allowed_mobs(ids: Array) -> void:
 
 func start_wave(wave: int) -> void:
 	wave_number = wave
-	credits = 50.0 + wave * 25.0  # Starting budget scales with wave.
+	# Starting budget scales with wave AND player count (Jesse 2026-10-10).
+	credits = (50.0 + wave * 25.0) * float(player_count)
 
 
 func _process(delta: float) -> void:
-	credits += credit_rate * delta
+	credits += credit_rate * delta * float(player_count)
 
 
 func get_wave_composition() -> Array:

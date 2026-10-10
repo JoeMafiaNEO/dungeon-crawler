@@ -1702,6 +1702,8 @@ func _start_wave() -> void:
 		_spawn_boss()
 	else:
 		# AI Director decides the wave composition.
+		# Wave credits scale with player count (Jesse 2026-10-10, issue #101).
+		_director.player_count = maxi(1, multiplayer.get_peers().size() + 1)
 		_director.start_wave(wave)
 		_wave_composition = _director.get_wave_composition()
 		mobs_to_spawn = _wave_composition.size()

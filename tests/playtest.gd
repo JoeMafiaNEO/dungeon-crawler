@@ -2406,6 +2406,29 @@ func _test_ai_director() -> void:
 	print("[Playtest] AI Director...")
 	var dir_script = load("res://scripts/systems/ai_director.gd")
 	_assert(dir_script != null, "AIDirector loads")
+	# Wave credits scale with player count (Jesse 2026-10-10, issue #101).
+	var d1 = dir_script.new()
+	d1.player_count = 1
+	d1.start_wave(1)
+	_assert(is_equal_approx(d1.credits, 75.0),
+		"director: solo wave 1 budget is 75")
+	var d4 = dir_script.new()
+	d4.player_count = 4
+	d4.start_wave(1)
+	_assert(is_equal_approx(d4.credits, 300.0),
+		"director: 4-player wave 1 budget is 4x")
+	var d12 = dir_script.new()
+	d12.player_count = 12
+	d12.start_wave(1)
+	_assert(is_equal_approx(d12.credits, 900.0),
+		"director: 12-player wave 1 budget is 12x")
+	# Credit trickle scales too.
+	d1._process(1.0)
+	_assert(is_equal_approx(d1.credits, 85.0),
+		"director: solo trickle is 10/s")
+	d4._process(1.0)
+	_assert(is_equal_approx(d4.credits, 340.0),
+		"director: 4-player trickle is 40/s")
 
 
 func _print_results() -> void:
