@@ -299,6 +299,15 @@ func _on_lobby_joined(joined_id: int, _permissions: int, _locked: bool, response
 		return
 	lobby_id = joined_id
 	var owner: int = Steam.getLobbyOwner(lobby_id)
+	if owner == SteamManager.steam_id:
+		# Host echo (Jesse 2026-10-10): Steam fires lobby_joined for the lobby
+		# owner too after createLobby. The server peer from host_lobby() /
+		# continue_multiplayer() is already running — keep it and keep is_host
+		# (otherwise start_game/kick silently no-op on `if not is_host`).
+		# Just refresh the roster.
+		_refresh_members()
+		lobby_members_changed.emit()
+		return
 	_reset_peer()
 	peer = SteamMultiplayerPeer.new()
 	# Jesse 2026-10-08: use connect_to_lobby(lobby_id), not create_client(owner).

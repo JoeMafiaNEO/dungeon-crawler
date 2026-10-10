@@ -2062,6 +2062,10 @@ func _test_train_disembark_fallback() -> void:
 	# Steam lobby P2P (Jesse 2026-10-08, renamed 2026-10-10): must use
 	# connect_to_lobby, not create_client — the latter hangs on "Joining..." forever.
 	_assert(nmsrc.contains("connect_to_lobby(lobby_id)"), "join: Steam uses connect_to_lobby")
+	# Host echo guard (Jesse 2026-10-10): Steam fires lobby_joined for the lobby
+	# owner too — the handler must not clobber is_host or rebuild the server peer,
+	# otherwise start_game() silently no-ops on `if not is_host`.
+	_assert(nmsrc.contains("if owner == SteamManager.steam_id:"), "join: host echo guard exists")
 	# No auto-pull mechanisms: no sweep, no fallback, no timers.
 	_assert(not isrc.contains("func _run_disembark_window"), "disembark: server sweep removed")
 	_assert(not isrc.contains("func _run_disembark_fallback"), "disembark: self-pull fallback removed")
