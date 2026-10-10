@@ -40,9 +40,10 @@ var lamps: Array = []
 ## (-1, -2.0) "extending north behind the train's footprint", but the train
 ## prop occupies z in [-5.7, -3.3] directly north of that point, so a room
 ## extending north would swallow the engine. The room instead sits just
-## SOUTH of the train with its doorway on the north wall at exactly the old
-## BoardingZone spot (-1, -2.0) — the Phase 3 flow ("boarding zone location
-## becomes the lobby doorway") is preserved.
+## SOUTH of the train with its doorway on the SOUTH wall (issue #97: Jesse —
+## players enter the annex from the south, so a north-wall door faced away).
+## The Phase 3 flow ("boarding zone location becomes the lobby doorway") is
+## preserved; only the wall changed.
 const LOBBY_CX := -1.0
 const LOBBY_CZ := 0.5
 const LOBBY_W := 8.0
@@ -327,20 +328,24 @@ func _build_lobby() -> void:
 		_hl(cx, -0.49, cz), car_dark).name = "LobbyFloor"
 
 	# Walls (0.5 thick, outer faces flush with the interior boundary).
-	# North wall split for the doorway (LOBBY_DOOR_W wide at LOBBY_DOOR_X).
+	# Issue #97: doorway moved to the SOUTH wall (Jesse). Players enter the
+	# annex from the south, so a north-wall door faced away.
 	var door_l := LOBBY_DOOR_X - LOBBY_DOOR_W * 0.5
 	var door_r := LOBBY_DOOR_X + LOBBY_DOOR_W * 0.5
+	# North wall: solid (doorway moved to south).
 	var nz := cz - hd - wt * 0.5
-	_solid(Vector3(door_l - (cx - hw - wt), LOBBY_H, wt),
-		_hl((cx - hw - wt + door_l) * 0.5, LOBBY_H * 0.5, nz), car_wall).name = "LobbyWallN_A"
-	_solid(Vector3((cx + hw + wt) - door_r, LOBBY_H, wt),
-		_hl((door_r + cx + hw + wt) * 0.5, LOBBY_H * 0.5, nz), car_wall).name = "LobbyWallN_B"
-	# Lintel above the doorway (opening is LOBBY_DOOR_H tall; panels in Phase 2).
-	_solid(Vector3(LOBBY_DOOR_W, LOBBY_H - LOBBY_DOOR_H, wt),
-		_hl(LOBBY_DOOR_X, LOBBY_DOOR_H + (LOBBY_H - LOBBY_DOOR_H) * 0.5, nz), car_wall).name = "LobbyLintel"
-	# South / west / east walls.
 	_solid(Vector3(LOBBY_W + 2.0 * wt, LOBBY_H, wt),
-		_hl(cx, LOBBY_H * 0.5, cz + hd + wt * 0.5), car_wall).name = "LobbyWallS"
+		_hl(cx, LOBBY_H * 0.5, nz), car_wall).name = "LobbyWallN"
+	# South wall split for the doorway (LOBBY_DOOR_W wide at LOBBY_DOOR_X).
+	var sz := cz + hd + wt * 0.5
+	_solid(Vector3(door_l - (cx - hw - wt), LOBBY_H, wt),
+		_hl((cx - hw - wt + door_l) * 0.5, LOBBY_H * 0.5, sz), car_wall).name = "LobbyWallS_A"
+	_solid(Vector3((cx + hw + wt) - door_r, LOBBY_H, wt),
+		_hl((door_r + cx + hw + wt) * 0.5, LOBBY_H * 0.5, sz), car_wall).name = "LobbyWallS_B"
+	# Lintel above the doorway (opening is LOBBY_DOOR_H tall).
+	_solid(Vector3(LOBBY_DOOR_W, LOBBY_H - LOBBY_DOOR_H, wt),
+		_hl(LOBBY_DOOR_X, LOBBY_DOOR_H + (LOBBY_H - LOBBY_DOOR_H) * 0.5, sz), car_wall).name = "LobbyLintel"
+	# West / east walls.
 	_solid(Vector3(wt, LOBBY_H, LOBBY_D),
 		_hl(cx - hw - wt * 0.5, LOBBY_H * 0.5, cz), car_wall).name = "LobbyWallW"
 	_solid(Vector3(wt, LOBBY_H, LOBBY_D),
@@ -427,10 +432,10 @@ func _build_lobby_doors(panel_mat: Material, brass: Material) -> void:
 	var cz := LOBBY_CZ
 	var hd := LOBBY_D * 0.5
 	var wt := LOBBY_WALL_T
-	var nz := cz - hd - wt * 0.5
-	# Panels ride just inside the lobby, sliding in front of the interior
-	# face of the north wall segments.
-	var pz := nz + wt * 0.5 + LOBBY_PANEL_T * 0.5 + 0.1
+	# Issue #97: doorway on south wall. Panels ride just inside the lobby,
+	# sliding in front of the interior face of the south wall segments.
+	var sz := cz + hd + wt * 0.5
+	var pz := sz - wt * 0.5 - LOBBY_PANEL_T * 0.5 - 0.1
 	for side in [-1.0, 1.0]:
 		var panel := MeshInstance3D.new()
 		var pm := BoxMesh.new()
@@ -465,7 +470,8 @@ func _door_blocker_build() -> void:
 	var cz := LOBBY_CZ
 	var hd := LOBBY_D * 0.5
 	var wt := LOBBY_WALL_T
-	var nz := cz - hd - wt * 0.5
+	# Issue #97: blocker on south wall (doorway moved).
+	var sz := cz + hd + wt * 0.5
 	var body := StaticBody3D.new()
 	body.collision_layer = 1
 	body.collision_mask = 0
@@ -474,7 +480,7 @@ func _door_blocker_build() -> void:
 	shape.size = Vector3(LOBBY_DOOR_W, LOBBY_DOOR_H, wt)
 	cs.shape = shape
 	body.add_child(cs)
-	body.position = _hl(LOBBY_DOOR_X, LOBBY_DOOR_H * 0.5, nz)
+	body.position = _hl(LOBBY_DOOR_X, LOBBY_DOOR_H * 0.5, sz)
 	add_child(body)
 	body.name = "LobbyDoorBlocker"
 	_door_blocker = body

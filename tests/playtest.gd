@@ -1593,8 +1593,10 @@ func _test_station_embedded() -> void:
 	holder.add_child(st) # _ready runs the embedded build
 
 	# 1. Content nodes exist as descendants.
-	for nname in ["Train", "DepartureBoard", "VendorStall", "HealPad", "Sleepers"]:
+	# Issue #97: old green-box Train prop removed (Jesse).
+	for nname in ["DepartureBoard", "VendorStall", "HealPad", "Sleepers"]:
 		_assert(st.get_node_or_null(nname) != null, "embedded: %s built" % nname)
+	_assert(st.get_node_or_null("Train") == null, "embedded: Train prop removed (#97)")
 	# Issue #93 Phase 3: the BoardingZone aboard-marker is retired; the
 	# depart lever (built by the annex, in the lobby) is the new flow node.
 	_assert(annex.get_node_or_null("DepartLever") != null, "embedded: DepartLever built in lobby")
@@ -1605,7 +1607,7 @@ func _test_station_embedded() -> void:
 	_assert(dressing != null and dressing.get_child_count() == 6,
 		"embedded: 6 dressing prop sets (apex added)")
 	# Every content node sits inside the 24x14m hall footprint.
-	for nname in ["Train", "DepartureBoard", "VendorStall", "HealPad"]:
+	for nname in ["DepartureBoard", "VendorStall", "HealPad"]:
 		var n := st.get_node_or_null(nname) as Node3D
 		var lp: Vector3 = n.position
 		_assert(absf(lp.x) <= 12.0 and absf(lp.z) <= 7.0,

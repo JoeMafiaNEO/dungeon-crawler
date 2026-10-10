@@ -623,25 +623,8 @@ func _build_station_embedded() -> void:
 	for x in range(-11, 9, 2):
 		_box(sleepers, Vector3(0.5, 0.08, 3.4), Vector3(x, 0.05, -4.5), wood_dark)
 
-	# Train: engine + 2 cars, static.
-	var train := Node3D.new()
-	train.name = "Train"
-	add_child(train)
-	_box(train, Vector3(4.0, 2.2, 2.4), Vector3(-1, 1.45, -4.5), train_green)   # engine body
-	_box(train, Vector3(1.6, 1.1, 2.0), Vector3(-2.0, 3.05, -4.5), train_green)  # cabin
-	_cyl(train, 0.28, 0.34, 1.0, Vector3(0.3, 3.0, -4.5), dark)                   # chimney
-	_box(train, Vector3(0.9, 0.7, 0.1), Vector3(-1, 1.9, -5.72), win_glow)        # lit windows
-	_box(train, Vector3(0.9, 0.7, 0.1), Vector3(-1, 1.9, -3.28), win_glow)
-	_box(train, Vector3(0.5, 0.5, 0.1), Vector3(-2.0, 3.1, -5.68), win_glow)
-	for wx in [-2.4, -1.6, -0.4, 0.4]:
-		var wheel := _cyl(train, 0.42, 0.42, 0.18, Vector3(wx, 0.42, -4.5), dark)
-		wheel.rotation_degrees.x = 90.0
-	_box(train, Vector3(3.4, 2.2, 2.4), Vector3(-5.5, 1.45, -4.5), wood)           # car 1
-	_box(train, Vector3(3.4, 2.2, 2.4), Vector3(-9.5, 1.45, -4.5), wood)           # car 2
-	for cx in [-6.4, -5.5, -4.6, -10.4, -9.5, -8.6]:
-		_box(train, Vector3(0.7, 0.6, 0.1), Vector3(cx, 1.8, -5.72), win_glow)
-		_box(train, Vector3(0.7, 0.6, 0.1), Vector3(cx, 1.8, -3.28), win_glow)
-	_box(train, Vector3(0.6, 0.25, 0.25), Vector3(1.1, 1.1, -4.5), lamp_glow)    # headlamp
+	# Issue #97: old green-box train prop removed (Jesse). The #93 rework
+	# retired the old boarding flow; the prop was never deleted.
 
 	# Doorway marker: gold pulse ring + destination signage at the lobby
 	# doorway (issue #93). The ring is pure ambience; the label shows
