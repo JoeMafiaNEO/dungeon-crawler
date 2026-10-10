@@ -1687,9 +1687,9 @@ func _on_next_wave_pressed() -> void:
 	dungeons[0].rpc("request_next_wave")
 
 
-## Supermarket: update cash display.
-func set_market_cash(cash: int, goal: int) -> void:
-	%MarketLabel.text = "Cash: $%d / $%d" % [cash, goal]
+## Supermarket: update gate-progress display (per-visit earnings vs goal).
+func set_market_cash(earned: int, goal: int) -> void:
+	%MarketLabel.text = "Earned: $%d / $%d" % [earned, goal]
 
 
 func _on_stat_pressed(stat: String) -> void:

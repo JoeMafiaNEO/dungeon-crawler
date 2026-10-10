@@ -69,6 +69,7 @@ func _run() -> void:
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
+	_test_market_earned_display()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2478,6 +2479,20 @@ func _test_dash_flash_separate() -> void:
 	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
 	_assert(tsrc.contains("[node name=\"DashFlash\""),
 		"dash: DashFlash node exists in hud.tscn")
+
+
+func _test_market_earned_display() -> void:
+	print("[Playtest] Market earned display...")
+	# Jesse 2026-10-10: gate progress shows per-visit EARNINGS (what unlocks
+	# the gate), not held cash.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func sync_market_earnings"),
+		"market: earnings broadcast RPC exists")
+	_assert(dsrc.contains("set_market_cash(market_earned_visit, market_cash_goal)"),
+		"market: HUD gets earnings, not held cash")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("Earned: $%d / $%d"),
+		"market: label reads Earned, not Cash")
 
 
 func _print_results() -> void:

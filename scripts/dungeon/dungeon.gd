@@ -748,9 +748,9 @@ func _process(delta: float) -> void:
 	if _local_hud != null:
 		_local_hud.set_wave(wave_info)
 		if is_supermarket:
-			var me := _my_player()
-			if me != null:
-				_local_hud.set_market_cash(int(me.get("supermarket_cash")), market_cash_goal)
+			# Gate progress shows per-visit EARNINGS (what unlocks the gate),
+			# not held cash (Jesse 2026-10-10).
+			_local_hud.set_market_cash(market_earned_visit, market_cash_goal)
 		_update_boss_bar()
 	_process_ambient(delta)
 
@@ -1552,6 +1552,7 @@ func _sell_player_loot(player: Node) -> void:
 		var payout := checkout_payout(total, float(player.get("cash_mult")))
 		player.set("supermarket_cash", int(player.get("supermarket_cash")) + payout)
 		market_earned_visit += payout
+		rpc("sync_market_earnings", market_earned_visit)
 		SaveManager.add_cash_earned(payout)
 		SaveManager.check_achievements()
 		if market_earned_visit >= SpecialData.GREED_CHARM_GOAL:
@@ -1567,6 +1568,13 @@ func _sell_player_loot(player: Node) -> void:
 ## $500 earn condition and gate check run against is the paid-out amount.
 static func checkout_payout(total: int, cash_mult: float) -> int:
 	return int(round(float(total) * cash_mult))
+
+
+## Supermarket: broadcast per-visit earnings so clients' HUDs show the
+## same gate progress as the server (Jesse 2026-10-10).
+@rpc("any_peer", "call_local")
+func sync_market_earnings(earned: int) -> void:
+	market_earned_visit = earned
 
 
 func _check_gate_unlock() -> void:
