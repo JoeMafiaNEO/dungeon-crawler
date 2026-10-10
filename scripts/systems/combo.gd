@@ -250,7 +250,12 @@ static func apply_frost_nova(tree: SceneTree, center: Vector3, damage: float, at
 			continue
 		if m.has_method("apply_slow"):
 			m.call("apply_slow", FROST_NOVA_SLOW_DURATION, FROST_NOVA_SLOW_MULT)
-		m.rpc_id(NetworkManager.server_id, "take_damage", damage, attacker, center)
+		# SteamMultiplayerPeer can't rpc_id its own peer ID (server-side here).
+		# Note: Node.multiplayer (SceneTree.multiplayer isn't accessible here).
+		if m.multiplayer.is_server():
+			m.call("take_damage", damage, attacker, center)
+		else:
+			m.rpc_id(NetworkManager.server_id, "take_damage", damage, attacker, center)
 
 
 ## Reciprocity Surge effect: 20% max-HP heal burst to all living allies.

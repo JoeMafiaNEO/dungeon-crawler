@@ -146,7 +146,10 @@ func _check_mob_hits() -> void:
 			var hit_dmg := damage
 			if mob.is_marked():
 				hit_dmg *= 1.5
-			mob.rpc_id(NetworkManager.server_id, "take_damage", hit_dmg, owner_peer, global_position)
+			if multiplayer.is_server():
+				mob.take_damage(hit_dmg, owner_peer, global_position)
+			else:
+				mob.rpc_id(NetworkManager.server_id, "take_damage", hit_dmg, owner_peer, global_position)
 			# Precision affinity: thrown hits feed it (Phase 2).
 			var owner := _owner_node()
 			if owner != null and owner.has_method("gain_affinity_capped"):

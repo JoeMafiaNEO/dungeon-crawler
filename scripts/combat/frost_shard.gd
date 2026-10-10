@@ -79,7 +79,10 @@ func _physics_process(delta: float) -> void:
 			var a := Vector2(mob.global_position.x, mob.global_position.z)
 			var b := Vector2(global_position.x, global_position.z)
 			if a.distance_to(b) < 1.3:
-				mob.rpc_id(NetworkManager.server_id, "take_damage", damage, owner_peer, global_position)
+				if multiplayer.is_server():
+					mob.take_damage(damage, owner_peer, global_position)
+				else:
+					mob.rpc_id(NetworkManager.server_id, "take_damage", damage, owner_peer, global_position)
 				# Permafrost: slows last +2s.
 				var sdur := slow_duration
 				if caster != null and caster.has_trait("permafrost"):

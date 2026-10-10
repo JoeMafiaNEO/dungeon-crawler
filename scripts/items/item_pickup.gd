@@ -193,7 +193,12 @@ func request_claim(claimer_peer: int) -> void:
 	# set by claim() on the server. Setting claimed here would break solo play,
 	# where this instance IS the server instance and claim() would early-out.
 	_request_sent = true
-	rpc_id(NetworkManager.server_id, "claim", claimer_peer)
+	# SteamMultiplayerPeer can't rpc_id its own peer ID: when this instance is
+	# the server, call directly (same outcome — claim() is call_local).
+	if multiplayer.is_server():
+		claim(claimer_peer)
+	else:
+		rpc_id(NetworkManager.server_id, "claim", claimer_peer)
 
 
 @rpc("any_peer", "call_local")

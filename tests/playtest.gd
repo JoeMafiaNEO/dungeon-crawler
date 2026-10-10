@@ -2066,6 +2066,15 @@ func _test_train_disembark_fallback() -> void:
 	# owner too — the handler must not clobber is_host or rebuild the server peer,
 	# otherwise start_game() silently no-ops on `if not is_host`.
 	_assert(nmsrc.contains("if owner == SteamManager.steam_id:"), "join: host echo guard exists")
+	# Steam self-target guard (Jesse 2026-10-10): SteamMultiplayerPeer can't
+	# rpc_id its own peer ID ("unknown peer ID" on the host), so server-bound
+	# RPCs must call directly when this instance IS the server. Pin the
+	# reported-broken dagger site and the melee site to the direct-call pattern.
+	var psrc_steam := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc_steam.contains("_request_dagger_spawn(spawn_pos, dagger_vel, throw_dmg, from, throw_range)"),
+		"steam: host dagger calls spawn directly")
+	_assert(psrc_steam.contains("mob.take_damage(melee_dmg, from, global_position)"),
+		"steam: host melee calls take_damage directly")
 	# No auto-pull mechanisms: no sweep, no fallback, no timers.
 	_assert(not isrc.contains("func _run_disembark_window"), "disembark: server sweep removed")
 	_assert(not isrc.contains("func _run_disembark_fallback"), "disembark: self-pull fallback removed")

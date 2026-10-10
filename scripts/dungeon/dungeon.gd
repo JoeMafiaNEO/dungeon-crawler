@@ -1966,7 +1966,10 @@ func demolish_structures(owner: int) -> void:
 				if mob == null or not mob.alive:
 					continue
 				if mob.global_position.distance_to(st.global_position) < Structure.DEMOLISH_RADIUS:
-					mob.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, st.global_position)
+					if multiplayer.is_server():
+						mob.take_damage(dmg, owner, st.global_position)
+					else:
+						mob.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner, st.global_position)
 		st.demolish()
 
 

@@ -274,7 +274,11 @@ func _on_train_button(utype: String) -> void:
 		hide_train_menu()
 		return
 	# Server validates cost/pop via building.queue_unit.
-	_train_building.rpc_id(NetworkManager.server_id, "rpc_queue_unit", utype)
+	# (SteamMultiplayerPeer can't rpc_id its own peer ID: call directly as server.)
+	if multiplayer.is_server():
+		_train_building.rpc_queue_unit(utype)
+	else:
+		_train_building.rpc_id(NetworkManager.server_id, "rpc_queue_unit", utype)
 	_refresh_train_buttons()
 
 

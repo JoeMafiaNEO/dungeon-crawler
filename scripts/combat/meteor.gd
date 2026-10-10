@@ -119,7 +119,10 @@ func _impact() -> void:
 			if m.global_position.distance_to(target) < radius:
 				var was_alive := m.alive
 				# Issue #67: Meteor bypasses Shieldbearer frontal block by design.
-				m.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, target, true)
+				if multiplayer.is_server():
+					m.take_damage(dmg, owner_peer, target, true)
+				else:
+					m.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, target, true)
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
 					m.apply_burn(3.0, dmg * 0.3, owner_peer)

@@ -641,7 +641,11 @@ func refresh_vendor_cash() -> void:
 
 
 func _on_vendor_buy(st: Node, item_id: String) -> void:
-	st.rpc_id(NetworkManager.server_id, "buy_vendor_item", item_id)
+	# SteamMultiplayerPeer can't rpc_id its own peer ID: call directly as server.
+	if multiplayer.is_server():
+		st.buy_vendor_item(item_id)
+	else:
+		st.rpc_id(NetworkManager.server_id, "buy_vendor_item", item_id)
 	AudioManager.sfx("ui_click")
 
 

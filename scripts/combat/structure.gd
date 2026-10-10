@@ -185,7 +185,10 @@ func _tick_turret(delta: float) -> void:
 	if not multiplayer.is_server():
 		return
 	var dmg := _owner_damage() * 0.6 * _rank_mult()
-	target.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, target.global_position)
+	if multiplayer.is_server():
+		target.take_damage(dmg, owner_peer, target.global_position)
+	else:
+		target.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, target.global_position)
 
 
 ## Nearest alive mob in range; marked targets (Rogue synergy) win ties.
@@ -248,7 +251,10 @@ func _tick_trap() -> void:
 				if m2 == null or not m2.alive:
 					continue
 				if m2.global_position.distance_to(global_position) < TRAP_AOE:
-					m2.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, global_position)
+					if multiplayer.is_server():
+						m2.take_damage(dmg, owner_peer, global_position)
+					else:
+						m2.rpc_id(NetworkManager.server_id, "take_damage", dmg, owner_peer, global_position)
 					m2.apply_slow(3.0, 0.6)
 		queue_free()
 		return
