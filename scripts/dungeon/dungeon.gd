@@ -784,10 +784,13 @@ func _spawn_market_mob() -> void:
 	var comp: Array = _director.get_wave_composition()
 	var data: MobData = null
 	var elite := false
+	var champion := false
 	if not comp.is_empty():
 		var pick: Dictionary = comp[0]
 		data = _mob_data(str(pick["type"]))
-		elite = bool(pick["elite"])
+		var tier := int(pick.get("tier", 1 if bool(pick.get("elite", false)) else 0))
+		elite = tier >= 1
+		champion = tier >= 2
 	if data == null:
 		data = _pick_mob_type()
 	if data == null:
@@ -798,7 +801,7 @@ func _spawn_market_mob() -> void:
 	_mob_id += 1
 	var hp_scale := _hp_scale()
 	var dmg_scale := _danger_mult() * NetworkManager.host_difficulty
-	rpc("spawn_mob", _mob_id, data.id, pos, hp_scale, dmg_scale, elite and not data.is_boss, _danger_mult())
+	rpc("spawn_mob", _mob_id, data.id, pos, hp_scale, dmg_scale, elite and not data.is_boss, _danger_mult(), champion and not data.is_boss)
 
 
 func _spawn_market_loot() -> void:
@@ -1649,7 +1652,7 @@ func _process_waves(delta: float) -> void:
 				mobs_to_spawn -= 1
 				_mob_id += 1
 				# Pop the next mob from the AI Director's composition.
-				var pick: Dictionary = {"type": "slime", "elite": false}
+				var pick: Dictionary = {"type": "slime", "tier": 0}
 				if not _wave_composition.is_empty():
 					pick = _wave_composition.pop_front()
 				var data := _mob_data(str(pick["type"]))
@@ -1657,8 +1660,10 @@ func _process_waves(delta: float) -> void:
 					data = _pick_mob_type()
 				var hp_scale := _hp_scale()
 				var dmg_scale := _danger_mult() * NetworkManager.host_difficulty
-				var elite := bool(pick["elite"]) and not data.is_boss
-				rpc("spawn_mob", _mob_id, data.id, _random_mob_pos(), hp_scale, dmg_scale, elite, _danger_mult())
+				var tier := int(pick.get("tier", 1 if bool(pick.get("elite", false)) else 0))
+				var elite := tier >= 1 and not data.is_boss
+				var champion := tier >= 2 and not data.is_boss
+				rpc("spawn_mob", _mob_id, data.id, _random_mob_pos(), hp_scale, dmg_scale, elite, _danger_mult(), champion)
 			# Issue #27: count ALIVE mobs, not raw $Mobs children — a lingering
 			# non-mob child (or dead mob awaiting free) must not stall the wave.
 			if mobs_to_spawn <= 0:
@@ -1926,13 +1931,13 @@ func _pick_mob_type() -> MobData:
 
 
 @rpc("any_peer", "call_local")
-func spawn_mob(mob_id: int, type_id: String, pos: Vector3, hp_scale: float = 1.0, dmg_scale: float = 1.0, elite: bool = false, reward_scale: float = 1.0) -> void:
+func spawn_mob(mob_id: int, type_id: String, pos: Vector3, hp_scale: float = 1.0, dmg_scale: float = 1.0, elite: bool = false, reward_scale: float = 1.0, champion: bool = false) -> void:
 	var data := _mob_data(type_id)
 	if data == null:
 		return
 	var m := MobScene.instantiate() as Mob
 	m.name = "Mob_%d" % mob_id
-	m.setup(mob_id, data, hp_scale, dmg_scale, elite, reward_scale)
+	m.setup(mob_id, data, hp_scale, dmg_scale, elite, reward_scale, champion)
 	m.position = pos
 	$Mobs.add_child(m)
 	if data.is_boss:

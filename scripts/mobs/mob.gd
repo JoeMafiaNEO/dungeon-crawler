@@ -38,6 +38,9 @@ var _shield_visual: Node3D
 var _windup_t := 0.0
 ## Elite mobs: 2.5x HP, 1.25x size, +1.5 loot luck, gold nameplate.
 var is_elite := false
+## Champion (Jesse 2026-10-10): second upgrade tier above elite — 4x HP,
+## +25% damage, purple label.
+var is_champion := false
 ## Slow debuff (frost): _slow_t seconds remaining at _slow_mult speed.
 var _slow_t := 0.0
 var _slow_mult := 1.0
@@ -85,14 +88,18 @@ var _trail_tick := 0.0
 var _shockwaves: Array = []
 
 
-func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: float = 1.0, p_elite: bool = false, p_reward_scale: float = 1.0) -> void:
+func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: float = 1.0, p_elite: bool = false, p_reward_scale: float = 1.0, p_champion: bool = false) -> void:
 	mob_id = p_id
 	data = p_data
 	hp_scale = p_hp_scale
 	dmg_scale = p_dmg_scale
 	reward_scale = p_reward_scale
 	is_elite = p_elite and not p_data.is_boss
-	if is_elite:
+	is_champion = p_champion and not p_data.is_boss
+	if is_champion:
+		hp_scale *= 4.0
+		dmg_scale *= 1.25
+	elif is_elite:
 		hp_scale *= 2.5
 	# Shieldbearer (issue #67, #82 Phase 2): tower-shield overlay.
 	# Visible when shield is up. Art Director's .glb (1.2m x 1.6m,
@@ -142,6 +149,10 @@ func _ready() -> void:
 		$Label3D.font_size = 64
 		$Label3D.modulate = Color(1.0, 0.45, 0.4)
 		_base_scale = Vector3.ONE * data.scale_mult
+	elif is_champion:
+		$Label3D.text = "Champion " + data.display_name
+		$Label3D.modulate = Color(0.75, 0.4, 1.0)
+		_base_scale = Vector3.ONE * 1.4
 	elif is_elite:
 		$Label3D.text = "Elite " + data.display_name
 		$Label3D.modulate = Color(1.0, 0.85, 0.3)

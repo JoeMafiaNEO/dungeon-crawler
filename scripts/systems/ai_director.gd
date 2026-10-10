@@ -15,8 +15,23 @@ const ENEMY_COSTS := {
 	"skeleton": 22,
 	"shieldbearer": 25,
 	"gravewarden": 30,
-	"elite": 40,  # Multiplier on base cost.
 }
+
+# Role buckets for mixed waves (Jesse 2026-10-10): every wave drafts from
+# each role so waves aren't all-trash or all-elite by accident.
+const ROLE_MOBS := {
+	"ranged": ["archer"],
+	"counter": ["shieldbearer"],
+	"heavy": ["gravewarden"],
+	"fast": ["splitter", "bat"],
+	"melee": ["slime", "goblin", "orc", "skeleton", "cultist"],
+}
+# Repeating draft order; shuffled per wave so the mix isn't mechanical.
+const DRAFT_PATTERN := ["melee", "fast", "ranged", "melee", "counter", "fast", "melee", "heavy"]
+
+# Upgrade tiers: each step costs 40 (normal -> elite -> champion).
+const TIER_NAMES := ["normal", "elite", "champion"]
+const UPGRADE_STEP_COST := 40
 
 var credits: float = 0.0
 var credit_rate: float = 10.0  # Credits per second.
@@ -43,43 +58,65 @@ func _process(delta: float) -> void:
 
 
 func get_wave_composition() -> Array:
-	# Returns array of mob type IDs to spawn this wave.
+	# Returns array of {"type": mob_id, "tier": 0/1/2} to spawn this wave.
+	# Phase 1 (draft): round-robin through shuffled roles so every wave has
+	# a mix — ranged, counters, heavies, fast, melee. Phase 2 (upgrades):
+	# leftover credits buy elite/champion tiers (Jesse 2026-10-10).
 	var composition: Array = []
 	var budget := credits
-	
-	# Don't buy too cheap (RoR2 rule): prefer expensive enemies as budget grows.
-	# Only spawn mobs the current theme allows.
+
 	var available := ENEMY_COSTS.keys()
 	if not allowed_mobs.is_empty():
 		available = available.filter(func(id): return id in allowed_mobs)
-	available.sort_custom(func(a, b): return ENEMY_COSTS[a] < ENEMY_COSTS[b])
-	
-	while budget >= 5.0 and composition.size() < 20:
-		# Pick the most expensive enemy we can afford (with some randomness).
-		var candidates := []
-		for mob_id in available:
-			if ENEMY_COSTS[mob_id] <= budget:
-				candidates.append(mob_id)
-		if candidates.is_empty():
-			break
-		
-		# Bias toward expensive (last 3 candidates) but allow cheap.
-		var pick: String
-		if randf() < 0.7 and candidates.size() >= 3:
-			pick = candidates[randi_range(candidates.size() - 3, candidates.size() - 1)]
-		else:
-			pick = candidates[randi() % candidates.size()]
-		
-		# Elite chance: 10% to upgrade to elite.
-		if randf() < 0.1 and pick != "elite":
-			composition.append({"type": pick, "elite": true})
-			budget -= ENEMY_COSTS[pick] + ENEMY_COSTS["elite"]
-		else:
-			composition.append({"type": pick, "elite": false})
-			budget -= ENEMY_COSTS[pick]
-	
+	if available.is_empty():
+		credits = budget
+		return composition
+	var cheapest := 999999.0
+	for mob_id in available:
+		cheapest = minf(cheapest, float(ENEMY_COSTS[mob_id]))
+
+	# Phase 1: draft.
+	var pattern := DRAFT_PATTERN.duplicate()
+	pattern.shuffle()
+	var pi := 0
+	while budget >= cheapest and composition.size() < 20:
+		var role: String = pattern[pi % pattern.size()]
+		pi += 1
+		var mob_id := _pick_in_role(role, available, budget)
+		if mob_id == "":
+			continue
+		composition.append({"type": mob_id, "tier": 0})
+		budget -= ENEMY_COSTS[mob_id]
+
+	# Phase 2: upgrades — priciest base mobs first. Pass 1 spreads elites,
+	# pass 2 promotes elites to champions.
+	composition.sort_custom(
+		func(a, b): return ENEMY_COSTS[a["type"]] > ENEMY_COSTS[b["type"]])
+	for entry in composition:
+		if entry["tier"] == 0 and budget >= UPGRADE_STEP_COST:
+			entry["tier"] = 1
+			budget -= UPGRADE_STEP_COST
+	for entry in composition:
+		if entry["tier"] == 1 and budget >= UPGRADE_STEP_COST:
+			entry["tier"] = 2
+			budget -= UPGRADE_STEP_COST
+
 	credits = budget  # Leftover carries over.
 	return composition
+
+
+func _pick_in_role(role: String, available: Array, budget: float) -> String:
+	# Most-expensive-affordable in the role, with some randomness.
+	var candidates := []
+	for mob_id in ROLE_MOBS[role]:
+		if mob_id in available and ENEMY_COSTS[mob_id] <= budget:
+			candidates.append(mob_id)
+	if candidates.is_empty():
+		return ""
+	candidates.sort_custom(func(a, b): return ENEMY_COSTS[a] < ENEMY_COSTS[b])
+	if randf() < 0.7 and candidates.size() >= 2:
+		return candidates[randi_range(candidates.size() - 2, candidates.size() - 1)]
+	return candidates[randi() % candidates.size()]
 
 
 func get_threat_level() -> float:

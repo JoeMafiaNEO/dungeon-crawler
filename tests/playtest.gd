@@ -2429,6 +2429,27 @@ func _test_ai_director() -> void:
 	d4._process(1.0)
 	_assert(is_equal_approx(d4.credits, 340.0),
 		"director: 4-player trickle is 40/s")
+	# Mixed waves (Jesse 2026-10-10): every wave drafts from each role.
+	var dmix = dir_script.new()
+	dmix.player_count = 4
+	dmix.start_wave(5)
+	var comp: Array = dmix.get_wave_composition()
+	_assert(not comp.is_empty(), "director: wave produces a composition")
+	var types := {}
+	for entry in comp:
+		types[str(entry["type"])] = true
+	_assert(types.size() >= 3,
+		"director: wave mixes at least 3 mob types (got %d)" % types.size())
+	# Leftover credits buy tiers: big budget should produce elites/champions.
+	var d12b = dir_script.new()
+	d12b.player_count = 12
+	d12b.start_wave(10)
+	var comp12: Array = d12b.get_wave_composition()
+	var tiers := {0: 0, 1: 0, 2: 0}
+	for entry in comp12:
+		tiers[int(entry["tier"])] += 1
+	_assert(tiers[1] + tiers[2] > 0,
+		"director: 12-player wave 10 buys upgrades (elites=%d champions=%d)" % [tiers[1], tiers[2]])
 
 
 func _print_results() -> void:
