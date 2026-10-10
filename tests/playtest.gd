@@ -1303,11 +1303,12 @@ func _test_lobby_room() -> void:
 	var hc: Vector3 = annex.hall_center()
 
 	# 1. Shell nodes exist: floor + 5 wall pieces + lintel + roof.
-	for n in ["LobbyFloor", "LobbyWallN_A", "LobbyWallN_B", "LobbyLintel",
-			"LobbyWallS", "LobbyWallW", "LobbyWallE", "LobbyRoof"]:
+	# Issue #97: doorway on the SOUTH wall — north wall solid, south split.
+	for n in ["LobbyFloor", "LobbyWallN", "LobbyWallS_A", "LobbyWallS_B", "LobbyLintel",
+			"LobbyWallW", "LobbyWallE", "LobbyRoof"]:
 		_assert(annex.get_node_or_null(n) != null, "lobby node %s built" % n)
 	_assert(annex.get_node("LobbyFloor") is StaticBody3D, "lobby floor is solid")
-	_assert(annex.get_node("LobbyWallN_A") is StaticBody3D, "lobby north wall solid")
+	_assert(annex.get_node("LobbyWallN") is StaticBody3D, "lobby north wall solid")
 
 	# 2. Dressing present: benches, racks, straps, lamps, windows.
 	var benches := 0
@@ -1332,6 +1333,8 @@ func _test_lobby_room() -> void:
 
 	# 3. Doorway is open once the doors open (issue #93 Phase 2: doors start
 	# closed; probes through it must not sit inside any solid).
+	# Issue #97: doorway moved to the SOUTH wall (probes at +3.25 hall-local,
+	# the south wall center plane, mirroring the old -2.25 north probes).
 	annex._apply_lobby_doors(true)
 	var solids: Array = []
 	for child in annex.get_children():
@@ -1341,7 +1344,7 @@ func _test_lobby_room() -> void:
 			solids.append(AABB(child.position - b.size * 0.5, b.size))
 	var door_blocked := 0
 	for px in [-1.8, -1.0, -0.2]:
-		var p := Vector3(hc.x + px, 1.0, hc.z - 2.25)
+		var p := Vector3(hc.x + px, 1.0, hc.z + 3.25)
 		for aabb: AABB in solids:
 			if aabb.has_point(p):
 				door_blocked += 1
@@ -1399,12 +1402,13 @@ func _test_lobby_doors() -> void:
 			"panel starts at closed_x")
 
 	# 2. Closed doors block the doorway: probes through it sit inside the blocker.
+	# Issue #97: doorway on the south wall — probes at the south wall center.
 	var cs := blocker.get_child(0) as CollisionShape3D
 	var bb := cs.shape as BoxShape3D
 	var blocker_aabb := AABB(blocker.position - bb.size * 0.5, bb.size)
 	var blocked := 0
 	for px in [-1.8, -1.0, -0.2]:
-		if blocker_aabb.has_point(Vector3(hc.x + px, 1.0, hc.z - 2.25)):
+		if blocker_aabb.has_point(Vector3(hc.x + px, 1.0, hc.z + 3.25)):
 			blocked += 1
 	_assert(blocked == 3, "closed doors block the doorway (%d/3 probes)" % blocked)
 
@@ -1420,7 +1424,7 @@ func _test_lobby_doors() -> void:
 			solids.append(AABB(child.position - b.size * 0.5, b.size))
 	var door_blocked := 0
 	for px in [-1.8, -1.0, -0.2]:
-		var p := Vector3(hc.x + px, 1.0, hc.z - 2.25)
+		var p := Vector3(hc.x + px, 1.0, hc.z + 3.25)
 		for aabb: AABB in solids:
 			if aabb.has_point(p):
 				door_blocked += 1
