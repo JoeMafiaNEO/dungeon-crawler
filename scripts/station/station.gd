@@ -627,22 +627,32 @@ func _build_station_embedded() -> void:
 	# retired the old boarding flow; the prop was never deleted.
 
 	# Doorway marker: gold pulse ring + destination signage at the lobby
-	# doorway (issue #93). The ring is pure ambience; the label shows
-	# NOW BOARDING once the vote resolves.
+	# doorway (issue #93). Issue #99: doorway moved to the SOUTH wall —
+	# ring/label follow it. Probed LobbyDoorBlocker AABB: doorway center at
+	# hall-local z=3.25 (wall plane). The marker sits 0.25 inside the lobby
+	# at z=3.0 — the same interior-face offset the original had (old marker
+	# z=-2.0 vs old wall plane -2.25); at the raw wall plane the label
+	# embeds in the lintel and is invisible (verified via Xvfb shots). The
+	# label rides a further 0.05 inside to clear the lintel face cleanly
+	# (coplanar placement z-fights as a dark bar in captures).
+	# The ring is pure ambience; the label shows NOW BOARDING once the vote
+	# resolves.
 	_ring = MeshInstance3D.new()
 	var torus := TorusMesh.new()
 	torus.inner_radius = 2.2
 	torus.outer_radius = 2.5
 	torus.material = ring_gold
 	_ring.mesh = torus
-	_ring.position = Vector3(-1, 0.06, -2.0)
+	_ring.position = Vector3(-1, 0.06, 3.0)
 	add_child(_ring)
 	var board_label := Label3D.new()
 	board_label.text = "BOARD HERE"
 	board_label.font_size = 96
 	board_label.modulate = Color(1.0, 0.85, 0.40)
 	board_label.outline_size = 12
-	board_label.position = Vector3(-1, 2.8, -2.0)
+	# resolves the lintel-face z-fighting the coplanar 3.0 placement showed
+	# in Xvfb captures; visually identical in-game.
+	board_label.position = Vector3(-1, 2.8, 2.95)
 	board_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	add_child(board_label)
 	_board_label = board_label
