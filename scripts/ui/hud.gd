@@ -1897,6 +1897,7 @@ func set_hint(text: String) -> void:
 # --- Class ability bar ---
 
 func refresh_abilities(p) -> void:
+	refresh_mouse_legend(p)
 	for c in %AbilityBar.get_children():
 		c.queue_free()
 	if p == null:
@@ -2171,3 +2172,88 @@ func set_command_view(on: bool) -> void:
 	%Crosshair.visible = not on
 	%AbilityBar.visible = not on
 
+
+
+## --- Mouse legend (issue #95): persistent bottom-right click guide ---
+## Data-driven via MouseLegend; render path knows nothing about classes.
+var _legend_left: Label
+var _legend_right: Label
+var _legend_mid: Label
+
+
+## Tiny procedural mouse icon (Art Director ships the real SNES sprite in Phase 3).
+class MouseIcon:
+	extends Control
+
+	func _draw() -> void:
+		var w := size.x
+		var h := size.y
+		var body := Color(0.85, 0.82, 0.75, 0.95)
+		var dark := Color(0.45, 0.4, 0.32, 0.95)
+		# Body: rounded rect.
+		draw_rect(Rect2(2, 6, w - 4, h - 8), body, true)
+		draw_rect(Rect2(2, 6, w - 4, h - 8), dark, false, 2.0)
+		# Button split line + wheel.
+		draw_line(Vector2(w / 2, 6), Vector2(w / 2, h * 0.45), dark, 2.0)
+		draw_circle(Vector2(w / 2, h * 0.32), 3.0, dark)
+
+
+func _build_mouse_legend() -> void:
+	var panel := PanelContainer.new()
+	panel.name = "MouseLegend"
+	panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	panel.offset_left = -280.0
+	panel.offset_top = -100.0
+	panel.offset_right = -16.0
+	panel.offset_bottom = -16.0
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.05, 0.08, 0.78)
+	sb.set_corner_radius_all(6)
+	sb.set_border_width_all(1)
+	sb.border_color = Color(0.55, 0.42, 0.22, 0.9)
+	sb.content_margin_left = 8.0
+	sb.content_margin_right = 8.0
+	sb.content_margin_top = 6.0
+	sb.content_margin_bottom = 6.0
+	panel.add_theme_stylebox_override("panel", sb)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 8)
+	hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(hb)
+	var icon := MouseIcon.new()
+	icon.custom_minimum_size = Vector2(26, 38)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(icon)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 2)
+	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(vb)
+	_legend_left = _legend_row(vb, "LMB")
+	_legend_right = _legend_row(vb, "RMB")
+	_legend_mid = _legend_row(vb, "MMB")
+	add_child(panel)
+
+
+func _legend_row(parent: Control, btn: String) -> Label:
+	var l := Label.new()
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_color", Color(0.8, 0.7, 0.4))
+	l.text = btn
+	parent.add_child(l)
+	return l
+
+
+## Re-renders the legend from the registry. Called on ability refresh (covers
+## setup + class switch). Phase 2 will pass live states instead of "standard".
+func refresh_mouse_legend(p) -> void:
+	if _legend_left == null:
+		_build_mouse_legend()
+	var cid := str(p.get("class_id")) if p != null else ""
+	var row: Dictionary = MouseLegend.actions_for(cid, "standard")
+	_legend_left.text = "LMB  %s" % str(row["left"])
+	var rmb := str(row["right"])
+	_legend_right.visible = rmb != ""
+	_legend_right.text = "RMB  %s" % rmb
+	_legend_mid.text = "MMB  %s" % str(row["middle"])

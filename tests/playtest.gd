@@ -33,6 +33,7 @@ func _run() -> void:
 	_test_pause_tabs()
 	_test_pause_stats_zero_scroll()
 	_test_ability_bar_selected_highlight()
+	_test_mouse_legend()
 	_test_holy_light_key7()
 	_test_holy_light_key7_label()
 	_test_holy_light_visual()
@@ -2634,6 +2635,50 @@ func _test_pause_stats_zero_scroll() -> void:
 	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
 	_assert(tsrc.contains('name="StatPair1"'), "Scene defines StatPair1")
 	_assert(tsrc.contains('name="StatPair2"'), "Scene defines StatPair2")
+
+
+func _test_mouse_legend() -> void:
+	print("[Playtest] Mouse legend...")
+	# Issue #95 Phase 1: data-driven registry, standard state, all four classes.
+	var w: Dictionary = MouseLegend.actions_for("warrior", "standard")
+	_assert(str(w["left"]) == "Attack", "warrior LMB = Attack")
+	_assert(str(w["right"]) == "", "warrior RMB empty (legend hides it)")
+	_assert(str(w["middle"]) == "Ping", "warrior MMB = Ping")
+	var m: Dictionary = MouseLegend.actions_for("mage")
+	_assert(str(m["left"]) == "Cast selected ability", "mage LMB = Cast selected ability")
+	var r: Dictionary = MouseLegend.actions_for("rogue", "standard")
+	_assert(str(r["left"]) == "Attack", "rogue LMB = Attack")
+	_assert(str(r["right"]) == "Hold: charge dagger throw", "rogue RMB = charge throw")
+	var a: Dictionary = MouseLegend.actions_for("architect", "standard")
+	_assert(str(a["left"]) == "Cast selected ability", "architect LMB = Cast selected ability")
+	# Adaptability: unknown class/state fall back, never crash the renderer.
+	var u: Dictionary = MouseLegend.actions_for("necromancer", "standard")
+	_assert(str(u["left"]) == "Attack", "unknown class falls back to Attack")
+	var us: Dictionary = MouseLegend.actions_for("rogue", "charging")
+	_assert(str(us["right"]) == "Hold: charge dagger throw", "unknown state falls back to standard row")
+	_assert(MouseLegend.classes_for("standard").size() == 4, "registry covers 4 classes")
+	# Render path: HUD legend follows the player's class, RMB row hidden when empty.
+	var PlayerScript = load("res://scripts/player/player.gd")
+	var p = PlayerScript.new()
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	p.class_id = "rogue"
+	hud.refresh_mouse_legend(p)
+	_assert(hud._legend_left.text.contains("Attack"), "HUD legend LMB = Attack (rogue)")
+	_assert(hud._legend_right.visible, "HUD legend RMB visible (rogue)")
+	_assert(hud._legend_right.text.contains("charge dagger throw"), "HUD legend RMB text (rogue)")
+	p.class_id = "mage"
+	hud.refresh_mouse_legend(p)
+	_assert(hud._legend_left.text.contains("Cast selected ability"), "HUD legend follows class switch (mage)")
+	_assert(not hud._legend_right.visible, "HUD legend RMB hidden when empty (mage)")
+	_assert(hud._legend_mid.text.contains("Ping"), "HUD legend MMB = Ping")
+	# Bottom-right anchoring + never intercepts input.
+	var panel = hud.get_node("MouseLegend")
+	_assert(panel.anchor_left == 1.0 and panel.anchor_top == 1.0, "legend anchored bottom-right")
+	_assert(panel.mouse_filter == Control.MOUSE_FILTER_IGNORE, "legend never blocks input")
+	hud.queue_free()
+	p.free()
 
 
 func _test_ability_bar_selected_highlight() -> void:

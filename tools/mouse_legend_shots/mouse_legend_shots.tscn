@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://tools/mouse_legend_shots/mouse_legend_shots.gd" id="1"]
+
+[node name="MouseLegendShots" type="Node"]
+script = ExtResource("1")
