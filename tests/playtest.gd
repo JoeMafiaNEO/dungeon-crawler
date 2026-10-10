@@ -5258,6 +5258,23 @@ func _test_warlord_spawn_avoids_river() -> void:
 	for off in offsets:
 		var spawn_x: float = (off + nudge).x
 		_assert(absf(spawn_x) >= 4.0, "#28: spawn at x=%.1f avoids river" % spawn_x)
+	# Jesse 2026-10-10 warlord rework: all players get factions (setup waits
+	# for everyone, not just the first player), no AI in 2+ player multiplayer,
+	# and the map scales with player count.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func _warlord_expected_players()"),
+		"warlord: expected-players helper exists")
+	_assert(dsrc.contains("players.size() >= expected"),
+		"warlord: setup waits for all players")
+	_assert(dsrc.contains("WARLORD_SETUP_TIMEOUT"),
+		"warlord: setup has a timeout fallback")
+	_assert(dsrc.contains("func _warlord_wants_ai()"),
+		"warlord: AI gating helper exists")
+	_assert(dsrc.contains("func _warlord_map_scale()"),
+		"warlord: map scale helper exists")
+	# Map scale: sqrt(n/2) keeps area-per-faction constant (1.0 at 2 players).
+	_assert(dsrc.contains("sqrt(float(maxi(2, _warlord_expected_players())) / 2.0)"),
+		"warlord: map scales with player count")
 	print("[Playtest] Warlord spawn avoids river done")
 
 

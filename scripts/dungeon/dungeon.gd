@@ -158,6 +158,10 @@ var _season_manager: Node = null
 ## Issue #10 Phase 2: seasons can be disabled (sim harness baseline).
 var seasons_enabled := true
 var _warlord_setup_pending := false
+## Warlord setup: how long we've waited for all players to load (timeout
+## fallback so a slow/disconnected loader can't stall the level forever).
+var _warlord_setup_wait := 0.0
+const WARLORD_SETUP_TIMEOUT := 15.0
 var _construction_check_tick := 0.0
 ## Issue #86 Bug 2: handshake retry timer. -1.0 = inactive.
 var _handshake_timer := -1.0
@@ -710,10 +714,16 @@ func _process(delta: float) -> void:
 	for i in _torch_lights.size():
 		_torch_lights[i].light_energy = 1.4 + sin(t * 7.0 + float(i) * 2.1) * 0.18
 	if multiplayer.is_server():
-		# Deferred warlord setup: wait for at least one player.
-		if _warlord_setup_pending and not get_tree().get_nodes_in_group("players").is_empty():
-			_warlord_setup_pending = false
-			_setup_warlord()
+		# Deferred warlord setup: wait for ALL expected players, not just the
+		# first (Jesse 2026-10-10: a 2-player test only gave the host a faction
+		# because setup ran as soon as the host's player node appeared).
+		if _warlord_setup_pending:
+			_warlord_setup_wait += delta
+			var players := get_tree().get_nodes_in_group("players")
+			var expected := _warlord_expected_players()
+			if not players.is_empty() and (players.size() >= expected or _warlord_setup_wait >= WARLORD_SETUP_TIMEOUT):
+				_warlord_setup_pending = false
+				_setup_warlord()
 		if is_warlord and _rts_manager != null:
 			_construction_check_tick += delta
 			if _construction_check_tick >= 5.0:
@@ -792,6 +802,29 @@ func _spawn_market_loot() -> void:
 
 
 ## Warlord's Domain setup: RTS factions, town halls, villagers, resources.
+## How many player factions to expect on this warlord level. Used to delay
+## RTS setup until everyone has loaded (Jesse 2026-10-10).
+func _warlord_expected_players() -> int:
+	if not continued_roster.is_empty():
+		return maxi(1, continued_roster.size())
+	# Fresh run: everyone currently connected (peers + host).
+	return maxi(1, multiplayer.get_peers().size() + 1)
+
+
+## Jesse 2026-10-10: no AI warlords in multiplayer with 2+ players.
+## Solo runs always get AI opponents; a lone multiplayer host does too.
+func _warlord_wants_ai() -> bool:
+	if NetworkManager.active_run_mode == SaveManager.MODE_SOLO:
+		return true
+	return _warlord_expected_players() < 2
+
+
+## Map scale factor for the warlord level: keeps area-per-faction constant
+## so 12 players aren't crowded (Jesse 2026-10-10). 1.0 at 2 factions.
+func _warlord_map_scale() -> float:
+	return sqrt(float(maxi(2, _warlord_expected_players())) / 2.0)
+
+
 func _setup_warlord() -> void:
 	print("[Warlord] Setting up RTS mode...")
 	_rts_manager = RTSManager.new()
@@ -801,6 +834,8 @@ func _setup_warlord() -> void:
 
 	# Register player factions.
 	var faction_id := 0
+	# Jesse 2026-10-10: no AI warlords in multiplayer with 2+ players.
+	var want_ai := _warlord_wants_ai()
 	if not continued_roster.is_empty():
 		# Continued run: pre-register ALL roster factions by saved ID.
 		# No-shows become AI immediately; rejoiners reclaim via _reclaim_faction.
@@ -817,11 +852,13 @@ func _setup_warlord() -> void:
 				_rts_manager.register_faction(fid, sid, cls)
 				connected[sid].set("rts_faction", fid)
 			else:
-				# No-show: AI controls this faction from the start.
+				# No-show: faction stays registered (reclaimable on rejoin);
+				# AI driver only when AI is wanted (Jesse 2026-10-10).
 				_rts_manager.register_faction(fid, -1, cls)
-				var ai := AIWarlord.new()
-				ai.faction_id = fid
-				add_child(ai)
+				if want_ai:
+					var ai := AIWarlord.new()
+					ai.faction_id = fid
+					add_child(ai)
 			_spawn_faction_base(fid, _faction_spawn_pos(fid))
 			faction_id = maxi(faction_id, fid + 1)
 	else:
@@ -835,8 +872,9 @@ func _setup_warlord() -> void:
 			_spawn_faction_base(faction_id, _faction_spawn_pos(faction_id))
 			faction_id += 1
 
-	# Solo: add AI warlord opponent(s).
-	if faction_id == 1:
+	# AI warlord opponent(s): solo, or multiplayer with fewer than 2 players
+	# (Jesse 2026-10-10: no AI in multiplayer with 2+ players).
+	if want_ai and faction_id == 1:
 		var ai_count := 1
 		var cycle := (level_number - 1) / THEME_ORDER.size()
 		if cycle >= 2:
@@ -993,9 +1031,10 @@ func _is_valid_build_spot(pos: Vector3) -> bool:
 
 
 func _faction_spawn_pos(faction_id: int) -> Vector3:
-	# Spread factions around the map.
+	# Spread factions around the map; radius scales with player count
+	# (Jesse 2026-10-10) so 12 factions aren't crowded.
 	var angle := TAU * float(faction_id) / float(maxi(2, _rts_manager.factions.size()))
-	var radius := RTSTuning.get_float("map", "faction_radius", 30.0)
+	var radius := RTSTuning.get_float("map", "faction_radius", 30.0) * _warlord_map_scale()
 	return Vector3(cos(angle) * radius, 0, sin(angle) * radius)
 
 
@@ -1085,10 +1124,11 @@ func spawn_rts_river() -> void:
 	var water := StaticBody3D.new()
 	water.name = "River"
 	water.add_to_group("rts_water")
-	# Dark riverbed for depth, just above the ground.
+	# Dark riverbed for depth, just above the ground. Length scales with the
+	# map so it still spans the play area at 12 players (Jesse 2026-10-10).
 	var bed := MeshInstance3D.new()
 	var bedm := PlaneMesh.new()
-	bedm.size = Vector2(8.0, 96.0)
+	bedm.size = Vector2(8.0, 96.0 * _warlord_map_scale())
 	bed.mesh = bedm
 	var bedmat := StandardMaterial3D.new()
 	bedmat.albedo_color = Color(0.08, 0.16, 0.22, 1.0)
@@ -1098,7 +1138,7 @@ func spawn_rts_river() -> void:
 	# Water surface.
 	var mi := MeshInstance3D.new()
 	var pm := PlaneMesh.new()
-	pm.size = Vector2(8.0, 96.0)
+	pm.size = Vector2(8.0, 96.0 * _warlord_map_scale())
 	mi.mesh = pm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.15, 0.38, 0.65, 0.92)
@@ -1174,10 +1214,12 @@ func _spawn_resource_nodes() -> void:
 	# Nodes per resource per faction, +bonus per cycle so late cycles don't thin out.
 	var per_res: int = RTSTuning.get_int("map", "nodes_per_resource_per_faction", 8) + RTSTuning.get_int("map", "nodes_cycle_bonus", 2) * cycle
 	var types := ["wood", "food", "gold", "stone"]
+	# Resource field scales with the map (Jesse 2026-10-10).
+	var ms := _warlord_map_scale()
 	for fi in _rts_manager.factions:
 		for t in types:
 			for n in per_res:
-				rpc("spawn_rts_node", t, _random_land_pos(14.0, 42.0))
+				rpc("spawn_rts_node", t, _random_land_pos(14.0 * ms, 42.0 * ms))
 	# Contested center ring: bonus gold/stone to reward map control.
 	for i in RTSTuning.get_int("map", "center_ring_nodes", 12):
 		var t: String = "gold" if i % 2 == 0 else "stone"
