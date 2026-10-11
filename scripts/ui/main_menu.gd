@@ -996,12 +996,16 @@ func _on_host_create_pressed() -> void:
 		_show_lobby("LAN Lobby", true)
 	else:
 		var slot := NetworkManager.host_save_slot
-		if slot < 0:
+		if slot >= 0:
+			# Hosting from a save: route through continue_run so _continued_run
+			# is set and start_continued_run() can rpc("load_dungeon") later.
+			NetworkManager.continue_run(SaveManager.MODE_MP, slot)
+		else:
 			slot = _first_empty_slot(SaveManager.MODE_MP)
 			if slot == -1:
 				slot = 0
-		_host_slot = slot
-		NetworkManager.host_lobby(slot)
+			_host_slot = slot
+			NetworkManager.host_lobby(slot)
 
 
 func _on_host_tabs_back() -> void:
