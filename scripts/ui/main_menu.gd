@@ -22,6 +22,16 @@ var _lan_ip_field: LineEdit = null
 var _lan_name_field: LineEdit = null
 var _lan_host_toggle: Button = null
 var _lan_join_toggle: Button = null
+## Host tab menu state (Jesse 2026-10-11 rework).
+var _host_tabs_built := false
+var _host_tab_container: TabContainer = null
+var _host_tab2: Control = null
+var _host_create_button: Button = null
+var _host_save_list: VBoxContainer = null
+var _host_adv_box: VBoxContainer = null
+var _host_loot_custom_row: HBoxContainer = null
+var _host_rarity_custom_box: VBoxContainer = null
+var _host_pw_field: LineEdit = null
 
 const CLASS_DESCS := {
 	"warrior": "Warrior — Tanky melee, totems and auras.",
@@ -58,6 +68,11 @@ func _ready() -> void:
 	_build_confirm_modal()
 	_build_settings_panel()
 	_apply_saved_fullscreen()
+	# Jesse 2026-10-11: class selection moved to Lobby (MP) / popup (Solo).
+	%TitlePhase.get_node("TitleClassRow").visible = false
+	%TitlePhase.get_node("TitleClassDesc").visible = false
+	# Jesse 2026-10-11: Daily Challenge hidden for a future update.
+	%ModePhase.get_node("DailyButton").visible = false
 	# Mason's Cipher: the Architect stays hidden until unlocked.
 	%TitleArchitectButton.visible = SaveManager.is_architect_unlocked()
 	AudioManager.play_music("menu")
@@ -82,9 +97,79 @@ func _show_lobby(title: String, can_start: bool) -> void:
 	%LobbyPanel.visible = true
 	%LobbyTitle.text = title
 	%StartButton.visible = can_start
+	# Jesse 2026-10-11: class selection in lobby (unless save-locked), ready button.
+	_build_lobby_class_row()
+	_build_lobby_ready_button()
 	# Issue #70: kick button for LAN host (kicks selected member).
 	_ensure_kick_button()
 	_refresh_members()
+	_refresh_lobby_start()
+
+
+## Class selection row in the lobby (hidden if the save locks classes).
+func _build_lobby_class_row() -> void:
+	var existing := %LobbyPanel.get_node_or_null("LobbyClassRow")
+	if existing != null:
+		existing.queue_free()
+	if NetworkManager.lobby_class_locked:
+		return
+	var row := HBoxContainer.new()
+	row.name = "LobbyClassRow"
+	row.add_theme_constant_override("separation", 8)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	%LobbyPanel.add_child(row)
+	%LobbyPanel.move_child(row, 2)
+	for cid in ["warrior", "rogue", "mage", "architect"]:
+		if cid == "architect" and not SaveManager.is_architect_unlocked():
+			continue
+		var b := Button.new()
+		b.text = cid.capitalize()
+		b.toggle_mode = true
+		b.button_pressed = (NetworkManager.selected_class_id == cid)
+		b.toggled.connect(_on_lobby_class.bind(cid))
+		row.add_child(b)
+
+
+func _on_lobby_class(pressed: bool, cid: String) -> void:
+	AudioManager.sfx("ui_click")
+	if pressed:
+		NetworkManager.selected_class_id = cid
+
+
+## Ready button for non-hosts; host sees Start Dungeon (gated on all ready).
+func _build_lobby_ready_button() -> void:
+	var existing := %LobbyPanel.get_node_or_null("ReadyButton")
+	if existing != null:
+		existing.queue_free()
+	if NetworkManager.is_host:
+		return
+	var b := Button.new()
+	b.name = "ReadyButton"
+	b.text = "Ready"
+	b.toggle_mode = true
+	b.custom_minimum_size = Vector2(160, 48)
+	b.toggled.connect(_on_lobby_ready_toggled)
+	%LobbyPanel.add_child(b)
+
+
+func _on_lobby_ready_toggled(pressed: bool) -> void:
+	AudioManager.sfx("ui_click")
+	var my_id := multiplayer.get_unique_id()
+	NetworkManager.lobby_ready[my_id] = pressed
+	# TODO: sync ready state to host via RPC.
+	_refresh_lobby_start()
+
+
+func _refresh_lobby_start() -> void:
+	# Start Dungeon only works if all players are ready.
+	var all_ready := true
+	for sid in NetworkManager.lobby_members:
+		if sid == NetworkManager.server_peer_id:
+			continue
+		if not bool(NetworkManager.lobby_ready.get(sid, false)):
+			all_ready = false
+			break
+	%StartButton.disabled = not all_ready
 
 
 # --- Title phase ---
@@ -112,14 +197,11 @@ func _on_multi_pressed() -> void:
 	_show_phase("MultiPhase")
 
 
-## Show the multiplayer slot cards (issue #4 Phase 5): one card per MP slot
-## with its roster summary, per-slot Continue / New Run, and legacy rows.
+## Simplified multiplayer page (Jesse 2026-10-11): just Host Game / Join Game.
+## Save slot selection moved into the Host Game tab menu.
 func _refresh_multi_ui() -> void:
-	for child in %MpSlotsList.get_children():
-		child.queue_free()
-	for slot in range(SaveManager.MAX_SLOTS):
-		%MpSlotsList.add_child(_build_slot_card(SaveManager.MODE_MP, slot))
-	_refresh_legacy_rows(%MpLegacyList, SaveManager.MODE_MP)
+	%MpSlotsList.visible = false
+	%MpLegacyList.visible = false
 	_style_buttons()
 
 
@@ -418,18 +500,496 @@ func _on_lan_join_pressed() -> void:
 
 func _on_host_pressed() -> void:
 	AudioManager.sfx("ui_click")
-	# Issue #4 Phase 5: a fresh host targets the first empty MP slot.
-	var slot := _first_empty_slot(SaveManager.MODE_MP)
-	if slot == -1:
-		# Every MP slot is occupied: hosting fresh overwrites slot 1 — confirm.
-		_show_overwrite_confirm(SaveManager.MODE_MP, 0)
-		return
-	_host_slot = slot
-	# Mason's Cipher: the Architect stays hidden on the host row until unlocked.
-	%HostArchitectButton.visible = SaveManager.is_architect_unlocked()
-	# Initialize from the title selection (don't clobber); keep changeable.
-	_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
+	_build_host_tabs()
 	_show_phase("HostPhase")
+
+
+## Host Game tabbed menu (Jesse 2026-10-11 rework). Scrollbars allowed here.
+func _build_host_tabs() -> void:
+	if _host_tabs_built:
+		_refresh_host_tabs()
+		return
+	_host_tabs_built = true
+	# Hide the legacy HostPhase children; the tabs take over.
+	for child in %HostPhase.get_children():
+		child.visible = false
+	var tabs := TabContainer.new()
+	tabs.name = "HostTabs"
+	tabs.custom_minimum_size = Vector2(560, 420)
+	%HostPhase.add_child(tabs)
+	_host_tab_container = tabs
+	# --- Tab 1: Connection & Save ---
+	var t1 := VBoxContainer.new()
+	t1.name = "Connection"
+	tabs.add_child(t1)
+	var conn_label := Label.new()
+	conn_label.text = "Connection"
+	conn_label.add_theme_font_size_override("font_size", 18)
+	t1.add_child(conn_label)
+	var conn_row := HBoxContainer.new()
+	conn_row.add_theme_constant_override("separation", 12)
+	t1.add_child(conn_row)
+	var steam_btn := Button.new()
+	steam_btn.name = "SteamBtn"
+	steam_btn.text = "Steam"
+	steam_btn.toggle_mode = true
+	steam_btn.button_pressed = not _lan_mode_host
+	steam_btn.toggled.connect(_on_host_conn_toggled.bind(false, steam_btn))
+	conn_row.add_child(steam_btn)
+	var lan_btn := Button.new()
+	lan_btn.name = "LanBtn"
+	lan_btn.text = "LAN"
+	lan_btn.toggle_mode = true
+	lan_btn.button_pressed = _lan_mode_host
+	lan_btn.toggled.connect(_on_host_conn_toggled.bind(true, lan_btn))
+	conn_row.add_child(lan_btn)
+	var save_label := Label.new()
+	save_label.text = "Save File (optional — hosting from a save locks Difficulty & Loot)"
+	save_label.add_theme_font_size_override("font_size", 18)
+	t1.add_child(save_label)
+	var save_scroll := ScrollContainer.new()
+	save_scroll.custom_minimum_size = Vector2(540, 180)
+	t1.add_child(save_scroll)
+	_host_save_list = VBoxContainer.new()
+	_host_save_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_scroll.add_child(_host_save_list)
+	_refresh_host_save_list()
+	# --- Tab 2: Difficulty & Loot ---
+	var t2_scroll := ScrollContainer.new()
+	t2_scroll.name = "Difficulty & Loot"
+	tabs.add_child(t2_scroll)
+	var t2 := VBoxContainer.new()
+	t2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	t2_scroll.add_child(t2)
+	_host_tab2 = t2_scroll
+	var diff_label := Label.new()
+	diff_label.text = "Difficulty"
+	diff_label.add_theme_font_size_override("font_size", 18)
+	t2.add_child(diff_label)
+	var diff_row := HBoxContainer.new()
+	diff_row.add_theme_constant_override("separation", 8)
+	t2.add_child(diff_row)
+	for spec in [["Easy", "easy"], ["Normal", "normal"], ["Hard", "hard"], ["Advanced", "advanced"]]:
+		var b := Button.new()
+		b.text = spec[0]
+		b.toggle_mode = true
+		b.button_pressed = (NetworkManager.host_difficulty_preset == spec[1])
+		b.toggled.connect(_on_host_diff_preset.bind(spec[1]))
+		b.name = "Diff_" + spec[1]
+		diff_row.add_child(b)
+	_host_adv_box = VBoxContainer.new()
+	t2.add_child(_host_adv_box)
+	_refresh_adv_box()
+	var loot_label := Label.new()
+	loot_label.text = "Loot Multiplier"
+	loot_label.add_theme_font_size_override("font_size", 18)
+	t2.add_child(loot_label)
+	var loot_row := HBoxContainer.new()
+	loot_row.add_theme_constant_override("separation", 8)
+	t2.add_child(loot_row)
+	for spec in [["0.5x", 0.5], ["1.0x", 1.0], ["2.0x", 2.0], ["Custom", -1.0]]:
+		var b := Button.new()
+		b.text = spec[0]
+		b.toggle_mode = true
+		b.button_pressed = (absf(NetworkManager.host_loot_mult - float(spec[1])) < 0.01) or \
+			(float(spec[1]) < 0.0 and NetworkManager.host_loot_mult not in [0.5, 1.0, 2.0])
+		b.toggled.connect(_on_host_loot_preset.bind(float(spec[1])))
+		b.name = "Loot_" + str(spec[1])
+		loot_row.add_child(b)
+	_host_loot_custom_row = HBoxContainer.new()
+	t2.add_child(_host_loot_custom_row)
+	_refresh_loot_custom_row()
+	var rar_label := Label.new()
+	rar_label.text = "Rarity Distribution"
+	rar_label.add_theme_font_size_override("font_size", 18)
+	t2.add_child(rar_label)
+	var rar_row := HBoxContainer.new()
+	rar_row.add_theme_constant_override("separation", 8)
+	t2.add_child(rar_row)
+	var rar_def := Button.new()
+	rar_def.text = "Default"
+	rar_def.toggle_mode = true
+	rar_def.button_pressed = NetworkManager.custom_rarity.is_empty()
+	rar_def.toggled.connect(_on_host_rarity_default.bind(true))
+	rar_def.name = "RarDefault"
+	rar_row.add_child(rar_def)
+	var rar_cus := Button.new()
+	rar_cus.text = "Custom"
+	rar_cus.toggle_mode = true
+	rar_cus.button_pressed = not NetworkManager.custom_rarity.is_empty()
+	rar_cus.toggled.connect(_on_host_rarity_default.bind(false))
+	rar_cus.name = "RarCustom"
+	rar_row.add_child(rar_cus)
+	_host_rarity_custom_box = VBoxContainer.new()
+	t2.add_child(_host_rarity_custom_box)
+	_refresh_rarity_box()
+	# --- Tab 3: Lobby Settings ---
+	var t3 := VBoxContainer.new()
+	t3.name = "Lobby"
+	tabs.add_child(t3)
+	var pw_label := Label.new()
+	pw_label.text = "Lobby Password (default: none)"
+	pw_label.add_theme_font_size_override("font_size", 18)
+	t3.add_child(pw_label)
+	var pw_row := HBoxContainer.new()
+	pw_row.add_theme_constant_override("separation", 12)
+	t3.add_child(pw_row)
+	var pw_toggle := CheckButton.new()
+	pw_toggle.text = "Use password"
+	pw_toggle.button_pressed = not NetworkManager.lobby_password.is_empty()
+	pw_toggle.toggled.connect(_on_host_pw_toggled)
+	pw_row.add_child(pw_toggle)
+	_host_pw_field = LineEdit.new()
+	_host_pw_field.placeholder_text = "Password"
+	_host_pw_field.text = NetworkManager.lobby_password
+	_host_pw_field.editable = pw_toggle.button_pressed
+	_host_pw_field.text_changed.connect(_on_host_pw_changed)
+	pw_row.add_child(_host_pw_field)
+	var vis_label := Label.new()
+	vis_label.text = "Lobby Visibility (Steam only)"
+	vis_label.add_theme_font_size_override("font_size", 18)
+	t3.add_child(vis_label)
+	var vis_row := HBoxContainer.new()
+	vis_row.add_theme_constant_override("separation", 8)
+	t3.add_child(vis_row)
+	for spec in [["Public", "public"], ["Friends Only", "friends"], ["Private", "private"]]:
+		var b := Button.new()
+		b.text = spec[0]
+		b.toggle_mode = true
+		b.button_pressed = (NetworkManager.lobby_visibility == spec[1])
+		b.toggled.connect(_on_host_visibility.bind(spec[1]))
+		vis_row.add_child(b)
+	var cap_label := Label.new()
+	cap_label.text = "Player Cap (4-12, default 4)"
+	cap_label.add_theme_font_size_override("font_size", 18)
+	t3.add_child(cap_label)
+	var cap_row := HBoxContainer.new()
+	cap_row.add_theme_constant_override("separation", 12)
+	t3.add_child(cap_row)
+	var cap_slider := HSlider.new()
+	cap_slider.min_value = 4
+	cap_slider.max_value = 12
+	cap_slider.step = 1
+	cap_slider.value = NetworkManager.lobby_player_cap
+	cap_slider.custom_minimum_size = Vector2(200, 0)
+	cap_slider.value_changed.connect(_on_host_cap_changed)
+	cap_row.add_child(cap_slider)
+	var cap_val := Label.new()
+	cap_val.name = "CapVal"
+	cap_val.text = str(NetworkManager.lobby_player_cap)
+	cap_row.add_child(cap_val)
+	var warn := Label.new()
+	warn.text = "Warning: players joining a pre-existing save file will start at level 1."
+	warn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
+	warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	t3.add_child(warn)
+	# --- Bottom buttons ---
+	var bot_row := HBoxContainer.new()
+	bot_row.add_theme_constant_override("separation", 16)
+	bot_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	%HostPhase.add_child(bot_row)
+	_host_create_button = Button.new()
+	_host_create_button.text = "Host"
+	_host_create_button.custom_minimum_size = Vector2(160, 48)
+	_host_create_button.pressed.connect(_on_host_create_pressed)
+	bot_row.add_child(_host_create_button)
+	var back_btn := Button.new()
+	back_btn.text = "Back"
+	back_btn.custom_minimum_size = Vector2(160, 48)
+	back_btn.pressed.connect(_on_host_tabs_back)
+	bot_row.add_child(back_btn)
+	_style_buttons()
+	_refresh_host_tabs()
+
+
+## Host tab refresh: lock states, button enable.
+func _refresh_host_tabs() -> void:
+	if _host_tab_container == null:
+		return
+	var from_save := NetworkManager.host_save_slot >= 0
+	# Tab 2 locked when hosting from a save.
+	_host_tab_container.set_tab_disabled(1, from_save)
+	if from_save and _host_tab_container.current_tab == 1:
+		_host_tab_container.current_tab = 0
+	_refresh_host_button()
+
+
+func _refresh_host_button() -> void:
+	if _host_create_button == null:
+		return
+	# Minimum specs: connection chosen (always true — Steam default).
+	_host_create_button.disabled = false
+
+
+func _on_host_conn_toggled(pressed: bool, lan_mode: bool, btn: Button) -> void:
+	AudioManager.sfx("ui_click")
+	_lan_mode_host = lan_mode
+	_refresh_host_button()
+
+
+func _refresh_host_save_list() -> void:
+	if _host_save_list == null:
+		return
+	for c in _host_save_list.get_children():
+		c.queue_free()
+	# "Fresh run" option.
+	var fresh := Button.new()
+	fresh.text = "Fresh Run (no save)"
+	fresh.toggle_mode = true
+	fresh.button_pressed = (NetworkManager.host_save_slot < 0)
+	fresh.toggled.connect(_on_host_save_selected.bind(-1))
+	_host_save_list.add_child(fresh)
+	for slot in range(SaveManager.MAX_SLOTS):
+		var info: Dictionary = SaveManager.get_slot_info(SaveManager.MODE_MP, slot)
+		if info.is_empty():
+			continue
+		var b := Button.new()
+		b.text = "Slot %d: %s" % [slot + 1, str(info.get("summary", "Save"))]
+		b.toggle_mode = true
+		b.button_pressed = (NetworkManager.host_save_slot == slot)
+		b.toggled.connect(_on_host_save_selected.bind(slot))
+		_host_save_list.add_child(b)
+
+
+func _on_host_save_selected(pressed: bool, slot: int) -> void:
+	AudioManager.sfx("ui_click")
+	if pressed:
+		NetworkManager.host_save_slot = slot
+	else:
+		NetworkManager.host_save_slot = -1
+	_refresh_host_save_list()
+	_refresh_host_tabs()
+
+
+func _on_host_diff_preset(pressed: bool, preset: String) -> void:
+	AudioManager.sfx("ui_click")
+	if not pressed:
+		return
+	NetworkManager.host_difficulty_preset = preset
+	match preset:
+		"easy":
+			NetworkManager.host_difficulty = 0.75
+		"normal":
+			NetworkManager.host_difficulty = 1.0
+		"hard":
+			NetworkManager.host_difficulty = 1.5
+		"advanced":
+			NetworkManager.host_difficulty = 1.0
+	_refresh_adv_box()
+	_refresh_host_button()
+
+
+func _refresh_adv_box() -> void:
+	if _host_adv_box == null:
+		return
+	for c in _host_adv_box.get_children():
+		c.queue_free()
+	if NetworkManager.host_difficulty_preset != "advanced":
+		return
+	var title := Label.new()
+	title.text = "Advanced Multipliers"
+	_host_adv_box.add_child(title)
+	for spec in [
+		["Mob HP / round", "adv_mob_hp_mult", 0.5, 3.0],
+		["Mob Dmg / round", "adv_mob_dmg_mult", 0.5, 3.0],
+		["Mob max spawn", "adv_mob_max_spawn", 4, 32],
+		["Boss HP / round", "adv_boss_hp_mult", 0.5, 3.0],
+		["Boss Dmg / round", "adv_boss_dmg_mult", 0.5, 3.0],
+		["Wave credits mult", "adv_wave_credits_mult", 0.5, 3.0],
+	]:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		var lab := Label.new()
+		lab.text = spec[0]
+		lab.custom_minimum_size = Vector2(160, 0)
+		row.add_child(lab)
+		var slider := HSlider.new()
+		slider.min_value = float(spec[2])
+		slider.max_value = float(spec[3])
+		slider.step = 0.1 if spec[1] != "adv_mob_max_spawn" else 1.0
+		slider.custom_minimum_size = Vector2(180, 0)
+		var key := str(spec[1])
+		if key == "adv_mob_max_spawn":
+			slider.value = NetworkManager.adv_mob_max_spawn
+		else:
+			slider.value = float(NetworkManager.get(key))
+		slider.value_changed.connect(_on_host_adv_changed.bind(key))
+		row.add_child(slider)
+		var val := Label.new()
+		val.name = "AdvVal_" + key
+		val.text = str(slider.value)
+		row.add_child(val)
+		_host_adv_box.add_child(row)
+
+
+func _on_host_adv_changed(value: float, key: String) -> void:
+	if key == "adv_mob_max_spawn":
+		NetworkManager.adv_mob_max_spawn = int(value)
+	else:
+		NetworkManager.set(key, value)
+	if _host_adv_box != null:
+		var lab := _host_adv_box.find_child("AdvVal_" + key, true, false) as Label
+		if lab != null:
+			lab.text = str(value)
+
+
+func _on_host_loot_preset(pressed: bool, mult: float) -> void:
+	AudioManager.sfx("ui_click")
+	if not pressed:
+		return
+	if mult < 0.0:
+		# Custom: keep current or default to 1.0.
+		if NetworkManager.host_loot_mult in [0.5, 1.0, 2.0]:
+			NetworkManager.host_loot_mult = 1.0
+	else:
+		NetworkManager.host_loot_mult = mult
+	_refresh_loot_custom_row()
+	_refresh_host_button()
+
+
+func _refresh_loot_custom_row() -> void:
+	if _host_loot_custom_row == null:
+		return
+	for c in _host_loot_custom_row.get_children():
+		c.queue_free()
+	var is_custom := NetworkManager.host_loot_mult not in [0.5, 1.0, 2.0]
+	if not is_custom:
+		return
+	var lab := Label.new()
+	lab.text = "Custom multiplier:"
+	_host_loot_custom_row.add_child(lab)
+	var slider := HSlider.new()
+	slider.min_value = 0.1
+	slider.max_value = 5.0
+	slider.step = 0.1
+	slider.value = NetworkManager.host_loot_mult
+	slider.custom_minimum_size = Vector2(180, 0)
+	slider.value_changed.connect(_on_host_loot_custom_changed)
+	_host_loot_custom_row.add_child(slider)
+	var val := Label.new()
+	val.name = "LootCustomVal"
+	val.text = "%.1fx" % slider.value
+	_host_loot_custom_row.add_child(val)
+
+
+func _on_host_loot_custom_changed(value: float) -> void:
+	NetworkManager.host_loot_mult = value
+	if _host_loot_custom_row != null:
+		var lab := _host_loot_custom_row.find_child("LootCustomVal", true, false) as Label
+		if lab != null:
+			lab.text = "%.1fx" % value
+
+
+func _on_host_rarity_default(pressed: bool, is_default: bool) -> void:
+	AudioManager.sfx("ui_click")
+	if not pressed:
+		return
+	if is_default:
+		NetworkManager.custom_rarity.clear()
+	else:
+		# Start from an even split; user adjusts.
+		NetworkManager.custom_rarity = {"common": 50.0, "uncommon": 25.0, "rare": 15.0, "epic": 7.0, "legendary": 3.0}
+	_refresh_rarity_box()
+
+
+func _refresh_rarity_box() -> void:
+	if _host_rarity_custom_box == null:
+		return
+	for c in _host_rarity_custom_box.get_children():
+		c.queue_free()
+	if NetworkManager.custom_rarity.is_empty():
+		return
+	var total := 0.0
+	for rar in ["common", "uncommon", "rare", "epic", "legendary"]:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		var lab := Label.new()
+		lab.text = rar.capitalize()
+		lab.custom_minimum_size = Vector2(120, 0)
+		row.add_child(lab)
+		var slider := HSlider.new()
+		slider.min_value = 0
+		slider.max_value = 100
+		slider.step = 1
+		slider.value = float(NetworkManager.custom_rarity.get(rar, 0.0))
+		slider.custom_minimum_size = Vector2(180, 0)
+		slider.value_changed.connect(_on_host_rarity_changed.bind(rar))
+		row.add_child(slider)
+		var val := Label.new()
+		val.name = "RarVal_" + rar
+		val.text = "%d%%" % int(slider.value)
+		row.add_child(val)
+		_host_rarity_custom_box.add_child(row)
+		total += slider.value
+	var total_lab := Label.new()
+	total_lab.name = "RarTotal"
+	total_lab.text = "Total: %d%% (must equal 100%%)" % int(total)
+	total_lab.add_theme_color_override("font_color", Color(0.4, 1.0, 0.4) if int(total) == 100 else Color(1.0, 0.4, 0.4))
+	_host_rarity_custom_box.add_child(total_lab)
+	_refresh_host_button()
+
+
+func _on_host_rarity_changed(value: float, rar: String) -> void:
+	NetworkManager.custom_rarity[rar] = value
+	if _host_rarity_custom_box != null:
+		var lab := _host_rarity_custom_box.find_child("RarVal_" + rar, true, false) as Label
+		if lab != null:
+			lab.text = "%d%%" % int(value)
+		var total := 0.0
+		for r in NetworkManager.custom_rarity.values():
+			total += float(r)
+		var tlab := _host_rarity_custom_box.find_child("RarTotal", true, false) as Label
+		if tlab != null:
+			tlab.text = "Total: %d%% (must equal 100%%)" % int(total)
+			tlab.add_theme_color_override("font_color", Color(0.4, 1.0, 0.4) if int(total) == 100 else Color(1.0, 0.4, 0.4))
+	_refresh_host_button()
+
+
+func _on_host_pw_toggled(pressed: bool) -> void:
+	AudioManager.sfx("ui_click")
+	if _host_pw_field != null:
+		_host_pw_field.editable = pressed
+	if not pressed:
+		NetworkManager.lobby_password = ""
+		if _host_pw_field != null:
+			_host_pw_field.text = ""
+
+
+func _on_host_pw_changed(text: String) -> void:
+	NetworkManager.lobby_password = text
+
+
+func _on_host_visibility(pressed: bool, vis: String) -> void:
+	AudioManager.sfx("ui_click")
+	if pressed:
+		NetworkManager.lobby_visibility = vis
+
+
+func _on_host_cap_changed(value: float) -> void:
+	NetworkManager.lobby_player_cap = int(value)
+	if _host_tab_container != null:
+		var lab := _host_tab_container.find_child("CapVal", true, false) as Label
+		if lab != null:
+			lab.text = str(int(value))
+
+
+func _on_host_create_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	# Validate rarity total if custom.
+	if not NetworkManager.custom_rarity.is_empty():
+		var total := 0.0
+		for r in NetworkManager.custom_rarity.values():
+			total += float(r)
+		if int(total) != 100:
+			AudioManager.sfx("ui_error")
+			return
+	# TODO: route through the existing host flow with the new settings.
+	_show_lobby("Lobby", true)
+
+
+func _on_host_tabs_back() -> void:
+	AudioManager.sfx("ui_click")
+	_show_phase("MultiPhase")
 
 
 func _on_join_pressed() -> void:
@@ -700,10 +1260,57 @@ func _on_slot_new_pressed(mode: String, slot: int) -> void:
 		return
 	if mode == SaveManager.MODE_MP:
 		_host_slot = slot
-		_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
+		_build_host_tabs()
 		_show_phase("HostPhase")
 	else:
-		NetworkManager.play_solo(slot)
+		# Jesse 2026-10-11: class selection popup before starting a solo run.
+		_show_solo_class_popup(slot)
+
+
+## Class popup for solo new/overwrite: pick a class, then start the run.
+func _show_solo_class_popup(slot: int) -> void:
+	var overlay := Control.new()
+	overlay.name = "SoloClassPopup"
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var panel := PanelContainer.new()
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "Choose Your Class"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 20)
+	vb.add_child(title)
+	for cid in ["warrior", "rogue", "mage", "architect"]:
+		if cid == "architect" and not SaveManager.is_architect_unlocked():
+			continue
+		var b := Button.new()
+		b.text = cid.capitalize()
+		b.custom_minimum_size = Vector2(220, 44)
+		b.pressed.connect(_on_solo_class_chosen.bind(cid, slot, overlay))
+		vb.add_child(b)
+	var cancel := Button.new()
+	cancel.text = "Cancel"
+	cancel.custom_minimum_size = Vector2(220, 44)
+	cancel.pressed.connect(func() -> void: overlay.queue_free())
+	vb.add_child(cancel)
+	add_child(overlay)
+	_style_buttons()
+
+
+func _on_solo_class_chosen(cid: String, slot: int, overlay: Control) -> void:
+	AudioManager.sfx("ui_click")
+	NetworkManager.selected_class_id = cid
+	overlay.queue_free()
+	NetworkManager.play_solo(slot)
 
 
 ## Build the overwrite-confirm modal (issue #4 Phase 5): a dimmed overlay
@@ -812,6 +1419,28 @@ func _build_settings_panel() -> void:
 		val.custom_minimum_size = Vector2(40, 0)
 		row.add_child(val)
 		vb.add_child(row)
+	# FOV slider (60-100, default 75).
+	var frow := HBoxContainer.new()
+	frow.add_theme_constant_override("separation", 12)
+	frow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var flab := Label.new()
+	flab.text = "FOV"
+	flab.custom_minimum_size = Vector2(70, 0)
+	frow.add_child(flab)
+	var fslider := HSlider.new()
+	fslider.custom_minimum_size = Vector2(220, 0)
+	fslider.min_value = 60
+	fslider.max_value = 100
+	fslider.step = 1
+	fslider.value = float(SaveManager.get_profile_setting("settings", "fov", 75.0))
+	fslider.value_changed.connect(_on_settings_vol_changed.bind("fov"))
+	frow.add_child(fslider)
+	var fval := Label.new()
+	fval.name = "Val_fov"
+	fval.text = "%d" % int(fslider.value)
+	fval.custom_minimum_size = Vector2(40, 0)
+	frow.add_child(fval)
+	vb.add_child(frow)
 	for spec in [["CRT filter", "crt_enabled", true], ["Screen shake", "shake_enabled", true], ["Fullscreen", "fullscreen", false]]:
 		var trow := HBoxContainer.new()
 		trow.add_theme_constant_override("separation", 12)
@@ -867,6 +1496,8 @@ func _on_settings_vol_changed(value: float, key: String) -> void:
 			AudioManager.set_music_vol(v)
 		"sfx_vol":
 			AudioManager.set_sfx_vol(v)
+		"fov":
+			SaveManager.set_profile_setting("settings", "fov", float(value))
 	if _settings_overlay != null:
 		var lab := _settings_overlay.find_child("Val_%s" % key, true, false) as Label
 		if lab != null:
@@ -920,10 +1551,10 @@ func _on_overwrite_confirmed() -> void:
 	_confirm_overlay.visible = false
 	if _confirm_mode == SaveManager.MODE_MP:
 		_host_slot = _confirm_slot
-		_update_class_row("HostPhase/HostClassRow", NetworkManager.selected_class_id, "HostClassDesc")
+		_build_host_tabs()
 		_show_phase("HostPhase")
 	else:
-		NetworkManager.play_solo(_confirm_slot)
+		_show_solo_class_popup(_confirm_slot)
 
 
 func _on_overwrite_cancelled() -> void:

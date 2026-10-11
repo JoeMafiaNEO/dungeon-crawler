@@ -27,6 +27,27 @@ var is_host: bool = false
 ## Host-configurable game settings (synced to clients via lobby data).
 var host_difficulty: float = 1.0
 var host_loot_mult: float = 1.0
+## Advanced mode multipliers (Jesse 2026-10-11 host rework).
+var adv_mob_hp_mult: float = 1.0
+var adv_mob_dmg_mult: float = 1.0
+var adv_mob_max_spawn: int = 12
+var adv_boss_hp_mult: float = 1.0
+var adv_boss_dmg_mult: float = 1.0
+var adv_wave_credits_mult: float = 1.0
+var host_difficulty_preset: String = "normal"  # easy, normal, hard, advanced
+## Custom loot rarity distribution (percentages, must sum to 100).
+## Empty = default distribution.
+var custom_rarity: Dictionary = {}
+## Lobby settings.
+var lobby_password: String = ""
+var lobby_visibility: String = "public"  # public, friends, private
+var lobby_player_cap: int = 4
+## Save file hosting: -1 = fresh run, else the slot index.
+var host_save_slot: int = -1
+## Ready states for the lobby (Jesse 2026-10-11): peer_id -> bool.
+var lobby_ready: Dictionary = {}
+## Whether the lobby's class selection is locked (hosting from a save).
+var lobby_class_locked: bool = false
 var server_id: int = 1
 ## Multiplayer peer ID of the server. ALWAYS 1 (Godot convention; the
 ## SteamMultiplayerPeer docs confirm create_host() sets unique_id to 1).

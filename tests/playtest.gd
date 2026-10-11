@@ -836,8 +836,8 @@ func _test_saves_ui() -> void:
 	_assert(msrc.contains("func _show_overwrite_confirm(mode: String, slot: int)"),
 		"overwrite confirm exists")
 	_assert(msrc.contains('"Slot %d already holds a saved run:\\n%s\\n\\nStart a new run and overwrite it?"'), "modal asks before overwriting")
-	_assert(msrc.contains("NetworkManager.play_solo(_confirm_slot)"),
-		"confirmed solo overwrite starts in that slot")
+	_assert(msrc.contains("_show_solo_class_popup(_confirm_slot)"),
+		"confirmed solo overwrite shows class popup")
 	_assert(msrc.contains("_host_slot = _confirm_slot"),
 		"confirmed mp overwrite targets that slot")
 	_assert(msrc.contains("NetworkManager.host_lobby(_host_slot)"),

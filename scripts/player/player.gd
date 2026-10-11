@@ -1915,12 +1915,12 @@ func _physics_process(delta: float) -> void:
 			velocity.z = _dash_dir.z * DASH_SPEED
 			# FOV kick while dashing.
 			if _camera != null:
-				_camera.fov = lerpf(_camera.fov, 82.0, delta * 12.0)
+				_camera.fov = lerpf(_camera.fov, _base_fov() + 7.0, delta * 12.0)
 		else:
 			velocity.x = move_vec.x * move_speed * _buff_mult("speed")
 			velocity.z = move_vec.z * move_speed * _buff_mult("speed")
 			if _camera != null:
-				_camera.fov = lerpf(_camera.fov, 75.0, delta * 8.0)
+				_camera.fov = lerpf(_camera.fov, _base_fov(), delta * 8.0)
 		if _jump_queued:
 			_jump_queued = false
 			if is_on_floor():
@@ -3404,6 +3404,13 @@ func use_item(index: int) -> void:
 		hud.toast("Used %s: %s" % [item.display_name, effect])
 		hud.refresh_inventory(self)
 		hud.refresh_loadout(self)
+
+
+## Base camera FOV from the settings panel (default 75).
+func _base_fov() -> float:
+	if has_node("/root/SaveManager"):
+		return float(get_node("/root/SaveManager").get_profile_setting("settings", "fov", 75.0))
+	return 75.0
 
 
 func _buff_mult(stat: String) -> float:
