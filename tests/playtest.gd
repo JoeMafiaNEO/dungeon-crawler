@@ -3884,8 +3884,8 @@ func _test_village_kit() -> void:
 	var well_mesh := load("res://assets/Modular Village/Prop_Well_1.obj") as Mesh
 	_assert(well_mesh != null, "village: well .obj loads as Mesh")
 	_assert(well_mesh.get_surface_count() > 0, "village: well has surfaces")
-	var wall_mesh := load("res://assets/Modular Village/Stucco_Block.obj") as Mesh
-	_assert(wall_mesh != null, "village: wall .obj loads as Mesh")
+	var cart_mesh := load("res://assets/Modular Village/Prop_Cart_1.obj") as Mesh
+	_assert(cart_mesh != null, "village: cart .obj loads as Mesh")
 	# PropBuilder builds kit props via the registry.
 	var holder := Node3D.new()
 	root.add_child(holder)
