@@ -46,6 +46,7 @@ func _ready() -> void:
 	NetworkManager.connection_failed.connect(_on_connection_failed)
 	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
 	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
+	NetworkManager.lobby_members_changed.connect(_refresh_lobby_strip)
 	# Issue #9 Phase 1: refresh the leaderboard rows when downloads land.
 	Leaderboard.entries_updated.connect(_on_leaderboard_entries)
 	_select_class("warrior")
@@ -1031,6 +1032,7 @@ func _on_staging_ready() -> void:
 	%OpenLobbyCheck.button_pressed = false
 	Dungeon.continued_open_lobby = false
 	_refresh_staging_roster()
+	_refresh_lobby_strip()
 	# Open the Steam invite dialog so the host can re-invite the crew.
 	NetworkManager.open_invite_dialog()
 
@@ -1083,6 +1085,20 @@ func _refresh_staging_roster() -> void:
 			inv.pressed.connect(_on_invite_player_pressed.bind(sid))
 			row.add_child(inv)
 		%RosterList.add_child(row)
+
+
+## Jesse 2026-10-10: small live lobby-member strip for the host on the
+## continue-run staging screen. Shows who's actually in the Steam lobby
+## right now (count + names), updating as members join/leave.
+func _refresh_lobby_strip() -> void:
+	if not _staging_active:
+		return
+	var members: Array = NetworkManager.lobby_members
+	var names: Array[String] = []
+	for sid in members:
+		names.append(NetworkManager.member_name(int(sid)))
+	%LobbyStripLabel.text = "Lobby (%d):" % members.size()
+	%LobbyStripNames.text = ", ".join(names) if not names.is_empty() else "—"
 
 
 func _on_invite_player_pressed(steam_id: int) -> void:

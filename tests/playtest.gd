@@ -73,6 +73,7 @@ func _run() -> void:
 	_test_heal_pad_multiplayer()
 	_test_train_spots_12p()
 	_test_mp_save_steam_ids()
+	_test_lobby_strip()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2551,6 +2552,20 @@ func _test_mp_save_steam_ids() -> void:
 	var miss: Dictionary = dungeon_script.find_roster_entry(roster, 1)
 	_assert(miss.is_empty(),
 		"mpsave: peer ID 1 does not match a Steam ID roster")
+
+
+func _test_lobby_strip() -> void:
+	print("[Playtest] Lobby strip...")
+	# Jesse 2026-10-10: small live lobby-member element for the host on the
+	# continue-run staging screen.
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("func _refresh_lobby_strip"),
+		"lobbystrip: refresh function exists")
+	_assert(msrc.contains("lobby_members_changed.connect(_refresh_lobby_strip)"),
+		"lobbystrip: refreshes on member changes")
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
+	_assert(tsrc.contains("LobbyStripNames"),
+		"lobbystrip: strip nodes in staging UI")
 
 
 func _print_results() -> void:

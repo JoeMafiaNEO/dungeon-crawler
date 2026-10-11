@@ -449,6 +449,24 @@ unique_name_in_owner = true
 layout_mode = 2
 horizontal_alignment = 1
 
+[node name="LobbyStrip" type="HBoxContainer" parent="StagingPhase" unique_id=4102938571]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="LobbyStripLabel" type="Label" parent="StagingPhase/LobbyStrip" unique_id=1284756390]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "Lobby (1):"
+
+[node name="LobbyStripNames" type="Label" parent="StagingPhase/LobbyStrip" unique_id=2938475610]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = ""
+
 [node name="RosterList" type="VBoxContainer" parent="StagingPhase" unique_id=570418501]
 unique_name_in_owner = true
 layout_mode = 2
