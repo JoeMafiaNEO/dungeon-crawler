@@ -374,14 +374,18 @@ func _animate_doors() -> void:
 			d.position.z = tz
 
 
-## Boarding spots down the center aisle, one per max party member.
+## Boarding spots down the center aisle, one per player (Jesse 2026-10-10:
+## scales to the 12-player cap; was 4 hardcoded spots for the old cap).
 func spawn_points() -> Array:
-	return [
-		Vector3(-5.0, 0.1, 0.0),
-		Vector3(-2.0, 0.1, 0.0),
-		Vector3(1.0, 0.1, 0.0),
-		Vector3(4.0, 0.1, 0.0),
-	]
+	var count := maxi(4, passenger_classes.size())
+	var spots := []
+	# Spread down the 16m aisle, keeping clear of the end doors.
+	var x0 := -6.5
+	var x1 := 6.5
+	for i in count:
+		var t := float(i) / float(maxi(1, count - 1))
+		spots.append(Vector3(lerpf(x0, x1, t), 0.1, 0.0))
+	return spots
 
 
 ## Deterministic on every peer: the boarding rpc transitioned everyone at

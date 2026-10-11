@@ -145,12 +145,17 @@ func lobby_bounds() -> AABB:
 ## Interior arrival spawn spots, hall-local. Kept clear of benches/straps
 ## by construction.
 func lobby_spawn_spots() -> Array:
-	return [
-		Vector3(LOBBY_CX - 2.0, 0.0, LOBBY_CZ),
-		Vector3(LOBBY_CX, 0.0, LOBBY_CZ),
-		Vector3(LOBBY_CX + 2.0, 0.0, LOBBY_CZ),
-		Vector3(LOBBY_CX, 0.0, LOBBY_CZ + 1.5),
-	]
+	# Grid covering the 8x5m lobby (Jesse 2026-10-10): scales to the
+	# 12-player cap instead of 4 hardcoded spots. 4 columns x 3 rows.
+	var spots := []
+	var cols := 4
+	var rows := 3
+	for r in rows:
+		for c in cols:
+			var x := LOBBY_CX - LOBBY_W / 2.0 + 1.0 + c * ((LOBBY_W - 2.0) / float(maxi(1, cols - 1)))
+			var z := LOBBY_CZ - LOBBY_D / 2.0 + 1.0 + r * ((LOBBY_D - 2.0) / float(maxi(1, rows - 1)))
+			spots.append(Vector3(x, 0.0, z))
+	return spots
 
 
 ## Interior arrival spawn spots, world space (issue #93 Phase 3: the

@@ -2337,10 +2337,10 @@ func _boarding_spots() -> Dictionary:
 		# Lobby spots sit at y=0; lift to boot height.
 		locals = locals.map(func(s): var v: Vector3 = s; v.y = 0.1; return v)
 	if locals.is_empty():
-		locals = [
-			Vector3(-2.5, 0.1, -2.0), Vector3(0.5, 0.1, -2.0),
-			Vector3(-2.5, 0.1, -0.5), Vector3(0.5, 0.1, -0.5),
-		]
+		# Fallback grid (Jesse 2026-10-10): 12 spots, was 4.
+		for r in 3:
+			for c in 4:
+				locals.append(Vector3(-3.5 + c * 2.0, 0.1, -2.5 + r * 2.0))
 	var i := 0
 	var holders := get_node_or_null("Players")
 	if holders != null:
@@ -2429,8 +2429,10 @@ func _annex_spawn_spots() -> Array[Vector3]:
 	var c := Vector3.ZERO
 	if annex != null and annex.has_method("hall_center"):
 		c = annex.hall_center()
-	for off in [Vector3(-3, 0.1, -2), Vector3(0, 0.1, -2), Vector3(3, 0.1, -2), Vector3(0, 0.1, 2)]:
-		spots.append(c + off)
+	# Fallback grid (Jesse 2026-10-10): 12 spots, was 4.
+	for r in 3:
+		for col in 4:
+			spots.append(c + Vector3(-4.5 + col * 3.0, 0.1, -2.0 + r * 2.0))
 	return spots
 
 

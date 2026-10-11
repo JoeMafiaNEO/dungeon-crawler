@@ -71,6 +71,7 @@ func _run() -> void:
 	_test_dash_flash_separate()
 	_test_market_earned_display()
 	_test_heal_pad_multiplayer()
+	_test_train_spots_12p()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -1367,9 +1368,9 @@ func _test_lobby_room() -> void:
 	for key in content:
 		_assert(not lb.intersects(content[key]), "lobby clear of %s" % key)
 
-	# 5. Spawn spots: 4, inside the room, not inside any solid.
+	# 5. Spawn spots: 12 (4x3 grid, Jesse 2026-10-10), inside the room, not inside any solid.
 	var spots: Array = annex.lobby_spawn_spots()
-	_assert(spots.size() == 4, "4 lobby spawn spots")
+	_assert(spots.size() == 12, "12 lobby spawn spots")
 	for sp in spots:
 		var s: Vector3 = sp
 		_assert(s.x >= -5.0 and s.x <= 3.0 and s.z >= -2.0 and s.z <= 3.0,
@@ -2506,6 +2507,25 @@ func _test_heal_pad_multiplayer() -> void:
 		"healpad: uses local player lookup")
 	_assert(not ssrc.contains("b.rpc_id(b.get_multiplayer_authority(), \"heal\""),
 		"healpad: no longer RPCs heal from server physics loop")
+
+
+func _test_train_spots_12p() -> void:
+	print("[Playtest] Train spots for 12 players...")
+	# Jesse 2026-10-10: the train hop had 4 hardcoded spots (old 4-player
+	# cap); 12 players stacked 3-per-spot. Now procedural, 12 minimum.
+	var asrc := FileAccess.get_file_as_string("res://scripts/station/station_annex.gd")
+	_assert(asrc.contains("4 columns x 3 rows") or asrc.contains("cols := 4"),
+		"train: lobby spots are a 12-slot grid")
+	var tsrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	_assert(tsrc.contains("maxi(4, passenger_classes.size())"),
+		"train: aisle spots scale to passenger count")
+	# Behavioral: annex grid yields 12.
+	var annex_script = load("res://scripts/station/station_annex.gd")
+	var annex = annex_script.new()
+	var spots: Array = annex.lobby_spawn_spots()
+	_assert(spots.size() >= 12,
+		"train: lobby grid has >=12 spots (got %d)" % spots.size())
+	annex.free()
 
 
 func _print_results() -> void:
