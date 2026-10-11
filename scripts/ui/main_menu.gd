@@ -121,14 +121,17 @@ func _build_lobby_class_row() -> void:
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	%LobbyPanel.add_child(row)
 	%LobbyPanel.move_child(row, 2)
+	var group := ButtonGroup.new()
 	for cid in ["warrior", "rogue", "mage", "architect"]:
 		if cid == "architect" and not SaveManager.is_architect_unlocked():
 			continue
 		var b := Button.new()
 		b.text = cid.capitalize()
 		b.toggle_mode = true
+		b.button_group = group
 		b.button_pressed = (NetworkManager.selected_class_id == cid)
 		b.toggled.connect(_on_lobby_class.bind(cid))
+		_style_one_button(b)
 		row.add_child(b)
 
 
@@ -533,19 +536,24 @@ func _build_host_tabs() -> void:
 	var conn_row := HBoxContainer.new()
 	conn_row.add_theme_constant_override("separation", 12)
 	t1.add_child(conn_row)
+	var conn_group := ButtonGroup.new()
 	var steam_btn := Button.new()
 	steam_btn.name = "SteamBtn"
 	steam_btn.text = "Steam"
 	steam_btn.toggle_mode = true
+	steam_btn.button_group = conn_group
 	steam_btn.button_pressed = not _lan_mode_host
 	steam_btn.toggled.connect(_on_host_conn_toggled.bind(false, steam_btn))
+	_style_one_button(steam_btn)
 	conn_row.add_child(steam_btn)
 	var lan_btn := Button.new()
 	lan_btn.name = "LanBtn"
 	lan_btn.text = "LAN"
 	lan_btn.toggle_mode = true
+	lan_btn.button_group = conn_group
 	lan_btn.button_pressed = _lan_mode_host
 	lan_btn.toggled.connect(_on_host_conn_toggled.bind(true, lan_btn))
+	_style_one_button(lan_btn)
 	conn_row.add_child(lan_btn)
 	var save_label := Label.new()
 	save_label.text = "Save File (optional — hosting from a save locks Difficulty & Loot)"
@@ -573,13 +581,16 @@ func _build_host_tabs() -> void:
 	var diff_row := HBoxContainer.new()
 	diff_row.add_theme_constant_override("separation", 8)
 	t2.add_child(diff_row)
+	var diff_group := ButtonGroup.new()
 	for spec in [["Easy", "easy"], ["Normal", "normal"], ["Hard", "hard"], ["Advanced", "advanced"]]:
 		var b := Button.new()
 		b.text = spec[0]
 		b.toggle_mode = true
+		b.button_group = diff_group
 		b.button_pressed = (NetworkManager.host_difficulty_preset == spec[1])
 		b.toggled.connect(_on_host_diff_preset.bind(spec[1]))
 		b.name = "Diff_" + spec[1]
+		_style_one_button(b)
 		diff_row.add_child(b)
 	_host_adv_box = VBoxContainer.new()
 	t2.add_child(_host_adv_box)
@@ -591,14 +602,17 @@ func _build_host_tabs() -> void:
 	var loot_row := HBoxContainer.new()
 	loot_row.add_theme_constant_override("separation", 8)
 	t2.add_child(loot_row)
+	var loot_group := ButtonGroup.new()
 	for spec in [["0.5x", 0.5], ["1.0x", 1.0], ["2.0x", 2.0], ["Custom", -1.0]]:
 		var b := Button.new()
 		b.text = spec[0]
 		b.toggle_mode = true
+		b.button_group = loot_group
 		b.button_pressed = (absf(NetworkManager.host_loot_mult - float(spec[1])) < 0.01) or \
 			(float(spec[1]) < 0.0 and NetworkManager.host_loot_mult not in [0.5, 1.0, 2.0])
 		b.toggled.connect(_on_host_loot_preset.bind(float(spec[1])))
 		b.name = "Loot_" + str(spec[1])
+		_style_one_button(b)
 		loot_row.add_child(b)
 	_host_loot_custom_row = HBoxContainer.new()
 	t2.add_child(_host_loot_custom_row)
@@ -610,19 +624,24 @@ func _build_host_tabs() -> void:
 	var rar_row := HBoxContainer.new()
 	rar_row.add_theme_constant_override("separation", 8)
 	t2.add_child(rar_row)
+	var rar_group := ButtonGroup.new()
 	var rar_def := Button.new()
 	rar_def.text = "Default"
 	rar_def.toggle_mode = true
+	rar_def.button_group = rar_group
 	rar_def.button_pressed = NetworkManager.custom_rarity.is_empty()
 	rar_def.toggled.connect(_on_host_rarity_default.bind(true))
 	rar_def.name = "RarDefault"
+	_style_one_button(rar_def)
 	rar_row.add_child(rar_def)
 	var rar_cus := Button.new()
 	rar_cus.text = "Custom"
 	rar_cus.toggle_mode = true
+	rar_cus.button_group = rar_group
 	rar_cus.button_pressed = not NetworkManager.custom_rarity.is_empty()
 	rar_cus.toggled.connect(_on_host_rarity_default.bind(false))
 	rar_cus.name = "RarCustom"
+	_style_one_button(rar_cus)
 	rar_row.add_child(rar_cus)
 	_host_rarity_custom_box = VBoxContainer.new()
 	t2.add_child(_host_rarity_custom_box)
@@ -656,12 +675,15 @@ func _build_host_tabs() -> void:
 	var vis_row := HBoxContainer.new()
 	vis_row.add_theme_constant_override("separation", 8)
 	t3.add_child(vis_row)
+	var vis_group := ButtonGroup.new()
 	for spec in [["Public", "public"], ["Friends Only", "friends"], ["Private", "private"]]:
 		var b := Button.new()
 		b.text = spec[0]
 		b.toggle_mode = true
+		b.button_group = vis_group
 		b.button_pressed = (NetworkManager.lobby_visibility == spec[1])
 		b.toggled.connect(_on_host_visibility.bind(spec[1]))
+		_style_one_button(b)
 		vis_row.add_child(b)
 	var cap_label := Label.new()
 	cap_label.text = "Player Cap (4-12, default 4)"
