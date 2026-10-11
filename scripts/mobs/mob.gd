@@ -24,12 +24,14 @@ var _remote_pos := Vector3.ZERO
 var _has_remote := false
 var _knockback := Vector3.ZERO
 var _sprite: AnimatedSprite3D
-## Jesse 2026-10-11: floating health bar (code-generated border + fill).
+## Jesse 2026-10-11: floating health bar (single dynamic texture).
 var _hb_fill: Sprite3D = null
 var _hb_full_w: float = 1.0
-var _hb_bar_h: float = 0.16
-var _hb_fill_tex_w: float = 32.0
-var _hb_fill_tex_h: float = 8.0
+var _hb_bar_h: float = 0.22
+var _hb_image: Image = null
+var _hb_tex: ImageTexture = null
+var _hb_img_w: int = 200
+var _hb_img_h: int = 22
 var _flash_tween: Tween
 var _bob_t := 0.0
 var _base_scale := Vector3.ONE
@@ -1700,72 +1702,52 @@ func _luck_weight(rarity: int) -> float:
 
 
 ## Jesse 2026-10-11: floating health bar above the mob.
-## Code-generated border (4 thin strips, no backing quad) + red fill.
-## Fill width scales by HP percent. (No PNG frames — procedural per Jesse.)
-static var _hb_white_tex: Texture2D = null
-
+## Single billboarded Sprite3D with a dynamically drawn texture:
+## code-generated border + red fill, fill width = HP percent.
+## (No PNG frames, no separate quads — one sprite, no clip/misalign bugs.)
 func _build_health_bar() -> void:
-	if _hb_white_tex == null:
-		var img := Image.create(1, 1, false, Image.FORMAT_RGBA8)
-		img.fill(Color.WHITE)
-		_hb_white_tex = ImageTexture.create_from_image(img)
 	var bar := Node3D.new()
 	bar.name = "HealthBar"
 	# Above the name Label3D (y=1.9); bosses are bigger so offset more.
 	var y_off := 2.6 * _base_scale.x if _base_scale.x > 1.0 else 2.3
 	bar.position = Vector3(0, y_off, 0)
 	add_child(bar)
-	var bar_w := 2.0 if data.is_boss else 1.4
-	var bar_h := 0.22 if data.is_boss else 0.16
-	var border := 0.035
-	_hb_full_w = bar_w
-	_hb_bar_h = bar_h
-	var border_col := Color(0.05, 0.05, 0.07, 0.92)
-	# 4 thin border strips framing the fill — no backing quad, so nothing
-	# can clip in front of the fill.
-	_add_border_strip(bar, _hb_white_tex, border_col, bar_w + border * 2.0, border, 0.0, bar_h * 0.5 + border * 0.5)
-	_add_border_strip(bar, _hb_white_tex, border_col, bar_w + border * 2.0, border, 0.0, -bar_h * 0.5 - border * 0.5)
-	_add_border_strip(bar, _hb_white_tex, border_col, border, bar_h, -bar_w * 0.5 - border * 0.5, 0.0)
-	_add_border_strip(bar, _hb_white_tex, border_col, border, bar_h, bar_w * 0.5 + border * 0.5, 0.0)
-	# Red fill in the center, shrinks left-to-right with HP.
-	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
-	var fill := Sprite3D.new()
-	if fill_tex != null:
-		fill.texture = fill_tex
-		_hb_fill_tex_w = 3200.0 * 0.01
-		_hb_fill_tex_h = 800.0 * 0.01
-	else:
-		fill.texture = _hb_white_tex
-		fill.modulate = Color(0.75, 0.08, 0.08)
-		_hb_fill_tex_w = 0.01
-		_hb_fill_tex_h = 0.01
-	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	fill.no_depth_test = true
-	bar.add_child(fill)
-	_hb_fill = fill
+	_hb_full_w = 2.0 if data.is_boss else 1.4
+	_hb_bar_h = 0.30 if data.is_boss else 0.22
+	_hb_img_w = 200
+	_hb_img_h = 22
+	_hb_image = Image.create(_hb_img_w, _hb_img_h, false, Image.FORMAT_RGBA8)
+	_hb_tex = ImageTexture.create_from_image(_hb_image)
+	var spr := Sprite3D.new()
+	spr.texture = _hb_tex
+	spr.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	spr.no_depth_test = true
+	# Sprite3D pixel_size=0.01: world size = px * 0.01 * scale.
+	spr.scale = Vector3(_hb_full_w / (_hb_img_w * 0.01), _hb_bar_h / (_hb_img_h * 0.01), 1)
+	bar.add_child(spr)
+	_hb_fill = spr
 	_update_health_bar()
 
 
-## Helper: one thin border strip as a billboarded Sprite3D.
-func _add_border_strip(bar: Node3D, tex: Texture2D, col: Color, w: float, h: float, x: float, y: float) -> void:
-	var s := Sprite3D.new()
-	s.texture = tex
-	s.modulate = col
-	s.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	s.no_depth_test = true
-	# 1px texture at pixel_size 0.01: world size = 0.01 * scale.
-	s.scale = Vector3(w / 0.01, h / 0.01, 1)
-	s.position = Vector3(x, y, 0)
-	bar.add_child(s)
-
-
-## Scale the fill by current HP percent (left-aligned, anchored at bar left).
+## Redraw the bar texture: dark border + red fill proportional to HP.
 func _update_health_bar() -> void:
-	if _hb_fill == null or not is_instance_valid(_hb_fill):
+	if _hb_fill == null or not is_instance_valid(_hb_fill) or _hb_image == null:
 		return
 	var frac := 0.0
 	if max_hp > 0.0:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
-	_hb_fill.scale = Vector3((_hb_full_w * frac) / _hb_fill_tex_w, _hb_bar_h / _hb_fill_tex_h, 1)
-	_hb_fill.position.x = -_hb_full_w * 0.5 + (_hb_full_w * frac) * 0.5
-	_hb_fill.position.y = 0.0
+	var border := 3
+	# Border.
+	_hb_image.fill(Color(0.05, 0.05, 0.07, 0.92))
+	# Red fill inside the border, width = HP percent.
+	var iw := _hb_img_w - border * 2
+	var ih := _hb_img_h - border * 2
+	var fill_w := int(iw * frac)
+	if fill_w > 0:
+		# Vertical gradient: brighter top, darker bottom.
+		for y in range(ih):
+			var t := float(y) / float(maxi(ih - 1, 1))
+			var col := Color(0.85, 0.12, 0.10).lerp(Color(0.55, 0.05, 0.05), t)
+			for x in range(fill_w):
+				_hb_image.set_pixel(border + x, border + y, col)
+	_hb_tex.update(_hb_image)

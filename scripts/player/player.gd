@@ -40,9 +40,11 @@ var hp := 100.0
 ## Jesse 2026-10-11: floating health bar above the player (visible to all).
 var _phb_fill: Sprite3D = null
 var _phb_full_w: float = 1.0
-var _phb_bar_h: float = 0.16
-var _phb_fill_tex_w: float = 32.0
-var _phb_fill_tex_h: float = 8.0
+var _phb_bar_h: float = 0.22
+var _phb_image: Image = null
+var _phb_tex: ImageTexture = null
+var _phb_img_w: int = 200
+var _phb_img_h: int = 22
 var damage := 10.0
 var attack_cooldown := 0.5
 var move_speed := 5.0
@@ -4013,65 +4015,47 @@ func show_achievement_unlock(achievement_ids: Array) -> void:	# Shows achievemen
 
 ## Jesse 2026-10-11: floating health bar above the player.
 ## Visible to all players in multiplayer (world-space, billboarded).
-## Code-generated border (4 strips) + red fill. (No PNG frame per Jesse.)
+## Single Sprite3D with dynamically drawn texture (border + fill).
 static var _phb_white_tex: Texture2D = null
 
 func _build_health_bar() -> void:
-	if _phb_white_tex == null:
-		var img := Image.create(1, 1, false, Image.FORMAT_RGBA8)
-		img.fill(Color.WHITE)
-		_phb_white_tex = ImageTexture.create_from_image(img)
 	var bar := Node3D.new()
 	bar.name = "HealthBar"
 	# Above the name Label3D (y=2.1).
 	bar.position = Vector3(0, 2.5, 0)
 	add_child(bar)
-	var bar_w := 1.4
-	var bar_h := 0.16
-	var border := 0.035
-	_phb_full_w = bar_w
-	_phb_bar_h = bar_h
-	var border_col := Color(0.05, 0.05, 0.07, 0.92)
-	_phb_add_border_strip(bar, border_col, bar_w + border * 2.0, border, 0.0, bar_h * 0.5 + border * 0.5)
-	_phb_add_border_strip(bar, border_col, bar_w + border * 2.0, border, 0.0, -bar_h * 0.5 - border * 0.5)
-	_phb_add_border_strip(bar, border_col, border, bar_h, -bar_w * 0.5 - border * 0.5, 0.0)
-	_phb_add_border_strip(bar, border_col, border, bar_h, bar_w * 0.5 + border * 0.5, 0.0)
-	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
-	var fill := Sprite3D.new()
-	if fill_tex != null:
-		fill.texture = fill_tex
-		_phb_fill_tex_w = 3200.0 * 0.01
-		_phb_fill_tex_h = 800.0 * 0.01
-	else:
-		fill.texture = _phb_white_tex
-		fill.modulate = Color(0.75, 0.08, 0.08)
-		_phb_fill_tex_w = 0.01
-		_phb_fill_tex_h = 0.01
-	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	fill.no_depth_test = true
-	bar.add_child(fill)
-	_phb_fill = fill
+	_phb_full_w = 1.4
+	_phb_bar_h = 0.22
+	_phb_img_w = 200
+	_phb_img_h = 22
+	_phb_image = Image.create(_phb_img_w, _phb_img_h, false, Image.FORMAT_RGBA8)
+	_phb_tex = ImageTexture.create_from_image(_phb_image)
+	var spr := Sprite3D.new()
+	spr.texture = _phb_tex
+	spr.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	spr.no_depth_test = true
+	spr.scale = Vector3(_phb_full_w / (_phb_img_w * 0.01), _phb_bar_h / (_phb_img_h * 0.01), 1)
+	bar.add_child(spr)
+	_phb_fill = spr
 	_update_health_bar()
 
 
-func _phb_add_border_strip(bar: Node3D, col: Color, w: float, h: float, x: float, y: float) -> void:
-	var s := Sprite3D.new()
-	s.texture = _phb_white_tex
-	s.modulate = col
-	s.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	s.no_depth_test = true
-	s.scale = Vector3(w / 0.01, h / 0.01, 1)
-	s.position = Vector3(x, y, 0)
-	bar.add_child(s)
-
-
-## Scale the fill by current HP percent (left-aligned, anchored at bar left).
+## Redraw the bar texture: dark border + red fill proportional to HP.
 func _update_health_bar() -> void:
-	if _phb_fill == null or not is_instance_valid(_phb_fill):
+	if _phb_fill == null or not is_instance_valid(_phb_fill) or _phb_image == null:
 		return
 	var frac := 0.0
 	if max_hp > 0.0:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
-	_phb_fill.scale = Vector3((_phb_full_w * frac) / _phb_fill_tex_w, _phb_bar_h / _phb_fill_tex_h, 1)
-	_phb_fill.position.x = -_phb_full_w * 0.5 + (_phb_full_w * frac) * 0.5
-	_phb_fill.position.y = 0.0
+	var border := 3
+	_phb_image.fill(Color(0.05, 0.05, 0.07, 0.92))
+	var iw := _phb_img_w - border * 2
+	var ih := _phb_img_h - border * 2
+	var fill_w := int(iw * frac)
+	if fill_w > 0:
+		for y in range(ih):
+			var t := float(y) / float(maxi(ih - 1, 1))
+			var col := Color(0.85, 0.12, 0.10).lerp(Color(0.55, 0.05, 0.05), t)
+			for x in range(fill_w):
+				_phb_image.set_pixel(border + x, border + y, col)
+	_phb_tex.update(_phb_image)
