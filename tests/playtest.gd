@@ -72,6 +72,7 @@ func _run() -> void:
 	_test_market_earned_display()
 	_test_heal_pad_multiplayer()
 	_test_train_spots_12p()
+	_test_mp_save_steam_ids()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2526,6 +2527,30 @@ func _test_train_spots_12p() -> void:
 	_assert(spots.size() >= 12,
 		"train: lobby grid has >=12 spots (got %d)" % spots.size())
 	annex.free()
+
+
+func _test_mp_save_steam_ids() -> void:
+	print("[Playtest] MP save uses Steam IDs...")
+	# Jesse 2026-10-10: the roster stored PEER IDs (1,2,3) in the steam_id
+	# field, but the continue flow compared against real Steam64 IDs — the
+	# host could never find their own save. Now real Steam IDs throughout.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("peer_steam_ids"),
+		"mpsave: peer -> Steam ID mapping exists")
+	_assert(dsrc.contains("SteamManager.steam_id if SteamManager.initialized"),
+		"mpsave: roster uses real Steam IDs")
+	# Behavioral: find_roster_entry matches by Steam ID.
+	var roster := [
+		{"steam_id": 76561198000000001, "class_id": "mage"},
+		{"steam_id": 76561198000000002, "class_id": "warrior"},
+	]
+	var dungeon_script = load("res://scripts/dungeon/dungeon.gd")
+	var hit: Dictionary = dungeon_script.find_roster_entry(roster, 76561198000000002)
+	_assert(str(hit.get("class_id", "")) == "warrior",
+		"mpsave: roster matches by Steam ID")
+	var miss: Dictionary = dungeon_script.find_roster_entry(roster, 1)
+	_assert(miss.is_empty(),
+		"mpsave: peer ID 1 does not match a Steam ID roster")
 
 
 func _print_results() -> void:

@@ -143,6 +143,10 @@ var level_number := 1
 var mob_types: Array[MobData] = []
 var spawn_points: Array[Vector3] = []
 var peer_classes := {} # int peer_id -> String class_id
+## Jesse 2026-10-10 fix: int peer_id -> int Steam64 ID. Clients send their
+## Steam ID in the register_class handshake; the server needs this to match
+## rejoining players against the saved roster (peer IDs are session-scoped).
+var peer_steam_ids := {}
 var wave := 0
 var wave_state: WaveState = WaveState.INTERMISSION
 # Supermarket mode: collect & sell loot to unlock the gate.
@@ -370,16 +374,22 @@ func sync_equipped_special(peer_id: int, special_id: String) -> void:
 func _send_handshake() -> void:
 	if multiplayer.is_server():
 		return
-	rpc_id(NetworkManager.server_peer_id, "register_class", NetworkManager.selected_class_id)
+	# Jesse 2026-10-10 fix: include our Steam ID so the server can match us
+	# against the saved roster (peer IDs change every session).
+	var my_sid := SteamManager.steam_id if SteamManager.initialized else multiplayer.get_unique_id()
+	rpc_id(NetworkManager.server_peer_id, "register_class", NetworkManager.selected_class_id, my_sid)
 	rpc_id(NetworkManager.server_peer_id, "request_state")
 
 
 @rpc("any_peer", "call_local")
-func register_class(class_id: String) -> void:
+func register_class(class_id: String, steam_id: int = 0) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
-	# Continued run: match the joiner against the saved roster.
+	# Jesse 2026-10-10 fix: record the peer -> Steam ID mapping, then match
+	# the joiner against the saved roster by Steam ID (not peer ID).
+	if steam_id != 0:
+		peer_steam_ids[sender] = steam_id
 	var roster_entry := _find_roster_entry(sender)
 	if not continued_roster.is_empty():
 		if roster_entry.is_empty() and not continued_open_lobby:
@@ -411,8 +421,11 @@ func register_class(class_id: String) -> void:
 
 
 ## Find a roster entry by Steam ID. Returns {} if not found.
-func _find_roster_entry(steam_id: int) -> Dictionary:
-	return find_roster_entry(continued_roster, steam_id)
+## Jesse 2026-10-10 fix: takes a peer ID, looks up the Steam ID from the
+## handshake mapping, then matches against the roster's Steam IDs.
+func _find_roster_entry(peer_id: int) -> Dictionary:
+	var sid: int = int(peer_steam_ids.get(peer_id, peer_id))
+	return find_roster_entry(continued_roster, sid)
 
 
 ## Static roster match: which saved seat does this Steam ID own? Pure so
@@ -2625,10 +2638,11 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	_save_roster.clear()
 	_save_pending.clear()
 	_save_slot = NetworkManager.active_run_slot
-	# Host's own state first.
+	# Host's own state first (Jesse 2026-10-10 fix: real Steam ID, not peer ID).
 	var me := _my_player()
 	if me != null:
-		_save_roster.append(_roster_entry(multiplayer.get_unique_id(), me))
+		var host_sid := SteamManager.steam_id if SteamManager.initialized else multiplayer.get_unique_id()
+		_save_roster.append(_roster_entry(host_sid, multiplayer.get_unique_id(), me))
 	# Ask each connected peer for their state.
 	for pid in multiplayer.get_peers():
 		_save_pending[pid] = true
@@ -2642,27 +2656,31 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	_write_multiplayer_save()
 
 
-func _roster_entry(steam_id: int, player_node: Node) -> Dictionary:
+func _roster_entry(steam_id: int, peer_id: int, player_node: Node) -> Dictionary:
 	var rts_faction := -1
 	if is_warlord and _rts_manager != null:
 		for fid in _rts_manager.faction_peers:
-			if _rts_manager.faction_peers[fid] == steam_id:
+			if int(_rts_manager.faction_peers[fid]) == peer_id:
 				rts_faction = int(fid)
+				break
+	var my_sid := SteamManager.steam_id if SteamManager.initialized else multiplayer.get_unique_id()
 	return {
 		"steam_id": steam_id,
 		"player_name": NetworkManager.member_name(steam_id),
 		"class_id": str(player_node.get("class_id")),
 		"player_state": player_node.get_state(),
 		"rts_faction": rts_faction,
-		"is_host": steam_id == multiplayer.get_unique_id(),
+		"is_host": steam_id == my_sid,
 	}
 
 
 func _mark_missing_disconnected() -> void:
 	for pid in _save_pending:
 		var node := get_player_node(pid)
-		var entry := _roster_entry(pid, node) if node != null else {
-			"steam_id": pid, "player_name": NetworkManager.member_name(pid),
+		# Jesse 2026-10-10 fix: use the mapped Steam ID if we know it.
+		var sid: int = int(peer_steam_ids.get(pid, pid))
+		var entry := _roster_entry(sid, pid, node) if node != null else {
+			"steam_id": sid, "player_name": NetworkManager.member_name(sid),
 			"class_id": "warrior", "player_state": {}, "rts_faction": -1, "is_host": false,
 		}
 		entry["disconnected"] = true
@@ -2686,7 +2704,10 @@ func rpc_request_save_state(slot_index: int) -> void:
 	if me == null:
 		return
 	var state := {
-		"steam_id": multiplayer.get_unique_id(),
+		# Jesse 2026-10-10 fix: store the real Steam64 ID, not the peer ID.
+		# Peer IDs (1, 2, 3...) are session-scoped; Steam IDs persist across
+		# sessions so returning players match their roster seat.
+		"steam_id": SteamManager.steam_id if SteamManager.initialized else multiplayer.get_unique_id(),
 		"player_name": SteamManager.persona_name if SteamManager.initialized else "Player",
 		"class_id": str(me.get("class_id")),
 		"player_state": me.get_state(),
