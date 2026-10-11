@@ -70,8 +70,13 @@ func _ready() -> void:
 
 
 ## Wrap SoloSlotsList in a ScrollContainer (once) for unlimited saves.
+## Stores a direct ref — reparenting breaks the % unique-name lookup.
+var _solo_slots_list: VBoxContainer = null
+
+
 func _wrap_solo_slots() -> void:
-	var list := %SoloSlotsList
+	var list := %SoloSlotsList as VBoxContainer
+	_solo_slots_list = list
 	if list.get_parent() is ScrollContainer:
 		return
 	var scroll := ScrollContainer.new()
@@ -1241,12 +1246,13 @@ func _on_join_back_pressed() -> void:
 ## Show the solo slot cards (issue #4 Phase 5): one card per solo slot with
 ## its run summary, per-slot Continue / New Run, and legacy overflow rows.
 func _refresh_solo_ui() -> void:
-	for child in %SoloSlotsList.get_children():
+	var list := _solo_slots_list if _solo_slots_list != null else %SoloSlotsList
+	for child in list.get_children():
 		child.queue_free()
 	for slot in SaveManager.list_slots(SaveManager.MODE_SOLO):
-		%SoloSlotsList.add_child(_build_slot_card(SaveManager.MODE_SOLO, slot))
+		list.add_child(_build_slot_card(SaveManager.MODE_SOLO, slot))
 	# Always offer one "New Run" slot at the end.
-	%SoloSlotsList.add_child(_build_slot_card(SaveManager.MODE_SOLO, SaveManager.next_free_slot(SaveManager.MODE_SOLO)))
+	list.add_child(_build_slot_card(SaveManager.MODE_SOLO, SaveManager.next_free_slot(SaveManager.MODE_SOLO)))
 	_refresh_legacy_rows(%SoloLegacyList, SaveManager.MODE_SOLO)
 	_style_buttons()
 
