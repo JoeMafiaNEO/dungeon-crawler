@@ -2460,19 +2460,28 @@ func _hl_winddown(delta: float) -> void:
 	var wind_t := _hl_active_t - HL_HOLD_TIME
 	var frac := clampf(wind_t / HL_WINDDOWN_TIME, 0.0, 1.0)
 	# Beam narrows.
-	var beam_mesh: MeshInstance3D = beam.get("beam_mesh")
-	if beam_mesh != null and is_instance_valid(beam_mesh):
-		var s := 1.0 - frac * 0.7
-		beam_mesh.scale = Vector3(s, 1.0, s)
+	var beam_mesh_node: Variant = beam.get("beam_mesh")
+	if beam_mesh_node != null and is_instance_valid(beam_mesh_node):
+		var beam_mesh := beam_mesh_node as MeshInstance3D
+		if beam_mesh != null:
+			var s := 1.0 - frac * 0.7
+			beam_mesh.scale = Vector3(s, 1.0, s)
 	# Light dims (tween also handles this; this is for the beam mesh).
-	var light: SpotLight3D = beam.get("light")
-	if light != null and is_instance_valid(light):
-		light.light_energy = 12.0 * (1.0 - frac)
+	# Jesse 2026-10-11: fetch as Variant first — assigning a freed instance
+	# to a typed var throws before is_instance_valid can run.
+	var light_node: Variant = beam.get("light")
+	if light_node != null and is_instance_valid(light_node):
+		var light := light_node as SpotLight3D
+		if light != null:
+			light.light_energy = 12.0 * (1.0 - frac)
 	# Rings dissolve upward.
 	var rings: Array = beam.get("rings", [])
 	for i in range(rings.size()):
-		var ring: MeshInstance3D = rings[i]
-		if ring != null and is_instance_valid(ring):
+		var ring_node: Variant = rings[i]
+		if ring_node != null and is_instance_valid(ring_node):
+			var ring := ring_node as MeshInstance3D
+			if ring == null:
+				continue
 			ring.position.y += delta * (2.0 + float(i))
 			var mat := ring.material_override as StandardMaterial3D
 			if mat != null:
