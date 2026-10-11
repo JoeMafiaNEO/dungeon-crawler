@@ -257,21 +257,19 @@ func lan_announce_name(player_name: String) -> void:
 
 ## Client -> host: sync ready state (Jesse 2026-10-11 lobby rework).
 @rpc("any_peer", "call_remote", "reliable")
-func sync_ready_state(peer_id: int, is_ready: bool) -> void:
+func sync_ready_state(lobby_id: int, is_ready: bool) -> void:
 	if not is_host:
 		return
-	lobby_ready[peer_id] = is_ready
+	lobby_ready[lobby_id] = is_ready
 	lobby_ready_changed.emit()
-	# Broadcast to all so every client sees the roster update.
-	for pid in lobby_members:
-		if pid != server_peer_id:
-			rpc_id(pid, "broadcast_ready_state", peer_id, is_ready)
+	# Broadcast to all so every client sees the update.
+	rpc("broadcast_ready_state", lobby_id, is_ready)
 
 
 ## Host -> all: relay a player's ready state.
 @rpc("any_peer", "call_remote", "reliable")
-func broadcast_ready_state(peer_id: int, is_ready: bool) -> void:
-	lobby_ready[peer_id] = is_ready
+func broadcast_ready_state(lobby_id: int, is_ready: bool) -> void:
+	lobby_ready[lobby_id] = is_ready
 	lobby_ready_changed.emit()
 
 

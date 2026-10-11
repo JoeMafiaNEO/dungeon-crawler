@@ -159,17 +159,23 @@ func _build_lobby_ready_button() -> void:
 
 func _on_lobby_ready_toggled(pressed: bool) -> void:
 	AudioManager.sfx("ui_click")
-	var my_id := multiplayer.get_unique_id()
+	var my_id := _my_lobby_id()
 	NetworkManager.lobby_ready[my_id] = pressed
 	if NetworkManager.is_host:
 		# Host relays their own ready state to everyone.
-		for pid in NetworkManager.lobby_members:
-			if pid != NetworkManager.server_peer_id:
-				NetworkManager.rpc_id(pid, "broadcast_ready_state", my_id, pressed)
+		NetworkManager.rpc("broadcast_ready_state", my_id, pressed)
 	else:
 		# Sync to host via RPC (host relays to everyone).
 		NetworkManager.rpc_id(NetworkManager.server_peer_id, "sync_ready_state", my_id, pressed)
 	_refresh_lobby_start()
+
+
+## The local player's ID as it appears in NetworkManager.lobby_members:
+## Steam64 on Steam, peer ID on LAN.
+func _my_lobby_id() -> int:
+	if SteamManager.initialized and NetworkManager.transport != NetworkManager.Transport.LAN:
+		return SteamManager.steam_id
+	return multiplayer.get_unique_id()
 
 
 func _refresh_lobby_start() -> void:
