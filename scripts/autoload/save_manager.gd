@@ -805,14 +805,19 @@ func run_summary(run: Dictionary) -> String:
 			theme_name = "MegaMart Supermarket"
 		"warlord":
 			theme_name = "Warlord's Domain"
+	# Jesse 2026-10-11: station saves show the pit-stop, not the next level.
+	var at_station := bool(run.get("at_station", false))
+	var level_label := "Level %d" % int(run.get("level_number", 1))
+	if at_station:
+		level_label = "At Station (next: Level %d)" % int(run.get("level_number", 1))
 	if bool(run.get("is_multiplayer", false)):
 		var roster: Array = run.get("roster", [])
 		var names: Array = []
 		for entry in roster:
 			var ps2: Dictionary = entry.get("player_state", {})
 			names.append("%s %d" % [str(entry.get("class_id", "?")).capitalize(), int(ps2.get("level", 1))])
-		return "%d players (%s) · %s · Level %d" % [roster.size(), ", ".join(names), theme_name, int(run.get("level_number", 1))]
+		return "%d players (%s) · %s · %s" % [roster.size(), ", ".join(names), theme_name, level_label]
 	var ps: Dictionary = run.get("player_state", {})
 	var lvl := int(ps.get("level", 1))
 	var class_id := str(run.get("class_id", "warrior")).capitalize()
-	return "Lv %d %s · %s · Level %d" % [lvl, class_id, theme_name, int(run.get("level_number", 1))]
+	return "Lv %d %s · %s · %s" % [lvl, class_id, theme_name, level_label]
