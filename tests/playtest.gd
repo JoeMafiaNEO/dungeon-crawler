@@ -75,6 +75,7 @@ func _run() -> void:
 	_test_mp_save_steam_ids()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
+	_test_holy_light_linger()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2579,6 +2580,21 @@ func _test_checkout_multiplayer() -> void:
 		"checkout: client sell-request RPC exists")
 	_assert(dsrc.contains("body.get_multiplayer_authority()) == multiplayer.get_unique_id()"),
 		"checkout: clients detect their own entry")
+
+
+func _test_holy_light_linger() -> void:
+	print("[Playtest] Holy Light linger...")
+	# Jesse 2026-10-10: the "beam never cleans up" bug is now a feature —
+	# after the ability ends, the beam lingers 15s as a fading heal zone.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("HL_LINGER_TIME := 15.0"),
+		"linger: 15s constant exists")
+	_assert(psrc.contains("func hl_linger_beam"),
+		"linger: linger RPC exists")
+	_assert(psrc.contains("func _hl_process_linger"),
+		"linger: fade processor exists")
+	_assert(psrc.contains("_hl_start_linger()"),
+		"linger: ability end starts linger")
 
 
 func _print_results() -> void:

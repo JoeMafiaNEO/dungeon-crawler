@@ -653,6 +653,13 @@ func _on_peer_disconnected(peer_id: int) -> void:
 		return
 	peer_classes.erase(peer_id)
 	rpc("despawn_player", peer_id)
+	# Jesse 2026-10-10: clean up the leaver's Holy Light beams (including
+	# lingering heal zones) so they don't orphan.
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Player
+		if p != null:
+			p.rpc("hl_end_beam", peer_id)
+			break
 	# Warlord: hand the leaver's faction to an AI so the FFA doesn't soft-lock.
 	if is_warlord and _rts_manager != null:
 		for fid in _rts_manager.faction_peers:

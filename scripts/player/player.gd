@@ -2325,6 +2325,10 @@ const HL_CHARGE_TIME := 1.0
 const HL_HOLD_TIME := 10.0
 const HL_WINDDOWN_TIME := 2.0
 const HL_COOLDOWN := 20.0
+## Jesse 2026-10-10: after the ability ends, the beam lingers as a healing
+## zone for 15s, slowly fading. Turned the "beam never cleans up" bug into
+## a feature.
+const HL_LINGER_TIME := 15.0
 const HL_AIM_RANGE := 25.0
 enum HLState { IDLE, ARMED, CHARGING, ACTIVE }
 ## Issue #95 Phase 2: setter emits click_state_changed so the mouse legend
@@ -2396,6 +2400,11 @@ func _hl_process(delta: float) -> void:
 		if _hl_active_t >= HL_HOLD_TIME + HL_WINDDOWN_TIME:
 			_hl_state = HLState.IDLE
 			_hl_active_t = 0.0
+			# Jesse 2026-10-10: don't just abandon the beam — it lingers
+			# as a fading heal zone for 15s (was a bug, now a feature).
+			_hl_start_linger()
+	# Jesse 2026-10-10: lingering beams fade over 15s, then clean up.
+	_hl_process_linger(delta)
 
 
 ## Issue #91 Phase 2: lerp all beam visuals toward their target aim points.
@@ -2448,6 +2457,8 @@ func _hl_winddown(delta: float) -> void:
 
 
 ## Issue #91 Phase 2: server runs 0.5s damage/heal ticks at the latest aim.
+## Jesse 2026-10-10: lingering beams (post-ability heal zone) heal but no
+## longer damage.
 func _hl_server_tick(delta: float) -> void:
 	for owner_id in _hl_beams.keys():
 		var beam = _hl_beams[owner_id]
@@ -2457,15 +2468,17 @@ func _hl_server_tick(delta: float) -> void:
 			continue
 		beam["tick_t"] = 0.0
 		var aim: Vector3 = beam.get("aim", Vector3.ZERO)
-		# Damage: 1.0x mage base per tick in the 4m beam column.
-		var dmg := _hl_beam_damage()
-		for n in get_tree().get_nodes_in_group("mobs"):
-			var mob := n as Mob
-			if mob == null or not bool(mob.get("alive")):
-				continue
-			var flat := Vector2(mob.global_position.x - aim.x, mob.global_position.z - aim.z)
-			if flat.length() <= 4.0:
-				mob.take_damage(dmg, owner_id, aim)
+		var lingering := bool(beam.get("lingering", false))
+		if not lingering:
+			# Damage: 1.0x mage base per tick in the 4m beam column.
+			var dmg := _hl_beam_damage()
+			for n in get_tree().get_nodes_in_group("mobs"):
+				var mob := n as Mob
+				if mob == null or not bool(mob.get("alive")):
+					continue
+				var flat := Vector2(mob.global_position.x - aim.x, mob.global_position.z - aim.z)
+				if flat.length() <= 4.0:
+					mob.take_damage(dmg, owner_id, aim)
 		# Heal: 15% max HP to allies within 15m of the beam point.
 		for n in get_tree().get_nodes_in_group("players"):
 			var p := n as Player
@@ -2638,6 +2651,67 @@ func hl_end_beam(owner_id: int) -> void:
 	if owner_id == int(multiplayer.get_unique_id()):
 		_hl_state = HLState.IDLE
 		_hl_active_t = 0.0
+
+
+## Jesse 2026-10-10: owner starts the linger phase when the ability ends.
+## Marks the beam lingering locally and tells all peers.
+func _hl_start_linger() -> void:
+	var my_id := int(multiplayer.get_unique_id())
+	if not _hl_beams.has(my_id):
+		return
+	_hl_beams[my_id]["lingering"] = true
+	_hl_beams[my_id]["linger_t"] = 0.0
+	rpc("hl_linger_beam", my_id)
+
+
+## Jesse 2026-10-10: all peers mark the beam as lingering (heal zone).
+@rpc("any_peer", "call_local")
+func hl_linger_beam(owner_id: int) -> void:
+	if _hl_beams.has(owner_id):
+		_hl_beams[owner_id]["lingering"] = true
+		_hl_beams[owner_id]["linger_t"] = 0.0
+
+
+## Jesse 2026-10-10: lingering beams fade over HL_LINGER_TIME, then the
+## owner cleans them up everywhere via hl_end_beam.
+func _hl_process_linger(delta: float) -> void:
+	var my_id := int(multiplayer.get_unique_id())
+	var done: Array[int] = []
+	for owner_id in _hl_beams.keys():
+		var beam = _hl_beams[owner_id]
+		if not bool(beam.get("lingering", false)):
+			continue
+		var t := float(beam.get("linger_t", 0.0)) + delta
+		beam["linger_t"] = t
+		var frac := clampf(t / HL_LINGER_TIME, 0.0, 1.0)
+		# Fade the beam core.
+		var beam_mesh: MeshInstance3D = beam.get("beam_mesh")
+		if beam_mesh != null and is_instance_valid(beam_mesh):
+			var bmat := beam_mesh.material_override as StandardMaterial3D
+			if bmat != null:
+				var bc := bmat.albedo_color
+				bc.a = 0.85 * (1.0 - frac)
+				bmat.albedo_color = bc
+				bmat.emission_energy_multiplier = 2.0 * (1.0 - frac)
+		# Fade the light.
+		var light: SpotLight3D = beam.get("light")
+		if light != null and is_instance_valid(light):
+			light.light_energy = 12.0 * (1.0 - frac)
+		# Fade the rings.
+		var rings: Array = beam.get("rings", [])
+		for ring in rings:
+			var rm := ring as MeshInstance3D
+			if rm != null and is_instance_valid(rm):
+				var rmat := rm.material_override as StandardMaterial3D
+				if rmat != null:
+					var rc := rmat.albedo_color
+					rc.a = 0.7 * (1.0 - frac)
+					rmat.albedo_color = rc
+		# Owner cleans up everywhere when the fade completes.
+		if frac >= 1.0 and owner_id == my_id:
+			done.append(owner_id)
+	for owner_id in done:
+		rpc("hl_end_beam", owner_id)
 
 
 @rpc("any_peer", "call_local")
