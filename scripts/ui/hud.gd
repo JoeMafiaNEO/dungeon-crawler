@@ -1271,7 +1271,11 @@ func _on_save_quit_pressed() -> void:
 	var at_station := false
 	var station := get_tree().get_first_node_in_group("station")
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if station != null:
+	# Jesse 2026-10-11: use the current scene to decide, not just node
+	# existence — a stale station node can linger after scene changes.
+	var scene_path := str(get_tree().current_scene.scene_file_path) if get_tree().current_scene != null else ""
+	var in_station := scene_path.contains("station") or (station != null and dungeon == null)
+	if in_station and station != null:
 		at_station = true
 		var nl := Station.next_level_number
 		# board_destinations() swaps warlord for the APEX ARENA on apex
@@ -1295,7 +1299,7 @@ func _on_save_quit_pressed() -> void:
 		# Host: multiplayer save with roster collection (async, then quit).
 		# Issue #70: LAN has no saves — skip straight to quit.
 		if NetworkManager.transport != NetworkManager.Transport.LAN:
-			var saver = station if station != null else dungeon
+			var saver = station if in_station and station != null else dungeon
 			saver.save_multiplayer_run(theme_id, level_number, level_seed)
 			# save_multiplayer_run waits 3s for clients; quit after.
 			await get_tree().create_timer(3.5).timeout
