@@ -805,19 +805,39 @@ func run_summary(run: Dictionary) -> String:
 			theme_name = "MegaMart Supermarket"
 		"warlord":
 			theme_name = "Warlord's Domain"
-	# Jesse 2026-10-11: station saves show the pit-stop, not the next level.
+	# Jesse 2026-10-11: station saves show the cleared level (where you are),
+	# not the next level (where you're going).
 	var at_station := bool(run.get("at_station", false))
-	var level_label := "Level %d" % int(run.get("level_number", 1))
+	var display_theme_id := theme_id
+	var display_level := int(run.get("level_number", 1))
+	if at_station and display_level > 1:
+		var cleared := display_level - 1
+		var dests := Dungeon.board_destinations(cleared)
+		display_theme_id = dests[(cleared - 1) % dests.size()]
+		display_level = cleared
+	var display_theme_name := display_theme_id.capitalize()
+	match display_theme_id:
+		"village":
+			display_theme_name = "Village Outskirts"
+		"dungeon":
+			display_theme_name = "The Dungeon"
+		"depths":
+			display_theme_name = "The Depths"
+		"supermarket":
+			display_theme_name = "MegaMart Supermarket"
+		"warlord":
+			display_theme_name = "Warlord's Domain"
+	var level_label := "Level %d" % display_level
 	if at_station:
-		level_label = "At Station (next: Level %d)" % int(run.get("level_number", 1))
+		level_label = "Level %d (At Station)" % display_level
 	if bool(run.get("is_multiplayer", false)):
 		var roster: Array = run.get("roster", [])
 		var names: Array = []
 		for entry in roster:
 			var ps2: Dictionary = entry.get("player_state", {})
 			names.append("%s %d" % [str(entry.get("class_id", "?")).capitalize(), int(ps2.get("level", 1))])
-		return "%d players (%s) · %s · %s" % [roster.size(), ", ".join(names), theme_name, level_label]
+		return "%d players (%s) · %s · %s" % [roster.size(), ", ".join(names), display_theme_name, level_label]
 	var ps: Dictionary = run.get("player_state", {})
 	var lvl := int(ps.get("level", 1))
 	var class_id := str(run.get("class_id", "warrior")).capitalize()
-	return "Lv %d %s · %s · %s" % [lvl, class_id, theme_name, level_label]
+	return "Lv %d %s · %s · %s" % [lvl, class_id, display_theme_name, level_label]
