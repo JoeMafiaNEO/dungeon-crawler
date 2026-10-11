@@ -750,6 +750,7 @@ func _refresh_host_save_list() -> void:
 	fresh.toggle_mode = true
 	fresh.button_pressed = (NetworkManager.host_save_slot < 0)
 	fresh.toggled.connect(_on_host_save_selected.bind(-1))
+	_style_one_button(fresh)
 	_host_save_list.add_child(fresh)
 	for slot in range(SaveManager.MAX_SLOTS):
 		if not SaveManager.has_run(SaveManager.MODE_MP, slot):
@@ -761,6 +762,7 @@ func _refresh_host_save_list() -> void:
 		b.toggle_mode = true
 		b.button_pressed = (NetworkManager.host_save_slot == slot)
 		b.toggled.connect(_on_host_save_selected.bind(slot))
+		_style_one_button(b)
 		_host_save_list.add_child(b)
 
 
