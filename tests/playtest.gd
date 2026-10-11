@@ -119,6 +119,7 @@ func _run() -> void:
 	_test_apex_mechanics()
 	_test_apex_relics()
 	_test_boss_second_specials()
+	_test_boss_third_specials()
 	_test_bounty_phase1()
 	_test_combo_phase1()
 	_test_combo_codex()
@@ -3705,11 +3706,19 @@ class ApexDungeonStub extends Node:
 	func random_arena_pos() -> Vector3:
 		return Vector3(10, 0.5, 10)
 
+	var placed: Array = []
+
+	@rpc("any_peer", "call_local")
+	func place_structure(structure_id: String, pos: Vector3, owner: int, rank: int, uid: String) -> void:
+		placed.append([structure_id, pos, uid])
+
 
 ## Stub player for shockwave hit tests: records damage taken.
 class ApexPlayerStub extends Node3D:
 	var alive := true
 	var damage_taken := 0.0
+	var hp := 100.0
+	var max_hp := 100.0
 
 	@rpc("any_peer", "call_local")
 	func take_damage(amount: float, _attacker_name: String) -> void:
@@ -3864,6 +3873,119 @@ func _test_apex_mechanics() -> void:
 	normal.queue_free()
 	wnormal.queue_free()
 	pspec.queue_free()
+	stub.queue_free()
+	holder.queue_free()
+
+
+func _test_boss_third_specials() -> void:
+	print("[Playtest] Boss third specials (mud/phalanx/mirror/cage/storm/enrage)...")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	# --- Data wiring.
+	_assert(str(load("res://data/mobs/boss_boar.tres").get("special_id_3")) == "mud_wall",
+		"boss3: boar special_id_3 mud_wall")
+	_assert(str(load("res://data/mobs/boss_warden.tres").get("special_id_3")) == "aegis_phalanx",
+		"boss3: warden special_id_3 aegis_phalanx")
+	_assert(str(load("res://data/mobs/boss_warden.tres").get("special_id_4")) == "gilded_cage",
+		"boss3: warden special_id_4 gilded_cage")
+	_assert(str(load("res://data/mobs/boss_horror.tres").get("special_id_3")) == "dread_mirror",
+		"boss3: horror special_id_3 dread_mirror")
+	_assert(load("res://data/mobs/gold_cage.tres") != null, "boss3: gold_cage mob exists")
+	_assert(load("res://data/mobs/dread_mirror.tres") != null, "boss3: dread_mirror mob exists")
+	for n in root.get_tree().get_nodes_in_group("dungeon"):
+		n.remove_from_group("dungeon")
+		n.queue_free()
+	for n in root.get_tree().get_nodes_in_group("players"):
+		n.remove_from_group("players")
+		n.queue_free()
+	var stub := ApexDungeonStub.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	# --- Mud Wall: 3 mounds placed via structure RPC.
+	var bdata: Resource = load("res://data/mobs/boss_boar.tres")
+	var boar = MobScene.instantiate()
+	boar.setup(21, bdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(boar)
+	boar.set("_special_cd", 999.0)
+	boar.set("_special2_cd", 999.0)
+	boar.set("_special3_cd", 999.0)
+	var tgt := ApexPlayerStub.new()
+	tgt.set_multiplayer_authority(1)
+	holder.add_child(tgt)
+	tgt.add_to_group("players")
+	tgt.global_position = boar.global_position + Vector3(0, 0, 8)
+	tgt.set("hp", 80.0)
+	tgt.set("max_hp", 100.0)
+	boar.set("_target", tgt)
+	boar._do_mud_wall()
+	_assert(stub.placed.size() == 3, "boss3: mud wall places 3 mounds")
+	_assert(str(stub.placed[0][0]) == "mud_mound", "boss3: mounds are mud_mound structures")
+	# --- Blood Frenzy: latches below 30% HP.
+	boar.set("hp", boar.get("max_hp") * 0.25)
+	boar._boss_think(0.1)
+	_assert(bool(boar.get("_frenzied")), "boss3: boar frenzies below 30% HP")
+	_assert(boar._move_speed_mult() > 1.4, "boss3: frenzy boosts move speed")
+	# --- Aegis Phalanx: 4 elite shieldbearers.
+	var wdata: Resource = load("res://data/mobs/boss_warden.tres")
+	var warden = MobScene.instantiate()
+	warden.setup(22, wdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(warden)
+	warden.set("_target", tgt)
+	stub.spawns.clear()
+	warden._do_aegis_phalanx()
+	_assert(stub.spawns.size() == 4, "boss3: phalanx spawns 4")
+	_assert(str(stub.spawns[0][0]) == "shieldbearer" and bool(stub.spawns[0][2]),
+		"boss3: phalanx spawns elite shieldbearers")
+	# --- Dread Mirror: 2 clones.
+	var hdata: Resource = load("res://data/mobs/boss_horror.tres")
+	var horror = MobScene.instantiate()
+	horror.setup(23, hdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(horror)
+	stub.spawns.clear()
+	horror._do_dread_mirror()
+	_assert(stub.spawns.size() == 2, "boss3: mirror spawns 2 clones")
+	_assert(str(stub.spawns[0][0]) == "dread_mirror", "boss3: clones are dread_mirrors")
+	# --- Gilded Cage: victim caged, dome spawned.
+	stub.spawns.clear()
+	warden._do_gilded_cage()
+	_assert(warden.get("_cage_target") != null, "boss3: cage picks a victim")
+	_assert(absf(float(warden.get("_cage_t")) - 4.0) < 0.01, "boss3: cage lasts 4s")
+	_assert(stub.spawns.size() == 1 and str(stub.spawns[0][0]) == "gold_cage",
+		"boss3: cage spawns the dome")
+	# --- Phaseshift Storm: exploding afterimage.
+	horror._do_phaseshift_storm(Vector3(1, 0, 1))
+	var pj: Array = horror.get("_pending_judgments")
+	_assert(pj.size() == 1 and bool(pj[0].get("storm", false)), "boss3: storm queued")
+	# --- Soft enrage: stacks accrue after 180s.
+	warden.set("_fight_t", 200.0)
+	warden.set("_special_cd", 999.0)
+	warden.set("_special2_cd", 999.0)
+	warden.set("_special3_cd", 999.0)
+	warden.set("_special4_cd", 999.0)
+	warden._boss_think(0.1)
+	_assert(int(warden.get("_enrage_stacks")) == 1, "boss3: enrage stacks after 180s")
+	# --- HP gates: special 3 blocked above 66%.
+	var warden2 = MobScene.instantiate()
+	warden2.setup(24, wdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(warden2)
+	warden2.set("_target", tgt)
+	warden2.set("_special_cd", 999.0)
+	warden2.set("_special2_cd", 999.0)
+	warden2.set("_special3_cd", 0.0)
+	warden2.set("_special4_cd", 999.0)
+	warden2._boss_think(0.1)
+	_assert(str(warden2.get("_pending_special")) == "", "boss3: special 3 gated above 66% HP")
+	warden2.set("hp", warden2.get("max_hp") * 0.5)
+	warden2._boss_think(0.1)
+	_assert(str(warden2.get("_pending_special")) == "aegis_phalanx",
+		"boss3: special 3 fires below 66% HP")
+
+	boar.queue_free()
+	warden.queue_free()
+	warden2.queue_free()
+	horror.queue_free()
+	tgt.queue_free()
 	stub.queue_free()
 	holder.queue_free()
 

@@ -29,6 +29,8 @@ extends Resource
 @export var is_boss: bool = false
 @export var boss_title: String = ""
 @export var scale_mult: float = 1.0
+## Flat tint applied to the sprite (e.g. dread mirrors are purple).
+@export var tint: Color = Color.WHITE
 ## Special attack: "slam" (AoE around self), "summon" (spawn minions),
 ## "charge" (telegraphed dash at nearest player). "" = none.
 @export var special_id: String = ""
@@ -39,6 +41,14 @@ extends Resource
 ## "void_rift" (Horror: drifting damage zones). "" = none.
 @export var special_id_2: String = ""
 @export var special_cooldown_2: float = 14.0
+## Third/fourth specials, HP-gated (phase thresholds): the boss must be at or
+## below the gate fraction to use them. "" = none.
+@export var special_id_3: String = ""
+@export var special_cooldown_3: float = 18.0
+@export var special_hp_gate_3: float = 0.66
+@export var special_id_4: String = ""
+@export var special_cooldown_4: float = 22.0
+@export var special_hp_gate_4: float = 0.33
 @export var summon_id: String = ""
 @export var summon_count: int = 2
 ## Apex mechanic id for apex-cycle bosses (issue #5): "", "enrage" (Bristleback),

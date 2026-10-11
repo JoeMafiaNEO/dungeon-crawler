@@ -1,0 +1,20 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/cultist.png" id="3"]
+
+[resource]
+script = ExtResource("2")
+id = "gold_cage"
+display_name = "Gilded Cage"
+health = 250.0
+damage = 0.0
+move_speed = 0.0
+attack_range = 0.0
+attack_cooldown = 999.0
+xp_reward = 0
+drop_chance = 0.0
+frames = [ExtResource("3")]
+tint = Color(1.0, 0.8, 0.2, 1.0)
+loot_luck = 0.0
+bonus_drops = 0

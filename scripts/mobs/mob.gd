@@ -70,8 +70,25 @@ var _pending_special := ""
 var _charge_t := 0.0
 var _charge_dir := Vector3.ZERO
 var _charge_hit: Array = []
+## Frenzy override: charge this target instead of _target (farthest player).
+var _charge_target: Node3D = null
 ## Second boss special (special_id_2): own cooldown, shares the telegraph slot.
 var _special2_cd := 10.0
+## Third/fourth specials (HP-gated): own cooldowns, share the telegraph slot.
+var _special3_cd := 14.0
+var _special4_cd := 18.0
+## Blood Frenzy (Boar): latched below 30% HP.
+var _frenzied := false
+var _frenzy_charge_cd := 0.0
+## Soft enrage: fight timer; +1 stack per 30s after 180s.
+var _fight_t := 0.0
+var _enrage_stacks := 0
+## Gilded Cage (Warden): trapped player + cage mob + expiry timer.
+var _cage_target: Node3D = null
+var _cage_mob: Node3D = null
+var _cage_t := 0.0
+## Mud Wall: sequence counter for deterministic mound UIDs.
+var _mound_seq := 0
 ## Judgment (Warden): [{positions: Array[Vector3], timer: float}] awaiting eruption.
 var _pending_judgments: Array = []
 ## Void rifts (Horror): [{pos: Vector3, ticks: int, tick_t: float, batch: int}].
@@ -170,6 +187,12 @@ func _ready() -> void:
 		_base_scale = Vector3.ONE * 1.25
 	else:
 		$Label3D.text = data.display_name
+	# Flat data tint (e.g. dread mirrors render purple).
+	if data.tint != Color.WHITE:
+		_sprite.modulate = data.tint
+	# Gilded Cage: gold dome mesh over the sprite.
+	if data.id == "gold_cage":
+		_build_cage_dome()
 	_sprite.scale = _base_scale
 	_remote_pos = global_position
 	if not multiplayer.is_server():
@@ -359,15 +382,21 @@ func _dmg_mult() -> float:
 
 
 ## Apex enrage: +40% movement speed below 30% HP (Bristleback).
+## Blood Frenzy: +50% movement speed. Soft enrage: +10% per stack.
 func _move_speed_mult() -> float:
-	return 1.4 if _enraged else 1.0
+	var m := 1.4 if _enraged else 1.0
+	if _frenzied:
+		m *= 1.5
+	m *= pow(1.1, _enrage_stacks)
+	return m
 
 
 ## Special cooldown: enraged apex Bristleback recharges in 4s instead of 7s.
 func _special_cooldown() -> float:
 	if _enraged:
 		return 4.0
-	return data.special_cooldown
+	# Soft enrage: each stack cuts special cooldowns 10% (multiplicative).
+	return data.special_cooldown * pow(0.9, _enrage_stacks)
 
 
 ## Ranged attackers hold their preferred distance: back off when crowded,
@@ -477,6 +506,26 @@ func _update_shield_visual() -> void:
 	if _shield_visual != null and is_instance_valid(_shield_visual):
 		_shield_visual.visible = _shield_up
 	# Sync to clients.
+
+
+## Gilded Cage: translucent gold dome mesh (2.5m radius) over the mob.
+func _build_cage_dome() -> void:
+	var dome := SphereMesh.new()
+	dome.radius = 2.5
+	dome.height = 5.0
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.8, 0.25, 0.35)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.75, 0.2)
+	mat.emission_energy_multiplier = 1.2
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	dome.material = mat
+	var mi := MeshInstance3D.new()
+	mi.mesh = dome
+	add_child(mi)
+	mi.position.y = 1.2
 	if multiplayer.is_server():
 		rpc("_sync_shield", _shield_up)
 
@@ -579,6 +628,36 @@ func _boss_think(delta: float) -> bool:
 		_process_judgments(delta)
 	if not _rifts.is_empty():
 		_process_rifts(delta)
+	# Soft enrage: after 180s, +1 stack per 30s (10% faster specials, 10% speed).
+	if data.is_boss:
+		_fight_t += delta
+		if _fight_t >= 180.0:
+			var want := int((_fight_t - 180.0) / 30.0) + 1
+			if want > _enrage_stacks:
+				_enrage_stacks = want
+				rpc("enrage_stack_fx", global_position, _enrage_stacks)
+	# Blood Frenzy (Boar): latch below 30% HP.
+	if data.is_boss and not _frenzied and data.special_id_2 == "seismic_slam" \
+			and max_hp > 0.0 and hp / max_hp <= 0.30:
+		_frenzied = true
+		_frenzy_charge_cd = 2.0
+		rpc("frenzy_fx", global_position)
+	# Gilded cage: expiry timer, plus break detection (teammates kill the dome).
+	if _cage_t > 0.0:
+		_cage_t -= delta
+		var cage_alive := false
+		if _cage_target != null and is_instance_valid(_cage_target):
+			for m in get_tree().get_nodes_in_group("mobs"):
+				var mm := m as Node3D
+				if mm != null and mm.get("alive") != false \
+						and str(mm.get("data").get("id")) == "gold_cage" \
+						and mm.global_position.distance_to(_cage_target.global_position) < 4.0:
+					cage_alive = true
+					break
+		if not cage_alive:
+			_break_cage(true)
+		elif _cage_t <= 0.0:
+			_break_cage(false)
 	# Phaseshift window: the Horror holds still, untargetable, for 2s.
 	if _phaseshift_t > 0.0:
 		_phaseshift_t -= delta
@@ -603,7 +682,8 @@ func _boss_think(delta: float) -> bool:
 	if _charge_t > 0.0:
 		_charge_t -= delta
 		# Apex enrage: the charge leaves a 4s fire trail (visual scorch decals).
-		if data.apex_id == "enrage":
+		# Blood Frenzy: same trail while frenzied.
+		if data.apex_id == "enrage" or _frenzied:
 			_trail_tick -= delta
 			if _trail_tick <= 0.0:
 				_trail_tick = 0.15
@@ -642,6 +722,41 @@ func _boss_think(delta: float) -> bool:
 			"void_rift":
 				_begin_telegraph("void_rift", 0.8)
 				return true
+	# Blood Frenzy: every 6s, charge the FARTHEST player.
+	if _frenzied:
+		_frenzy_charge_cd -= delta
+		if _frenzy_charge_cd <= 0.0:
+			_frenzy_charge_cd = 6.0
+			var far: Node3D = null
+			var far_d := 0.0
+			for n in get_tree().get_nodes_in_group("players"):
+				var p := n as Node3D
+				if p == null or p.get("alive") == false:
+					continue
+				var d: float = global_position.distance_to(p.global_position)
+				if d > far_d:
+					far_d = d
+					far = p
+			if far != null and far_d > 4.0:
+				_charge_target = far
+				_begin_telegraph("charge", 0.6)
+				return true
+	# Third/fourth specials: HP-gated phase thresholds.
+	var frac := 1.0
+	if max_hp > 0.0:
+		frac = hp / max_hp
+	_special3_cd -= delta
+	if _special3_cd <= 0.0 and not data.special_id_3.is_empty() \
+			and frac <= data.special_hp_gate_3 \
+			and _target != null and is_instance_valid(_target):
+		_begin_telegraph(data.special_id_3, 1.0)
+		return true
+	_special4_cd -= delta
+	if _special4_cd <= 0.0 and not data.special_id_4.is_empty() \
+			and frac <= data.special_hp_gate_4 \
+			and _target != null and is_instance_valid(_target):
+		_begin_telegraph(data.special_id_4, 1.0)
+		return true
 	return false
 
 
@@ -669,6 +784,18 @@ func _fire_special() -> void:
 		"void_rift":
 			_special2_cd = data.special_cooldown_2
 			_do_void_rift()
+		"mud_wall":
+			_special3_cd = data.special_cooldown_3
+			_do_mud_wall()
+		"aegis_phalanx":
+			_special3_cd = data.special_cooldown_3
+			_do_aegis_phalanx()
+		"dread_mirror":
+			_special3_cd = data.special_cooldown_3
+			_do_dread_mirror()
+		"gilded_cage":
+			_special4_cd = data.special_cooldown_4
+			_do_gilded_cage()
 	_pending_special = ""
 
 
@@ -751,7 +878,7 @@ func _do_judgment() -> void:
 
 
 func _process_judgments(delta: float) -> void:
-	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
+	var base_dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
 	var done: Array = []
 	for j in _pending_judgments:
 		j["timer"] = float(j["timer"]) - delta
@@ -759,7 +886,13 @@ func _process_judgments(delta: float) -> void:
 			continue
 		done.append(j)
 		var positions: Array = j["positions"]
-		rpc("judgment_fx", positions)
+		var dmg: float = base_dmg * float(j.get("dmg_mult", 1.0))
+		var radius: float = float(j.get("radius", 3.0))
+		var is_storm: bool = bool(j.get("storm", false))
+		if is_storm:
+			rpc("afterimage_fx", positions[0])
+		else:
+			rpc("judgment_fx", positions)
 		if _misses():
 			continue
 		for pos in positions:
@@ -768,7 +901,7 @@ func _process_judgments(delta: float) -> void:
 				var p := n as Node3D
 				if p == null or p.get("alive") == false:
 					continue
-				if pv.distance_to(p.global_position) <= 3.0:
+				if pv.distance_to(p.global_position) <= radius:
 					p.rpc_id(p.get_multiplayer_authority(), "take_damage", dmg, data.display_name)
 	for j in done:
 		_pending_judgments.erase(j)
@@ -793,6 +926,118 @@ func _do_void_rift() -> void:
 	rpc("rift_spawn", _rift_batch, positions)
 	for pos in positions:
 		_rifts.append({"pos": pos, "ticks": 15, "tick_t": 0.0, "batch": _rift_batch})
+
+
+## Boar: mud wall — 3 destructible dirt mounds in a line facing the nearest
+## player. They block movement for everyone (players and mobs).
+func _do_mud_wall() -> void:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or _target == null or not is_instance_valid(_target):
+		return
+	rpc("mud_wall_fx", global_position)
+	var to: Vector3 = _target.global_position - global_position
+	to.y = 0.0
+	var fwd := to.normalized() if to.length() > 0.1 else Vector3.FORWARD
+	var side := fwd.cross(Vector3.UP).normalized()
+	for i in [-1, 0, 1]:
+		var pos: Vector3 = global_position + fwd * 4.0 + side * (i * 3.0)
+		pos.y = 0.5
+		_mound_seq += 1
+		var uid := "mound_%d_%d" % [mob_id, _mound_seq]
+		dungeon.rpc("place_structure", "mud_mound", pos, NetworkManager.server_peer_id, 1, uid)
+
+
+## Warden: aegis phalanx — 4 elite shieldbearers spawn in a line between the
+## Warden and the nearest player, shields up.
+func _do_aegis_phalanx() -> void:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or _target == null or not is_instance_valid(_target):
+		return
+	rpc("summon_fx", global_position)
+	dungeon.rpc("announce_text", "%s RAISES THE PHALANX!" % [data.boss_title.to_upper()])
+	var to: Vector3 = _target.global_position - global_position
+	to.y = 0.0
+	var fwd := to.normalized() if to.length() > 0.1 else Vector3.FORWARD
+	var side := fwd.cross(Vector3.UP).normalized()
+	for i in [-1.5, -0.5, 0.5, 1.5]:
+		var pos: Vector3 = global_position + fwd * 3.0 + side * (i * 2.0)
+		pos.y = 0.5
+		dungeon.server_spawn_mob("shieldbearer", pos, true)
+
+
+## Horror: dread mirror — 2 shadow clones (purple-tinted knight sprites)
+## spawn beside random players and hunt them.
+func _do_dread_mirror() -> void:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		return
+	var players: Array = []
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Node3D
+		if p != null and p.get("alive") != false:
+			players.append(p)
+	if players.is_empty():
+		return
+	rpc("mirror_fx", global_position)
+	for i in 2:
+		var p: Node3D = players[randi() % players.size()]
+		var pos: Vector3 = p.global_position + Vector3(randf_range(-2.0, 2.0), 0.5, randf_range(-2.0, 2.0))
+		dungeon.server_spawn_mob("dread_mirror", pos, false)
+
+
+## Warden: gilded cage — the lowest-HP living player is caged: rooted inside
+## a golden dome (a killable mob). Break the dome to free them; after 4s the
+## dome collapses and the trapped player takes a heavy hit.
+func _do_gilded_cage() -> void:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		return
+	var victim: Node3D = null
+	var lowest := 1e9
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Node3D
+		if p == null or p.get("alive") == false:
+			continue
+		var hp_frac := 1.0
+		var mhp = p.get("max_hp")
+		if mhp != null and float(mhp) > 0.0:
+			var chp = p.get("hp")
+			hp_frac = float(chp) / float(mhp) if chp != null else 1.0
+		if hp_frac < lowest:
+			lowest = hp_frac
+			victim = p
+	if victim == null:
+		return
+	_cage_target = victim
+	_cage_t = 4.0
+	dungeon.server_spawn_mob("gold_cage", victim.global_position + Vector3(0, 0.5, 0), false)
+	# Track the cage mob so we know when teammates break it.
+	# (server_spawn_mob is async; resolve on next think via proximity scan.)
+	rpc("cage_fx", victim.global_position)
+	victim.rpc_id(victim.get_multiplayer_authority(), "apply_caged", 4.0)
+
+
+## Gilded cage cleanup. broken=true when teammates killed the dome.
+## Server-side; visuals fan out via RPC.
+func _break_cage(broken: bool) -> void:
+	_cage_t = 0.0
+	if _cage_target != null and is_instance_valid(_cage_target):
+		_cage_target.rpc_id(_cage_target.get_multiplayer_authority(), "clear_caged")
+		if not broken:
+			var dmg := data.damage * data.special_damage_mult * 1.5 * dmg_scale * _dmg_mult()
+			_cage_target.rpc_id(_cage_target.get_multiplayer_authority(),
+				"take_damage", dmg, data.display_name)
+	rpc("cage_break_fx", global_position)
+	_cage_target = null
+	_cage_mob = null
+
+
+## Apex Horror phaseshift storm: the teleport leaves an exploding afterimage
+## at the departure point (telegraphed, erupts after 1s).
+func _do_phaseshift_storm(from_pos: Vector3) -> void:
+	rpc("afterimage_telegraph", from_pos)
+	_pending_judgments.append({"positions": [from_pos], "timer": 1.0,
+		"dmg_mult": 1.5, "radius": 4.0, "storm": true})
 
 
 func _process_rifts(delta: float) -> void:
@@ -883,17 +1128,22 @@ func _do_phaseshift() -> void:
 	untargetable = true
 	_phaseshift_t = 2.0
 	_target = null
+	var from_pos := global_position
 	var dest: Vector3 = dungeon.random_arena_pos()
 	if dest != Vector3.INF:
 		global_position = Vector3(dest.x, 0.5, dest.z)
 	_sprite.modulate.a = 0.35
 	rpc("phaseshift_fx", global_position)
+	# Phaseshift Storm: the departure point detonates 1s later.
+	_do_phaseshift_storm(from_pos)
 
 
 func _do_charge() -> void:
-	if _target == null or not is_instance_valid(_target):
+	var tgt := _charge_target if (_charge_target != null and is_instance_valid(_charge_target)) else _target
+	_charge_target = null
+	if tgt == null or not is_instance_valid(tgt):
 		return
-	var to: Vector3 = _target.global_position - global_position
+	var to: Vector3 = tgt.global_position - global_position
 	to.y = 0.0
 	if to.length() < 0.1:
 		return
@@ -1123,6 +1373,59 @@ func rift_despawn(batch: int) -> void:
 		if is_instance_valid(n):
 			n.queue_free()
 	_rift_nodes.erase(batch)
+
+
+## Boar mud wall: dust burst where the mounds erupt.
+@rpc("any_peer", "call_local")
+func mud_wall_fx(pos: Vector3) -> void:
+	AudioManager.sfx("boss_slam", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 0.5, 0), Color(0.5, 0.38, 0.22), 36, 8.0)
+
+
+## Horror dread mirror: purple burst as the clones form.
+@rpc("any_peer", "call_local")
+func mirror_fx(pos: Vector3) -> void:
+	AudioManager.sfx("wave_horn", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(0.6, 0.3, 0.9), 30, 6.0)
+
+
+## Warden gilded cage: golden flash on the victim.
+@rpc("any_peer", "call_local")
+func cage_fx(pos: Vector3) -> void:
+	AudioManager.sfx("boss_roar", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(1.0, 0.8, 0.25), 24, 5.0)
+
+
+@rpc("any_peer", "call_local")
+func cage_break_fx(pos: Vector3) -> void:
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(1.0, 0.85, 0.4), 20, 6.0)
+
+
+## Boar blood frenzy: red burst as it enrages.
+@rpc("any_peer", "call_local")
+func frenzy_fx(pos: Vector3) -> void:
+	AudioManager.sfx("boss_roar", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(1.0, 0.2, 0.1), 40, 7.0)
+
+
+## Soft enrage: small burst + stack count (visual only).
+@rpc("any_peer", "call_local")
+func enrage_stack_fx(pos: Vector3, stacks: int) -> void:
+	AudioManager.sfx("boss_roar", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.5, 0), Color(1.0, 0.4, 0.1), 12 + stacks * 4, 5.0)
+
+
+## Phaseshift storm: purple telegraph at the departure point.
+@rpc("any_peer", "call_local")
+func afterimage_telegraph(pos: Vector3) -> void:
+	Effects.telegraph_ring(get_parent(), pos, 4.0, Color(0.6, 0.2, 0.9))
+
+
+## Phaseshift storm: the afterimage detonates.
+@rpc("any_peer", "call_local")
+func afterimage_fx(pos: Vector3) -> void:
+	AudioManager.sfx("boss_slam", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 1.0, 0), Color(0.65, 0.25, 0.95), 36, 8.0)
 
 
 ## Apex Horror phaseshift: teleport burst + phased-out fade (clients apply it).

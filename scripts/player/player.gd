@@ -121,6 +121,8 @@ const SPECIALIZATION_UNLOCK_LEVEL := 20
 ## Smoke Veil stealth: mobs can't target you while stealthed.
 var stealthed := false
 var _stealth_t := 0.0
+## Gilded Cage (Warden): rooted inside the dome while > 0.
+var _caged_t := 0.0
 ## Unseen trait: next attack after veil/blink crits (2x). Set on veil expiry / blink land.
 var unseen_crit_ready := false
 ## Co-op ping: MMB / G drops a "!" marker visible to the whole party.
@@ -1549,6 +1551,19 @@ func set_stealthed(s: bool) -> void:
 		_sprite.modulate.a = 0.35 if s else 1.0
 
 
+## Gilded Cage (Warden): root this player for the duration.
+@rpc("any_peer", "call_local")
+func apply_caged(duration: float) -> void:
+	_caged_t = maxf(_caged_t, duration)
+	if hud != null:
+		hud.toast("Caged! Break the dome!")
+
+
+@rpc("any_peer", "call_local")
+func clear_caged() -> void:
+	_caged_t = 0.0
+
+
 ## Stoneskin totem: -30% damage taken while in the aura (scaled by aura strength).
 var _stoneskin_t := 0.0
 var _stoneskin_strength := 1.0
@@ -1854,6 +1869,11 @@ func _physics_process(delta: float) -> void:
 			iz -= 1.0
 		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
 			iz += 1.0
+		# Gilded Cage: rooted while caged.
+		if _caged_t > 0.0:
+			_caged_t -= delta
+			ix = 0.0
+			iz = 0.0
 		var wish := Vector3(ix, 0, iz)
 		if wish.length() > 1.0:
 			wish = wish.normalized()

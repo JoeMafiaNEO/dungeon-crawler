@@ -75,6 +75,7 @@ boss_title = "MAW OF THE DEEP"
 scale_mult = 2.8
 special_id = "summon"
 special_id_2 = "void_rift"
+special_id_3 = "dread_mirror"
 special_cooldown = 10.0
 special_damage_mult = 1.5
 summon_id = "cultist"

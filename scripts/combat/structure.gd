@@ -17,6 +17,7 @@ const STATS := {
 	"bulwark_wall": {"hp": 150.0, "life": 20.0},
 	"spike_trap": {"hp": 60.0, "life": 60.0},
 	"keystone": {"hp": 200.0, "life": 45.0},
+	"mud_mound": {"hp": 120.0, "life": 25.0},
 }
 
 var structure_id := ""
@@ -54,6 +55,8 @@ func _ready() -> void:
 			_build_trap()
 		"keystone":
 			_build_keystone()
+		"mud_mound":
+			_build_mound()
 		_:
 			_build_wall()
 	AudioManager.sfx("totem_place", global_position)
@@ -95,6 +98,30 @@ func _build_wall() -> void:
 	shape.size = Vector3(3.0, 2.5, 0.6)
 	cs.shape = shape
 	cs.position.y = 1.25
+	body.add_child(cs)
+	add_child(body)
+
+
+func _build_mound() -> void:
+	# Boar mud wall: dirt mound, 2.5m wide x 1.8m tall. Blocks everyone
+	# (players and mobs): physics layer 1+2, so the arena gets split up.
+	var mound := SphereMesh.new()
+	mound.radius = 1.25
+	mound.height = 1.8
+	var mi := MeshInstance3D.new()
+	mi.mesh = mound
+	_add_mat(mi, Color(0.42, 0.30, 0.18))
+	_glow(mi, Color(0.35, 0.22, 0.12), 0.4)
+	add_child(mi)
+	mi.position.y = 0.5
+	var body := StaticBody3D.new()
+	body.collision_layer = 3
+	body.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var shape := SphereShape3D.new()
+	shape.radius = 1.25
+	cs.shape = shape
+	cs.position.y = 0.9
 	body.add_child(cs)
 	add_child(body)
 
