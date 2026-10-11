@@ -68,6 +68,16 @@ func _ready() -> void:
 	add_child(_mus_a)
 	add_child(_mus_b)
 	_mus_active = _mus_a
+	# Jesse 2026-10-11: defer volume load until after all autoloads init.
+	# SaveManager (later in autoload order) hasn't loaded the profile yet
+	# when this _ready runs, so volumes defaulted to max every launch.
+	_load_volumes()
+	_apply_volumes()
+	call_deferred("_reload_volumes_after_autoloads")
+
+
+## Re-read volumes once SaveManager has loaded the profile.
+func _reload_volumes_after_autoloads() -> void:
 	_load_volumes()
 	_apply_volumes()
 
