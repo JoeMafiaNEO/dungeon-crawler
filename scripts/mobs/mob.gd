@@ -1701,12 +1701,12 @@ func _luck_weight(rarity: int) -> float:
 func _build_health_bar() -> void:
 	var bar := Node3D.new()
 	bar.name = "HealthBar"
-	# Above the sprite; bosses are bigger so offset more.
-	var y_off := 2.2 * _base_scale.x if _base_scale.x > 1.0 else 1.6
+	# Above the name Label3D (y=1.9); bosses are bigger so offset more.
+	var y_off := 2.6 * _base_scale.x if _base_scale.x > 1.0 else 2.3
 	bar.position = Vector3(0, y_off, 0)
 	add_child(bar)
-	var frame_tex := load("res://assets/sprites/ui/healthbar_boss_frame.png") as Texture2D \
-		if data.is_boss else load("res://assets/sprites/ui/healthbar_mob_frame.png") as Texture2D
+	var frame_path := "res://assets/sprites/ui/healthbar_boss_frame.png" if data.is_boss else "res://assets/sprites/ui/healthbar_mob_frame.png"
+	var frame_tex := load(frame_path) as Texture2D
 	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
 	if frame_tex == null or fill_tex == null:
 		return

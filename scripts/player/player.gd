@@ -4013,7 +4013,8 @@ func show_achievement_unlock(achievement_ids: Array) -> void:	# Shows achievemen
 func _build_health_bar() -> void:
 	var bar := Node3D.new()
 	bar.name = "HealthBar"
-	bar.position = Vector3(0, 2.0, 0)
+	# Above the name Label3D (y=2.1).
+	bar.position = Vector3(0, 2.5, 0)
 	add_child(bar)
 	var frame_tex := load("res://assets/sprites/ui/healthbar_mob_frame.png") as Texture2D
 	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D

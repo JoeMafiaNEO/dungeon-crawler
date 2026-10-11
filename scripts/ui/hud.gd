@@ -84,19 +84,14 @@ func _apply_healthbar_art() -> void:
 		fill_style.texture = fill_tex
 		hp_bar.add_theme_stylebox_override("fill", fill_style)
 	# Frame overlays the bar; the fill shows through the transparent center.
+	# Added as a child of the bar so it covers it exactly (not a sibling).
 	var frame := TextureRect.new()
 	frame.texture = frame_tex
 	frame.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	frame.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	# Size to the bar with some padding for the skull decorations.
-	var bar_size := hp_bar.custom_minimum_size
-	frame.custom_minimum_size = Vector2(bar_size.x + 40, bar_size.y + 24)
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Insert right above the bar in the TopLeft container.
-	var parent := hp_bar.get_parent()
-	var idx := hp_bar.get_index()
-	parent.add_child(frame)
-	parent.move_child(frame, idx + 1)
+	hp_bar.add_child(frame)
 
 
 ## Issue #69 Phase 1: Thrown dagger charge meter. Small bar near the
