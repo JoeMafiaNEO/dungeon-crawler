@@ -40,8 +40,9 @@ var hp := 100.0
 ## Jesse 2026-10-11: floating health bar above the player (visible to all).
 var _phb_fill: Sprite3D = null
 var _phb_full_w: float = 1.0
-var _phb_hole_cx: float = 0.0
-var _phb_hole_cy: float = 0.0
+var _phb_bar_h: float = 0.16
+var _phb_fill_tex_w: float = 32.0
+var _phb_fill_tex_h: float = 8.0
 var damage := 10.0
 var attack_cooldown := 0.5
 var move_speed := 5.0
@@ -4010,55 +4011,59 @@ func show_achievement_unlock(achievement_ids: Array) -> void:	# Shows achievemen
 			AudioManager.sfx("unlock")
 
 
-## Jesse 2026-10-11: floating SNES health bar above the player.
+## Jesse 2026-10-11: floating health bar above the player.
 ## Visible to all players in multiplayer (world-space, billboarded).
+## Code-generated dark border + red fill (replaced PNG frame per Jesse).
+static var _phb_white_tex: Texture2D = null
+
 func _build_health_bar() -> void:
+	if _phb_white_tex == null:
+		var img := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+		img.fill(Color.WHITE)
+		_phb_white_tex = ImageTexture.create_from_image(img)
 	var bar := Node3D.new()
 	bar.name = "HealthBar"
 	# Above the name Label3D (y=2.1).
 	bar.position = Vector3(0, 2.5, 0)
 	add_child(bar)
-	var frame_tex := load("res://assets/sprites/ui/healthbar_mob_frame.png") as Texture2D
+	var bar_w := 1.4
+	var bar_h := 0.16
+	var border := 0.035
+	_phb_full_w = bar_w
+	_phb_bar_h = bar_h
+	var bg := Sprite3D.new()
+	bg.texture = _phb_white_tex
+	bg.modulate = Color(0.05, 0.05, 0.07, 0.92)
+	bg.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	bg.no_depth_test = true
+	bg.scale = Vector3((bar_w + border * 2.0) / 0.01, (bar_h + border * 2.0) / 0.01, 1)
+	bar.add_child(bg)
 	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
-	if frame_tex == null or fill_tex == null:
-		return
 	var fill := Sprite3D.new()
-	fill.texture = fill_tex
+	if fill_tex != null:
+		fill.texture = fill_tex
+		_phb_fill_tex_w = 3200.0 * 0.01
+		_phb_fill_tex_h = 800.0 * 0.01
+	else:
+		fill.texture = _phb_white_tex
+		fill.modulate = Color(0.75, 0.08, 0.08)
+		_phb_fill_tex_w = 0.01
+		_phb_fill_tex_h = 0.01
 	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	fill.no_depth_test = true
-	# Mob frame hole: w=0.274 h=0.223 left=0.365 top=0.405.
-	var fw := float(frame_tex.get_width())
-	var fh := float(frame_tex.get_height())
-	var target_w := 0.9
-	# Sprite3D pixel_size=0.01: world width = px * 0.01 * scale.
-	var s := target_w / (fw * 0.01)
-	var hole_world_w := 0.274 * target_w
-	var hole_world_h := 0.223 * (fh * 0.01 * s)
-	fill.scale = Vector3(hole_world_w / (3200.0 * 0.01), hole_world_h / (800.0 * 0.01), 1)
-	_phb_full_w = hole_world_w
-	_phb_hole_cx = -target_w * 0.5 + (0.365 + 0.274 * 0.5) * target_w
-	_phb_hole_cy = (fh * 0.01 * s) * 0.5 - (0.405 + 0.223 * 0.5) * (fh * 0.01 * s)
-	fill.position = Vector3(_phb_hole_cx - hole_world_w * 0.5, _phb_hole_cy, 0)
+	fill.position.z = 0.01
 	bar.add_child(fill)
 	_phb_fill = fill
-	var frame := Sprite3D.new()
-	frame.texture = frame_tex
-	frame.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	frame.no_depth_test = true
-	frame.scale = Vector3(s, s, 1)
-	frame.position.z = 0.01
-	bar.add_child(frame)
 	_update_health_bar()
 
 
-## Scale the fill by current HP percent (left-aligned).
+## Scale the fill by current HP percent (left-aligned, anchored at bar left).
 func _update_health_bar() -> void:
 	if _phb_fill == null or not is_instance_valid(_phb_fill):
 		return
 	var frac := 0.0
 	if max_hp > 0.0:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
-	var full_sx := _phb_full_w / (3200.0 * 0.01)
-	_phb_fill.scale.x = full_sx * frac
-	_phb_fill.position.x = (_phb_hole_cx - _phb_full_w * 0.5) + (_phb_full_w * frac) * 0.5
-	_phb_fill.position.y = _phb_hole_cy
+	_phb_fill.scale = Vector3((_phb_full_w * frac) / _phb_fill_tex_w, _phb_bar_h / _phb_fill_tex_h, 1)
+	_phb_fill.position.x = -_phb_full_w * 0.5 + (_phb_full_w * frac) * 0.5
+	_phb_fill.position.y = 0.0

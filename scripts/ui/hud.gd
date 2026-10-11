@@ -70,28 +70,28 @@ func _ready() -> void:
 
 
 ## Jesse 2026-10-11: SNES health bar frame overlay on the player HP bar.
+## Jesse 2026-10-11: code-generated HUD health bar border (replaced PNG frame).
 func _apply_healthbar_art() -> void:
 	var hp_bar := %HPBar as ProgressBar
 	if hp_bar == null:
 		return
-	var frame_tex := load("res://assets/sprites/ui/healthbar_player_frame.png") as Texture2D
+	# Dark code-drawn border behind the bar.
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.05, 0.05, 0.07, 0.95)
+	bg.border_color = Color(0.75, 0.68, 0.45)
+	bg.set_border_width_all(2)
+	bg.set_corner_radius_all(3)
+	bg.content_margin_left = 2.0
+	bg.content_margin_right = 2.0
+	bg.content_margin_top = 2.0
+	bg.content_margin_bottom = 2.0
+	hp_bar.add_theme_stylebox_override("background", bg)
+	# Red fill texture.
 	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
-	if frame_tex == null:
-		return
-	# Use the SNES fill texture for the bar.
 	if fill_tex != null:
 		var fill_style := StyleBoxTexture.new()
 		fill_style.texture = fill_tex
 		hp_bar.add_theme_stylebox_override("fill", fill_style)
-	# Frame overlays the bar; the fill shows through the transparent center.
-	# Added as a child of the bar so it covers it exactly (not a sibling).
-	var frame := TextureRect.new()
-	frame.texture = frame_tex
-	frame.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	frame.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
-	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hp_bar.add_child(frame)
 
 
 ## Issue #69 Phase 1: Thrown dagger charge meter. Small bar near the

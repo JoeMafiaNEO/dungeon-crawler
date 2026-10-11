@@ -24,11 +24,12 @@ var _remote_pos := Vector3.ZERO
 var _has_remote := false
 var _knockback := Vector3.ZERO
 var _sprite: AnimatedSprite3D
-## Jesse 2026-10-11: floating health bar (frame + fill sprites).
+## Jesse 2026-10-11: floating health bar (code-generated border + fill).
 var _hb_fill: Sprite3D = null
 var _hb_full_w: float = 1.0
-var _hb_hole_cx: float = 0.0
-var _hb_hole_cy: float = 0.0
+var _hb_bar_h: float = 0.16
+var _hb_fill_tex_w: float = 32.0
+var _hb_fill_tex_h: float = 8.0
 var _flash_tween: Tween
 var _bob_t := 0.0
 var _base_scale := Vector3.ONE
@@ -1698,66 +1699,63 @@ func _luck_weight(rarity: int) -> float:
 	return 1.0 + luck * float(rarity) * 0.4
 
 
-## Jesse 2026-10-11: floating SNES health bar above the mob.
-## Frame (mob or boss variant) + fill sprite scaled by HP percent.
+## Jesse 2026-10-11: floating health bar above the mob.
+## Code-generated dark border + red fill, fill width scales by HP percent.
+## (Replaced the PNG frame art per Jesse 2026-10-11 — procedural is cleaner.)
+static var _hb_white_tex: Texture2D = null
+
 func _build_health_bar() -> void:
+	if _hb_white_tex == null:
+		var img := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+		img.fill(Color.WHITE)
+		_hb_white_tex = ImageTexture.create_from_image(img)
 	var bar := Node3D.new()
 	bar.name = "HealthBar"
 	# Above the name Label3D (y=1.9); bosses are bigger so offset more.
 	var y_off := 2.6 * _base_scale.x if _base_scale.x > 1.0 else 2.3
 	bar.position = Vector3(0, y_off, 0)
 	add_child(bar)
-	var frame_path := "res://assets/sprites/ui/healthbar_boss_frame.png" if data.is_boss else "res://assets/sprites/ui/healthbar_mob_frame.png"
-	var frame_tex := load(frame_path) as Texture2D
+	var bar_w := 2.0 if data.is_boss else 1.4
+	var bar_h := 0.22 if data.is_boss else 0.16
+	var border := 0.035
+	_hb_full_w = bar_w
+	_hb_bar_h = bar_h
+	# Code-generated border: dark backing quad slightly larger than the fill.
+	var bg := Sprite3D.new()
+	bg.texture = _hb_white_tex
+	bg.modulate = Color(0.05, 0.05, 0.07, 0.92)
+	bg.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	bg.no_depth_test = true
+	# Sprite3D pixel_size=0.01: world size = 0.01 * scale for a 1px texture.
+	bg.scale = Vector3((bar_w + border * 2.0) / 0.01, (bar_h + border * 2.0) / 0.01, 1)
+	bar.add_child(bg)
+	# Red fill on top, shrinks left-to-right with HP.
 	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
-	if frame_tex == null or fill_tex == null:
-		return
-	# Fill goes behind the frame.
 	var fill := Sprite3D.new()
-	fill.texture = fill_tex
+	if fill_tex != null:
+		fill.texture = fill_tex
+		_hb_fill_tex_w = 3200.0 * 0.01
+		_hb_fill_tex_h = 800.0 * 0.01
+	else:
+		fill.texture = _hb_white_tex
+		fill.modulate = Color(0.75, 0.08, 0.08)
+		_hb_fill_tex_w = 0.01
+		_hb_fill_tex_h = 0.01
 	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	fill.no_depth_test = true
-	fill.modulate = Color(1, 1, 1, 1)
-	# Fill sized to the frame's measured transparent center hole.
-	# Mob: w=0.274 h=0.223 left=0.365 top=0.405; Boss: w=0.609 h=0.435 left=0.194 top=0.285.
-	var fw := float(frame_tex.get_width())
-	var fh := float(frame_tex.get_height())
-	var target_w := 1.2 if data.is_boss else 0.9
-	# Sprite3D pixel_size=0.01: world width = px * 0.01 * scale.
-	var s := target_w / (fw * 0.01)
-	var hole_w := 0.609 if data.is_boss else 0.274
-	var hole_h := 0.435 if data.is_boss else 0.223
-	var hole_l := 0.194 if data.is_boss else 0.365
-	var hole_t := 0.285 if data.is_boss else 0.405
-	var hole_world_w := hole_w * target_w
-	var hole_world_h := hole_h * (fh * 0.01 * s)
-	fill.scale = Vector3(hole_world_w / (3200.0 * 0.01), hole_world_h / (800.0 * 0.01), 1)
-	_hb_full_w = hole_world_w
-	_hb_hole_cx = -target_w * 0.5 + (hole_l + hole_w * 0.5) * target_w
-	_hb_hole_cy = (fh * 0.01 * s) * 0.5 - (hole_t + hole_h * 0.5) * (fh * 0.01 * s)
-	# Left-align: offset so scaling from the left edge works.
-	fill.position = Vector3(_hb_hole_cx - hole_world_w * 0.5, _hb_hole_cy, 0)
+	fill.position.z = 0.01
 	bar.add_child(fill)
 	_hb_fill = fill
-	var frame := Sprite3D.new()
-	frame.texture = frame_tex
-	frame.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	frame.no_depth_test = true
-	frame.scale = Vector3(s, s, 1)
-	frame.position.z = 0.01
-	bar.add_child(frame)
 	_update_health_bar()
 
 
-## Scale the fill by current HP percent (left-aligned).
+## Scale the fill by current HP percent (left-aligned, anchored at bar left).
 func _update_health_bar() -> void:
 	if _hb_fill == null or not is_instance_valid(_hb_fill):
 		return
 	var frac := 0.0
 	if max_hp > 0.0:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
-	# Shrink from the right, keeping the left edge anchored at the hole's left.
-	var full_sx := _hb_full_w / (3200.0 * 0.01)
-	_hb_fill.scale.x = full_sx * frac
-	_hb_fill.position.x = (_hb_hole_cx - _hb_full_w * 0.5) + (_hb_full_w * frac) * 0.5
-	_hb_fill.position.y = _hb_hole_cy
+	_hb_fill.scale = Vector3((_hb_full_w * frac) / _hb_fill_tex_w, _hb_bar_h / _hb_fill_tex_h, 1)
+	_hb_fill.position.x = -_hb_full_w * 0.5 + (_hb_full_w * frac) * 0.5
+	_hb_fill.position.y = 0.0
