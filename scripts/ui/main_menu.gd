@@ -805,13 +805,24 @@ func _refresh_host_save_list() -> void:
 	for slot in SaveManager.list_slots(SaveManager.MODE_MP):
 		var run: Dictionary = SaveManager.load_run(SaveManager.MODE_MP, slot)
 		var summary := SaveManager.run_summary(run)
+		var hrow := HBoxContainer.new()
+		hrow.add_theme_constant_override("separation", 8)
 		var b := Button.new()
 		b.text = "Slot %d: %s" % [slot + 1, summary]
 		b.toggle_mode = true
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.button_pressed = (NetworkManager.host_save_slot == slot)
 		b.toggled.connect(_on_host_save_selected.bind(slot))
 		_style_one_button(b)
-		_host_save_list.add_child(b)
+		hrow.add_child(b)
+		var del_btn := Button.new()
+		del_btn.text = "×"
+		del_btn.tooltip_text = "Delete this saved run (asks first)"
+		del_btn.custom_minimum_size = Vector2(36, 0)
+		del_btn.pressed.connect(_show_delete_confirm.bind(SaveManager.MODE_MP, slot))
+		_style_one_button(del_btn)
+		hrow.add_child(del_btn)
+		_host_save_list.add_child(hrow)
 
 
 func _on_host_save_selected(pressed: bool, slot: int) -> void:
@@ -1282,6 +1293,11 @@ func _build_slot_card(mode: String, slot: int) -> MarginContainer:
 		new_btn.tooltip_text = "Start a new run in this slot (asks before overwriting)"
 		new_btn.pressed.connect(_on_slot_new_pressed.bind(mode, slot))
 		row.add_child(new_btn)
+		var del_btn := Button.new()
+		del_btn.text = "Delete"
+		del_btn.tooltip_text = "Delete this saved run (asks first)"
+		del_btn.pressed.connect(_show_delete_confirm.bind(mode, slot))
+		row.add_child(del_btn)
 	else:
 		meta.text = "Empty slot"
 		meta.modulate = Color(0.55, 0.55, 0.60)
@@ -1629,9 +1645,37 @@ func _show_overwrite_confirm(mode: String, slot: int) -> void:
 	_confirm_overlay.visible = true
 
 
+## Delete confirm: reuses the overwrite modal with a delete action.
+var _delete_mode := ""
+var _delete_slot := -1
+
+
+func _show_delete_confirm(mode: String, slot: int) -> void:
+	AudioManager.sfx("ui_click")
+	_delete_mode = mode
+	_delete_slot = slot
+	_confirm_mode = "delete"
+	var run := SaveManager.load_run(mode, slot)
+	_confirm_msg.text = "Delete this saved run?\nSlot %d: %s\n\nThis cannot be undone." % [
+		slot + 1, SaveManager.run_summary(run)]
+	_confirm_overlay.visible = true
+
+
 func _on_overwrite_confirmed() -> void:
 	AudioManager.sfx("ui_click")
 	_confirm_overlay.visible = false
+	if _confirm_mode == "delete":
+		SaveManager.clear_run(_delete_mode, _delete_slot)
+		# If we deleted the host's selected save, deselect it.
+		if _delete_mode == SaveManager.MODE_MP and NetworkManager.host_save_slot == _delete_slot:
+			NetworkManager.host_save_slot = -1
+		_delete_mode = ""
+		_delete_slot = -1
+		_confirm_mode = ""
+		_refresh_solo_ui()
+		_refresh_host_save_list()
+		_refresh_host_tabs()
+		return
 	if _confirm_mode == SaveManager.MODE_MP:
 		_host_slot = _confirm_slot
 		_build_host_tabs()
