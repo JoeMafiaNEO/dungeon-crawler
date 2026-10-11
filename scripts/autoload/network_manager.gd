@@ -333,6 +333,13 @@ func load_dungeon(theme_id: String, level_seed: int, level_number: int) -> void:
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
 
+## Jesse 2026-10-11: clients load the station for continued station saves.
+@rpc("any_peer", "call_local")
+func load_station(level_number: int) -> void:
+	Station.next_level_number = level_number
+	get_tree().change_scene_to_file("res://scenes/station/station.tscn")
+
+
 # --- Joining ---
 
 func refresh_lobby_list() -> void:
@@ -546,7 +553,12 @@ func continue_run(mode: String, slot: int) -> bool:
 	Dungeon.next_theme_id = str(run.get("theme_id", "village"))
 	Dungeon.next_seed = int(run.get("seed", randi()))
 	Dungeon.next_level_number = int(run.get("level_number", 1))
-	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
+	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
+	if bool(run.get("at_station", false)):
+		Station.next_level_number = int(run.get("level_number", 1))
+		get_tree().change_scene_to_file("res://scenes/station/station.tscn")
+	else:
+		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 	return true
 
 
@@ -611,10 +623,14 @@ func start_continued_run() -> void:
 		return
 	Steam.setLobbyJoinable(lobby_id, false)
 	var run := _continued_run
-	# Broadcast the dungeon load to all clients (they pull state via
+	# Broadcast the level load to all clients (they pull state via
 	# register_class, and the server matches them against the saved roster).
 	# Without this the host loads alone and clients sit in staging forever.
-	rpc("load_dungeon", str(run.get("theme_id", "village")), int(run.get("seed", randi())), int(run.get("level_number", 1)))
+	# Jesse 2026-10-11: station saves resume AT the station.
+	if bool(run.get("at_station", false)):
+		rpc("load_station", int(run.get("level_number", 1)))
+	else:
+		rpc("load_dungeon", str(run.get("theme_id", "village")), int(run.get("seed", randi())), int(run.get("level_number", 1)))
 	_continue_load_level()
 
 
@@ -638,7 +654,12 @@ func _continue_load_level() -> void:
 	Dungeon.next_level_number = int(run.get("level_number", 1))
 	# Stash the roster for the staging UI.
 	Dungeon.continued_roster = run.get("roster", [])
-	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
+	# Jesse 2026-10-11: station saves resume AT the station.
+	if bool(run.get("at_station", false)):
+		Station.next_level_number = int(run.get("level_number", 1))
+		get_tree().change_scene_to_file("res://scenes/station/station.tscn")
+	else:
+		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
 
 func _reset_peer() -> void:

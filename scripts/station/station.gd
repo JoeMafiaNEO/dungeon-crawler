@@ -879,6 +879,7 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 		"level_number": level_number,
 		"seed": level_seed,
 		"is_multiplayer": true,
+		"at_station": true,
 		"host_difficulty": NetworkManager.host_difficulty,
 		"host_loot_mult": NetworkManager.host_loot_mult,
 		"lobby": {

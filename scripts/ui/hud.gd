@@ -1258,7 +1258,9 @@ func _on_quit_pressed() -> void:
 ## Save the current run as a save point, then quit to the menu.
 ## Host in multiplayer: saves the full roster. Client: just disconnects.
 ## Station-aware: quitting from the pit-stop saves the NEXT level, exactly
-## as if the train had departed.
+## as if the train had departed. The at_station flag ensures continuing
+## puts you back at the station (shops/healing), not straight into the
+## next dungeon level.
 func _on_save_quit_pressed() -> void:
 	if _player == null:
 		_on_quit_pressed()
@@ -1266,9 +1268,11 @@ func _on_save_quit_pressed() -> void:
 	var theme_id := "village"
 	var level_number := 1
 	var level_seed := 0
+	var at_station := false
 	var station := get_tree().get_first_node_in_group("station")
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if station != null:
+		at_station = true
 		var nl := Station.next_level_number
 		# board_destinations() swaps warlord for the APEX ARENA on apex
 		# cycles (issue #5) so the saved next theme agrees with the board.
@@ -1302,6 +1306,8 @@ func _on_save_quit_pressed() -> void:
 		SaveManager.save_run({
 			"theme_id": theme_id,
 			"level_number": level_number,
+			"seed": level_seed,
+			"at_station": at_station,
 			"class_id": _player.class_id,
 			"player_state": _player.get_state(),
 		}, SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
