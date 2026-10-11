@@ -755,6 +755,14 @@ func _boss_think(delta: float) -> bool:
 	if _special4_cd <= 0.0 and not data.special_id_4.is_empty() \
 			and frac <= data.special_hp_gate_4 \
 			and _target != null and is_instance_valid(_target):
+		# Jesse 2026-10-11: gilded cage needs at least 2 players.
+		if data.special_id_4 == "gilded_cage":
+			var alive := 0
+			for n in get_tree().get_nodes_in_group("players"):
+				if n.get("alive") != false:
+					alive += 1
+			if alive < 2:
+				return false
 		_begin_telegraph(data.special_id_4, 1.0)
 		return true
 	return false

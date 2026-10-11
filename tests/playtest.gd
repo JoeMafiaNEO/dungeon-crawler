@@ -208,9 +208,11 @@ func _test_save_roundtrip() -> void:
 	var SaveScript := load("res://scripts/autoload/save_manager.gd")
 	var mgr = SaveScript.new()
 	# Back up real slot files + profile so the test can't clobber them.
+	# Jesse 2026-10-11: with unlimited saves, scan for all existing slots,
+	# not just 0-2 — leftover slot 3+ files from crashed runs break list_runs.
 	var backup := {}
 	for mode in ["solo", "mp"]:
-		for slot in range(3):
+		for slot in mgr.list_slots(mode):
 			var p := "user://runs/%s_%d.cfg" % [mode, slot]
 			if FileAccess.file_exists(p):
 				backup[p] = FileAccess.get_file_as_bytes(p)
