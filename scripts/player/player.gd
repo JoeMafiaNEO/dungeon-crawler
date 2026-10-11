@@ -4013,7 +4013,7 @@ func show_achievement_unlock(achievement_ids: Array) -> void:	# Shows achievemen
 
 ## Jesse 2026-10-11: floating health bar above the player.
 ## Visible to all players in multiplayer (world-space, billboarded).
-## Code-generated dark border + red fill (replaced PNG frame per Jesse).
+## Code-generated border (4 strips) + red fill. (No PNG frame per Jesse.)
 static var _phb_white_tex: Texture2D = null
 
 func _build_health_bar() -> void:
@@ -4031,13 +4031,11 @@ func _build_health_bar() -> void:
 	var border := 0.035
 	_phb_full_w = bar_w
 	_phb_bar_h = bar_h
-	var bg := Sprite3D.new()
-	bg.texture = _phb_white_tex
-	bg.modulate = Color(0.05, 0.05, 0.07, 0.92)
-	bg.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	bg.no_depth_test = true
-	bg.scale = Vector3((bar_w + border * 2.0) / 0.01, (bar_h + border * 2.0) / 0.01, 1)
-	bar.add_child(bg)
+	var border_col := Color(0.05, 0.05, 0.07, 0.92)
+	_phb_add_border_strip(bar, border_col, bar_w + border * 2.0, border, 0.0, bar_h * 0.5 + border * 0.5)
+	_phb_add_border_strip(bar, border_col, bar_w + border * 2.0, border, 0.0, -bar_h * 0.5 - border * 0.5)
+	_phb_add_border_strip(bar, border_col, border, bar_h, -bar_w * 0.5 - border * 0.5, 0.0)
+	_phb_add_border_strip(bar, border_col, border, bar_h, bar_w * 0.5 + border * 0.5, 0.0)
 	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
 	var fill := Sprite3D.new()
 	if fill_tex != null:
@@ -4051,10 +4049,20 @@ func _build_health_bar() -> void:
 		_phb_fill_tex_h = 0.01
 	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	fill.no_depth_test = true
-	fill.position.z = 0.01
 	bar.add_child(fill)
 	_phb_fill = fill
 	_update_health_bar()
+
+
+func _phb_add_border_strip(bar: Node3D, col: Color, w: float, h: float, x: float, y: float) -> void:
+	var s := Sprite3D.new()
+	s.texture = _phb_white_tex
+	s.modulate = col
+	s.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	s.no_depth_test = true
+	s.scale = Vector3(w / 0.01, h / 0.01, 1)
+	s.position = Vector3(x, y, 0)
+	bar.add_child(s)
 
 
 ## Scale the fill by current HP percent (left-aligned, anchored at bar left).
