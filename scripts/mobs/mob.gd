@@ -27,6 +27,8 @@ var _sprite: AnimatedSprite3D
 ## Jesse 2026-10-11: floating health bar (frame + fill sprites).
 var _hb_fill: Sprite3D = null
 var _hb_full_w: float = 1.0
+var _hb_hole_cx: float = 0.0
+var _hb_hole_cy: float = 0.0
 var _flash_tween: Tween
 var _bob_t := 0.0
 var _base_scale := Vector3.ONE
@@ -1716,16 +1718,25 @@ func _build_health_bar() -> void:
 	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	fill.no_depth_test = true
 	fill.modulate = Color(1, 1, 1, 1)
-	# Scale fill to fit inside the frame's transparent center (approx 80% x 50%).
+	# Fill sized to the frame's measured transparent center hole.
+	# Mob: w=0.274 h=0.223 left=0.365 top=0.405; Boss: w=0.609 h=0.435 left=0.194 top=0.285.
 	var fw := float(frame_tex.get_width())
 	var fh := float(frame_tex.get_height())
 	var target_w := 1.2 if data.is_boss else 0.9
 	# Sprite3D pixel_size=0.01: world width = px * 0.01 * scale.
 	var s := target_w / (fw * 0.01)
-	fill.scale = Vector3(s * 0.8, s * 0.5, 1)
-	_hb_full_w = fill.scale.x
+	var hole_w := 0.609 if data.is_boss else 0.274
+	var hole_h := 0.435 if data.is_boss else 0.223
+	var hole_l := 0.194 if data.is_boss else 0.365
+	var hole_t := 0.285 if data.is_boss else 0.405
+	var hole_world_w := hole_w * target_w
+	var hole_world_h := hole_h * (fh * 0.01 * s)
+	fill.scale = Vector3(hole_world_w / (3200.0 * 0.01), hole_world_h / (800.0 * 0.01), 1)
+	_hb_full_w = hole_world_w
+	_hb_hole_cx = -target_w * 0.5 + (hole_l + hole_w * 0.5) * target_w
+	_hb_hole_cy = (fh * 0.01 * s) * 0.5 - (hole_t + hole_h * 0.5) * (fh * 0.01 * s)
 	# Left-align: offset so scaling from the left edge works.
-	fill.position.x = -_hb_full_w * 0.5
+	fill.position = Vector3(_hb_hole_cx - hole_world_w * 0.5, _hb_hole_cy, 0)
 	bar.add_child(fill)
 	_hb_fill = fill
 	var frame := Sprite3D.new()
@@ -1745,5 +1756,8 @@ func _update_health_bar() -> void:
 	var frac := 0.0
 	if max_hp > 0.0:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
-	_hb_fill.scale.x = _hb_full_w * frac
-	_hb_fill.position.x = -_hb_full_w * 0.5 + (_hb_full_w * frac) * 0.5
+	# Shrink from the right, keeping the left edge anchored at the hole's left.
+	var full_sx := _hb_full_w / (3200.0 * 0.01)
+	_hb_fill.scale.x = full_sx * frac
+	_hb_fill.position.x = (_hb_hole_cx - _hb_full_w * 0.5) + (_hb_full_w * frac) * 0.5
+	_hb_fill.position.y = _hb_hole_cy

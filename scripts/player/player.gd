@@ -40,6 +40,8 @@ var hp := 100.0
 ## Jesse 2026-10-11: floating health bar above the player (visible to all).
 var _phb_fill: Sprite3D = null
 var _phb_full_w: float = 1.0
+var _phb_hole_cx: float = 0.0
+var _phb_hole_cy: float = 0.0
 var damage := 10.0
 var attack_cooldown := 0.5
 var move_speed := 5.0
@@ -4024,12 +4026,19 @@ func _build_health_bar() -> void:
 	fill.texture = fill_tex
 	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	fill.no_depth_test = true
+	# Mob frame hole: w=0.274 h=0.223 left=0.365 top=0.405.
 	var fw := float(frame_tex.get_width())
+	var fh := float(frame_tex.get_height())
+	var target_w := 0.9
 	# Sprite3D pixel_size=0.01: world width = px * 0.01 * scale.
-	var s := 0.9 / (fw * 0.01)
-	fill.scale = Vector3(s * 0.8, s * 0.5, 1)
-	_phb_full_w = fill.scale.x
-	fill.position.x = -_phb_full_w * 0.5
+	var s := target_w / (fw * 0.01)
+	var hole_world_w := 0.274 * target_w
+	var hole_world_h := 0.223 * (fh * 0.01 * s)
+	fill.scale = Vector3(hole_world_w / (3200.0 * 0.01), hole_world_h / (800.0 * 0.01), 1)
+	_phb_full_w = hole_world_w
+	_phb_hole_cx = -target_w * 0.5 + (0.365 + 0.274 * 0.5) * target_w
+	_phb_hole_cy = (fh * 0.01 * s) * 0.5 - (0.405 + 0.223 * 0.5) * (fh * 0.01 * s)
+	fill.position = Vector3(_phb_hole_cx - hole_world_w * 0.5, _phb_hole_cy, 0)
 	bar.add_child(fill)
 	_phb_fill = fill
 	var frame := Sprite3D.new()
@@ -4049,5 +4058,7 @@ func _update_health_bar() -> void:
 	var frac := 0.0
 	if max_hp > 0.0:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
-	_phb_fill.scale.x = _phb_full_w * frac
-	_phb_fill.position.x = -_phb_full_w * 0.5 + (_phb_full_w * frac) * 0.5
+	var full_sx := _phb_full_w / (3200.0 * 0.01)
+	_phb_fill.scale.x = full_sx * frac
+	_phb_fill.position.x = (_phb_hole_cx - _phb_full_w * 0.5) + (_phb_full_w * frac) * 0.5
+	_phb_fill.position.y = _phb_hole_cy
