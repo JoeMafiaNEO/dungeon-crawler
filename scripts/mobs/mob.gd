@@ -1720,7 +1720,8 @@ func _build_health_bar() -> void:
 	var fw := float(frame_tex.get_width())
 	var fh := float(frame_tex.get_height())
 	var target_w := 1.2 if data.is_boss else 0.9
-	var s := target_w / fw
+	# Sprite3D pixel_size=0.01: world width = px * 0.01 * scale.
+	var s := target_w / (fw * 0.01)
 	fill.scale = Vector3(s * 0.8, s * 0.5, 1)
 	_hb_full_w = fill.scale.x
 	# Left-align: offset so scaling from the left edge works.

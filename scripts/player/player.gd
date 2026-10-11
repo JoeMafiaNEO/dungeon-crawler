@@ -4025,7 +4025,8 @@ func _build_health_bar() -> void:
 	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	fill.no_depth_test = true
 	var fw := float(frame_tex.get_width())
-	var s := 0.9 / fw
+	# Sprite3D pixel_size=0.01: world width = px * 0.01 * scale.
+	var s := 0.9 / (fw * 0.01)
 	fill.scale = Vector3(s * 0.8, s * 0.5, 1)
 	_phb_full_w = fill.scale.x
 	fill.position.x = -_phb_full_w * 0.5
