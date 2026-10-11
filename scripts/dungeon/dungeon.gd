@@ -442,6 +442,19 @@ static func find_roster_entry(roster: Array, steam_id: int) -> Dictionary:
 	return {}
 
 
+## Pick one peer's boarding state from the host-collected map. Pure so tests
+## can verify the fallback without a live dungeon. Returns the host state
+## when it's non-empty; returns {} when the entry is missing or empty so the
+## caller falls back to local capture. (Jesse 2026-10-10: a peer that misses
+## the 3s save window gets an empty roster entry — treating that as a real
+## state would wipe them even though their local player node is right there.)
+static func pick_boarding_state(states: Dictionary, my_id: int) -> Dictionary:
+	var hs: Dictionary = states.get(my_id, {})
+	if not hs.is_empty():
+		return hs
+	return {}
+
+
 @rpc("any_peer", "call_local")
 func reject_join(reason: String) -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
@@ -2331,11 +2344,13 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	SaveManager.check_achievements()
 	var me := _my_player()
 	if me != null:
+		# Jesse 2026-10-10: always start from a clean map — a stale one from
+		# a previous MP session would leak into a solo boarding RPC.
+		saved_player_states.clear()
 		if multiplayer.get_peers().size() > 0:
 			await save_multiplayer_run(theme_id, new_level, seed)
 			# Jesse 2026-10-10 fix: build peer_id -> state map from the roster
 			# for the train transition. Maps Steam IDs back to peer IDs.
-			saved_player_states.clear()
 			var steam_to_peer := {}
 			for pid in peer_steam_ids:
 				steam_to_peer[int(peer_steam_ids[pid])] = int(pid)
@@ -2445,10 +2460,11 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 		return
 	var me := _my_player()
 	# Jesse 2026-10-10 fix: prefer the host-collected states (reliable);
-	# fall back to local capture if not provided.
+	# fall back to local capture when the host entry is missing or empty.
 	var my_id := multiplayer.get_unique_id()
-	if not states.is_empty() and states.has(my_id):
-		saved_player_state = states[my_id]
+	var host_state := pick_boarding_state(states, my_id)
+	if not host_state.is_empty():
+		saved_player_state = host_state
 	elif me != null:
 		saved_player_state = me.get_state()
 	# Issue #4 Phase 2: every peer persists its OWN collection to its OWN

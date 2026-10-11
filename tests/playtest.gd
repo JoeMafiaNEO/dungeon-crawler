@@ -2608,6 +2608,20 @@ func _test_train_state_handoff() -> void:
 		"train: host-collected states dict exists")
 	_assert(dsrc.contains("board_train_interior\", theme_id, seed, new_level, peer_classes, saved_player_states"),
 		"train: states sent in boarding RPC")
+	# Behavioral: pick_boarding_state prefers the host state, but an empty
+	# or missing entry falls back (caller uses local capture) — a peer that
+	# missed the 3s save window must not be wiped by its empty roster entry.
+	var dungeon_script = load("res://scripts/dungeon/dungeon.gd")
+	var good := {"level": 5, "xp": 120}
+	var states := {1: good, 2: {}}
+	_assert(int((dungeon_script.pick_boarding_state(states, 1) as Dictionary).get("level", 0)) == 5,
+		"train: non-empty host state wins")
+	_assert((dungeon_script.pick_boarding_state(states, 2) as Dictionary).is_empty(),
+		"train: empty host entry falls back to local capture")
+	_assert((dungeon_script.pick_boarding_state(states, 9) as Dictionary).is_empty(),
+		"train: missing peer falls back to local capture")
+	_assert((dungeon_script.pick_boarding_state({}, 1) as Dictionary).is_empty(),
+		"train: empty states map falls back to local capture")
 
 
 func _print_results() -> void:
