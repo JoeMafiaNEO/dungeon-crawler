@@ -141,19 +141,19 @@ func _on_lobby_class(pressed: bool, cid: String) -> void:
 		NetworkManager.selected_class_id = cid
 
 
-## Ready button for non-hosts; host sees Start Dungeon (gated on all ready).
+## Ready button for all players including the host; Start Dungeon (host only)
+## is gated on everyone being ready.
 func _build_lobby_ready_button() -> void:
 	var existing := %LobbyPanel.get_node_or_null("ReadyButton")
 	if existing != null:
 		existing.queue_free()
-	if NetworkManager.is_host:
-		return
 	var b := Button.new()
 	b.name = "ReadyButton"
 	b.text = "Ready"
 	b.toggle_mode = true
 	b.custom_minimum_size = Vector2(160, 48)
 	b.toggled.connect(_on_lobby_ready_toggled)
+	_style_one_button(b)
 	%LobbyPanel.add_child(b)
 
 
@@ -161,18 +161,21 @@ func _on_lobby_ready_toggled(pressed: bool) -> void:
 	AudioManager.sfx("ui_click")
 	var my_id := multiplayer.get_unique_id()
 	NetworkManager.lobby_ready[my_id] = pressed
-	# Sync to host via RPC (host relays to everyone).
-	if not NetworkManager.is_host:
+	if NetworkManager.is_host:
+		# Host relays their own ready state to everyone.
+		for pid in NetworkManager.lobby_members:
+			if pid != NetworkManager.server_peer_id:
+				NetworkManager.rpc_id(pid, "broadcast_ready_state", my_id, pressed)
+	else:
+		# Sync to host via RPC (host relays to everyone).
 		NetworkManager.rpc_id(NetworkManager.server_peer_id, "sync_ready_state", my_id, pressed)
 	_refresh_lobby_start()
 
 
 func _refresh_lobby_start() -> void:
-	# Start Dungeon only works if all players are ready.
+	# Start Dungeon only works if all players (including host) are ready.
 	var all_ready := true
 	for sid in NetworkManager.lobby_members:
-		if sid == NetworkManager.server_peer_id:
-			continue
 		if not bool(NetworkManager.lobby_ready.get(sid, false)):
 			all_ready = false
 			break
