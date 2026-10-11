@@ -70,6 +70,7 @@ func _run() -> void:
 	_test_downed_marker()
 	_test_dash_flash_separate()
 	_test_market_earned_display()
+	_test_heal_pad_multiplayer()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2493,6 +2494,18 @@ func _test_market_earned_display() -> void:
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
 	_assert(hsrc.contains("Earned: $%d / $%d"),
 		"market: label reads Earned, not Cash")
+
+
+func _test_heal_pad_multiplayer() -> void:
+	print("[Playtest] Heal pad multiplayer...")
+	# Jesse 2026-10-10: heal pad was server-only and the server's physics
+	# couldn't see client bodies — clients never got healed. Now each peer
+	# checks its own player locally.
+	var ssrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(ssrc.contains("_my_player()"),
+		"healpad: uses local player lookup")
+	_assert(not ssrc.contains("b.rpc_id(b.get_multiplayer_authority(), \"heal\""),
+		"healpad: no longer RPCs heal from server physics loop")
 
 
 func _print_results() -> void:

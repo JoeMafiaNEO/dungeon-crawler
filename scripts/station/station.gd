@@ -109,6 +109,13 @@ func _process(delta: float) -> void:
 	if _ring != null:
 		var s := 1.0 + sin(Time.get_ticks_msec() / 300.0) * 0.04
 		_ring.scale = Vector3(s, 1, s)
+	# Heal pad (all peers, Jesse 2026-10-10 fix): each peer checks its OWN
+	# player locally. The old server-only version couldn't see client bodies
+	# in the server's physics space, so clients never got healed.
+	_heal_tick -= delta
+	if _heal_tick <= 0.0:
+		_heal_tick = HEAL_TICK
+		_process_heal_pad()
 	if not multiplayer.is_server():
 		return
 	if not _departing and _timer_running:
@@ -127,25 +134,32 @@ func _process(delta: float) -> void:
 				_last_sync_sec = -1
 				rpc("station_timer_sync", DEPART_TIME)
 				rpc("vote_reset_notice")
-	_heal_tick -= delta
-	if _heal_tick <= 0.0:
-		_heal_tick = HEAL_TICK
-		_process_heal_pad()
 
 
 ## Heal pad: every tick, living players on the pad get 15% max HP.
-## Server-authoritative; heal() itself does FX + clamps to max.
+## Heal pad (Jesse 2026-10-10 fix): each peer checks its OWN player against
+## the pad's local physics overlap. The old server-only loop used the
+## server's get_overlapping_bodies(), which can't see client bodies, so
+## clients never got healed. heal() is any_peer + call_local, so a direct
+## local call is safe on all peers (co-op trust model).
 func _process_heal_pad() -> void:
 	if _heal_pad == null:
 		return
+	var me := _my_player()
+	if me == null:
+		return
+	if not bool(me.get("alive")):
+		return
+	if float(me.get("hp")) >= float(me.get("max_hp")):
+		return
+	var on_pad := false
 	for b in _heal_pad.get_overlapping_bodies():
-		if not b.is_in_group("players"):
-			continue
-		if not bool(b.get("alive")):
-			continue
-		if float(b.get("hp")) >= float(b.get("max_hp")):
-			continue
-		b.rpc_id(b.get_multiplayer_authority(), "heal", heal_tick_amount(float(b.get("max_hp"))))
+		if b == me:
+			on_pad = true
+			break
+	if not on_pad:
+		return
+	me.heal(heal_tick_amount(float(me.get("max_hp"))))
 
 
 ## Heal tick amount: 15% of max HP per 0.5s tick (~3.3s to full from empty).
