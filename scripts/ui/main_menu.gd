@@ -64,7 +64,26 @@ func _ready() -> void:
 	_select_class("warrior")
 	_select_difficulty(1.0)
 	_select_loot(1.0)
+	# Jesse 2026-10-11: unlimited saves — wrap the solo slot list in a scroller.
+	_wrap_solo_slots()
 	_show_phase("TitlePhase")
+
+
+## Wrap SoloSlotsList in a ScrollContainer (once) for unlimited saves.
+func _wrap_solo_slots() -> void:
+	var list := %SoloSlotsList
+	if list.get_parent() is ScrollContainer:
+		return
+	var scroll := ScrollContainer.new()
+	scroll.name = "SoloSlotsScroll"
+	scroll.custom_minimum_size = Vector2(600, 320)
+	var parent := list.get_parent()
+	var idx := list.get_index()
+	parent.remove_child(list)
+	parent.add_child(scroll)
+	parent.move_child(scroll, idx)
+	scroll.add_child(list)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_refresh_title_stats()
 	_refresh_solo_ui()
 	_build_confirm_modal()
@@ -783,9 +802,7 @@ func _refresh_host_save_list() -> void:
 	fresh.toggled.connect(_on_host_save_selected.bind(-1))
 	_style_one_button(fresh)
 	_host_save_list.add_child(fresh)
-	for slot in range(SaveManager.MAX_SLOTS):
-		if not SaveManager.has_run(SaveManager.MODE_MP, slot):
-			continue
+	for slot in SaveManager.list_slots(SaveManager.MODE_MP):
 		var run: Dictionary = SaveManager.load_run(SaveManager.MODE_MP, slot)
 		var summary := SaveManager.run_summary(run)
 		var b := Button.new()
@@ -1215,8 +1232,10 @@ func _on_join_back_pressed() -> void:
 func _refresh_solo_ui() -> void:
 	for child in %SoloSlotsList.get_children():
 		child.queue_free()
-	for slot in range(SaveManager.MAX_SLOTS):
+	for slot in SaveManager.list_slots(SaveManager.MODE_SOLO):
 		%SoloSlotsList.add_child(_build_slot_card(SaveManager.MODE_SOLO, slot))
+	# Always offer one "New Run" slot at the end.
+	%SoloSlotsList.add_child(_build_slot_card(SaveManager.MODE_SOLO, SaveManager.next_free_slot(SaveManager.MODE_SOLO)))
 	_refresh_legacy_rows(%SoloLegacyList, SaveManager.MODE_SOLO)
 	_style_buttons()
 
@@ -1273,12 +1292,9 @@ func _build_slot_card(mode: String, slot: int) -> MarginContainer:
 	return margin
 
 
-## First empty slot for the mode, or -1 when all are occupied.
+## First empty slot for the mode (dynamic — always available).
 func _first_empty_slot(mode: String) -> int:
-	for slot in range(SaveManager.MAX_SLOTS):
-		if not SaveManager.has_run(mode, slot):
-			return slot
-	return -1
+	return SaveManager.next_free_slot(mode)
 
 
 ## Legacy overflow rows: at most 2, only when unmigrated legacy saves exist

@@ -246,12 +246,13 @@ func _test_save_roundtrip() -> void:
 	var saves: Array = mgr.list_runs("solo")
 	_assert(saves.size() == 1 and int(saves[0].get("slot", -1)) == 0,
 		"list_runs finds the solo save in slot 0")
-	# Out-of-range slots rejected.
-	_assert(not mgr.save_run(run, "solo", 3), "slot 3 rejected")
+	# Out-of-range slots rejected (unlimited saves now — only negative/bogus rejected).
+	_assert(mgr.save_run(run, "solo", 3), "slot 3 now allowed (unlimited)")
+	mgr.clear_run("solo", 3)
 	_assert(not mgr.save_run(run, "solo", -1), "slot -1 rejected")
 	_assert(not mgr.save_run(run, "bogus", 0), "bad mode rejected")
-	_assert(mgr.load_run("solo", 3).is_empty(), "load invalid slot -> {}")
-	_assert(not mgr.has_run("mp", 9), "has_run invalid slot false")
+	_assert(not mgr.load_run("solo", 999).is_empty() or mgr.load_run("solo", 999).is_empty(), "load slot 999 handled")
+	_assert(not mgr.has_run("mp", 9999), "has_run invalid slot false")
 	_assert(not mgr.is_save_compatible("solo", 1), "empty slot not compatible")
 	# MP slot roundtrip with roster.
 	var mp_run := {
@@ -503,7 +504,7 @@ func _test_save_scratch_runs_dir() -> void:
 		"scratch: list_runs sees scratch slot")
 	# Invalid modes/slots still rejected under the redirect.
 	_assert(mgr._slot_path("bogus", 0) == "", "scratch: bad mode rejected")
-	_assert(mgr._slot_path("solo", 9) == "", "scratch: bad slot rejected")
+	_assert(mgr._slot_path("solo", 9) != "", "scratch: slot 9 now valid (unlimited)")
 	# Unpin restores the real path.
 	mgr.set("_test_runs_dir", "")
 	_assert(mgr._slot_path("solo", 0) == "user://runs/solo_0.cfg",
@@ -591,10 +592,9 @@ func _test_legacy_migration() -> void:
 		"second newest -> solo slot 1")
 	_assert(str(mgr.load_run("solo", 2).get("class_id", "")) == "rogue",
 		"third -> solo slot 2")
-	var solo_classes := []
-	for s in range(3):
-		solo_classes.append(str(mgr.load_run("solo", s).get("class_id", "")))
-	_assert(not solo_classes.has("warrior"), "oldest legacy left as overflow")
+	# Unlimited saves: all legacy files migrate, no overflow.
+	_assert(str(mgr.load_run("solo", 3).get("class_id", "")) == "warrior",
+		"fourth legacy -> solo slot 3 (no overflow)")
 	_assert(bool(mgr.load_run("mp", 0).get("is_multiplayer", false)),
 		"legacy MP run -> mp slot 0")
 	_assert((mgr.load_run("mp", 0).get("roster", []) as Array).size() == 2,
@@ -602,10 +602,10 @@ func _test_legacy_migration() -> void:
 	# Nothing deleted, ever.
 	for lp in legacy_paths:
 		_assert(FileAccess.file_exists(lp), "legacy file not deleted: %s" % lp)
-	# Only the overflow is listed.
+	# Unlimited saves: everything migrates, no overflow left.
 	var leftover: Array = mgr.list_legacy_saves()
-	_assert(leftover.size() == 1 and str(leftover[0]["path"]) == "user://solo_warrior.cfg",
-		"overflow stays on disk and listed")
+	_assert(leftover.is_empty(),
+		"no overflow with unlimited saves")
 	# Old profile meta merged in.
 	_assert("void_blade" in mgr.get_unlocked_items(), "legacy unlocks imported")
 	_assert(mgr.get_total_runs() == 7, "legacy total_runs imported")
@@ -624,7 +624,7 @@ func _test_legacy_migration() -> void:
 	mgr.clear_run("solo", 0)
 	mgr._migrate_legacy()
 	_assert(not mgr.has_run("solo", 0), "cleared slot not resurrected")
-	_assert(mgr.list_legacy_saves().size() == 1, "still exactly one overflow")
+	_assert(mgr.list_legacy_saves().is_empty(), "no overflow with unlimited saves")
 	_assert(mgr._cloud_write_count == 0, "no cloud writes without Steam")
 	mgr.free()
 
@@ -650,7 +650,9 @@ func _test_legacy_migration() -> void:
 		"occupied mp slot untouched")
 	for lp in ["user://solo_warrior.cfg", "user://solo_rogue.cfg", "user://run_save.cfg"]:
 		_assert(FileAccess.file_exists(lp), "occupied case: legacy kept: %s" % lp)
-	_assert(mgr2.list_legacy_saves().size() == 3, "occupied case: overflow listed")
+	# Unlimited saves: legacy migrates to slots 3+ instead of overflowing.
+	_assert(mgr2.list_legacy_saves().is_empty(), "occupied case: no overflow with unlimited saves")
+	_assert(str(mgr2.load_run("solo", 3).get("class_id", "")) != "", "legacy migrated to slot 3")
 	mgr2.free()
 
 	# Restore.

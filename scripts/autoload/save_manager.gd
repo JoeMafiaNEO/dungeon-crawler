@@ -21,8 +21,43 @@ const MODE_SOLO := "solo"
 const MODE_MP := "mp"
 const MAX_SLOTS := 3
 const RUNS_DIR := "user://runs"
+## Jesse 2026-10-11: unlimited saves — slots grow dynamically. Existing
+## saves keep their indices; new saves take the next free index.
+const MAX_DYNAMIC_SLOTS := 999
 ## Save format version. Continue refuses saves with a mismatched version.
 const SAVE_VERSION := 1
+
+
+## List all slot indices that have a save for the given mode, sorted.
+func list_slots(mode: String) -> Array[int]:
+	var slots: Array[int] = []
+	var base := _test_runs_dir if _test_runs_dir != "" else RUNS_DIR
+	var dir := DirAccess.open(base)
+	if dir == null:
+		return slots
+	dir.list_dir_begin()
+	var fname := dir.get_next()
+	while fname != "":
+		if fname.begins_with(mode + "_") and fname.ends_with(".cfg"):
+			var num := fname.trim_prefix(mode + "_").trim_suffix(".cfg")
+			if num.is_valid_int():
+				slots.append(int(num))
+		fname = dir.get_next()
+	dir.list_dir_end()
+	slots.sort()
+	return slots
+
+
+## Next free slot index for a new save.
+func next_free_slot(mode: String) -> int:
+	var used := list_slots(mode)
+	var candidate := 0
+	for s in used:
+		if s == candidate:
+			candidate += 1
+		elif s > candidate:
+			break
+	return candidate
 
 # Meta progression: unlocks that broaden (not flatten).
 # - unlocked_items: Array[String] of item IDs added to drop pool
@@ -173,7 +208,7 @@ func _cloud_sync_down() -> void:
 		return
 	_cloud_fetch(_profile_path_for(_profile_account))
 	for mode in [MODE_SOLO, MODE_MP]:
-		for slot in range(MAX_SLOTS):
+		for slot in list_slots(mode):
 			_cloud_fetch(_slot_path(mode, slot))
 
 
@@ -634,10 +669,7 @@ func _legacy_saved_at(path: String, run: Dictionary) -> String:
 
 
 func _first_empty_slot(mode: String) -> int:
-	for slot in range(MAX_SLOTS):
-		if not has_run(mode, slot):
-			return slot
-	return -1
+	return next_free_slot(mode)
 
 
 ## One-time import of the pre-profile meta (user://savegame.cfg) into the
@@ -672,7 +704,7 @@ func _slot_path(mode: String, slot: int) -> String:
 	if mode != MODE_SOLO and mode != MODE_MP:
 		push_error("[SaveManager] Bad slot mode: %s" % mode)
 		return ""
-	if slot < 0 or slot >= MAX_SLOTS:
+	if slot < 0 or slot >= MAX_DYNAMIC_SLOTS:
 		push_error("[SaveManager] Slot out of range: %d" % slot)
 		return ""
 	var base := _test_runs_dir if _test_runs_dir != "" else RUNS_DIR
@@ -739,7 +771,7 @@ func list_runs(mode: String) -> Array:
 	var out: Array = []
 	if mode != MODE_SOLO and mode != MODE_MP:
 		return out
-	for slot in range(MAX_SLOTS):
+	for slot in list_slots(mode):
 		var run := load_run(mode, slot)
 		if not run.is_empty():
 			out.append({"slot": slot, "run": run})
