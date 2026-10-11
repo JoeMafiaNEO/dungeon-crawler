@@ -687,6 +687,14 @@ func _build_host_tabs() -> void:
 	warn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
 	warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	t3.add_child(warn)
+	var open_row := HBoxContainer.new()
+	open_row.add_theme_constant_override("separation", 12)
+	t3.add_child(open_row)
+	var open_toggle := CheckButton.new()
+	open_toggle.text = "Open roster: allow new players to join this save at level 1"
+	open_toggle.button_pressed = NetworkManager.lobby_open_roster
+	open_toggle.toggled.connect(_on_host_open_roster_toggled)
+	open_row.add_child(open_toggle)
 	# --- Bottom buttons ---
 	var bot_row := HBoxContainer.new()
 	bot_row.add_theme_constant_override("separation", 16)
@@ -948,6 +956,11 @@ func _on_host_rarity_changed(value: float, rar: String) -> void:
 			tlab.text = "Total: %d%% (must equal 100%%)" % int(total)
 			tlab.add_theme_color_override("font_color", Color(0.4, 1.0, 0.4) if int(total) == 100 else Color(1.0, 0.4, 0.4))
 	_refresh_host_button()
+
+
+func _on_host_open_roster_toggled(pressed: bool) -> void:
+	AudioManager.sfx("ui_click")
+	NetworkManager.lobby_open_roster = pressed
 
 
 func _on_host_pw_toggled(pressed: bool) -> void:

@@ -43,6 +43,8 @@ var custom_rarity: Dictionary = {}
 var lobby_password: String = ""
 var lobby_visibility: String = "public"  # public, friends, private
 var lobby_player_cap: int = 4
+## Allow strangers to join a continued save (fresh level-1 characters).
+var lobby_open_roster: bool = false
 ## Save file hosting: -1 = fresh run, else the slot index.
 var host_save_slot: int = -1
 ## Ready states for the lobby (Jesse 2026-10-11): peer_id -> bool.
@@ -563,6 +565,8 @@ func continue_multiplayer(run: Dictionary) -> bool:
 	var lobby: Dictionary = run.get("lobby", {})
 	host_difficulty = float(run.get("host_difficulty", 1.0))
 	host_loot_mult = float(run.get("host_loot_mult", 1.0))
+	# Jesse 2026-10-11: open-roster flag from the host menu.
+	Dungeon.continued_open_lobby = lobby_open_roster
 	# Re-host a new lobby with the same settings.
 	_reset_peer()
 	peer = SteamMultiplayerPeer.new()
