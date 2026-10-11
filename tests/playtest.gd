@@ -3899,27 +3899,10 @@ func _test_village_kit() -> void:
 	var lamp := PropBuilder.build("lamp", 1.0, {"pos": Vector3.ZERO})
 	_assert(lamp != null, "village: lamp builds from registry")
 	holder.add_child(lamp)
-	# Kit house assembles without errors and has the expected piece count.
+	# Kit house reverted to programmer art (Jesse 2026-10-11); kit props remain.
 	var house := PropBuilder.build("house", 2.0, {"pos": Vector3.ZERO})
-	_assert(house != null, "village: kit house builds")
+	_assert(house != null, "village: house builds")
 	holder.add_child(house)
-	var pieces := 0
-	var stack: Array = [house]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		if n is MeshInstance3D:
-			pieces += 1
-		for c in n.get_children():
-			stack.append(c)
-	# 24 wall blocks + 7 front pieces + 4 posts + 8 roof + 1 chimney = 44.
-	_assert(pieces == 44, "village: house has 44 kit pieces (got %d)" % pieces)
-	# Deterministic: same position builds the same rotation on every peer.
-	var h1 := PropBuilder.build("house", 2.0, {"pos": Vector3(3, 0, 7)})
-	var h2 := PropBuilder.build("house", 2.0, {"pos": Vector3(3, 0, 7)})
-	_assert(absf((h1.get_child(0) as Node3D).rotation.y - (h2.get_child(0) as Node3D).rotation.y) < 0.001,
-		"village: house rotation deterministic")
-	h1.queue_free()
-	h2.queue_free()
 	holder.queue_free()
 
 

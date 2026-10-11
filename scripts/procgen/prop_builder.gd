@@ -212,7 +212,9 @@ static func build(prop_type: String, size_cells: float = 1.0, opts: Dictionary =
 			_add_prism(root, Vector3(1.6, 1.3, 2.0), 0.65, Color(0.72, 0.62, 0.48))
 			_add_trunk(root, 0.06, 1.8, Color(0.35, 0.25, 0.15))
 		"house":
-			_build_kit_house(root, opts.get("pos", Vector3.ZERO))
+			_add_box(root, Vector3(2.6, 1.8, 2.2), 0.9, Color(0.78, 0.72, 0.60))
+			_add_prism(root, Vector3(3.0, 1.2, 2.6), 2.4, Color(0.45, 0.30, 0.18))
+			_add_box(root, Vector3(0.7, 1.2, 0.1), 0.6, Color(0.30, 0.20, 0.12), 0.0, Vector3(0, 0, 1.15))
 		"fence":
 			for k in 3:
 				_add_trunk_at(root, 0.07, 0.9, Color(0.40, 0.30, 0.18), Vector3((k - 1) * 0.9, 0.45, 0))
@@ -279,61 +281,6 @@ static func _mi(mesh: Mesh, pos: Vector3, color: Color, rot_y: float = 0.0) -> M
 	mi.material_override = mat(color)
 	return mi
 
-
-## Modular Village kit piece: loads the .obj (cached) and positions it.
-## Base path for Jesse's 2026-10-11 village kit.
-const VILLAGE_KIT := "res://assets/Modular Village/"
-
-static func _kit(root: Node3D, piece: String, pos: Vector3, rot_y: float = 0.0, s: float = 1.0) -> void:
-	var path := VILLAGE_KIT + piece + ".obj"
-	if not _model_cache.has(path):
-		var mesh := load(path) as Mesh
-		if mesh == null:
-			return
-		_model_cache[path] = mesh
-	var mi := MeshInstance3D.new()
-	mi.mesh = _model_cache[path] as Mesh
-	mi.position = pos
-	mi.rotation.y = rot_y
-	mi.scale = Vector3.ONE * s
-	root.add_child(mi)
-
-
-## Kit-built village house: 4x4m stucco walls (2m tall) with a real doorway
-## and windows, timber posts at the corners, and a gabled roof.
-static func _build_kit_house(root: Node3D, seed_pos: Vector3) -> void:
-	# Deterministic rotation so all peers agree.
-	var rot := float(absi(hash("house|%.3f|%.3f" % [seed_pos.x, seed_pos.z])) % 4) * PI / 2.0
-	var h := Node3D.new()
-	h.rotation.y = rot
-	root.add_child(h)
-	# Walls: 4x4m, 2 blocks tall. Front (z=+2) gets doorway + windows.
-	for row in 2:
-		var y := 0.5 + row * 1.0
-		for x in [-1.5, -0.5, 0.5, 1.5]:
-			# Back wall (z=-2): solid.
-			_kit(h, "Stucco_Block", Vector3(x, y - 0.5, -2.0))
-			# Side walls (x=±2): solid, rotated 90°.
-			_kit(h, "Stucco_Block", Vector3(2.0, y - 0.5, x), PI / 2.0)
-			_kit(h, "Stucco_Block", Vector3(-2.0, y - 0.5, x), PI / 2.0)
-	# Front wall (z=+2): doorway center-bottom, windows top-sides.
-	_kit(h, "Stucco_Doorway_Wide_Tall", Vector3(0, 0, 2.0))
-	_kit(h, "Stucco_Block", Vector3(-1.5, 0.0, 2.0))
-	_kit(h, "Stucco_Block", Vector3(1.5, 0.0, 2.0))
-	_kit(h, "Stucco_Window_Double_Wide", Vector3(-1.5, 1.0, 2.0))
-	_kit(h, "Stucco_Block", Vector3(-0.5, 1.0, 2.0))
-	_kit(h, "Stucco_Block", Vector3(0.5, 1.0, 2.0))
-	_kit(h, "Stucco_Window_Double_Wide", Vector3(1.5, 1.0, 2.0))
-	# Corner timber posts.
-	for cx in [-2.0, 2.0]:
-		for cz in [-2.0, 2.0]:
-			_kit(h, "Wood_Post_Large", Vector3(cx, 0, cz))
-	# Gabled roof: ridge along X at y=3.1, slopes of Roof_Straight_Side.
-	for x in [-1.5, -0.5, 0.5, 1.5]:
-		_kit(h, "Roof_Straight_Side", Vector3(x, 2.0, 1.0), PI)
-		_kit(h, "Roof_Straight_Side", Vector3(x, 2.0, -1.0), 0.0)
-	# Chimney.
-	_kit(h, "Roof_Prop_Chimney_Stone", Vector3(1.0, 2.8, 0.0))
 
 
 static func _add_box(root: Node3D, size: Vector3, y: float, color: Color, rot_y: float = 0.0, offset: Vector3 = Vector3.ZERO) -> void:
