@@ -113,6 +113,8 @@ static func arrival_tint(theme_id: String) -> Color:
 static var next_theme_id: String = "village"
 static var next_seed: int = 12345
 static var next_level_number: int = 1
+## Jesse 2026-10-11: wave to resume at when continuing a save.
+static var next_wave: int = 0
 static var saved_player_state: Dictionary = {}
 ## Jesse 2026-10-10 fix: host-collected player states (peer_id -> state dict)
 ## for the train transition. The host gathers these in save_multiplayer_run;
@@ -243,6 +245,9 @@ func _ready() -> void:
 		push_warning("[Dungeon] Unknown theme '%s', falling back to village." % next_theme_id)
 		theme = load("res://data/levels/theme_village.tres") as LevelTheme
 	level_number = next_level_number
+	# Jesse 2026-10-11: resume at the saved wave (0 = fresh level).
+	wave = next_wave
+	next_wave = 0
 	# Cycle scaling: each full loop (village->dungeon->depths) enlarges the
 	# map and adds keys. Duplicate the theme so the .tres stays pristine.
 	var cycle := (level_number - 1) / THEME_ORDER.size()
@@ -2710,12 +2715,18 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	if NetworkManager.transport == NetworkManager.Transport.LAN:
 		return
 	var at_station := get_tree().get_first_node_in_group("station") != null
+	var wave_number := 0
+	if not at_station:
+		wave_number = wave
+		if wave_state == WaveState.ACTIVE:
+			wave_number = max(0, wave_number - 1)
 	_save_base = {
 		"theme_id": theme_id,
 		"level_number": level_number,
 		"seed": level_seed,
 		"is_multiplayer": true,
 		"at_station": at_station,
+		"wave": wave_number,
 		"host_difficulty": NetworkManager.host_difficulty,
 		"host_loot_mult": NetworkManager.host_loot_mult,
 		"lobby": {

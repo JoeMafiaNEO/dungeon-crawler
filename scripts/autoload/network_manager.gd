@@ -553,6 +553,7 @@ func continue_run(mode: String, slot: int) -> bool:
 	Dungeon.next_theme_id = str(run.get("theme_id", "village"))
 	Dungeon.next_seed = int(run.get("seed", randi()))
 	Dungeon.next_level_number = int(run.get("level_number", 1))
+	Dungeon.next_wave = int(run.get("wave", 0))
 	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
 	if bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
@@ -652,6 +653,7 @@ func _continue_load_level() -> void:
 	Dungeon.next_theme_id = str(run.get("theme_id", "village"))
 	Dungeon.next_seed = int(run.get("seed", randi()))
 	Dungeon.next_level_number = int(run.get("level_number", 1))
+	Dungeon.next_wave = int(run.get("wave", 0))
 	# Stash the roster for the staging UI.
 	Dungeon.continued_roster = run.get("roster", [])
 	# Jesse 2026-10-11: station saves resume AT the station.

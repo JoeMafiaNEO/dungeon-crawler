@@ -1269,6 +1269,7 @@ func _on_save_quit_pressed() -> void:
 	var level_number := 1
 	var level_seed := 0
 	var at_station := false
+	var wave_number := 0
 	var station := get_tree().get_first_node_in_group("station")
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	# Jesse 2026-10-11: use the current scene to decide, not just node
@@ -1288,6 +1289,11 @@ func _on_save_quit_pressed() -> void:
 		theme_id = str(dungeon.get("theme").get("theme_id")) if dungeon.get("theme") != null else "village"
 		level_number = int(dungeon.get("level_number"))
 		level_seed = Dungeon.next_seed
+		# Jesse 2026-10-11: save the wave so continuing resumes where you were.
+		wave_number = int(dungeon.get("wave"))
+		# If mid-wave (active), step back one so the wave restarts fresh.
+		if str(dungeon.get("wave_state")) == "1":  # WaveState.ACTIVE
+			wave_number = max(0, wave_number - 1)
 	else:
 		_on_quit_pressed()
 		return
@@ -1312,6 +1318,7 @@ func _on_save_quit_pressed() -> void:
 			"level_number": level_number,
 			"seed": level_seed,
 			"at_station": at_station,
+			"wave": wave_number,
 			"class_id": _player.class_id,
 			"player_state": _player.get_state(),
 		}, SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
