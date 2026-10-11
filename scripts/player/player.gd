@@ -37,6 +37,9 @@ var xp := 0
 var xp_next := 25
 var max_hp := 100.0
 var hp := 100.0
+## Jesse 2026-10-11: floating health bar above the player (visible to all).
+var _phb_fill: Sprite3D = null
+var _phb_full_w: float = 1.0
 var damage := 10.0
 var attack_cooldown := 0.5
 var move_speed := 5.0
@@ -220,6 +223,7 @@ func _ready() -> void:
 	_give_starter_kit()
 	_build_aura_visual()
 	_apply_equipped_special()
+	_build_health_bar()
 	# Push initial aura so the team sees the glow from the start.
 	if is_multiplayer_authority() and class_id == "mage":
 		_push_aura.call_deferred()
@@ -1527,6 +1531,7 @@ func heal(amount: float) -> void:
 		return
 	hp = minf(max_hp, hp + amount)
 	health_changed.emit(hp, max_hp)
+	_update_health_bar()
 	Effects.burst(get_parent(), global_position + Vector3(0, 1.2, 0), Color(0.4, 1.0, 0.5), 8, 3.0)
 
 
@@ -3477,6 +3482,7 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	hp = maxf(0.0, hp - amount)
 	_shake = 0.3
 	health_changed.emit(hp, max_hp)
+	_update_health_bar()
 	AudioManager.sfx("player_hurt")
 	if hud != null:
 		hud.flash_damage()
@@ -3979,6 +3985,7 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: fl
 	hp = hp_v
 	level = lvl
 	alive = alive_v
+	_update_health_bar()
 
 
 ## Bounty Board (issue #7): server-triggered completion toast.
@@ -3999,3 +4006,50 @@ func show_achievement_unlock(achievement_ids: Array) -> void:	# Shows achievemen
 		if not progress.is_empty():
 			hud.show_toast("ACHIEVEMENT: %s — %s" % [progress["name"], progress["desc"]])
 			AudioManager.sfx("unlock")
+
+
+## Jesse 2026-10-11: floating SNES health bar above the player.
+## Visible to all players in multiplayer (world-space, billboarded).
+func _build_health_bar() -> void:
+	var bar := Node3D.new()
+	bar.name = "HealthBar"
+	bar.position = Vector3(0, 2.0, 0)
+	add_child(bar)
+	var frame_tex := load("res://assets/sprites/ui/healthbar_mob_frame.png") as Texture2D
+	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
+	if frame_tex == null or fill_tex == null:
+		return
+	var fill := Sprite3D.new()
+	fill.texture = fill_tex
+	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	fill.no_depth_test = true
+	var fw := float(frame_tex.get_width())
+	var s := 0.9 / fw
+	fill.scale = Vector3(s * 0.8, s * 0.5, 1)
+	_phb_full_w = fill.scale.x
+	fill.position.x = -_phb_full_w * 0.5
+	bar.add_child(fill)
+	_phb_fill = fill
+	var frame := Sprite3D.new()
+	frame.texture = frame_tex
+	frame.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	frame.no_depth_test = true
+	frame.scale = Vector3(s, s, 1)
+	frame.position.z = 0.01
+	bar.add_child(frame)
+	_update_health_bar()
+
+
+## Scale the fill by current HP percent (left-aligned).
+func _update_health_bar() -> void:
+	if _phb_fill == null or not is_instance_valid(_phb_fill):
+		return
+	var frac := 0.0
+	if max_hp > 0.0:
+		frac = clampf(hp / max_hp, 0.0, 1.0)
+	_phb_fill.scale.x = _phb_full_w * frac
+	_phb_fill.position.x = -_phb_full_w * 0.5 + (_phb_full_w * frac) * 0.5
+	# Hide when full — show once damaged. Always show for other players
+	# so teammates can see your status.
+	var is_local := get_multiplayer_authority() == multiplayer.get_unique_id()
+	_phb_fill.get_parent().visible = (frac < 1.0) or not is_local
