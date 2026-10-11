@@ -120,6 +120,7 @@ func _run() -> void:
 	_test_apex_relics()
 	_test_boss_second_specials()
 	_test_boss_third_specials()
+	_test_village_kit()
 	_test_bounty_phase1()
 	_test_combo_phase1()
 	_test_combo_codex()
@@ -3874,6 +3875,51 @@ func _test_apex_mechanics() -> void:
 	wnormal.queue_free()
 	pspec.queue_free()
 	stub.queue_free()
+	holder.queue_free()
+
+
+func _test_village_kit() -> void:
+	print("[Playtest] Modular Village kit wiring...")
+	# .obj meshes load as Mesh resources.
+	var well_mesh := load("res://assets/Modular Village/Prop_Well_1.obj") as Mesh
+	_assert(well_mesh != null, "village: well .obj loads as Mesh")
+	_assert(well_mesh.get_surface_count() > 0, "village: well has surfaces")
+	var wall_mesh := load("res://assets/Modular Village/Stucco_Block.obj") as Mesh
+	_assert(wall_mesh != null, "village: wall .obj loads as Mesh")
+	# PropBuilder builds kit props via the registry.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var well := PropBuilder.build("well", 1.0, {"pos": Vector3(10, 0, 5)})
+	_assert(well != null, "village: well builds from registry")
+	holder.add_child(well)
+	_assert(well.get_child_count() > 0, "village: well has mesh child")
+	var cart := PropBuilder.build("cart", 1.0, {"pos": Vector3.ZERO})
+	_assert(cart != null, "village: cart builds from registry")
+	holder.add_child(cart)
+	var lamp := PropBuilder.build("lamp", 1.0, {"pos": Vector3.ZERO})
+	_assert(lamp != null, "village: lamp builds from registry")
+	holder.add_child(lamp)
+	# Kit house assembles without errors and has the expected piece count.
+	var house := PropBuilder.build("house", 2.0, {"pos": Vector3.ZERO})
+	_assert(house != null, "village: kit house builds")
+	holder.add_child(house)
+	var pieces := 0
+	var stack: Array = [house]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D:
+			pieces += 1
+		for c in n.get_children():
+			stack.append(c)
+	# 24 wall blocks + 7 front pieces + 4 posts + 8 roof + 1 chimney = 44.
+	_assert(pieces == 44, "village: house has 44 kit pieces (got %d)" % pieces)
+	# Deterministic: same position builds the same rotation on every peer.
+	var h1 := PropBuilder.build("house", 2.0, {"pos": Vector3(3, 0, 7)})
+	var h2 := PropBuilder.build("house", 2.0, {"pos": Vector3(3, 0, 7)})
+	_assert(absf((h1.get_child(0) as Node3D).rotation.y - (h2.get_child(0) as Node3D).rotation.y) < 0.001,
+		"village: house rotation deterministic")
+	h1.queue_free()
+	h2.queue_free()
 	holder.queue_free()
 
 

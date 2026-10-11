@@ -56,6 +56,27 @@ static var _model_registry: Dictionary = {
 	"grass": [
 		{"p": "res://assets/models/kenney/nature/grass.glb", "s": 1.5},
 	],
+	# Modular Village kit (Jesse 2026-10-11): .obj meshes load as ArrayMesh.
+	"well": [
+		{"p": "res://assets/Modular Village/Prop_Well_1.obj", "s": 1.0},
+		{"p": "res://assets/Modular Village/Prop_Well_Cobblestone.obj", "s": 1.0},
+		{"p": "res://assets/Modular Village/Prop_Well_Dirt.obj", "s": 1.0},
+		{"p": "res://assets/Modular Village/Prop_Well_Grass.obj", "s": 1.0},
+	],
+	"cart": [
+		{"p": "res://assets/Modular Village/Prop_Cart_1.obj", "s": 1.0},
+		{"p": "res://assets/Modular Village/Prop_Cart_1_Barrels.obj", "s": 1.0},
+		{"p": "res://assets/Modular Village/Prop_Cart_1_Hay.obj", "s": 1.0},
+	],
+	"lamp": [
+		{"p": "res://assets/Modular Village/Prop_Lamp_Street.obj", "s": 1.0},
+	],
+	"waterwheel": [
+		{"p": "res://assets/Modular Village/Waterwheel_1.obj", "s": 1.0},
+	],
+	"haybale": [
+		{"p": "res://assets/Modular Village/Prop_Hay_1.obj", "s": 1.2},
+	],
 }
 
 
@@ -68,17 +89,30 @@ static func _model_for(prop_type: String, pos: Vector3) -> Node3D:
 	var cfg: Dictionary = variants[idx]
 	var path := str(cfg["p"])
 	if not _model_cache.has(path):
-		var packed := load(path) as PackedScene
-		if packed == null:
+		var res := load(path)
+		if res == null:
 			return null
-		_model_cache[path] = packed
-	var inst := (_model_cache[path] as PackedScene).instantiate() as Node3D
+		_model_cache[path] = res
+	var cached = _model_cache[path]
+	var inst: Node3D = null
+	if cached is PackedScene:
+		inst = (cached as PackedScene).instantiate() as Node3D
+	elif cached is Mesh:
+		# .obj imports (e.g. the Modular Village kit) load as ArrayMesh.
+		var mi := MeshInstance3D.new()
+		mi.mesh = cached as Mesh
+		inst = mi
+	if inst == null:
+		return null
 	var holder := Node3D.new()
 	holder.name = "Prop_" + prop_type
 	holder.set_meta("is_model", true)
 	holder.add_child(inst)
 	inst.scale = Vector3.ONE * float(cfg.get("s", 1.0))
 	inst.position.y = float(cfg.get("y", 0.0))
+	var rot_y := float(cfg.get("r", 0.0))
+	if rot_y != 0.0:
+		inst.rotation.y = deg_to_rad(rot_y)
 	return holder
 
 
@@ -178,9 +212,7 @@ static func build(prop_type: String, size_cells: float = 1.0, opts: Dictionary =
 			_add_prism(root, Vector3(1.6, 1.3, 2.0), 0.65, Color(0.72, 0.62, 0.48))
 			_add_trunk(root, 0.06, 1.8, Color(0.35, 0.25, 0.15))
 		"house":
-			_add_box(root, Vector3(2.6, 1.8, 2.2), 0.9, Color(0.78, 0.72, 0.60))
-			_add_prism(root, Vector3(3.0, 1.2, 2.6), 2.4, Color(0.45, 0.30, 0.18))
-			_add_box(root, Vector3(0.7, 1.2, 0.1), 0.6, Color(0.30, 0.20, 0.12), 0.0, Vector3(0, 0, 1.15))
+			_build_kit_house(root, opts.get("pos", Vector3.ZERO))
 		"fence":
 			for k in 3:
 				_add_trunk_at(root, 0.07, 0.9, Color(0.40, 0.30, 0.18), Vector3((k - 1) * 0.9, 0.45, 0))
@@ -246,6 +278,62 @@ static func _mi(mesh: Mesh, pos: Vector3, color: Color, rot_y: float = 0.0) -> M
 	mi.rotation.y = rot_y
 	mi.material_override = mat(color)
 	return mi
+
+
+## Modular Village kit piece: loads the .obj (cached) and positions it.
+## Base path for Jesse's 2026-10-11 village kit.
+const VILLAGE_KIT := "res://assets/Modular Village/"
+
+static func _kit(root: Node3D, piece: String, pos: Vector3, rot_y: float = 0.0, s: float = 1.0) -> void:
+	var path := VILLAGE_KIT + piece + ".obj"
+	if not _model_cache.has(path):
+		var mesh := load(path) as Mesh
+		if mesh == null:
+			return
+		_model_cache[path] = mesh
+	var mi := MeshInstance3D.new()
+	mi.mesh = _model_cache[path] as Mesh
+	mi.position = pos
+	mi.rotation.y = rot_y
+	mi.scale = Vector3.ONE * s
+	root.add_child(mi)
+
+
+## Kit-built village house: 4x4m stucco walls (2m tall) with a real doorway
+## and windows, timber posts at the corners, and a gabled roof.
+static func _build_kit_house(root: Node3D, seed_pos: Vector3) -> void:
+	# Deterministic rotation so all peers agree.
+	var rot := float(absi(hash("house|%.3f|%.3f" % [seed_pos.x, seed_pos.z])) % 4) * PI / 2.0
+	var h := Node3D.new()
+	h.rotation.y = rot
+	root.add_child(h)
+	# Walls: 4x4m, 2 blocks tall. Front (z=+2) gets doorway + windows.
+	for row in 2:
+		var y := 0.5 + row * 1.0
+		for x in [-1.5, -0.5, 0.5, 1.5]:
+			# Back wall (z=-2): solid.
+			_kit(h, "Stucco_Block", Vector3(x, y - 0.5, -2.0))
+			# Side walls (x=±2): solid, rotated 90°.
+			_kit(h, "Stucco_Block", Vector3(2.0, y - 0.5, x), PI / 2.0)
+			_kit(h, "Stucco_Block", Vector3(-2.0, y - 0.5, x), PI / 2.0)
+	# Front wall (z=+2): doorway center-bottom, windows top-sides.
+	_kit(h, "Stucco_Doorway_Wide_Tall", Vector3(0, 0, 2.0))
+	_kit(h, "Stucco_Block", Vector3(-1.5, 0.0, 2.0))
+	_kit(h, "Stucco_Block", Vector3(1.5, 0.0, 2.0))
+	_kit(h, "Stucco_Window_Double_Wide", Vector3(-1.5, 1.0, 2.0))
+	_kit(h, "Stucco_Block", Vector3(-0.5, 1.0, 2.0))
+	_kit(h, "Stucco_Block", Vector3(0.5, 1.0, 2.0))
+	_kit(h, "Stucco_Window_Double_Wide", Vector3(1.5, 1.0, 2.0))
+	# Corner timber posts.
+	for cx in [-2.0, 2.0]:
+		for cz in [-2.0, 2.0]:
+			_kit(h, "Wood_Post_Large", Vector3(cx, 0, cz))
+	# Gabled roof: ridge along X at y=3.1, slopes of Roof_Straight_Side.
+	for x in [-1.5, -0.5, 0.5, 1.5]:
+		_kit(h, "Roof_Straight_Side", Vector3(x, 2.0, 1.0), PI)
+		_kit(h, "Roof_Straight_Side", Vector3(x, 2.0, -1.0), 0.0)
+	# Chimney.
+	_kit(h, "Roof_Prop_Chimney_Stone", Vector3(1.0, 2.8, 0.0))
 
 
 static func _add_box(root: Node3D, size: Vector3, y: float, color: Color, rot_y: float = 0.0, offset: Vector3 = Vector3.ZERO) -> void:
