@@ -14,6 +14,7 @@ extends Node3D
 
 ## Handoff statics (set by the dungeon before change_scene_to_file).
 static var passenger_classes: Dictionary = {} # peer_id -> class_id
+static var passenger_steam_ids: Dictionary = {} # peer_id -> Steam ID (name bar)
 static var ride_theme_id: String = "village" # destination theme
 ## Issue #3 Phase 2: the dungeon locks the car doors when boarding completes
 ## (all aboard or timer expiry) — nobody re-opens them during the ride.
@@ -399,6 +400,7 @@ func _spawn_passengers() -> void:
 		var p := PlayerScene.instantiate() as Player
 		p.name = "Player_%d" % pid
 		p.class_id = str(passenger_classes[pid])
+		p.steam_id = int(passenger_steam_ids.get(pid, 0))
 		p.set_multiplayer_authority(int(pid))
 		p.position = spots[i % spots.size()]
 		add_child(p)

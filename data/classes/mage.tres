@@ -1,14 +1,14 @@
 [gd_resource type="Resource" format=3]
 
 [ext_resource type="Script" path="res://scripts/data/class_data.gd" id="1"]
-[ext_resource type="Texture2D" path="res://assets/sprites/knight.png" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/mage.png" id="2"]
 
 [resource]
 script = ExtResource("1")
 id = "mage"
 display_name = "Mage"
 description = "Heavy hitter with long reach. Slow swing, slower feet."
-tint = Color(0.6, 0.75, 1, 1)
+tint = Color(1, 1, 1, 1)
 base_health = 75.0
 base_damage = 19.0
 base_move_speed = 4.6

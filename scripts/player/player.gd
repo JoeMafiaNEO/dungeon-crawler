@@ -24,6 +24,9 @@ const PICKUP_RANGE := 4.5
 const FIREBALL_SPEED := 22.0
 
 @export var class_id: String = "warrior"
+## Steam ID of the owning player (0 = unknown / LAN). Used for the
+## overhead name bar via Steam.getFriendPersonaName.
+@export var steam_id: int = 0
 
 ## RTS faction in the Warlord's Domain (-1 = not in RTS mode).
 var rts_faction := -1
@@ -235,9 +238,11 @@ func _ready() -> void:
 
 
 func _display_name() -> String:
+	if SteamManager.initialized and steam_id != 0:
+		return Steam.getFriendPersonaName(steam_id)
 	var pid := get_multiplayer_authority()
-	if SteamManager.initialized:
-		return Steam.getFriendPersonaName(pid)
+	if NetworkManager.transport == NetworkManager.Transport.LAN:
+		return str(NetworkManager.lan_names.get(pid, "Player %d" % pid))
 	return "Player %d" % pid
 
 

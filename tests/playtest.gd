@@ -130,6 +130,7 @@ func _run() -> void:
 	_test_thrown_dagger_phase1()
 	_test_holy_light_heal()
 	_test_steam_ready_once_only()
+	_test_class_sprites_and_namebar()
 
 	_print_results()
 	quit()
@@ -6389,3 +6390,39 @@ func _test_steam_ready_once_only() -> void:
 	_assert(wiring == 1, "steam_ready wired exactly once after 120 frames")
 	_assert(sm.steam_ready.is_connected(Callable(nm, "_connect_steam_signals")),
 		"steam_ready is connected")
+
+
+func _test_class_sprites_and_namebar() -> void:
+	print("[Playtest] class sprites + name bar...")
+	# Each class must reference its own sprite texture (no shared knight.png).
+	var expected := {"warrior": "knight.png", "mage": "mage.png",
+		"rogue": "rogue.png", "architect": "architect.png"}
+	for cid in expected:
+		var cd = load("res://data/classes/%s.tres" % cid)
+		_assert(cd != null, "%s.tres loads" % cid)
+		var frames: Array = cd.get("frames")
+		_assert(frames.size() > 0, "%s has sprite frames" % cid)
+		var tex_path: String = (frames[0] as Texture2D).resource_path
+		_assert(tex_path.ends_with(expected[cid]),
+			"%s uses %s (got %s)" % [cid, expected[cid], tex_path])
+	# Name bar: Label3D exists in the player scene with billboard + outline.
+	var ps: PackedScene = load("res://scenes/player/player.tscn")
+	var p: Node = ps.instantiate()
+	var label := p.get_node_or_null("Label3D") as Label3D
+	_assert(label != null, "player has Label3D name bar")
+	if label != null:
+		_assert(label.billboard == BaseMaterial3D.BILLBOARD_ENABLED,
+			"name bar billboards to camera")
+		_assert(label.outline_size > 0, "name bar has readable outline")
+		_assert(abs(label.position.y - 2.1) < 0.01, "name bar hovers above head")
+	# _display_name must use the Steam ID, not the P2P peer ID.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("Steam.getFriendPersonaName(steam_id)"),
+		"_display_name uses steam_id for Steam persona name")
+	_assert(not psrc.contains("Steam.getFriendPersonaName(pid)"),
+		"_display_name no longer passes peer id to getFriendPersonaName")
+	# spawn_player RPC must carry the Steam ID for remote name bars.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func spawn_player(peer_id: int, class_id: String, pos: Vector3, steam_id: int"),
+		"spawn_player RPC carries steam_id")
+	p.free()

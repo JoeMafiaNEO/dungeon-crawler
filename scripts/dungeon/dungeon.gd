@@ -307,7 +307,8 @@ func _ready() -> void:
 	if multiplayer.is_server():
 		var host_id := multiplayer.get_unique_id()
 		peer_classes[host_id] = NetworkManager.selected_class_id
-		_do_spawn(host_id, NetworkManager.selected_class_id, spawn_points[0])
+		peer_steam_ids[host_id] = SteamManager.steam_id
+		_do_spawn(host_id, NetworkManager.selected_class_id, spawn_points[0], SteamManager.steam_id)
 	else:
 		# Pull-based: the server pushes new arrivals to everyone already in
 		# the game, and each newcomer pulls the full world state once loaded.
@@ -405,10 +406,10 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 			# Returning player: restore their saved class and state.
 			class_id = str(roster_entry.get("class_id", class_id))
 	peer_classes[sender] = class_id
-	_do_spawn(sender, class_id, _next_spawn_point())
+	_do_spawn(sender, class_id, _next_spawn_point(), int(peer_steam_ids.get(sender, 0)))
 	var node := get_player_node(sender)
 	if node != null:
-		rpc("spawn_player", sender, class_id, node.position)
+		rpc("spawn_player", sender, class_id, node.position, int(peer_steam_ids.get(sender, 0)))
 	# Send the saved state to the rejoiner (server also applies locally).
 	if not roster_entry.is_empty():
 		var ps: Dictionary = roster_entry.get("player_state", {})
@@ -497,7 +498,7 @@ func request_state() -> void:
 	for pid in peer_classes:
 		var existing := get_player_node(pid)
 		if existing != null:
-			rpc_id(sender, "spawn_player", pid, peer_classes[pid], existing.position)
+			rpc_id(sender, "spawn_player", pid, peer_classes[pid], existing.position, int(peer_steam_ids.get(pid, 0)))
 	for m in $Mobs.get_children():
 		var mob := m as Mob
 		if mob != null and mob.alive:
@@ -561,8 +562,8 @@ func client_sync_faction(faction_id: int, peer_id: int, civ_id: String, wood: in
 
 
 @rpc("any_peer", "call_local")
-func spawn_player(peer_id: int, class_id: String, pos: Vector3) -> void:
-	_do_spawn(peer_id, class_id, pos)
+func spawn_player(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) -> void:
+	_do_spawn(peer_id, class_id, pos, steam_id)
 
 
 func _next_spawn_point() -> Vector3:
@@ -603,12 +604,13 @@ func _maybe_spawn_echo_ghost() -> void:
 		ghost.queue_free()
 
 
-func _do_spawn(peer_id: int, class_id: String, pos: Vector3) -> void:
+func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) -> void:
 	if get_player_node(peer_id) != null:
 		return
 	var p := PlayerScene.instantiate() as Player
 	p.name = "Player_%d" % peer_id
 	p.class_id = class_id
+	p.steam_id = steam_id
 	p.set_multiplayer_authority(peer_id)
 	p.position = pos
 	$Players.add_child(p)
@@ -2500,6 +2502,7 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	# (same pattern as the station.gd runtime load in _build_station_annex_content).
 	var InteriorScript: GDScript = load("res://scripts/station/train_interior.gd")
 	InteriorScript.passenger_classes = classes
+	InteriorScript.passenger_steam_ids = peer_steam_ids.duplicate()
 	InteriorScript.ride_theme_id = theme_id
 	# Fresh trip: the interior's late-_ready ride check must not see a stale
 	# ride_active from the previous ride (issue #3 Phase 3).
