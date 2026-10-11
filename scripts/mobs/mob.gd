@@ -70,6 +70,15 @@ var _pending_special := ""
 var _charge_t := 0.0
 var _charge_dir := Vector3.ZERO
 var _charge_hit: Array = []
+## Second boss special (special_id_2): own cooldown, shares the telegraph slot.
+var _special2_cd := 10.0
+## Judgment (Warden): [{positions: Array[Vector3], timer: float}] awaiting eruption.
+var _pending_judgments: Array = []
+## Void rifts (Horror): [{pos: Vector3, ticks: int, tick_t: float, batch: int}].
+var _rifts: Array = []
+var _rift_batch := 0
+## Client-side rift visuals: batch id -> Array[Node3D]. Built from rift_spawn RPC.
+var _rift_nodes := {}
 # --- Apex mechanics (issue #5 Phase 2; only active when data.apex_id != "") ---
 ## Phaseshift untargetability: take_damage ignores all hits while true.
 var untargetable := false
@@ -96,6 +105,8 @@ func setup(p_id: int, p_data: MobData, p_hp_scale: float = 1.0, p_dmg_scale: flo
 	reward_scale = p_reward_scale
 	is_elite = p_elite and not p_data.is_boss
 	is_champion = p_champion and not p_data.is_boss
+	# Stagger the second boss special off the first so they don't sync up.
+	_special2_cd = data.special_cooldown_2 * 0.7
 	if is_champion:
 		hp_scale *= 4.0
 		dmg_scale *= 1.25
@@ -562,6 +573,12 @@ func _boss_think(delta: float) -> bool:
 	# Expanding shockwave rings keep moving even while the Warden telegraphs.
 	if not _shockwaves.is_empty():
 		_process_shockwaves(delta)
+	# Pending Judgment eruptions and active void rifts tick independently of
+	# whatever the boss is doing (telegraphing, charging, phaseshifting).
+	if not _pending_judgments.is_empty():
+		_process_judgments(delta)
+	if not _rifts.is_empty():
+		_process_rifts(delta)
 	# Phaseshift window: the Horror holds still, untargetable, for 2s.
 	if _phaseshift_t > 0.0:
 		_phaseshift_t -= delta
@@ -612,6 +629,19 @@ func _boss_think(delta: float) -> bool:
 				if dist > 4.0 and dist < 22.0:
 					_begin_telegraph("charge", 0.6)
 					return true
+	# Second boss special (special_id_2): own cooldown, shares the telegraph.
+	_special2_cd -= delta
+	if _special2_cd <= 0.0 and _target != null and is_instance_valid(_target):
+		match data.special_id_2:
+			"seismic_slam":
+				_begin_telegraph("seismic_slam", 1.0)
+				return true
+			"judgment":
+				_begin_telegraph("judgment", 1.2)
+				return true
+			"void_rift":
+				_begin_telegraph("void_rift", 0.8)
+				return true
 	return false
 
 
@@ -630,6 +660,15 @@ func _fire_special() -> void:
 			_do_slam()
 		"charge":
 			_do_charge()
+		"seismic_slam":
+			_special2_cd = data.special_cooldown_2
+			_do_seismic_slam()
+		"judgment":
+			_special2_cd = data.special_cooldown_2
+			_do_judgment()
+		"void_rift":
+			_special2_cd = data.special_cooldown_2
+			_do_void_rift()
 	_pending_special = ""
 
 
@@ -660,10 +699,11 @@ func _fire_shockwave() -> void:
 
 
 func _process_shockwaves(delta: float) -> void:
-	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
+	var base_dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
 	var done: Array = []
 	for w in _shockwaves:
 		w["radius"] = float(w["radius"]) + float(w["speed"]) * delta
+		var dmg: float = float(w.get("dmg", base_dmg))
 		var hit: Array = w["hit"]
 		for n in get_tree().get_nodes_in_group("players"):
 			var p := n as Node3D
@@ -676,6 +716,126 @@ func _process_shockwaves(delta: float) -> void:
 			done.append(w)
 	for w in done:
 		_shockwaves.erase(w)
+
+
+## --- Boss second specials (special_id_2). Server-side only; visuals fan out
+## via any_peer call_local RPCs. Damage always goes through the victim's
+## multiplayer authority (take_damage), never through RPC authority mode. ---
+
+## Boar: seismic slam — a bigger, slower shockwave than the Warden's.
+## 12m at 6 m/s, 1.5x special damage. Dodge by outrunning the ring.
+func _do_seismic_slam() -> void:
+	rpc("seismic_fx", global_position)
+	if _misses():
+		return  # Blinded (Smoke Bombard): the slam misses.
+	var dmg := data.damage * data.special_damage_mult * 1.5 * dmg_scale * _dmg_mult()
+	_shockwaves.append({"radius": 1.0, "max_radius": 12.0, "speed": 6.0,
+		"hit": [], "dmg": dmg})
+
+
+## Warden: judgment — up to 3 living players are marked with gold rings;
+## after 1.2s holy pillars erupt at the marked spots (3m radius each).
+func _do_judgment() -> void:
+	var positions: Array = []
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Node3D
+		if p == null or p.get("alive") == false:
+			continue
+		positions.append(p.global_position)
+		if positions.size() >= 3:
+			break
+	if positions.is_empty():
+		return
+	rpc("judgment_telegraph", positions)
+	_pending_judgments.append({"positions": positions, "timer": 1.2})
+
+
+func _process_judgments(delta: float) -> void:
+	var dmg := data.damage * data.special_damage_mult * dmg_scale * _dmg_mult()
+	var done: Array = []
+	for j in _pending_judgments:
+		j["timer"] = float(j["timer"]) - delta
+		if float(j["timer"]) > 0.0:
+			continue
+		done.append(j)
+		var positions: Array = j["positions"]
+		rpc("judgment_fx", positions)
+		if _misses():
+			continue
+		for pos in positions:
+			var pv: Vector3 = pos
+			for n in get_tree().get_nodes_in_group("players"):
+				var p := n as Node3D
+				if p == null or p.get("alive") == false:
+					continue
+				if pv.distance_to(p.global_position) <= 3.0:
+					p.rpc_id(p.get_multiplayer_authority(), "take_damage", dmg, data.display_name)
+	for j in done:
+		_pending_judgments.erase(j)
+
+
+## Horror: void rifts — 3 zones spawn near random players, drift toward the
+## nearest living player at 1.2 m/s, and pulse every second for 15s
+## (2.5m radius, 0.5x special damage per pulse).
+func _do_void_rift() -> void:
+	var players: Array = []
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Node3D
+		if p != null and p.get("alive") != false:
+			players.append(p)
+	if players.is_empty():
+		return
+	var positions: Array = []
+	for i in 3:
+		var p: Node3D = players[randi() % players.size()]
+		positions.append(p.global_position + Vector3(randf_range(-3.0, 3.0), 0, randf_range(-3.0, 3.0)))
+	_rift_batch += 1
+	rpc("rift_spawn", _rift_batch, positions)
+	for pos in positions:
+		_rifts.append({"pos": pos, "ticks": 15, "tick_t": 0.0, "batch": _rift_batch})
+
+
+func _process_rifts(delta: float) -> void:
+	var dmg := data.damage * 0.5 * data.special_damage_mult * dmg_scale * _dmg_mult()
+	var done: Array = []
+	var done_batches: Array = []
+	for r in _rifts:
+		# Drift toward the nearest living player.
+		var best: Node3D = null
+		var best_d := 1e9
+		for n in get_tree().get_nodes_in_group("players"):
+			var p := n as Node3D
+			if p == null or p.get("alive") == false:
+				continue
+			var d: float = (r["pos"] as Vector3).distance_to(p.global_position)
+			if d < best_d:
+				best_d = d
+				best = p
+		if best != null and best_d > 0.5:
+			var dir: Vector3 = best.global_position - (r["pos"] as Vector3)
+			dir.y = 0.0
+			r["pos"] = (r["pos"] as Vector3) + dir.normalized() * 1.2 * delta
+		r["tick_t"] = float(r["tick_t"]) + delta
+		if float(r["tick_t"]) >= 1.0:
+			r["tick_t"] = 0.0
+			r["ticks"] = int(r["ticks"]) - 1
+			var pos: Vector3 = r["pos"]
+			rpc("rift_pulse_fx", pos)
+			if not _misses():
+				for n in get_tree().get_nodes_in_group("players"):
+					var p := n as Node3D
+					if p == null or p.get("alive") == false:
+						continue
+					if pos.distance_to(p.global_position) <= 2.5:
+						p.rpc_id(p.get_multiplayer_authority(), "take_damage", dmg, data.display_name)
+		if int(r["ticks"]) <= 0:
+			done.append(r)
+			if not done_batches.has(r["batch"]):
+				done_batches.append(r["batch"])
+	for r in done:
+		_rifts.erase(r)
+	for b in done_batches:
+		rpc("rift_despawn", b)
 
 
 ## Apex HP-gated triggers (issue #5 Phase 2). Server-side, called from
@@ -840,6 +1000,129 @@ func shockwave_fx(pos: Vector3) -> void:
 	tw.tween_property(mi, "scale", Vector3(9, 1, 9), 1.1).set_trans(Tween.TRANS_LINEAR)
 	tw.tween_property(mat, "albedo_color:a", 0.0, 1.1)
 	tw.chain().tween_callback(mi.queue_free)
+
+
+## Boar seismic slam: dust-brown expanding ring, 2s out to 12m (matches the
+## server-side 6 m/s expansion). Damage is server-side only.
+@rpc("any_peer", "call_local")
+func seismic_fx(pos: Vector3) -> void:
+	AudioManager.sfx("boss_slam", pos)
+	Effects.burst(get_parent(), pos + Vector3(0, 0.4, 0), Color(0.55, 0.42, 0.25), 40, 9.0)
+	var parent := get_parent()
+	if parent == null:
+		return
+	var torus := TorusMesh.new()
+	torus.inner_radius = 0.85
+	torus.outer_radius = 1.0
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.75, 0.55, 0.3, 0.9)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.emission_enabled = true
+	mat.emission = Color(0.7, 0.45, 0.2)
+	mat.emission_energy_multiplier = 2.0
+	torus.material = mat
+	var mi := MeshInstance3D.new()
+	mi.mesh = torus
+	parent.add_child(mi)
+	mi.global_position = Vector3(pos.x, 0.35, pos.z)
+	var tw := mi.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(mi, "scale", Vector3(12, 1, 12), 2.0).set_trans(Tween.TRANS_LINEAR)
+	tw.tween_property(mat, "albedo_color:a", 0.0, 2.0)
+	tw.chain().tween_callback(mi.queue_free)
+
+
+## Warden judgment: gold telegraph rings on the marked spots (1.2s warning).
+@rpc("any_peer", "call_local")
+func judgment_telegraph(positions: Array) -> void:
+	if positions.is_empty():
+		return
+	AudioManager.sfx("boss_roar", positions[0])
+	for pos in positions:
+		Effects.telegraph_ring(get_parent(), pos, 3.0, Color(1.0, 0.8, 0.2))
+
+
+## Warden judgment: holy pillars erupt at the marked spots.
+@rpc("any_peer", "call_local")
+func judgment_fx(positions: Array) -> void:
+	var parent := get_parent()
+	for pos in positions:
+		AudioManager.sfx("boss_slam", pos)
+		Effects.burst(parent, pos + Vector3(0, 1.0, 0), Color(1.0, 0.75, 0.25), 30, 8.0)
+		if parent == null:
+			continue
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 1.2
+		cyl.bottom_radius = 1.6
+		cyl.height = 7.0
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(1.0, 0.85, 0.35, 0.85)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.emission_enabled = true
+		mat.emission = Color(1.0, 0.8, 0.3)
+		mat.emission_energy_multiplier = 3.0
+		cyl.material = mat
+		var mi := MeshInstance3D.new()
+		mi.mesh = cyl
+		parent.add_child(mi)
+		mi.global_position = Vector3(pos.x, 3.5, pos.z)
+		var tw := mi.create_tween()
+		tw.set_parallel(true)
+		tw.tween_property(mi, "scale", Vector3(0.2, 1.4, 0.2), 0.45).set_trans(Tween.TRANS_LINEAR)
+		tw.tween_property(mat, "albedo_color:a", 0.0, 0.45)
+		tw.chain().tween_callback(mi.queue_free)
+
+
+## Horror void rift: persistent purple zones. The server owns the lifecycle;
+## clients build/free the visuals from the spawn/despawn RPCs.
+@rpc("any_peer", "call_local")
+func rift_spawn(batch: int, positions: Array) -> void:
+	AudioManager.sfx("wave_horn", global_position)
+	var parent := get_parent()
+	if parent == null:
+		return
+	var nodes: Array = []
+	for pos in positions:
+		var disc := CylinderMesh.new()
+		disc.top_radius = 2.5
+		disc.bottom_radius = 2.5
+		disc.height = 0.1
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.45, 0.1, 0.7, 0.55)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.emission_enabled = true
+		mat.emission = Color(0.5, 0.15, 0.8)
+		mat.emission_energy_multiplier = 1.5
+		disc.material = mat
+		var mi := MeshInstance3D.new()
+		mi.mesh = disc
+		parent.add_child(mi)
+		mi.global_position = Vector3(pos.x, 0.12, pos.z)
+		# Slow spin while the rift lives; freed on rift_despawn.
+		var tw := mi.create_tween()
+		tw.set_loops()
+		tw.tween_property(mi, "rotation:y", TAU, 4.0).set_trans(Tween.TRANS_LINEAR)
+		nodes.append(mi)
+	_rift_nodes[batch] = nodes
+
+
+## Horror void rift: pulse flash each server damage tick.
+@rpc("any_peer", "call_local")
+func rift_pulse_fx(pos: Vector3) -> void:
+	Effects.burst(get_parent(), pos + Vector3(0, 0.5, 0), Color(0.6, 0.2, 0.9), 12, 4.0)
+
+
+@rpc("any_peer", "call_local")
+func rift_despawn(batch: int) -> void:
+	if not _rift_nodes.has(batch):
+		return
+	for n in _rift_nodes[batch]:
+		if is_instance_valid(n):
+			n.queue_free()
+	_rift_nodes.erase(batch)
 
 
 ## Apex Horror phaseshift: teleport burst + phased-out fade (clients apply it).

@@ -118,6 +118,7 @@ func _run() -> void:
 	_test_holy_light_v2_phase3()
 	_test_apex_mechanics()
 	_test_apex_relics()
+	_test_boss_second_specials()
 	_test_bounty_phase1()
 	_test_combo_phase1()
 	_test_combo_codex()
@@ -3864,6 +3865,96 @@ func _test_apex_mechanics() -> void:
 	wnormal.queue_free()
 	pspec.queue_free()
 	stub.queue_free()
+	holder.queue_free()
+
+
+func _test_boss_second_specials() -> void:
+	print("[Playtest] Boss second specials (seismic/judgment/rifts)...")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	_assert(MobScene != null, "boss2: mob scene loads")
+	# --- Data wiring: every boss (normal + apex) has a second special.
+	_assert(str(load("res://data/mobs/boss_boar.tres").get("special_id_2")) == "seismic_slam",
+		"boss2: boar special_id_2 seismic_slam")
+	_assert(str(load("res://data/mobs/apex_boar.tres").get("special_id_2")) == "seismic_slam",
+		"boss2: apex boar special_id_2 seismic_slam")
+	_assert(str(load("res://data/mobs/boss_warden.tres").get("special_id_2")) == "judgment",
+		"boss2: warden special_id_2 judgment")
+	_assert(str(load("res://data/mobs/apex_warden.tres").get("special_id_2")) == "judgment",
+		"boss2: apex warden special_id_2 judgment")
+	_assert(str(load("res://data/mobs/boss_horror.tres").get("special_id_2")) == "void_rift",
+		"boss2: horror special_id_2 void_rift")
+	_assert(str(load("res://data/mobs/apex_horror.tres").get("special_id_2")) == "void_rift",
+		"boss2: apex horror special_id_2 void_rift")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	# --- Seismic slam: big slow ring, hits as it passes.
+	var bdata: Resource = load("res://data/mobs/boss_boar.tres")
+	var boar = MobScene.instantiate()
+	boar.setup(11, bdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(boar)
+	boar.set("_special_cd", 999.0)
+	boar.set("_special2_cd", 999.0)
+	var pspec := ApexPlayerStub.new()
+	pspec.set_multiplayer_authority(1)
+	holder.add_child(pspec)
+	pspec.add_to_group("players")
+	pspec.global_position = boar.global_position + Vector3(5, 0, 0)
+	boar._do_seismic_slam()
+	var waves: Array = boar.get("_shockwaves")
+	_assert(waves.size() == 1, "boss2: seismic fires one ring")
+	_assert(absf(float(waves[0]["max_radius"]) - 12.0) < 0.01, "boss2: seismic ring reaches 12m")
+	_assert(absf(float(waves[0]["speed"]) - 6.0) < 0.01, "boss2: seismic ring speed 6 m/s")
+	_assert(pspec.damage_taken == 0.0, "boss2: ring has not reached the player yet")
+	boar._boss_think(1.0) # ring out to ~7m
+	_assert(pspec.damage_taken > 0.0, "boss2: seismic ring hits the player as it passes")
+	# --- Judgment: telegraphed pillars on player positions.
+	var wdata: Resource = load("res://data/mobs/boss_warden.tres")
+	var warden = MobScene.instantiate()
+	warden.setup(12, wdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(warden)
+	warden.set("_special_cd", 999.0)
+	warden.set("_special2_cd", 999.0)
+	warden._do_judgment()
+	_assert((warden.get("_pending_judgments") as Array).size() == 1, "boss2: judgment queued")
+	# Stand a fresh stub on the first marked spot, then let the timer fire.
+	var marks: Array = (warden.get("_pending_judgments") as Array)[0]["positions"]
+	_assert(marks.size() >= 1, "boss2: judgment marked at least one spot")
+	var pspec2 := ApexPlayerStub.new()
+	pspec2.set_multiplayer_authority(1)
+	holder.add_child(pspec2)
+	pspec2.add_to_group("players")
+	pspec2.global_position = marks[0]
+	warden._boss_think(1.3) # past the 1.2s timer
+	_assert((warden.get("_pending_judgments") as Array).is_empty(), "boss2: judgment fired")
+	_assert(pspec2.damage_taken > 0.0, "boss2: judgment pillar hits the marked player")
+	# --- Void rifts: 3 zones, pulse, then expire.
+	var hdata: Resource = load("res://data/mobs/boss_horror.tres")
+	var horror = MobScene.instantiate()
+	horror.setup(13, hdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(horror)
+	horror.set("_special_cd", 999.0)
+	horror.set("_special2_cd", 999.0)
+	horror._do_void_rift()
+	var rifts: Array = horror.get("_rifts")
+	_assert(rifts.size() == 3, "boss2: void rift spawns 3 zones")
+	# Park a stub inside the first rift.
+	var pspec3 := ApexPlayerStub.new()
+	pspec3.set_multiplayer_authority(1)
+	holder.add_child(pspec3)
+	pspec3.add_to_group("players")
+	pspec3.global_position = rifts[0]["pos"]
+	horror._boss_think(1.1) # first pulse
+	_assert(pspec3.damage_taken > 0.0, "boss2: rift pulses damage inside the zone")
+	for i in 20:
+		horror._boss_think(1.0)
+	_assert((horror.get("_rifts") as Array).is_empty(), "boss2: rifts expire after 15 ticks")
+
+	boar.queue_free()
+	warden.queue_free()
+	horror.queue_free()
+	pspec.queue_free()
+	pspec2.queue_free()
+	pspec3.queue_free()
 	holder.queue_free()
 
 

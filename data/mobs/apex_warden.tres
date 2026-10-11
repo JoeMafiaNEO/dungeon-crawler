@@ -68,6 +68,7 @@ is_boss = true
 boss_title = "APEX WARDEN"
 scale_mult = 2.5
 special_id = "slam"
+special_id_2 = "judgment"
 special_cooldown = 8.0
 special_damage_mult = 2.0
 apex_id = "adds"

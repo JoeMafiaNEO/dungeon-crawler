@@ -34,6 +34,11 @@ extends Resource
 @export var special_id: String = ""
 @export var special_cooldown: float = 8.0
 @export var special_damage_mult: float = 2.0
+## Second boss special (own cooldown): "seismic_slam" (Boar: big slow
+## shockwave), "judgment" (Warden: telegraphed holy pillars on players),
+## "void_rift" (Horror: drifting damage zones). "" = none.
+@export var special_id_2: String = ""
+@export var special_cooldown_2: float = 14.0
 @export var summon_id: String = ""
 @export var summon_count: int = 2
 ## Apex mechanic id for apex-cycle bosses (issue #5): "", "enrage" (Bristleback),
