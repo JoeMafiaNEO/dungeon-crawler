@@ -53,6 +53,8 @@ func _ready() -> void:
 	NetworkManager.lobby_created_success.connect(_on_host_ready)
 	NetworkManager.lobby_join_succeeded.connect(_on_join_ready)
 	NetworkManager.lobby_members_changed.connect(_refresh_members)
+	NetworkManager.lobby_members_changed.connect(_refresh_lobby_start)
+	NetworkManager.lobby_ready_changed.connect(_refresh_lobby_start)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
 	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
 	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
@@ -156,7 +158,9 @@ func _on_lobby_ready_toggled(pressed: bool) -> void:
 	AudioManager.sfx("ui_click")
 	var my_id := multiplayer.get_unique_id()
 	NetworkManager.lobby_ready[my_id] = pressed
-	# TODO: sync ready state to host via RPC.
+	# Sync to host via RPC (host relays to everyone).
+	if not NetworkManager.is_host:
+		NetworkManager.rpc_id(NetworkManager.server_peer_id, "sync_ready_state", my_id, pressed)
 	_refresh_lobby_start()
 
 
@@ -983,8 +987,20 @@ func _on_host_create_pressed() -> void:
 		if int(total) != 100:
 			AudioManager.sfx("ui_error")
 			return
-	# TODO: route through the existing host flow with the new settings.
-	_show_lobby("Lobby", true)
+	# Lock class selection if hosting from a save.
+	NetworkManager.lobby_class_locked = (NetworkManager.host_save_slot >= 0)
+	NetworkManager.lobby_ready.clear()
+	if _lan_mode_host:
+		NetworkManager.host_lan()
+		_show_lobby("LAN Lobby", true)
+	else:
+		var slot := NetworkManager.host_save_slot
+		if slot < 0:
+			slot = _first_empty_slot(SaveManager.MODE_MP)
+			if slot == -1:
+				slot = 0
+		_host_slot = slot
+		NetworkManager.host_lobby(slot)
 
 
 func _on_host_tabs_back() -> void:

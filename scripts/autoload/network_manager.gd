@@ -7,6 +7,7 @@ signal lobby_created_success
 signal continue_staging_ready
 signal lobby_join_succeeded
 signal lobby_members_changed
+signal lobby_ready_changed
 signal connection_failed(reason: String)
 
 const GAME_TAG := "dungeon-crawler"
@@ -132,7 +133,13 @@ func host_lobby(slot: int = 0) -> void:
 	multiplayer.multiplayer_peer = peer
 	is_host = true
 	server_id = SteamManager.steam_id
-	Steam.createLobby(Steam.LOBBY_TYPE_PUBLIC, MAX_PLAYERS)
+	var lobby_type := Steam.LOBBY_TYPE_PUBLIC
+	match lobby_visibility:
+		"friends":
+			lobby_type = Steam.LOBBY_TYPE_FRIENDS_ONLY
+		"private":
+			lobby_type = Steam.LOBBY_TYPE_PRIVATE
+	Steam.createLobby(lobby_type, lobby_player_cap)
 
 
 func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
@@ -147,6 +154,20 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 	Steam.setLobbyData(lobby_id, "name", "%s's Dungeon" % SteamManager.persona_name)
 	Steam.setLobbyData(lobby_id, "difficulty", str(host_difficulty))
 	Steam.setLobbyData(lobby_id, "loot_mult", str(host_loot_mult))
+	Steam.setLobbyData(lobby_id, "difficulty_preset", host_difficulty_preset)
+	Steam.setLobbyData(lobby_id, "player_cap", str(lobby_player_cap))
+	Steam.setLobbyData(lobby_id, "visibility", lobby_visibility)
+	if not lobby_password.is_empty():
+		Steam.setLobbyData(lobby_id, "has_password", "1")
+	if host_difficulty_preset == "advanced":
+		Steam.setLobbyData(lobby_id, "adv_mob_hp", str(adv_mob_hp_mult))
+		Steam.setLobbyData(lobby_id, "adv_mob_dmg", str(adv_mob_dmg_mult))
+		Steam.setLobbyData(lobby_id, "adv_mob_spawn", str(adv_mob_max_spawn))
+		Steam.setLobbyData(lobby_id, "adv_boss_hp", str(adv_boss_hp_mult))
+		Steam.setLobbyData(lobby_id, "adv_boss_dmg", str(adv_boss_dmg_mult))
+		Steam.setLobbyData(lobby_id, "adv_credits", str(adv_wave_credits_mult))
+	if not custom_rarity.is_empty():
+		Steam.setLobbyData(lobby_id, "custom_rarity", JSON.stringify(custom_rarity))
 	Steam.setLobbyJoinable(lobby_id, true)
 	_refresh_members()
 	lobby_created_success.emit()
@@ -230,6 +251,26 @@ func lan_announce_name(player_name: String) -> void:
 	_refresh_members()
 	lobby_members_changed.emit()
 	_broadcast_lan_roster()
+
+
+## Client -> host: sync ready state (Jesse 2026-10-11 lobby rework).
+@rpc("any_peer", "call_remote", "reliable")
+func sync_ready_state(peer_id: int, is_ready: bool) -> void:
+	if not is_host:
+		return
+	lobby_ready[peer_id] = is_ready
+	lobby_ready_changed.emit()
+	# Broadcast to all so every client sees the roster update.
+	for pid in lobby_members:
+		if pid != server_peer_id:
+			rpc_id(pid, "broadcast_ready_state", peer_id, is_ready)
+
+
+## Host -> all: relay a player's ready state.
+@rpc("any_peer", "call_remote", "reliable")
+func broadcast_ready_state(peer_id: int, is_ready: bool) -> void:
+	lobby_ready[peer_id] = is_ready
+	lobby_ready_changed.emit()
 
 
 ## Host -> all LAN clients: broadcast the full cosmetic-name roster.
