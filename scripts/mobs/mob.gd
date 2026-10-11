@@ -1746,5 +1746,3 @@ func _update_health_bar() -> void:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
 	_hb_fill.scale.x = _hb_full_w * frac
 	_hb_fill.position.x = -_hb_full_w * 0.5 + (_hb_full_w * frac) * 0.5
-	# Hide when full (cleaner look) — show once damaged.
-	_hb_fill.get_parent().visible = frac < 1.0

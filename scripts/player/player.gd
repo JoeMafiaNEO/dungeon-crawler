@@ -4049,7 +4049,3 @@ func _update_health_bar() -> void:
 		frac = clampf(hp / max_hp, 0.0, 1.0)
 	_phb_fill.scale.x = _phb_full_w * frac
 	_phb_fill.position.x = -_phb_full_w * 0.5 + (_phb_full_w * frac) * 0.5
-	# Hide when full — show once damaged. Always show for other players
-	# so teammates can see your status.
-	var is_local := get_multiplayer_authority() == multiplayer.get_unique_id()
-	_phb_fill.get_parent().visible = (frac < 1.0) or not is_local
