@@ -1676,7 +1676,11 @@ func _on_kick_pressed() -> void:
 
 func _on_start_pressed() -> void:
 	AudioManager.sfx("ui_click")
-	NetworkManager.start_game()
+	# Continued run: use the save path; fresh run: normal start.
+	if not NetworkManager._continued_run.is_empty():
+		NetworkManager.start_continued_run()
+	else:
+		NetworkManager.start_game()
 
 
 func _on_leave_pressed() -> void:
@@ -1693,13 +1697,13 @@ var _staging_active := false
 
 
 func _on_staging_ready() -> void:
-	_show_phase("StagingPhase")
-	_staging_active = true
-	_staging_timer = STAGING_AUTO_START
-	%OpenLobbyCheck.button_pressed = false
-	Dungeon.continued_open_lobby = false
-	_refresh_staging_roster()
-	_refresh_lobby_strip()
+	# Jesse 2026-10-11: continued runs now use the lobby UI, not the old staging phase.
+	var run_title := "Continue Run"
+	if not NetworkManager._continued_run.is_empty():
+		var lobby: Dictionary = NetworkManager._continued_run.get("lobby", {})
+		var lname := str(lobby.get("lobby_name", "Dungeon"))
+		run_title = "Continue: %s" % lname
+	_show_lobby(run_title, true)
 	# Open the Steam invite dialog so the host can re-invite the crew.
 	NetworkManager.open_invite_dialog()
 
