@@ -6,6 +6,9 @@ extends CharacterBody3D
 var faction: int = 0
 var unit_type: String = "villager"
 var civ: CivData = null
+## Deterministic network ID (Jesse 2026-10-10). Set by the spawner; the node is
+## named "RTSUnit_<id>" so client and server paths match for order RPCs.
+var unit_id: int = 0
 
 var hp: float = 50.0
 var max_hp: float = 50.0

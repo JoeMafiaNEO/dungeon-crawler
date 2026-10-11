@@ -67,6 +67,33 @@ const BUILDING_COSTS := {
 var factions: Dictionary = {}
 # faction_id -> peer_id (for players). AI factions have peer_id = -1.
 var faction_peers: Dictionary = {}
+## Deterministic network IDs for RTS entities (Jesse 2026-10-10: units/buildings
+## used Godot's @ClassName@N auto-naming — a global monotonic counter — so client
+## and server node paths diverged and client order RPCs missed. Server allocates
+## an ID per entity and passes it in the spawn RPC; clients name their copy
+## identically. Clients never allocate.)
+var _next_unit_id := 1
+var _next_building_id := 1
+var _next_node_id := 1
+
+
+## Server-side: allocate a deterministic unit ID. Clients must use the ID from
+## the spawn RPC, never allocate.
+func alloc_unit_id() -> int:
+	_next_unit_id += 1
+	return _next_unit_id - 1
+
+
+## Server-side: allocate a deterministic building ID.
+func alloc_building_id() -> int:
+	_next_building_id += 1
+	return _next_building_id - 1
+
+
+## Server-side: allocate a deterministic resource-node ID.
+func alloc_node_id() -> int:
+	_next_node_id += 1
+	return _next_node_id - 1
 # Additive instrumentation for the balance sim harness. Never affects gameplay:
 # faction_id -> {"units_trained": {type: count}, "conversions": int,
 #                "trade_deliveries": int, "trade_gold": int, "fish_food": int}
@@ -250,11 +277,12 @@ func spawn_unit(unit_type: String, faction_id: int, pos: Vector3, civ: CivData) 
 	var f: Dictionary = factions.get(faction_id, {})
 	if f.is_empty() or not bool(f.get("alive", false)):
 		return
-	_spawn_unit_local(unit_type, faction_id, pos, civ.civ_id)
-	rpc("client_spawn_unit", unit_type, faction_id, pos, civ.civ_id)
+	var uid := alloc_unit_id()
+	_spawn_unit_local(unit_type, faction_id, pos, civ.civ_id, uid)
+	rpc("client_spawn_unit", unit_type, faction_id, pos, civ.civ_id, uid)
 
 
-func _spawn_unit_local(unit_type: String, faction_id: int, pos: Vector3, civ_id: String) -> void:
+func _spawn_unit_local(unit_type: String, faction_id: int, pos: Vector3, civ_id: String, unit_id: int) -> void:
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon == null:
 		return
@@ -264,16 +292,18 @@ func _spawn_unit_local(unit_type: String, faction_id: int, pos: Vector3, civ_id:
 	var civ := CivData.for_civ_id(civ_id)
 	var u := RTSUnit.new()
 	u.setup(faction_id, unit_type, civ)
+	u.unit_id = unit_id
+	u.name = "RTSUnit_%d" % unit_id
 	u.position = pos
 	holder.add_child(u)
 	sim_bump(faction_id, "units_trained", 1, unit_type)
 
 
 @rpc("any_peer", "call_local")
-func client_spawn_unit(unit_type: String, faction_id: int, pos: Vector3, civ_id: String) -> void:
+func client_spawn_unit(unit_type: String, faction_id: int, pos: Vector3, civ_id: String, unit_id: int) -> void:
 	if multiplayer.is_server():
 		return
-	_spawn_unit_local(unit_type, faction_id, pos, civ_id)
+	_spawn_unit_local(unit_type, faction_id, pos, civ_id, unit_id)
 
 
 ## Called by RTSBuilding when destroyed: re-check elimination/win.

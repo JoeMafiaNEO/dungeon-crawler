@@ -48,6 +48,9 @@ const PRODUCTION := {
 
 var faction := 0
 var building_type := "town_hall"
+## Deterministic network ID (Jesse 2026-10-10). Set by the spawner; the node is
+## named "RTSBuilding_<id>" so client and server paths match for RPCs.
+var building_id: int = 0
 var hp := 100.0
 var max_hp := 100.0
 var civ: CivData = null

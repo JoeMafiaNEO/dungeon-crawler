@@ -536,12 +536,14 @@ func sync_rts_state(target_peer: int) -> void:
 		var uciv: CivData = u.get("civ")
 		rpc_id(target_peer, "client_spawn_unit",
 			str(u.get("unit_type")), int(u.get("faction")),
-			u.global_position, uciv.civ_id if uciv else "iron_vanguard")
+			u.global_position, uciv.civ_id if uciv else "iron_vanguard",
+			int(u.get("unit_id")))
 	for b in get_tree().get_nodes_in_group("rts_buildings"):
 		var bciv: CivData = b.get("civ")
 		rpc_id(target_peer, "client_spawn_building",
 			int(b.get("faction")), str(b.get("building_type")),
-			b.global_position, bciv.civ_id if bciv else "iron_vanguard")
+			b.global_position, bciv.civ_id if bciv else "iron_vanguard",
+			int(b.get("building_id")))
 
 
 @rpc("any_peer", "call_local")
@@ -966,7 +968,7 @@ func _setup_warlord() -> void:
 		var bp := _faction_spawn_pos(fi)
 		var side := 1.0 if bp.x >= 0.0 else -1.0
 		var dciv := _rts_manager.get_civ(fi)
-		rpc("spawn_rts_dock", fi, Vector3(side * 6.0, 0.0, bp.z), dciv.civ_id)
+		rpc("spawn_rts_dock", fi, Vector3(side * 6.0, 0.0, bp.z), dciv.civ_id, _rts_manager.alloc_building_id())
 
 	# RTS camera for the local player (Tab to toggle).
 	var rts_cam := RTSCamera.new()
@@ -1109,7 +1111,11 @@ func _faction_spawn_pos(faction_id: int) -> Vector3:
 
 func _spawn_faction_base(faction_id: int, pos: Vector3) -> void:
 	var civ := _rts_manager.get_civ(faction_id)
-	rpc("spawn_rts_base", faction_id, pos, civ.civ_id)
+	# Jesse 2026-10-10: allocate deterministic network IDs on the server and pass
+	# them in the RPC so client and server name the entities identically.
+	var town_hall_id := _rts_manager.alloc_building_id()
+	var villager_ids := [_rts_manager.alloc_unit_id(), _rts_manager.alloc_unit_id(), _rts_manager.alloc_unit_id()]
+	rpc("spawn_rts_base", faction_id, pos, civ.civ_id, town_hall_id, villager_ids)
 	# Guaranteed starting cluster near the town center (tunable via [map]).
 	var cluster := RTSTuning.get_dict("map", "starting_cluster",
 		{"wood": 6, "food": 4, "gold": 3, "stone": 2})
@@ -1120,15 +1126,17 @@ func _spawn_faction_base(faction_id: int, pos: Vector3) -> void:
 			var npos := pos + Vector3(cos(angle) * dist, 0, sin(angle) * dist)
 			if is_on_water(npos):
 				npos = pos + Vector3(cos(angle + PI) * dist, 0, sin(angle + PI) * dist)
-			rpc("spawn_rts_node", t, npos)
+			rpc("spawn_rts_node", t, npos, _rts_manager.alloc_node_id())
 
 
 @rpc("any_peer", "call_local")
-func spawn_rts_base(faction_id: int, pos: Vector3, civ_id: String) -> void:
+func spawn_rts_base(faction_id: int, pos: Vector3, civ_id: String, building_id: int, villager_ids: Array) -> void:
 	var civ := CivData.for_class(_class_from_civ(civ_id))
 	# Town Hall.
 	var th := RTSBuilding.new()
 	th.setup(faction_id, "town_hall", civ)
+	th.building_id = building_id
+	th.name = "RTSBuilding_%d" % building_id
 	th.position = pos
 	$RTS.add_child(th)
 	_wire_building(th, faction_id)
@@ -1137,6 +1145,9 @@ func spawn_rts_base(faction_id: int, pos: Vector3, civ_id: String) -> void:
 	for i in 3:
 		var v := RTSUnit.new()
 		v.setup(faction_id, "villager", civ)
+		var vid := int(villager_ids[i]) if i < villager_ids.size() else 0
+		v.unit_id = vid
+		v.name = "RTSUnit_%d" % vid
 		var angle := TAU * float(i) / 3.0
 		v.position = pos + Vector3(cos(angle) * 3.0, 0, sin(angle) * 3.0)
 		$RTS.add_child(v)
@@ -1172,10 +1183,12 @@ func _wire_building(b: RTSBuilding, faction_id: int) -> void:
 
 
 @rpc("any_peer", "call_local")
-func spawn_rts_dock(faction_id: int, pos: Vector3, civ_id: String) -> void:
+func spawn_rts_dock(faction_id: int, pos: Vector3, civ_id: String, building_id: int) -> void:
 	var civ := CivData.for_class(_class_from_civ(civ_id))
 	var dock := RTSBuilding.new()
 	dock.setup(faction_id, "dock", civ)
+	dock.building_id = building_id
+	dock.name = "RTSBuilding_%d" % building_id
 	dock.position = pos
 	$RTS.add_child(dock)
 	_wire_building(dock, faction_id)
@@ -1288,11 +1301,11 @@ func _spawn_resource_nodes() -> void:
 	for fi in _rts_manager.factions:
 		for t in types:
 			for n in per_res:
-				rpc("spawn_rts_node", t, _random_land_pos(14.0 * ms, 42.0 * ms))
+				rpc("spawn_rts_node", t, _random_land_pos(14.0 * ms, 42.0 * ms), _rts_manager.alloc_node_id())
 	# Contested center ring: bonus gold/stone to reward map control.
 	for i in RTSTuning.get_int("map", "center_ring_nodes", 12):
 		var t: String = "gold" if i % 2 == 0 else "stone"
-		rpc("spawn_rts_node", t, _random_land_pos(4.0, 12.0))
+		rpc("spawn_rts_node", t, _random_land_pos(4.0, 12.0), _rts_manager.alloc_node_id())
 
 
 ## Random position on land (not river), within a radius band.
@@ -1316,15 +1329,17 @@ func _process_node_respawns() -> void:
 			ready.append(entry)
 	for entry in ready:
 		_node_respawns.erase(entry)
-		rpc("spawn_rts_node", str(entry["type"]), _random_land_pos(10.0, 42.0))
+		rpc("spawn_rts_node", str(entry["type"]), _random_land_pos(10.0, 42.0), _rts_manager.alloc_node_id())
 
 
 @rpc("any_peer", "call_local")
-func spawn_rts_node(res_type: String, pos: Vector3) -> void:
+func spawn_rts_node(res_type: String, pos: Vector3, node_id: int) -> void:
 	var amounts := RTSTuning.get_dict("map", "node_amounts",
 		{"wood": 1000, "food": 800, "gold": 800, "stone": 800})
 	var node := RTSResourceNode.new()
 	node.setup(res_type, int(amounts.get(res_type, 500)))
+	node.node_id = node_id
+	node.name = "RTSNode_%d" % node_id
 	node.position = pos
 	node.add_to_group("rts_resources")
 	$RTS.add_child(node)
@@ -1378,22 +1393,25 @@ func rpc_start_construction(faction_id: int, btype: String, pos: Vector3) -> voi
 			_rts_manager.add_resource(faction_id, k, int(cost[k]))
 		return
 	var civ: CivData = _rts_manager.factions[faction_id]["civ"]
-	var b := _spawn_building_local(faction_id, btype, pos, civ.civ_id)
-	rpc("client_spawn_building", faction_id, btype, pos, civ.civ_id)
+	var bid := _rts_manager.alloc_building_id()
+	var b := _spawn_building_local(faction_id, btype, pos, civ.civ_id, bid)
+	rpc("client_spawn_building", faction_id, btype, pos, civ.civ_id, bid)
 	builder.rpc("rpc_order_build", b.get_path())
 
 
 @rpc("any_peer", "call_local")
-func client_spawn_building(faction_id: int, btype: String, pos: Vector3, civ_id: String) -> void:
+func client_spawn_building(faction_id: int, btype: String, pos: Vector3, civ_id: String, building_id: int) -> void:
 	if multiplayer.is_server():
 		return
-	_spawn_building_local(faction_id, btype, pos, civ_id)
+	_spawn_building_local(faction_id, btype, pos, civ_id, building_id)
 
 
-func _spawn_building_local(faction_id: int, btype: String, pos: Vector3, civ_id: String) -> RTSBuilding:
+func _spawn_building_local(faction_id: int, btype: String, pos: Vector3, civ_id: String, building_id: int) -> RTSBuilding:
 	var civ := CivData.for_civ_id(civ_id)
 	var b := RTSBuilding.new()
 	b.setup(faction_id, btype, civ)
+	b.building_id = building_id
+	b.name = "RTSBuilding_%d" % building_id
 	b.rts_manager = _rts_manager
 	b.position = pos
 	$RTS.add_child(b)

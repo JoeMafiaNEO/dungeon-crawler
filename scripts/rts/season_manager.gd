@@ -120,7 +120,10 @@ func _do_gold_rush() -> void:
 	for i in count:
 		var pos := _random_center_pos(4.0, 12.0)
 		# The dungeon's spawn_rts_node is an RPC; call via dungeon.
-		_dungeon.rpc("spawn_rts_node", "gold", pos, amount)
+		# Jesse 2026-10-10: pass a deterministic node ID (was passing amount
+		# into a 2-arg handler, so Gold Rush never spawned).
+		var nid := _rts.alloc_node_id() if _rts != null else 0
+		_dungeon.rpc("spawn_rts_node", "gold", pos, nid)
 	print("[Seasons] Gold Rush: spawned %d gold nodes" % count)
 
 func _random_center_pos(min_r: float, max_r: float) -> Vector3:
@@ -190,6 +193,9 @@ func _do_mercenary_raid() -> void:
 		var pos := Vector3(cos(angle) * 45.0, 0, sin(angle) * 45.0)
 		var u: Node3D = unit_script.new()
 		u.setup(-99, unit_type, civ)  # Faction -99: hostile mercenaries.
+		var muid := _rts.alloc_unit_id() if _rts != null else 0
+		u.set("unit_id", muid)
+		u.name = "RTSUnit_%d" % muid
 		u.position = pos
 		rts_node.add_child(u)
 		_order_raid_attack(u, target_faction)

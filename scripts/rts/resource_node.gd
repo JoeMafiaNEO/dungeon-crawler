@@ -4,6 +4,9 @@ extends StaticBody3D
 
 var resource_type: String = "wood"
 var amount: int = 500
+## Deterministic network ID (Jesse 2026-10-10). Set by the spawner; the node is
+## named "RTSNode_<id>" so client and server paths match for gather-order RPCs.
+var node_id: int = 0
 
 
 func setup(p_type: String, p_amount: int) -> void:
