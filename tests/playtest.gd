@@ -74,6 +74,7 @@ func _run() -> void:
 	_test_train_spots_12p()
 	_test_mp_save_steam_ids()
 	_test_lobby_strip()
+	_test_checkout_multiplayer()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2566,6 +2567,18 @@ func _test_lobby_strip() -> void:
 	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/main_menu.tscn")
 	_assert(tsrc.contains("LobbyStripNames"),
 		"lobbystrip: strip nodes in staging UI")
+
+
+func _test_checkout_multiplayer() -> void:
+	print("[Playtest] Checkout multiplayer...")
+	# Jesse 2026-10-10: the checkout sell was server-side body_entered, but
+	# the server's physics can't see client bodies — clients never sold.
+	# Now each peer detects its own entry; clients RPC the server.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func rpc_request_checkout_sell"),
+		"checkout: client sell-request RPC exists")
+	_assert(dsrc.contains("body.get_multiplayer_authority()) == multiplayer.get_unique_id()"),
+		"checkout: clients detect their own entry")
 
 
 func _print_results() -> void:

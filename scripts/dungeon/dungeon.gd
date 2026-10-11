@@ -1437,12 +1437,28 @@ func spawn_checkout(pos: Vector3) -> void:
 
 
 func _on_checkout_body(body: Node3D, checkout: Area3D) -> void:
-	# Server-side: auto-sell the entering player's supermarket loot.
-	if not multiplayer.is_server():
-		return
+	# Jesse 2026-10-10 fix: the server's physics can't see client bodies, so
+	# clients never triggered the sell (same root cause as the heal pad).
+	# Each peer detects its OWN player entering; the server sells directly,
+	# clients RPC the server to perform the authoritative sell.
 	if not body.is_in_group("players"):
 		return
-	_sell_player_loot(body)
+	if multiplayer.is_server():
+		_sell_player_loot(body)
+	elif int(body.get_multiplayer_authority()) == multiplayer.get_unique_id():
+		rpc_id(NetworkManager.server_peer_id, "rpc_request_checkout_sell")
+
+
+## Client walked through the checkout on their own screen; the server
+## performs the authoritative sell for them.
+@rpc("any_peer")
+func rpc_request_checkout_sell() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var node := get_player_node(sender)
+	if node != null:
+		_sell_player_loot(node)
 
 
 ## Potion shop: 3D counter with 3 buyable potions. E at a pedestal to buy.
