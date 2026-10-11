@@ -830,6 +830,10 @@ func run_summary(run: Dictionary) -> String:
 	var level_label := "Level %d" % display_level
 	if at_station:
 		level_label = "Level %d (At Station)" % display_level
+	# Jesse 2026-10-11: show saved wave so it's visible in the file list.
+	var wave_num := int(run.get("wave", 0))
+	if wave_num > 0 and not at_station:
+		level_label += " · Wave %d" % wave_num
 	if bool(run.get("is_multiplayer", false)):
 		var roster: Array = run.get("roster", [])
 		var names: Array = []
