@@ -851,3 +851,39 @@ func _dressing_props_embedded() -> void:
 		_cyl(a, 0.35, 0.25, 0.25, Vector3(bx * 0.85, 0.9, 5.6), steel_dark)
 		_box(a, Vector3(0.12, 0.9, 0.12), Vector3(bx * 0.85, 0.45, 5.6), steel_dark)
 		_box(a, Vector3(0.30, 0.18, 0.30), Vector3(bx * 0.85, 1.08, 5.6), ember)
+
+
+## Save the multiplayer run from the station (host only).
+## Mirrors Dungeon.save_multiplayer_run but synchronous — the station has
+## all player nodes locally, so no RPC round-trip is needed.
+func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) -> void:
+	if not multiplayer.is_server():
+		return
+	# Issue #70: LAN has no saves.
+	if NetworkManager.transport == NetworkManager.Transport.LAN:
+		return
+	var roster: Array = []
+	var my_sid := SteamManager.steam_id if SteamManager.initialized else multiplayer.get_unique_id()
+	for n in get_tree().get_nodes_in_group("players"):
+		var sid := int(n.get("steam_id")) if n.get("steam_id") != null else my_sid
+		roster.append({
+			"steam_id": sid,
+			"player_name": NetworkManager.member_name(sid),
+			"class_id": str(n.get("class_id")),
+			"player_state": n.get_state(),
+			"rts_faction": -1,
+			"is_host": sid == my_sid,
+		})
+	SaveManager.save_run({
+		"theme_id": theme_id,
+		"level_number": level_number,
+		"seed": level_seed,
+		"is_multiplayer": true,
+		"host_difficulty": NetworkManager.host_difficulty,
+		"host_loot_mult": NetworkManager.host_loot_mult,
+		"lobby": {
+			"max_players": NetworkManager.MAX_PLAYERS,
+			"lobby_name": "%s's Dungeon" % SteamManager.persona_name if SteamManager.initialized else "Dungeon",
+		},
+		"roster": roster,
+	}, SaveManager.MODE_MP, NetworkManager.active_run_slot)
