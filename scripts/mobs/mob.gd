@@ -24,6 +24,9 @@ var _remote_pos := Vector3.ZERO
 var _has_remote := false
 var _knockback := Vector3.ZERO
 var _sprite: AnimatedSprite3D
+## Jesse 2026-10-11: floating health bar (frame + fill sprites).
+var _hb_fill: Sprite3D = null
+var _hb_full_w: float = 1.0
 var _flash_tween: Tween
 var _bob_t := 0.0
 var _base_scale := Vector3.ONE
@@ -193,6 +196,8 @@ func _ready() -> void:
 	# Gilded Cage: gold dome mesh over the sprite.
 	if data.id == "gold_cage":
 		_build_cage_dome()
+	# Jesse 2026-10-11: floating health bar above the mob.
+	_build_health_bar()
 	_sprite.scale = _base_scale
 	_remote_pos = global_position
 	if not multiplayer.is_server():
@@ -1513,6 +1518,7 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		_stagger_t = 1.5
 		_shield_up = false
 	hp -= amount
+	_update_health_bar()
 	# Credit run stats: the attacking player tracks total damage dealt.
 	# Covers every source (melee, spells, projectiles, totems) in one place.
 	for n in get_tree().get_nodes_in_group("players"):
@@ -1688,3 +1694,57 @@ func _try_meta_drop(dungeon) -> void:
 func _luck_weight(rarity: int) -> float:
 	var luck := data.loot_luck + (1.5 if is_elite else 0.0)
 	return 1.0 + luck * float(rarity) * 0.4
+
+
+## Jesse 2026-10-11: floating SNES health bar above the mob.
+## Frame (mob or boss variant) + fill sprite scaled by HP percent.
+func _build_health_bar() -> void:
+	var bar := Node3D.new()
+	bar.name = "HealthBar"
+	# Above the sprite; bosses are bigger so offset more.
+	var y_off := 2.2 * _base_scale.x if _base_scale.x > 1.0 else 1.6
+	bar.position = Vector3(0, y_off, 0)
+	add_child(bar)
+	var frame_tex := load("res://assets/sprites/ui/healthbar_boss_frame.png") as Texture2D \
+		if data.is_boss else load("res://assets/sprites/ui/healthbar_mob_frame.png") as Texture2D
+	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
+	if frame_tex == null or fill_tex == null:
+		return
+	# Fill goes behind the frame.
+	var fill := Sprite3D.new()
+	fill.texture = fill_tex
+	fill.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	fill.no_depth_test = true
+	fill.modulate = Color(1, 1, 1, 1)
+	# Scale fill to fit inside the frame's transparent center (approx 80% x 50%).
+	var fw := float(frame_tex.get_width())
+	var fh := float(frame_tex.get_height())
+	var target_w := 1.2 if data.is_boss else 0.9
+	var s := target_w / fw
+	fill.scale = Vector3(s * 0.8, s * 0.5, 1)
+	_hb_full_w = fill.scale.x
+	# Left-align: offset so scaling from the left edge works.
+	fill.position.x = -_hb_full_w * 0.5
+	bar.add_child(fill)
+	_hb_fill = fill
+	var frame := Sprite3D.new()
+	frame.texture = frame_tex
+	frame.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	frame.no_depth_test = true
+	frame.scale = Vector3(s, s, 1)
+	frame.position.z = 0.01
+	bar.add_child(frame)
+	_update_health_bar()
+
+
+## Scale the fill by current HP percent (left-aligned).
+func _update_health_bar() -> void:
+	if _hb_fill == null or not is_instance_valid(_hb_fill):
+		return
+	var frac := 0.0
+	if max_hp > 0.0:
+		frac = clampf(hp / max_hp, 0.0, 1.0)
+	_hb_fill.scale.x = _hb_full_w * frac
+	_hb_fill.position.x = -_hb_full_w * 0.5 + (_hb_full_w * frac) * 0.5
+	# Hide when full (cleaner look) — show once damaged.
+	_hb_fill.get_parent().visible = frac < 1.0

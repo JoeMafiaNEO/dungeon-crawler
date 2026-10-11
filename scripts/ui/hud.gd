@@ -66,6 +66,37 @@ func _ready() -> void:
 	_build_potion_slot()
 	_build_charge_meter()
 	_build_ascension_indicator()
+	_apply_healthbar_art()
+
+
+## Jesse 2026-10-11: SNES health bar frame overlay on the player HP bar.
+func _apply_healthbar_art() -> void:
+	var hp_bar := %HPBar as ProgressBar
+	if hp_bar == null:
+		return
+	var frame_tex := load("res://assets/sprites/ui/healthbar_player_frame.png") as Texture2D
+	var fill_tex := load("res://assets/sprites/ui/healthbar_fill.png") as Texture2D
+	if frame_tex == null:
+		return
+	# Use the SNES fill texture for the bar.
+	if fill_tex != null:
+		var fill_style := StyleBoxTexture.new()
+		fill_style.texture = fill_tex
+		hp_bar.add_theme_stylebox_override("fill", fill_style)
+	# Frame overlays the bar; the fill shows through the transparent center.
+	var frame := TextureRect.new()
+	frame.texture = frame_tex
+	frame.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	frame.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# Size to the bar with some padding for the skull decorations.
+	var bar_size := hp_bar.custom_minimum_size
+	frame.custom_minimum_size = Vector2(bar_size.x + 40, bar_size.y + 24)
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Insert right above the bar in the TopLeft container.
+	var parent := hp_bar.get_parent()
+	var idx := hp_bar.get_index()
+	parent.add_child(frame)
+	parent.move_child(frame, idx + 1)
 
 
 ## Issue #69 Phase 1: Thrown dagger charge meter. Small bar near the
