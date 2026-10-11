@@ -744,11 +744,12 @@ func _refresh_host_save_list() -> void:
 	fresh.toggled.connect(_on_host_save_selected.bind(-1))
 	_host_save_list.add_child(fresh)
 	for slot in range(SaveManager.MAX_SLOTS):
-		var info: Dictionary = SaveManager.get_slot_info(SaveManager.MODE_MP, slot)
-		if info.is_empty():
+		if not SaveManager.has_run(SaveManager.MODE_MP, slot):
 			continue
+		var run: Dictionary = SaveManager.load_run(SaveManager.MODE_MP, slot)
+		var summary := SaveManager.run_summary(run)
 		var b := Button.new()
-		b.text = "Slot %d: %s" % [slot + 1, str(info.get("summary", "Save"))]
+		b.text = "Slot %d: %s" % [slot + 1, summary]
 		b.toggle_mode = true
 		b.button_pressed = (NetworkManager.host_save_slot == slot)
 		b.toggled.connect(_on_host_save_selected.bind(slot))
