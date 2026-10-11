@@ -337,7 +337,7 @@ func load_dungeon(theme_id: String, level_seed: int, level_number: int) -> void:
 @rpc("any_peer", "call_local")
 func load_station(level_number: int) -> void:
 	Station.next_level_number = level_number
-	get_tree().change_scene_to_file("res://scenes/station/station.tscn")
+	get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
 
 
 # --- Joining ---
@@ -557,7 +557,7 @@ func continue_run(mode: String, slot: int) -> bool:
 	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
 	if bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
-		get_tree().change_scene_to_file("res://scenes/station/station.tscn")
+		get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
 	else:
 		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 	return true
@@ -659,7 +659,7 @@ func _continue_load_level() -> void:
 	# Jesse 2026-10-11: station saves resume AT the station.
 	if bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
-		get_tree().change_scene_to_file("res://scenes/station/station.tscn")
+		get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
 	else:
 		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 

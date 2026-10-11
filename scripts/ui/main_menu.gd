@@ -1072,6 +1072,37 @@ func _on_host_create_pressed() -> void:
 	NetworkManager.lobby_class_locked = (NetworkManager.host_save_slot >= 0)
 	NetworkManager.lobby_ready.clear()
 	if _lan_mode_host:
+		var lan_slot := NetworkManager.host_save_slot
+		if lan_slot >= 0:
+			# Jesse 2026-10-11: LAN host from save — load the save data directly.
+			# (Steam's continue_run needs a lobby; LAN goes straight in.)
+			var run := SaveManager.load_run(SaveManager.MODE_MP, lan_slot)
+			if not run.is_empty():
+				NetworkManager.active_run_mode = SaveManager.MODE_MP
+				NetworkManager.active_run_slot = lan_slot
+				NetworkManager.is_host = true
+				# Find the host's roster entry for their saved state.
+				var host_state := {}
+				var host_class := "warrior"
+				for entry in run.get("roster", []):
+					if bool(entry.get("is_host", false)):
+						host_state = entry.get("player_state", {})
+						host_class = str(entry.get("class_id", "warrior"))
+						break
+				NetworkManager.selected_class_id = host_class
+				Dungeon.saved_player_state = host_state
+				Dungeon.next_theme_id = str(run.get("theme_id", "village"))
+				Dungeon.next_seed = int(run.get("seed", randi()))
+				Dungeon.next_level_number = int(run.get("level_number", 1))
+				Dungeon.next_wave = int(run.get("wave", 0))
+				Dungeon.continued_roster = run.get("roster", [])
+				NetworkManager.host_lan()
+				if bool(run.get("at_station", false)):
+					Station.next_level_number = int(run.get("level_number", 1))
+					get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
+				else:
+					get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
+				return
 		NetworkManager.host_lan()
 		_show_lobby("LAN Lobby", true)
 	else:

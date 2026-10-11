@@ -2714,7 +2714,9 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	# Issue #70: LAN has no saves — skip the departure auto-save.
 	if NetworkManager.transport == NetworkManager.Transport.LAN:
 		return
-	var at_station := get_tree().get_first_node_in_group("station") != null
+	# Jesse 2026-10-11: use scene path, not node existence — stale nodes lie.
+	var scene_path := str(get_tree().current_scene.scene_file_path) if get_tree().current_scene != null else ""
+	var at_station := scene_path.contains("station")
 	var wave_number := 0
 	if not at_station:
 		wave_number = wave
