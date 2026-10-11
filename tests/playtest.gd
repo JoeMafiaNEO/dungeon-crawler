@@ -76,6 +76,7 @@ func _run() -> void:
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
+	_test_train_state_handoff()
 	_test_economy()
 	_test_trade_no_self_trade()
 	_test_apex_phase1()
@@ -2595,6 +2596,18 @@ func _test_holy_light_linger() -> void:
 		"linger: fade processor exists")
 	_assert(psrc.contains("_hl_start_linger()"),
 		"linger: ability end starts linger")
+
+
+func _test_train_state_handoff() -> void:
+	print("[Playtest] Train state handoff...")
+	# Jesse 2026-10-10: players lost stats/items on the annex->train hop
+	# because saved_player_state relied on local capture. Now the host
+	# collects states in save_multiplayer_run and sends them in the RPC.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("saved_player_states"),
+		"train: host-collected states dict exists")
+	_assert(dsrc.contains("board_train_interior\", theme_id, seed, new_level, peer_classes, saved_player_states"),
+		"train: states sent in boarding RPC")
 
 
 func _print_results() -> void:

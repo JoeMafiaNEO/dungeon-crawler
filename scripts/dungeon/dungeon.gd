@@ -114,6 +114,11 @@ static var next_theme_id: String = "village"
 static var next_seed: int = 12345
 static var next_level_number: int = 1
 static var saved_player_state: Dictionary = {}
+## Jesse 2026-10-10 fix: host-collected player states (peer_id -> state dict)
+## for the train transition. The host gathers these in save_multiplayer_run;
+## clients use them as the source of truth instead of relying on local
+## capture which can fail if the player node isn't ready.
+static var saved_player_states: Dictionary = {}
 ## Train interior (issue #3 Phase 3): set by the car's do_disembark before the
 ## hop. The next dungeon spawns the party in its annex hall, and the
 ## dungeon-entry arrival beat skips the brake + banner (the car already
@@ -2328,6 +2333,19 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	if me != null:
 		if multiplayer.get_peers().size() > 0:
 			await save_multiplayer_run(theme_id, new_level, seed)
+			# Jesse 2026-10-10 fix: build peer_id -> state map from the roster
+			# for the train transition. Maps Steam IDs back to peer IDs.
+			saved_player_states.clear()
+			var steam_to_peer := {}
+			for pid in peer_steam_ids:
+				steam_to_peer[int(peer_steam_ids[pid])] = int(pid)
+			# Host's own entry.
+			var host_sid := SteamManager.steam_id if SteamManager.initialized else multiplayer.get_unique_id()
+			steam_to_peer[int(host_sid)] = multiplayer.get_unique_id()
+			for entry in _save_roster:
+				var sid := int(entry.get("steam_id", 0))
+				if steam_to_peer.has(sid):
+					saved_player_states[steam_to_peer[sid]] = entry.get("player_state", {})
 		else:
 			SaveManager.save_run({
 				"theme_id": theme_id,
@@ -2336,7 +2354,9 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				"player_state": me.get_state(),
 				"seed": seed,
 			}, SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
-	rpc("board_train_interior", theme_id, seed, new_level, peer_classes)
+	# Jesse 2026-10-10 fix: send the collected states with the boarding RPC
+	# so clients don't rely on local capture.
+	rpc("board_train_interior", theme_id, seed, new_level, peer_classes, saved_player_states)
 
 
 ## Station annex (issue #2 Phase 4): server rolls every player back to
@@ -2419,16 +2439,22 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 ## saved_player_state, so every departure reset progression. The old
 ## go_to_station_net/change_level handoff did capture it.
 @rpc("any_peer", "call_local")
-func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary) -> void:
+func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
 	var me := _my_player()
-	if me != null:
+	# Jesse 2026-10-10 fix: prefer the host-collected states (reliable);
+	# fall back to local capture if not provided.
+	var my_id := multiplayer.get_unique_id()
+	if not states.is_empty() and states.has(my_id):
+		saved_player_state = states[my_id]
+	elif me != null:
 		saved_player_state = me.get_state()
-		# Issue #4 Phase 2: every peer persists its OWN collection to its OWN
-		# local profile here — collections never cross peers, and clients
-		# (who never run the host's save_run) keep their unlocks too.
+	# Issue #4 Phase 2: every peer persists its OWN collection to its OWN
+	# local profile here — collections never cross peers, and clients
+	# (who never run the host's save_run) keep their unlocks too.
+	if me != null:
 		var coll: Dictionary = me.family_collection
 		if not coll.is_empty():
 			SaveManager.save_collections(str(me.class_id), coll)
