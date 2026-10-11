@@ -1287,7 +1287,7 @@ func _on_save_quit_pressed() -> void:
 		# Client: warn that only the host's save persists.
 		_show_quit_confirm("Disconnect? Only the host's save will persist.", _on_quit_pressed)
 		return
-	if multiplayer.get_peers().size() > 0:
+	if NetworkManager.active_run_mode == SaveManager.MODE_MP and NetworkManager.is_host:
 		# Host: multiplayer save with roster collection (async, then quit).
 		# Issue #70: LAN has no saves — skip straight to quit.
 		if NetworkManager.transport != NetworkManager.Transport.LAN:
@@ -1295,6 +1295,9 @@ func _on_save_quit_pressed() -> void:
 			saver.save_multiplayer_run(theme_id, level_number, level_seed)
 			# save_multiplayer_run waits 3s for clients; quit after.
 			await get_tree().create_timer(3.5).timeout
+		else:
+			_on_quit_pressed()
+			return
 	else:
 		SaveManager.save_run({
 			"theme_id": theme_id,
