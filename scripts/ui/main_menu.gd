@@ -547,6 +547,7 @@ func _on_host_pressed() -> void:
 ## Host Game tabbed menu (Jesse 2026-10-11 rework). Scrollbars allowed here.
 func _build_host_tabs() -> void:
 	if _host_tabs_built:
+		_refresh_host_save_list()
 		_refresh_host_tabs()
 		return
 	_host_tabs_built = true
