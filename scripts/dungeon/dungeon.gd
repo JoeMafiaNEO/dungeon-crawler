@@ -982,6 +982,10 @@ func _setup_warlord() -> void:
 	rts_cam.name = "RTSCamera"
 	rts_cam.add_to_group("rts_camera")
 	add_child(rts_cam)
+	# Jesse 2026-10-11: MultiMesh unit renderer (one draw call per type).
+	var renderer := RTSUnitRenderer.new()
+	renderer.name = "RTSUnitRenderer"
+	add_child(renderer)
 	# Find local player's faction.
 	var local_faction := 0
 	for p in get_tree().get_nodes_in_group("players"):
@@ -1043,6 +1047,10 @@ func client_setup_warlord(my_faction: int, my_civ_id: String) -> void:
 	rts_cam.name = "RTSCamera"
 	rts_cam.add_to_group("rts_camera")
 	add_child(rts_cam)
+	# Jesse 2026-10-11: MultiMesh unit renderer (one draw call per type).
+	var renderer := RTSUnitRenderer.new()
+	renderer.name = "RTSUnitRenderer"
+	add_child(renderer)
 	rts_cam.setup(_rts_manager, my_faction)
 	var rts_hud := RTSHUD.new()
 	rts_hud.name = "RTSHUD"

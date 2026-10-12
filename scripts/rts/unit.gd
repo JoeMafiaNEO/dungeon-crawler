@@ -16,7 +16,6 @@ var damage: float = 5.0
 var attack_range: float = 1.5
 var move_speed: float = 3.0
 var alive: bool = true
-var _sync_tick := 0.0
 
 # Orders.
 var _move_target: Vector3 = Vector3.INF
@@ -24,6 +23,11 @@ var _sprite: Sprite3D = null
 var _attack_target: Node3D = null
 var _gather_node: RTSResourceNode = null
 var _gather_tick := 0.0
+# Jesse 2026-10-11: cached manager + spatial hash (avoid per-frame lookups).
+var _rts_mgr: RTSManager = null
+# Jesse 2026-10-11: dormancy — idle units skip per-frame work.
+var _dormant := false
+var _dormant_check := 0.0
 # Trade route state (trade_cart only).
 var _home_market: Node3D = null
 var _trade_target: Node3D = null
@@ -114,6 +118,14 @@ func _ready() -> void:
 	# setup() already built the visual; only rebuild if it wasn't.
 	if _sprite == null or not is_instance_valid(_sprite):
 		_build_visual()
+	# Jesse 2026-10-11: register in the spatial hash.
+	_rts_mgr = get_tree().get_first_node_in_group("rts_manager") as RTSManager
+	if _rts_mgr != null and _rts_mgr.spatial_hash != null:
+		_rts_mgr.spatial_hash.insert(self)
+	# Jesse 2026-10-11: register with the MultiMesh renderer.
+	var renderer := get_tree().get_first_node_in_group("rts_unit_renderer")
+	if renderer != null and renderer.has_method("register_unit"):
+		renderer.call("register_unit", self)
 
 
 func setup(p_faction: int, p_type: String, p_civ: CivData) -> void:
@@ -279,6 +291,7 @@ func _update_hp_bar() -> void:
 
 
 func order_move(pos: Vector3) -> void:
+	_wake()
 	_move_target = pos
 	_attack_target = null
 	_gather_node = null
@@ -312,6 +325,7 @@ func rpc_order_move(pos: Vector3) -> void:
 func order_gather(node: RTSResourceNode) -> void:
 	if unit_type != "villager":
 		return
+	_wake()
 	_gather_node = node
 	_attack_target = null
 	_build_target = null
@@ -333,6 +347,7 @@ func rpc_order_gather(target_path: NodePath) -> void:
 
 
 func order_attack(target: Node3D) -> void:
+	_wake()
 	_attack_target = target
 	_move_target = Vector3.INF
 	_gather_node = null
@@ -361,6 +376,7 @@ func order_convert(target_path: NodePath) -> void:
 		return
 	if unit_type != "monk" or not alive:
 		return
+	_wake()
 	var target := get_node_or_null(target_path) as Node3D
 	if target == null or not is_instance_valid(target):
 		return
@@ -450,6 +466,7 @@ func order_trade(target_market: Node3D) -> void:
 		return
 	if target_market == null or not is_instance_valid(target_market):
 		return
+	_wake()
 	# No self-trading: routing a cart to your own market would be a
 	# zero-distance loop printing min_payout gold every trip (infinite gold).
 	if int(target_market.get("faction")) == faction:
@@ -480,6 +497,7 @@ func rpc_order_trade(target_path: NodePath) -> void:
 func order_build(building: Node3D) -> void:
 	if unit_type != "villager":
 		return
+	_wake()
 	_build_target = building
 	_attack_target = null
 	_gather_node = null
@@ -540,6 +558,7 @@ func rpc_take_damage(amount: float, attacker_peer_id: int) -> void:
 func _apply_damage(amount: float) -> void:
 	if not alive:
 		return
+	_wake()
 	hp -= amount
 	if hp <= 0.0:
 		hp = 0.0
@@ -559,6 +578,14 @@ func sync_unit_hp(new_hp: float) -> void:
 func _die() -> void:
 	# Small poof, then free. Broadcast so clients despawn too.
 	_cancel_convert()
+	# Jesse 2026-10-11: remove from spatial hash.
+	var mgr2 := get_tree().get_first_node_in_group("rts_manager") as RTSManager
+	if mgr2 != null and mgr2.spatial_hash != null:
+		mgr2.spatial_hash.remove(self)
+	# Jesse 2026-10-11: unregister from MultiMesh renderer.
+	var renderer := get_tree().get_first_node_in_group("rts_unit_renderer")
+	if renderer != null and renderer.has_method("unregister_unit"):
+		renderer.call("unregister_unit", self)
 	rpc("set_selected", false)
 	rpc("client_unit_died")
 	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
@@ -577,10 +604,41 @@ func client_unit_died() -> void:
 	queue_free()
 
 
+## Jesse 2026-10-11: dormancy helpers.
+func _is_idle() -> bool:
+	return _move_target == Vector3.INF and _attack_target == null \
+		and _gather_node == null and _build_target == null \
+		and _trade_target == null and _convert_target == null
+
+
+func _wake() -> void:
+	_dormant = false
+	set_physics_process(true)
+
+
+func _sleep() -> void:
+	if _dormant:
+		return
+	_dormant = true
+	_dormant_check = 0.0  # check immediately on next frame
+	# Don't disable physics_process entirely — we need the staggered check.
+	# The early return in _physics_process handles the skip.
+
+
 func _physics_process(delta: float) -> void:
 	if not multiplayer.is_server():
 		return
 	if not alive:
+		return
+	# Jesse 2026-10-11: dormancy — idle units do a cheap staggered
+	# enemy check instead of full processing.
+	if _dormant:
+		_dormant_check -= delta
+		if _dormant_check <= 0.0:
+			# Stagger by instance id to avoid thundering herd.
+			_dormant_check = 0.5 + float(get_instance_id() % 10) * 0.05
+			if _find_nearest_enemy(8.0) != null:
+				_wake()
 		return
 
 	# Ships float at water level (river surface is at y=0.08).
@@ -686,21 +744,14 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector3.ZERO
 		move_and_slide()
 	# Replicate transform to clients ~12 Hz (unreliable).
-	_sync_tick += delta
-	if _sync_tick >= 0.08:
-		_sync_tick = 0.0
-		rpc("sync_transform", global_position, rotation.y, hp)
-
-
-@rpc("any_peer", "unreliable")
-func sync_transform(pos: Vector3, rot_y: float, new_hp: float) -> void:
-	if multiplayer.is_server():
-		return
-	global_position = pos
-	rotation.y = rot_y
-	if absf(hp - new_hp) > 0.01:
-		hp = new_hp
-		_update_hp_bar()
+	# Jesse 2026-10-11: per-unit sync removed — RTSManager broadcasts
+	# batched army transforms per faction at ~8Hz instead.
+	# Jesse 2026-10-11: update spatial hash cell after movement.
+	if _rts_mgr != null and _rts_mgr.spatial_hash != null:
+		_rts_mgr.spatial_hash.update(self)
+	# Jesse 2026-10-11: sleep if idle after processing.
+	if _is_idle():
+		_sleep()
 
 
 var _attack_cd := 0.0
@@ -944,7 +995,13 @@ func _resource_avoid_steer(want_dir: Vector3) -> Vector3:
 func _find_nearest_enemy(max_dist: float) -> Node3D:
 	var best: Node3D = null
 	var best_d := max_dist
-	for n in get_tree().get_nodes_in_group("rts_units"):
+	# Jesse 2026-10-11: spatial hash query instead of O(n) group scan.
+	var candidates: Array = []
+	if _rts_mgr != null and _rts_mgr.spatial_hash != null:
+		candidates = _rts_mgr.spatial_hash.query(global_position, max_dist)
+	else:
+		candidates = get_tree().get_nodes_in_group("rts_units")
+	for n in candidates:
 		if n == self:
 			continue
 		if int(n.get("faction")) == faction:

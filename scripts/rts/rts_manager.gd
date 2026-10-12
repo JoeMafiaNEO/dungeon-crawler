@@ -67,6 +67,11 @@ const BUILDING_COSTS := {
 
 # faction_id -> {resources: {wood, food, gold}, age: int, civ: CivData, alive: bool}
 var factions: Dictionary = {}
+## Jesse 2026-10-11: spatial hash grid for unit neighborhood queries.
+var spatial_hash: RTSSpatialHash = null
+# Jesse 2026-10-11: batched network sync (replaces per-unit 12Hz RPCs).
+var _sync_tick := 0.0
+const SYNC_INTERVAL := 0.12  # ~8Hz
 # faction_id -> peer_id (for players). AI factions have peer_id = -1.
 var faction_peers: Dictionary = {}
 ## Deterministic network IDs for RTS entities (Jesse 2026-10-10: units/buildings
@@ -117,6 +122,63 @@ func sim_bump(faction_id: int, key: String, amount: int = 1, subkey: String = ""
 
 func _ready() -> void:
 	add_to_group("rts_manager")
+	# Jesse 2026-10-11: spatial hash for O(1) neighborhood lookups.
+	spatial_hash = RTSSpatialHash.new()
+
+
+func _process(delta: float) -> void:
+	# Jesse 2026-10-11: batched army sync. Server collects all unit
+	# transforms per faction and sends ONE rpc per faction per tick,
+	# instead of each unit rpc'ing individually at 12Hz.
+	if not multiplayer.is_server():
+		return
+	_sync_tick += delta
+	if _sync_tick < SYNC_INTERVAL:
+		return
+	_sync_tick = 0.0
+	_broadcast_army_sync()
+
+
+## Gather all living units by faction and broadcast packed transforms.
+func _broadcast_army_sync() -> void:
+	var by_faction: Dictionary = {}
+	for n in get_tree().get_nodes_in_group("rts_units"):
+		if not bool(n.get("alive")):
+			continue
+		var f := int(n.get("faction"))
+		if not by_faction.has(f):
+			by_faction[f] = {"ids": PackedInt32Array(), "pos": PackedVector3Array(),
+				"rot": PackedFloat32Array(), "hp": PackedFloat32Array()}
+		var d: Dictionary = by_faction[f]
+		(d["ids"] as PackedInt32Array).append(int(n.get("unit_id")))
+		(d["pos"] as PackedVector3Array).append((n as Node3D).global_position)
+		(d["rot"] as PackedFloat32Array).append((n as Node3D).rotation.y)
+		(d["hp"] as PackedFloat32Array).append(float(n.get("hp")))
+	for f in by_faction:
+		rpc("client_sync_army", f, by_faction[f])
+
+
+@rpc("any_peer", "unreliable")
+func client_sync_army(faction_id: int, data: Dictionary) -> void:
+	if multiplayer.is_server():
+		return
+	# Build a quick id->unit map for this faction.
+	var units := {}
+	for n in get_tree().get_nodes_in_group("rts_units"):
+		if int(n.get("faction")) == faction_id:
+			units[int(n.get("unit_id"))] = n
+	var ids: PackedInt32Array = data["ids"]
+	var pos: PackedVector3Array = data["pos"]
+	var rot: PackedFloat32Array = data["rot"]
+	var hp: PackedFloat32Array = data["hp"]
+	for i in ids.size():
+		var u = units.get(ids[i])
+		if u != null and is_instance_valid(u):
+			(u as Node3D).global_position = pos[i]
+			(u as Node3D).rotation.y = rot[i]
+			u.set("hp", hp[i])
+			if u.has_method("_update_hp_bar"):
+				u.call("_update_hp_bar")
 
 
 func register_faction(faction_id: int, peer_id: int, class_id: String) -> void:
