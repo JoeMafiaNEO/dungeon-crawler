@@ -1602,6 +1602,7 @@ func _refresh_collection_log() -> void:
 	_refresh_cipher_section()
 	_refresh_combo_codex()
 	_refresh_trophy_section()
+	_refresh_dock_trophy_section()
 	_hide_redundant_collection_headers()
 
 
@@ -1657,6 +1658,39 @@ func _refresh_trophy_section() -> void:
 			label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		else:
 			label.text = "??? — %s" % sp.unlock_hint
+			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+		label.add_theme_font_size_override("font_size", 9)
+		row.add_child(label)
+
+
+
+## Dock trophies (issue #102 Phase 3): misty docks trophies. The legendary
+## fish joins this section in a later phase. Issue #55: compact, same
+## pattern as the apex trophy rows (earned = gold row, locked = ??? + hint).
+func _refresh_dock_trophy_section() -> void:
+	var trophies: Array = SaveManager.get_dock_trophies()
+	var header := Label.new()
+	header.text = "Dock Trophies — %d/2" % mini(trophies.size(), 2)
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_font_size_override("font_size", 10)
+	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	%CollectionLog.add_child(header)
+	var rows := [
+		{"id": "golden_crop", "name": "Golden Gourd", "hint": "Harvest the legendary golden crop"},
+		{"id": "legendary_fish", "name": "Legendary Fish", "hint": "Land the legendary fish (later phase)"},
+	]
+	for r in rows:
+		var earned: bool = str(r["id"]) in trophies
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 6)
+		%CollectionLog.add_child(row)
+		var label := Label.new()
+		if earned:
+			label.text = "%s — misty docks trophy" % str(r["name"])
+			label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		else:
+			label.text = "??? — %s" % str(r["hint"])
 			label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		label.add_theme_font_size_override("font_size", 9)
 		row.add_child(label)

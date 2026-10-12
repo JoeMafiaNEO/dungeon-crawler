@@ -1,18 +1,69 @@
 class_name FarmPlot
 extends Node3D
-## E-interact farm soil plot (issue #102 Phase 1).
-## One player per plot: the server owns the lock; clients claim/release via
-## RPC. The plot state machine (untilled -> tilled -> planted -> growing ->
-## harvestable) arrives in Phase 3; until then the node is the soil visual
-## plus the lock.
+## E-interact farm soil plot (issue #102).
+## Phase 1: one-player-per-plot server-authoritative locking.
+## Phase 2: claim hardening (P2P peer ids via get_remote_sender_id) +
+## disconnect auto-release.
+## Phase 3: server-authoritative farming loop. States:
+## untilled -> tilled -> planted -> growing -> harvestable -> (harvest)
+## -> untilled. E drives the machine: E on untilled tills (free); E on
+## tilled with seeds plants (consumes 1 seed); E on tilled without seeds
+## prompts "out of seeds"; E on growing prompts "still growing (N waves
+## left)"; E on harvestable harvests into the inventory (server-side
+## rarity roll) and resets to untilled, releasing the claim. Growth ticks
+## per wave cleared (server-side hook), never real time — no watering
+## minigame: farming is the passive counterpart to fishing's active game.
 ##
-## Trust model (Phase 2 hardening): claim/release take no peer id — the
-## server attributes every call via multiplayer.get_remote_sender_id()
-## (P2P peer ids; server = 1, never the 64-bit Steam id).
+## Trust model: the server owns the lock, the states, the seed ledger,
+## growth ticks, and harvest rolls. Claim/interact RPCs take no peer id —
+## the server attributes every call via multiplayer.get_remote_sender_id()
+## (P2P peer ids; server = 1, never the 64-bit Steam id). Light anti-cheat,
+## co-op game.
+
+const GROWTH_TICKS := 3 ## Waves for a crop to mature. Jesse's numbers call (spec: 2-3).
+const HARVEST_COMMON_W := 0.70 ## Harvest rarity weights. Jesse's numbers call.
+const HARVEST_RARE_W := 0.25
+const HARVEST_LEGENDARY_W := 0.05
+const STARTER_SEED_COUNT := 3 ## Free seeds per misty-docks level entry. Jesse's call.
+
+const SEED_ITEM := "seed_packet"
+const CROP_COMMON := "crop_sunroot"
+const CROP_RARE := "crop_moonmelon"
+const CROP_LEGENDARY := "crop_goldengourd"
+const DOCK_TROPHY_GOLDEN := "golden_crop"
+
+## TEST SEAMS (never set in production): debug_harvest_roll >= 0 forces the
+## harvest rarity roll; test_player overrides _player_for_peer().
+static var debug_harvest_roll: float = -1.0
+## Server-side seed ledger: peer id -> plantable seed count. Mirrors the
+## seed_packet stacks the server granted. Cleared per peer on disconnect;
+## Phase 4 vendor seed purchases must update this ledger too.
+static var _seed_ledger: Dictionary = {}
+
+var test_player: Player = null
 
 var plot_index: int = 0
 var occupied_by: int = 0 ## peer id holding the plot; 0 = free
-var plot_state: String = "untilled" ## Phase 3 drives this.
+var plot_state: String = "untilled" ## Phase 3 state machine state.
+var growth_ticks: int = 0 ## wave ticks since planting.
+
+
+## Seed ledger (server-side only). Grant is additive per level entry so
+## unspent seeds from an earlier misty-docks visit are never wiped.
+static func grant_starter_seeds(peer: int) -> void:
+	_seed_ledger[peer] = seed_count(peer) + STARTER_SEED_COUNT
+
+
+static func seed_count(peer: int) -> int:
+	return int(_seed_ledger.get(peer, 0))
+
+
+static func _spend_seed(peer: int) -> bool:
+	var left := seed_count(peer)
+	if left <= 0:
+		return false
+	_seed_ledger[peer] = left - 1
+	return true
 
 
 func _ready() -> void:
@@ -23,28 +74,119 @@ func _ready() -> void:
 func prompt_text() -> String:
 	var me := int(multiplayer.get_unique_id())
 	if occupied_by == 0:
-		return "Claim farm plot"
-	if occupied_by == me:
-		return "Release farm plot"
-	return "Plot in use"
+		return "Till soil (E)"
+	if occupied_by != me:
+		return "Plot in use"
+	match plot_state:
+		"tilled":
+			return "Plant seeds (E)"
+		"planted", "growing":
+			return "Growing (%d waves left)" % _waves_left()
+		"harvestable":
+			return "Harvest! (E)"
+	return "Till soil (E)"
 
 
 func interact(player: Player) -> void:
 	var me := int(multiplayer.get_unique_id())
-	if occupied_by == 0:
-		if multiplayer.is_server():
-			claim_plot()
-		else:
-			rpc_id(NetworkManager.server_peer_id, "claim_plot")
+	if occupied_by != 0 and occupied_by != me:
 		if player.hud != null:
-			player.hud.toast("Farm plot claimed")
-	elif occupied_by == me:
-		if multiplayer.is_server():
-			release_plot()
-		else:
-			rpc_id(NetworkManager.server_peer_id, "release_plot")
-	elif player.hud != null:
-		player.hud.toast("Someone is already farming this plot.")
+			player.hud.toast("Someone is already farming this plot.")
+		return
+	if multiplayer.is_server():
+		plot_action()
+	else:
+		rpc_id(NetworkManager.server_peer_id, "plot_action")
+
+
+## The E flow, server-side: free plot -> claim + act; claimed plot -> act.
+## Claim and the state action are one E (mirrors fishing's one-E claim+cast).
+@rpc("any_peer", "call_local")
+func plot_action() -> void:
+	if not multiplayer.is_server():
+		return
+	var peer := _sender_peer()
+	if occupied_by == 0:
+		_claim(peer)
+		if occupied_by != peer:
+			return
+	elif occupied_by != peer:
+		return
+	match plot_state:
+		"untilled":
+			_till(peer)
+		"tilled":
+			if _spend_seed(peer):
+				_plant(peer)
+			else:
+				rpc_id(peer, "on_plot_toast", "Out of seeds.")
+		"planted", "growing":
+			rpc_id(peer, "on_plot_toast", "Still growing (%d waves left)." % _waves_left())
+		"harvestable":
+			_harvest(peer)
+
+
+## Server-side wave hook: each cleared wave advances growing plots one
+## tick. Called by the dungeon's _wave_cleared (host only). Never called
+## by clients; plot nodes exist on every peer, state arrives via sync.
+func on_wave_cleared() -> void:
+	if not multiplayer.is_server():
+		return
+	if plot_state != "planted" and plot_state != "growing":
+		return
+	growth_ticks += 1
+	plot_state = "harvestable" if growth_ticks >= GROWTH_TICKS else "growing"
+	_sync_plot()
+
+
+func _waves_left() -> int:
+	return maxi(0, GROWTH_TICKS - growth_ticks)
+
+
+func _till(peer: int) -> void:
+	plot_state = "tilled"
+	growth_ticks = 0
+	_sync_plot()
+	rpc_id(peer, "on_plot_toast", "Soil tilled — E to plant seeds.")
+
+
+func _plant(peer: int) -> void:
+	# Tell the planter's client to drop one seed_packet from its stack
+	# (inventory is per-peer authoritative; the ledger already decremented).
+	var player := _player_for_peer(peer)
+	if player != null:
+		player.rpc_id(peer, "consume_seed_item")
+	plot_state = "planted"
+	growth_ticks = 0
+	_sync_plot()
+	rpc_id(peer, "on_plot_toast", "Planted — harvest in %d waves." % GROWTH_TICKS)
+
+
+func _harvest(peer: int) -> void:
+	var item_id := _roll_harvest_item()
+	var player := _player_for_peer(peer)
+	if player != null:
+		player.rpc_id(peer, "receive_item", item_id)
+	if item_id == CROP_LEGENDARY:
+		# Each peer records the trophy in their own profile (Collection
+		# tab), paralleling dungeon.record_apex_kill.
+		rpc_id(peer, "record_dock_trophy", DOCK_TROPHY_GOLDEN)
+	plot_state = "untilled"
+	growth_ticks = 0
+	occupied_by = 0
+	rpc("sync_occupant", 0)
+	_sync_plot()
+
+
+## Harvest rarity: weighted roll, server-side.
+## (Numbers are defaults for Jesse to tune; flagged in the report.)
+func _roll_harvest_item() -> String:
+	var roll := debug_harvest_roll if debug_harvest_roll >= 0.0 else randf()
+	if roll < HARVEST_LEGENDARY_W:
+		return CROP_LEGENDARY
+	if roll < HARVEST_LEGENDARY_W + HARVEST_RARE_W:
+		return CROP_RARE
+	return CROP_COMMON
 
 
 ## Server-authoritative claim: first valid claim wins, everyone syncs.
@@ -53,10 +195,7 @@ func interact(player: Player) -> void:
 func claim_plot() -> void:
 	if not multiplayer.is_server():
 		return
-	if occupied_by != 0:
-		return
-	occupied_by = _sender_peer()
-	rpc("sync_occupant", occupied_by)
+	_claim(_sender_peer())
 
 
 @rpc("any_peer", "call_local")
@@ -70,13 +209,50 @@ func release_plot() -> void:
 
 
 ## Server-side forced release (peer disconnect). Never called by clients.
+## Abandoned crops keep their growth state — a new claimer can finish them.
 func force_release_peer(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
+	_seed_ledger.erase(peer_id)
 	if occupied_by != peer_id:
 		return
 	occupied_by = 0
 	rpc("sync_occupant", 0)
+
+
+@rpc("any_peer", "call_local")
+func sync_occupant(peer_id: int) -> void:
+	occupied_by = peer_id
+	_refresh_marker()
+
+
+## State broadcast, server -> everyone (mirrors sync_occupant; self-heals).
+@rpc("any_peer", "call_local")
+func sync_plot(state: String, ticks: int) -> void:
+	plot_state = state
+	growth_ticks = ticks
+	_refresh_visual()
+
+
+func _sync_plot() -> void:
+	rpc("sync_plot", plot_state, growth_ticks)
+	_refresh_visual()
+
+
+## Each peer records the dock trophy in their own profile + toast
+## (server RPC, paralleling dungeon.record_apex_kill).
+@rpc("any_peer", "call_local")
+func record_dock_trophy(trophy_id: String) -> void:
+	if SaveManager.record_dock_trophy(trophy_id):
+		_toast_local("TROPHY: Golden Gourd harvested!")
+		AudioManager.sfx("unlock")
+
+
+## Client-side presentation: server-rpc'd toast for the acting peer.
+## call_local: when the actor IS the server (host/solo), executes locally.
+@rpc("any_peer", "call_local")
+func on_plot_toast(msg: String) -> void:
+	_toast_local(msg)
 
 
 ## P2P peer id of the RPC sender; local (server) calls fall back to the
@@ -88,10 +264,34 @@ func _sender_peer() -> int:
 	return sender
 
 
-@rpc("any_peer", "call_local")
-func sync_occupant(peer_id: int) -> void:
-	occupied_by = peer_id
-	_refresh_marker()
+func _player_for_peer(peer: int) -> Player:
+	if test_player != null:
+		return test_player
+	for n in get_tree().get_nodes_in_group("players"):
+		if n.get_multiplayer_authority() == peer:
+			return n as Player
+	return null
+
+
+func _local_player() -> Player:
+	var me := int(multiplayer.get_unique_id())
+	for n in get_tree().get_nodes_in_group("players"):
+		if n.get_multiplayer_authority() == me:
+			return n as Player
+	return null
+
+
+func _toast_local(msg: String) -> void:
+	var p := _local_player()
+	if p != null and p.hud != null:
+		p.hud.toast(msg)
+
+
+func _claim(peer: int) -> void:
+	if occupied_by != 0:
+		return
+	occupied_by = peer
+	rpc("sync_occupant", occupied_by)
 
 
 func _refresh_marker() -> void:
@@ -115,19 +315,67 @@ func _marker_mat(occupied: bool) -> StandardMaterial3D:
 	return m
 
 
+## Growth visuals: soil tint per state + procedural sprout boxes.
+## (Art Director delivers real tilled-soil / crop-stage sprites later.)
+func _refresh_visual() -> void:
+	var soil := get_node_or_null("Soil") as MeshInstance3D
+	if soil != null:
+		var tint := Color(0.25, 0.16, 0.10) # untilled: packed dark earth
+		if plot_state == "tilled" or plot_state == "planted":
+			tint = Color(0.38, 0.26, 0.15) # tilled: loosened lighter soil
+		elif plot_state == "growing":
+			tint = Color(0.33, 0.24, 0.14)
+		elif plot_state == "harvestable":
+			tint = Color(0.40, 0.30, 0.16) # harvestable: rich worked soil
+		var m := StandardMaterial3D.new()
+		m.albedo_color = tint
+		soil.material_override = m
+	var crops := get_node_or_null("Crops")
+	if crops != null:
+		for c in crops.get_children():
+			c.queue_free()
+		_add_sprouts(crops)
+
+
+func _add_sprouts(parent: Node) -> void:
+	if plot_state == "untilled" or plot_state == "tilled":
+		return
+	var col := Color(0.25, 0.7, 0.25) # planted/growing: green sprouts
+	var h := 0.18
+	if plot_state == "growing":
+		h = 0.38
+	elif plot_state == "harvestable":
+		col = Color(1.0, 0.8, 0.2) # harvestable: golden heads
+		h = 0.55
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = col
+	mat.emission_enabled = true
+	mat.emission = col
+	mat.emission_energy_multiplier = 0.6
+	for off in [Vector3(-0.9, 0, -0.6), Vector3(0.2, 0, -0.9), Vector3(1.0, 0, 0.1), Vector3(-0.3, 0, 0.8), Vector3(0.9, 0, 0.9)]:
+		var s := MeshInstance3D.new()
+		var sm := BoxMesh.new()
+		sm.size = Vector3(0.14, h, 0.14)
+		s.mesh = sm
+		s.position = off + Vector3(0, 0.12 + h * 0.5, 0)
+		s.material_override = mat
+		parent.add_child(s)
+
+
 func _build() -> void:
 	# Tilled soil square with furrow ridges, corner posts, and a small claim
-	# sign. Phase 3 re-tints/re-models this per growth state.
-	var soil := StandardMaterial3D.new()
-	soil.albedo_color = Color(0.25, 0.16, 0.10)
+	# sign. _refresh_visual re-tints/re-models per growth state (Phase 3).
+	var soil_m := StandardMaterial3D.new()
+	soil_m.albedo_color = Color(0.25, 0.16, 0.10)
 	var ridge_m := StandardMaterial3D.new()
 	ridge_m.albedo_color = Color(0.32, 0.21, 0.13)
 	var base := MeshInstance3D.new()
+	base.name = "Soil"
 	var bm := BoxMesh.new()
 	bm.size = Vector3(3.4, 0.12, 3.4)
 	base.mesh = bm
 	base.position = Vector3(0, 0.06, 0)
-	base.material_override = soil
+	base.material_override = soil_m
 	add_child(base)
 	for k in 3:
 		var ridge := MeshInstance3D.new()
@@ -137,6 +385,9 @@ func _build() -> void:
 		ridge.position = Vector3(0, 0.14, -1.1 + float(k) * 1.1)
 		ridge.material_override = ridge_m
 		add_child(ridge)
+	var crops := Node3D.new()
+	crops.name = "Crops"
+	add_child(crops)
 	var wood := StandardMaterial3D.new()
 	wood.albedo_color = Color(0.42, 0.30, 0.18)
 	for sx in [-1.6, 1.6]:

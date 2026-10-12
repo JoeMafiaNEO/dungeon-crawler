@@ -333,6 +333,28 @@ func has_apex_trophy(apex_mob_id: String) -> bool:
 	return apex_mob_id in get_apex_trophies()
 
 
+## Dock trophies (issue #102 Phase 3): account-level list of trophy ids from
+## the misty docks level (golden crop; the legendary fish joins in a later
+## phase). Parallels the apex trophy pattern; shown in the Collection tab.
+func get_dock_trophies() -> Array:
+	return _profile.get_value("meta", "dock_trophies", [])
+
+
+## Record a dock trophy. Returns true if this is the first record (no dupes).
+func record_dock_trophy(trophy_id: String) -> bool:
+	var trophies: Array = get_dock_trophies()
+	if trophy_id in trophies:
+		return false
+	trophies.append(trophy_id)
+	_profile.set_value("meta", "dock_trophies", trophies)
+	save_game()
+	return true
+
+
+func has_dock_trophy(trophy_id: String) -> bool:
+	return trophy_id in get_dock_trophies()
+
+
 func get_total_runs() -> int:
 	return int(_profile.get_value("meta", "total_runs", 0))
 

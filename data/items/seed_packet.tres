@@ -1,0 +1,12 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "seed_packet"
+display_name = "Seed Packet"
+description = "A packet of dockside seeds. E at a tilled farm plot to plant. (Issue #102)"
+slot = 2
+rarity = 0
+sell_value = 0

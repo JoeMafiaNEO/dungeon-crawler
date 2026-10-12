@@ -3756,6 +3756,28 @@ func use_item(index: int) -> void:
 		hud.refresh_loadout(self)
 
 
+## Issue #102 Phase 3: the server spends one seed when a farm plot is
+## planted. Inventory is per-peer authoritative, so the server rpc_ids the
+## planter and the client drops one seed_packet from its own stack
+## (mirrors the receive_item grant path).
+@rpc("any_peer", "call_local")
+func consume_seed_item() -> void:
+	if not is_multiplayer_authority():
+		return
+	for i in range(inventory.size()):
+		var entry: Dictionary = inventory[i]
+		var item := entry["item"] as ItemData
+		if item != null and item.id == "seed_packet":
+			entry["count"] = int(entry["count"]) - 1
+			if int(entry["count"]) <= 0:
+				inventory.remove_at(i)
+			_recalc_stats()
+			if hud != null:
+				hud.refresh_inventory(self)
+				hud.refresh_loadout(self)
+			return
+
+
 ## Base camera FOV from the settings panel (default 75).
 func _base_fov() -> float:
 	if has_node("/root/SaveManager"):

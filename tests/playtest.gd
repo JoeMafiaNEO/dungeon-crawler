@@ -141,6 +141,7 @@ func _run() -> void:
 	_test_class_sprites_and_namebar()
 	_test_fishing_farming_phase1()
 	_test_fishing_minigame_phase2()
+	_test_farming_loop_phase3()
 
 	_print_results()
 	quit()
@@ -6892,7 +6893,7 @@ func _test_fishing_farming_phase1() -> void:
 	var plot = PlotScript.new()
 	root.add_child(plot)
 	_assert(plot.is_in_group("farm_plots"), "plot joins farm_plots group")
-	_assert(plot.prompt_text() == "Claim farm plot", "free plot prompt")
+	_assert(plot.prompt_text() == "Till soil (E)", "free plot prompt")
 	plot.claim_plot()
 	_assert(plot.occupied_by == 1, "plot claim attributes to sender")
 	plot.claim_plot()
@@ -7010,3 +7011,189 @@ func _test_fishing_minigame_phase2() -> void:
 	spot.free()
 	p.queue_free()
 	print("[Playtest] issue #102 Phase 2 done")
+
+
+func _test_farming_loop_phase3() -> void:
+	print("[Playtest] issue #102 Phase 3: farming loop...")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var SM: Node = root.get_node("SaveManager")
+	# Crop + seed items exist in the ItemDB.
+	for iid in ["seed_packet", "crop_sunroot", "crop_moonmelon", "crop_goldengourd"]:
+		_assert(ItemDBNode.get_item(iid) != null, "ItemDB has " + iid)
+	var moonmelon = ItemDBNode.get_item("crop_moonmelon")
+	_assert(bool(moonmelon.get("consumable")), "rare crop is usable (consumable)")
+	_assert(float(moonmelon.get("heal_fraction")) > 0.0, "rare crop heals")
+	# Sim rig: real player + plot in the tree; this instance is the server (peer 1).
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	p.global_position = Vector3.ZERO
+	var plot = PlotScript.new()
+	root.add_child(plot)
+	plot.global_position = Vector3.ZERO
+	plot.test_player = p
+	# --- Starter seed grant (mirrors dungeon._do_spawn on misty docks) ---
+	PlotScript.grant_starter_seeds(1)
+	for s in PlotScript.STARTER_SEED_COUNT:
+		p.receive_item(PlotScript.SEED_ITEM)
+	_assert(PlotScript.seed_count(1) == PlotScript.STARTER_SEED_COUNT, "starter grant: ledger topped up")
+	_assert(_farm_inv_count(p, "seed_packet") == PlotScript.STARTER_SEED_COUNT, "starter grant: packets in inventory")
+	# --- Full plant -> harvest cycle across waves ---
+	plot.plot_action() # E on untilled: claim + till (free)
+	_assert(plot.occupied_by == 1, "till: plot claimed")
+	_assert(plot.plot_state == "tilled", "till: state tilled")
+	_assert(PlotScript.seed_count(1) == PlotScript.STARTER_SEED_COUNT, "till is free: seeds untouched")
+	_assert(plot.prompt_text() == "Plant seeds (E)", "tilled prompt")
+	plot.plot_action() # E on tilled with seeds: plant
+	_assert(plot.plot_state == "planted", "plant: state planted")
+	_assert(PlotScript.seed_count(1) == PlotScript.STARTER_SEED_COUNT - 1, "plant: ledger spent 1 seed")
+	_assert(_farm_inv_count(p, "seed_packet") == PlotScript.STARTER_SEED_COUNT - 1, "plant: inventory stack spent 1 seed")
+	plot.on_wave_cleared() # wave tick 1
+	_assert(plot.plot_state == "growing" and plot.growth_ticks == 1, "wave 1: growing")
+	plot.on_wave_cleared() # wave tick 2
+	_assert(plot.plot_state == "growing" and plot.growth_ticks == 2, "wave 2: still growing")
+	_assert(plot.prompt_text() == "Growing (1 waves left)", "growing prompt counts down")
+	plot.on_wave_cleared() # wave tick 3 -> mature
+	_assert(plot.plot_state == "harvestable", "wave 3: harvestable")
+	_assert(plot.prompt_text() == "Harvest! (E)", "harvestable prompt")
+	PlotScript.debug_harvest_roll = 0.5 # force a common crop
+	plot.plot_action() # E on harvestable: harvest
+	_assert(plot.plot_state == "untilled", "harvest: resets to untilled")
+	_assert(plot.growth_ticks == 0, "harvest: ticks reset")
+	_assert(plot.occupied_by == 0, "harvest: claim released")
+	_assert(_farm_inv_count(p, "crop_sunroot") == 1, "harvest: common crop granted")
+	_assert(plot.prompt_text() == "Till soil (E)", "prompt resets after harvest")
+	# --- Seed-less and growing-state prompts ---
+	var plot3 = PlotScript.new()
+	root.add_child(plot3)
+	plot3.global_position = Vector3.ZERO
+	plot3.test_player = p
+	PlotScript._seed_ledger.erase(1) # no seeds at all
+	plot3.plot_action() # till is still free
+	_assert(plot3.plot_state == "tilled", "seedless: till still works")
+	plot3.plot_action() # plant attempt with no seeds
+	_assert(plot3.plot_state == "tilled", "seedless: stays tilled")
+	_assert(PlotScript.seed_count(1) == 0, "seedless: ledger untouched")
+	_assert(plot3.prompt_text() == "Plant seeds (E)", "seedless: prompt unchanged")
+	plot3.occupied_by = 2 # simulate another peer's claim
+	plot3.plot_state = "growing"
+	plot3.growth_ticks = 1
+	plot3.plot_action() # stranger's E: rejected
+	_assert(plot3.plot_state == "growing" and plot3.occupied_by == 2, "stranger cannot drive the machine")
+	_assert(plot3.prompt_text() == "Plot in use", "stranger prompt")
+	# --- Rarity weighting (defaults, Jesse's call) ---
+	PlotScript.debug_harvest_roll = -1.0
+	var seen := {}
+	for i in 300:
+		seen[plot._roll_harvest_item()] = true
+	_assert(seen.has("crop_sunroot") and seen.has("crop_moonmelon") and seen.has("crop_goldengourd"), "rarity: all tiers roll")
+	for rid in seen:
+		_assert(ItemDBNode.get_item(str(rid)) != null, "rolled crop is a real item: " + str(rid))
+	PlotScript.debug_harvest_roll = 0.01
+	_assert(plot._roll_harvest_item() == "crop_goldengourd", "forced roll: legendary")
+	PlotScript.debug_harvest_roll = 0.10
+	_assert(plot._roll_harvest_item() == "crop_moonmelon", "forced roll: rare")
+	PlotScript.debug_harvest_roll = 0.90
+	_assert(plot._roll_harvest_item() == "crop_sunroot", "forced roll: common")
+	PlotScript.debug_harvest_roll = -1.0
+	# --- Rare-crop buff application (usable from inventory) ---
+	p.receive_item("crop_moonmelon")
+	var idx := -1
+	for i in range(p.inventory.size()):
+		var e: Dictionary = p.inventory[i]
+		var it = e.get("item")
+		if it != null and str(it.id) == "crop_moonmelon":
+			idx = i
+			break
+	_assert(idx >= 0, "moonmelon in inventory")
+	p.hp = p.max_hp * 0.4
+	var hp_before: float = p.hp
+	p.use_item(idx)
+	_assert(p.hp > hp_before, "rare crop heal applied")
+	# --- Golden crop harvest registers the dock trophy (scratch account) ---
+	# Drop any leftover scratch profile from an earlier run first.
+	if FileAccess.file_exists("user://profile_test_dock3.cfg"):
+		DirAccess.remove_absolute("user://profile_test_dock3.cfg")
+	var plot2 = PlotScript.new()
+	root.add_child(plot2)
+	plot2.global_position = Vector3.ZERO
+	plot2.test_player = p
+	PlotScript.grant_starter_seeds(1)
+	plot2.plot_action() # till
+	plot2.plot_action() # plant
+	plot2.on_wave_cleared()
+	plot2.on_wave_cleared()
+	plot2.on_wave_cleared()
+	_assert(plot2.plot_state == "harvestable", "trophy plot matured")
+	SM.set("_test_account_pin", "test_dock3")
+	SM.load_game()
+	_assert(not SM.has_dock_trophy("golden_crop"), "trophy: not recorded yet")
+	PlotScript.debug_harvest_roll = 0.01 # force the legendary
+	plot2.plot_action() # harvest golden
+	_assert(_farm_inv_count(p, "crop_goldengourd") == 1, "golden crop granted to inventory")
+	_assert(SM.has_dock_trophy("golden_crop"), "trophy: golden crop recorded")
+	_assert(not SM.call("record_dock_trophy", "golden_crop"), "trophy: no dupes")
+	SM.set("_test_account_pin", "")
+	SM.load_game()
+	# --- Collection tab: dock trophy section ---
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	SM.set("_test_account_pin", "test_dock3")
+	SM.load_game()
+	hud._refresh_dock_trophy_section()
+	var log = hud.get_node("%CollectionLog")
+	var header_ok := false
+	var unknowns := 0
+	for child in log.get_children():
+		if child is Label and str(child.text).begins_with("Dock Trophies"):
+			header_ok = true
+		if child is HBoxContainer:
+			for gc in child.get_children():
+				if gc is Label and str(gc.text).begins_with("???"):
+					unknowns += 1
+	_assert(header_ok, "dock section: header present")
+	_assert(unknowns == 1, "dock section: 1 locked row (legendary fish, later phase)")
+	SM.call("record_dock_trophy", "golden_crop")
+	for child in log.get_children():
+		log.remove_child(child)
+		child.free()
+	hud._refresh_dock_trophy_section()
+	var knowns := 0
+	for child in log.get_children():
+		if child is HBoxContainer:
+			for gc in child.get_children():
+				if gc is Label and str(gc.text).contains("Golden Gourd"):
+					knowns += 1
+	_assert(knowns == 1, "dock section: golden row earned")
+	hud.queue_free()
+	SM.set("_test_account_pin", "")
+	SM.load_game()
+	# Cleanup scratch profile (relic-test pattern): keeps the test
+	# idempotent across consecutive suite runs.
+	var scratch := "user://profile_test_dock3.cfg"
+	if FileAccess.file_exists(scratch):
+		DirAccess.remove_absolute(scratch)
+	# Cleanup: reset the test seams so later tests see production behavior.
+	PlotScript.debug_harvest_roll = -1.0
+	PlotScript._seed_ledger.clear()
+	plot.free()
+	plot2.free()
+	plot3.free()
+	p.queue_free()
+	print("[Playtest] issue #102 Phase 3 done")
+
+
+## Farm-phase helper: count of an item id in a player's inventory.
+## (Untyped param: a Player type hint here would force player.gd to compile
+## at suite startup, before autoloads register — caching a compile failure
+## that leaves every player.tscn instantiation script-less for the run.)
+func _farm_inv_count(pl, item_id: String) -> int:
+	for e in pl.inventory:
+		var it = (e as Dictionary).get("item")
+		if it != null and str(it.id) == item_id:
+			return int((e as Dictionary).get("count", 0))
+	return 0

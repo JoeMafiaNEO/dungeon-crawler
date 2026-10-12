@@ -660,6 +660,15 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 		var pnode := get_player_node(peer_id)
 		if pnode != null and _bounty != null:
 			pnode.set("bounty_progress", BountySys.new_progress(_bounty.bounties))
+		# Issue #102 Phase 3: free starter seed packet on misty-docks level
+		# entry so the farming loop boots even without fishing. The server
+		# tracks the seed ledger; each seed also lands in the player's own
+		# inventory stack (receive_item executes on the peer as authority).
+		if theme != null and theme.has_farm_plots:
+			FarmPlot.grant_starter_seeds(peer_id)
+			if pnode != null:
+				for s in FarmPlot.STARTER_SEED_COUNT:
+					pnode.rpc_id(peer_id, "receive_item", FarmPlot.SEED_ITEM)
 		# Forfeit snapshot (issue #2 Phase 4): taken after any continue-state
 		# restore above, so "entry" means what the player arrived with.
 		_snapshot_entry(peer_id)
@@ -1873,6 +1882,14 @@ func record_apex_kill(apex_mob_id: String) -> void:
 
 
 func _wave_cleared() -> void:
+	# Issue #102 Phase 3: crops grow per wave cleared (host only). Plots
+	# exist on every peer; the server advances them, states sync via RPC.
+	# The dungeon is always in the tree in-game; the guard keeps tree-less
+	# unit-test doubles working.
+	if is_inside_tree():
+		for n in get_tree().get_nodes_in_group("farm_plots"):
+			if n.has_method("on_wave_cleared"):
+				n.call("on_wave_cleared")
 	if wave >= TOTAL_WAVES:
 		wave_state = WaveState.CLEARED
 		_shower_loot()
