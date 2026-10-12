@@ -93,16 +93,16 @@ func _convert_range() -> float:
 
 # Base stats per type.
 const BASE_STATS := {
-	"villager": {"hp": 400.0, "dmg": 3.0, "range": 1.2, "speed": 3.2},
-	"spearman": {"hp": 800.0, "dmg": 8.0, "range": 1.5, "speed": 3.0},
-	"archer": {"hp": 500.0, "dmg": 10.0, "range": 8.0, "speed": 3.0},
-	"knight": {"hp": 1400.0, "dmg": 14.0, "range": 1.8, "speed": 3.8},
+	"villager": {"hp": 400.0, "dmg": 30.0, "range": 1.2, "speed": 3.2},
+	"spearman": {"hp": 800.0, "dmg": 80.0, "range": 1.5, "speed": 3.0},
+	"archer": {"hp": 500.0, "dmg": 100.0, "range": 8.0, "speed": 3.0},
+	"knight": {"hp": 1400.0, "dmg": 140.0, "range": 1.8, "speed": 3.8},
 	"trade_cart": {"hp": 600.0, "dmg": 0.0, "range": 0.0, "speed": 4.0},
-	"catapult": {"hp": 800.0, "dmg": 40.0, "range": 15.0, "speed": 2.0},
-	"ram": {"hp": 2000.0, "dmg": 25.0, "range": 2.0, "speed": 2.5},
+	"catapult": {"hp": 800.0, "dmg": 400.0, "range": 15.0, "speed": 2.0},
+	"ram": {"hp": 2000.0, "dmg": 250.0, "range": 2.0, "speed": 2.5},
 	"monk": {"hp": 400.0, "dmg": 0.0, "range": 0.0, "speed": 2.8},
 	"fishing_ship": {"hp": 800.0, "dmg": 0.0, "range": 0.0, "speed": 3.5},
-	"war_galley": {"hp": 1200.0, "dmg": 15.0, "range": 10.0, "speed": 3.0},
+	"war_galley": {"hp": 1200.0, "dmg": 150.0, "range": 10.0, "speed": 3.0},
 }
 
 # Unit types that never auto-attack (economic units).
