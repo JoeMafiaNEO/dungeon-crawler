@@ -35,7 +35,7 @@ var vendor_stock: Array = [] # [{id, price}]
 const BOARD_STARS := {
 	"village": "★☆☆☆", "dungeon": "★★☆☆", "depths": "★★★☆",
 	"supermarket": "★☆☆☆", "warlord": "★★★★",
-	"apex": "★★★★★",
+	"apex": "★★★★★", "misty_docks": "★☆☆☆",
 }
 
 ## Per-theme station dressing: platform lamp tint (Phase 5).
@@ -46,6 +46,7 @@ const DRESSING_LAMPS := {
 	"supermarket": Color(1.0, 1.0, 0.95),
 	"warlord": Color(1.0, 0.55, 0.25),
 	"apex": Color(1.0, 0.25, 0.2),
+	"misty_docks": Color(0.45, 0.75, 0.9),
 }
 
 ## Owning dungeon: player roster + departure hop target.
@@ -99,9 +100,15 @@ func _ready() -> void:
 	_build_station_embedded()
 	# Dress for the rotation default; re-dressed when a vote resolves.
 	# board_destinations() swaps warlord for the APEX ARENA on apex cycles
-	# (issue #5), so the default dressing stays consistent with the board.
-	var dests := Dungeon.board_destinations(next_level_number)
-	apply_dressing(dests[(next_level_number - 1) % dests.size()])
+	# (issue #5) and appends misty_docks as an opt-in 6th row (issue #102),
+	# so the rotation default is computed from THEME_ORDER directly — the
+	# docks row is opt-in, never the default.
+	var rot_idx := (next_level_number - 1) % Dungeon.THEME_ORDER.size()
+	var rot_id: String = Dungeon.THEME_ORDER[rot_idx]
+	var rot_cycle := int((next_level_number - 1) / Dungeon.THEME_ORDER.size()) + 1
+	if Dungeon.is_apex_cycle(rot_cycle):
+		rot_id = "apex"
+	apply_dressing(rot_id)
 
 
 func _process(delta: float) -> void:
@@ -228,6 +235,9 @@ static func resolve_destination(p_votes: Dictionary, living: Array) -> String:
 static func recommended_level(theme_id: String, next_level: int) -> int:
 	var cycle := int((next_level - 1) / Dungeon.THEME_ORDER.size()) + 1
 	var idx := Dungeon.THEME_ORDER.find(theme_id)
+	if idx < 0:
+		# Opt-in destinations (misty_docks) target the upcoming level itself.
+		return next_level
 	return (cycle - 1) * Dungeon.THEME_ORDER.size() + (idx + 1)
 
 
@@ -738,9 +748,10 @@ func _build_station_embedded() -> void:
 ## theme's prop set, set the NOW BOARDING sign. Unknown ids fall back to
 ## village. Called on load (rotation default) and again when a vote resolves.
 func apply_dressing(theme_id: String) -> void:
-	# The apex arena (issue #5) is a board destination, not a THEME_ORDER
-	# entry — allow it explicitly. Unknown ids fall back to village.
-	var tid := theme_id if (theme_id in Dungeon.THEME_ORDER or theme_id == "apex") else "village"
+	# The apex arena (issue #5) and misty docks (issue #102) are board
+	# destinations, not THEME_ORDER entries — allow them explicitly.
+	# Unknown ids fall back to village.
+	var tid := theme_id if (theme_id in Dungeon.THEME_ORDER or theme_id == "apex" or theme_id == "misty_docks") else "village"
 	var tint: Color = DRESSING_LAMPS.get(tid, Color.WHITE)
 	# The station lives in the annex hall: tint the annex shell's lamps.
 	var lamp_list: Array = annex.lamps if annex != null else _lamps
@@ -851,6 +862,19 @@ func _dressing_props_embedded() -> void:
 		_cyl(a, 0.35, 0.25, 0.25, Vector3(bx * 0.85, 0.9, 5.6), steel_dark)
 		_box(a, Vector3(0.12, 0.9, 0.12), Vector3(bx * 0.85, 0.45, 5.6), steel_dark)
 		_box(a, Vector3(0.30, 0.18, 0.30), Vector3(bx * 0.85, 1.08, 5.6), ember)
+
+	# misty_docks (issue #102): dock lantern posts + crates + a rope coil.
+	var md := Node3D.new()
+	md.name = "misty_docks"
+	_dressing.add_child(md)
+	var lamp_glow := _mat(Color(1.0, 0.75, 0.35), Color(1.0, 0.6, 0.25), 2.5)
+	for lx in [11.0, -11.0]:
+		_box(md, Vector3(0.14, 2.2, 0.14), Vector3(lx, 1.1, 5.8), trunk_m)
+		_box(md, Vector3(0.5, 0.08, 0.08), Vector3(lx, 2.2, 5.8), trunk_m)
+		_box(md, Vector3(0.28, 0.34, 0.28), Vector3(lx + 0.22, 1.95, 5.8), lamp_glow)
+	_box(md, Vector3(1.0, 1.0, 1.0), Vector3(9.8, 0.5, 5.9), crate_b)
+	_box(md, Vector3(1.0, 1.0, 1.0), Vector3(-9.8, 0.5, 5.9), crate_r)
+	_cyl(md, 0.45, 0.35, 0.18, Vector3(10.6, 0.18, 5.2), chain_m)
 
 
 ## Save the multiplayer run from the station (host only).

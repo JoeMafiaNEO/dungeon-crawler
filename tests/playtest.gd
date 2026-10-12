@@ -139,6 +139,7 @@ func _run() -> void:
 	_test_holy_light_heal()
 	_test_steam_ready_once_only()
 	_test_class_sprites_and_namebar()
+	_test_fishing_farming_phase1()
 
 	_print_results()
 	quit()
@@ -1167,8 +1168,9 @@ func _test_station_phase5() -> void:
 			if child.visible:
 				vis.append(str(child.name))
 		_assert(vis == [tid], "dressing shows only %s set" % tid)
-	_assert(st._dressing.get_child_count() == 6, "6 theme prop sets built (apex added)")
+	_assert(st._dressing.get_child_count() == 7, "7 theme prop sets built (apex + misty_docks)")
 	_assert(st._dressing.get_node_or_null("apex") != null, "apex dressing set built")
+	_assert(st._dressing.get_node_or_null("misty_docks") != null, "misty_docks dressing set built")
 	st.apply_dressing("bogus_theme")
 	var vis2: Array = []
 	for child in st._dressing.get_children():
@@ -1756,8 +1758,8 @@ func _test_station_embedded() -> void:
 	_assert(sign != null and ("NOW BOARDING" in str(sign.text) or "NOW_BOARDING" in str(sign.text)),
 		"embedded: NOW BOARDING sign set")
 	var dressing = st.get_node_or_null("Dressing")
-	_assert(dressing != null and dressing.get_child_count() == 6,
-		"embedded: 6 dressing prop sets (apex added)")
+	_assert(dressing != null and dressing.get_child_count() == 7,
+		"embedded: 7 dressing prop sets (apex + misty_docks)")
 	# Every content node sits inside the 24x14m hall footprint.
 	for nname in ["DepartureBoard", "VendorStall", "HealPad"]:
 		var n := st.get_node_or_null(nname) as Node3D
@@ -3570,12 +3572,16 @@ func _test_apex_phase1() -> void:
 			"%s base HP matches %s" % [aid, specs[aid][1]])
 		_assert(absf(float(data.get("damage")) - float(src.get("damage"))) < 0.001,
 			"%s base damage matches %s" % [aid, specs[aid][1]])
-	# Board destinations: warlord row becomes APEX ARENA on apex cycles only.
+	# Board destinations: warlord row becomes APEX ARENA on apex cycles only;
+	# misty docks (issue #102) appends an opt-in 6th row on every cycle.
 	var d3: Array = DungeonScript.board_destinations(11) # cycle 3
-	_assert(d3.size() == 5, "board still has 5 rows on apex cycles")
+	_assert(d3.size() == 6, "board has 6 rows with misty_docks (apex cycle)")
 	_assert(d3.has("apex") and not d3.has("warlord"), "warlord -> apex swap (cycle 3)")
+	_assert(d3.has("misty_docks"), "docks row present on apex cycles")
 	var d1: Array = DungeonScript.board_destinations(1) # cycle 1
+	_assert(d1.size() == 6, "board has 6 rows with misty_docks (cycle 1)")
 	_assert(d1.has("warlord") and not d1.has("apex"), "warlord row normal (cycle 1)")
+	_assert(d1[5] == "misty_docks", "docks row is last; rotation order kept")
 	var d4: Array = DungeonScript.board_destinations(16) # cycle 4
 	_assert(d4.has("warlord") and not d4.has("apex"), "warlord row normal (cycle 4)")
 	# Apex row text: name, 5 stars, Rec. Lv = party level + 5.
@@ -6802,3 +6808,92 @@ func _test_class_sprites_and_namebar() -> void:
 	_assert(dsrc.contains("func spawn_player(peer_id: int, class_id: String, pos: Vector3, steam_id: int"),
 		"spawn_player RPC carries steam_id")
 	p.free()
+
+
+func _test_fishing_farming_phase1() -> void:
+	print("[Playtest] issue #102 Phase 1: fishing + farming foundation...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var StationScript := load("res://scripts/station/station.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	# Theme file loads with the Phase 1 flags.
+	var docks: Resource = load("res://data/levels/theme_misty_docks.tres")
+	_assert(docks != null, "theme_misty_docks.tres loads")
+	_assert(str(docks.get("theme_id")) == "misty_docks", "docks theme_id")
+	_assert(str(docks.get("display_name")) == "Misty Docks", "docks display name")
+	_assert(bool(docks.get("has_fishing_water")), "docks has_fishing_water")
+	_assert(bool(docks.get("has_farm_plots")), "docks has_farm_plots")
+	# Base themes pay nothing: both flags default false on every existing theme.
+	for tid in ["village", "dungeon", "depths", "supermarket", "warlord", "apex"]:
+		var t: Resource = load("res://data/levels/theme_%s.tres" % tid)
+		_assert(t != null, "%s.tres loads" % tid)
+		_assert(not bool(t.get("has_fishing_water")), "%s: no fishing water" % tid)
+		_assert(not bool(t.get("has_farm_plots")), "%s: no farm plots" % tid)
+	# Procgen on the docks theme: 2-4 ponds, one spot per pond, 6 plots.
+	var layout = ProcGenScript.generate(docks, 424242)
+	_assert(layout.ponds.size() >= 2 and layout.ponds.size() <= 4,
+		"2-4 ponds (got %d)" % layout.ponds.size())
+	_assert(layout.fishing_spots.size() == layout.ponds.size(), "one spot per pond")
+	_assert(layout.farm_plots.size() == 6, "6 farm plots (got %d)" % layout.farm_plots.size())
+	# Spots/plots sit on walkable cells (water is visual, never a blocker).
+	for s in layout.fishing_spots:
+		_assert(not layout.is_solid_world(s), "fishing spot on walkable cell")
+	for s in layout.farm_plots:
+		_assert(not layout.is_solid_world(s), "farm plot on walkable cell")
+	# Ponds keep clear of the spawn clearing and of each other.
+	for pd in layout.ponds:
+		var pc: Vector3 = pd["center"]
+		_assert(pc.length() > 8.0, "pond clear of spawn (dist %.1f)" % pc.length())
+	# Determinism: same seed -> identical fingerprint (multiplayer-safe).
+	var again = ProcGenScript.generate(docks, 424242)
+	_assert(layout.fingerprint() == again.fingerprint(), "docks layout deterministic")
+	var other = ProcGenScript.generate(docks, 777)
+	_assert(layout.fingerprint() != other.fingerprint(), "different seed, different layout")
+	# Base theme untouched: no new zones on village.
+	var village: Resource = load("res://data/levels/theme_village.tres")
+	var vlayout = ProcGenScript.generate(village, 424242)
+	_assert(vlayout.ponds.is_empty(), "village: no ponds")
+	_assert(vlayout.fishing_spots.is_empty(), "village: no fishing spots")
+	_assert(vlayout.farm_plots.is_empty(), "village: no farm plots")
+	# Departure board: docks row metadata.
+	_assert(str(StationScript.BOARD_STARS.get("misty_docks")) == "★☆☆☆", "docks danger stars")
+	_assert(StationScript.recommended_level("misty_docks", 7) == 7,
+		"docks rec level = upcoming level")
+	_assert((StationScript.DRESSING_LAMPS as Dictionary).has("misty_docks"), "docks lamp tint set")
+	_assert(str(StationScript.theme_display_name("misty_docks")) == "Misty Docks",
+		"docks display name from tres")
+	_assert(DungeonScript.arrival_tint("misty_docks") == Color(0.45, 0.7, 0.9),
+		"docks arrival tint")
+	# THEME_ORDER still has exactly the base five (cycle math untouched).
+	_assert((DungeonScript.THEME_ORDER as Array).size() == 5, "THEME_ORDER still 5")
+	_assert(not (DungeonScript.THEME_ORDER as Array).has("misty_docks"), "docks not in THEME_ORDER")
+	# Locking: server-authoritative claim, first claim wins, owner-only release.
+	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	var spot = SpotScript.new()
+	root.add_child(spot)
+	_assert(spot.is_in_group("fishing_spots"), "spot joins fishing_spots group")
+	_assert(spot.prompt_text() == "Fish here", "free spot prompt")
+	spot.claim_spot(1)
+	_assert(spot.occupied_by == 1, "claim sets occupant")
+	_assert(spot.prompt_text() == "Stop fishing", "owner prompt")
+	spot.claim_spot(2)
+	_assert(spot.occupied_by == 1, "second claim rejected")
+	spot.release_spot(2)
+	_assert(spot.occupied_by == 1, "stranger cannot release")
+	spot.release_spot(1)
+	_assert(spot.occupied_by == 0, "owner release frees spot")
+	_assert(spot.prompt_text() == "Fish here", "prompt resets after release")
+	spot.free()
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var plot = PlotScript.new()
+	root.add_child(plot)
+	_assert(plot.is_in_group("farm_plots"), "plot joins farm_plots group")
+	_assert(plot.prompt_text() == "Claim farm plot", "free plot prompt")
+	plot.claim_plot(3)
+	plot.claim_plot(4)
+	_assert(plot.occupied_by == 3, "plot: first claim wins")
+	plot.release_plot(4)
+	_assert(plot.occupied_by == 3, "plot: stranger cannot release")
+	plot.release_plot(3)
+	_assert(plot.occupied_by == 0, "plot: owner release frees")
+	plot.free()
+	print("[Playtest] issue #102 Phase 1 done")

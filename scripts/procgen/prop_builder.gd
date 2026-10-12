@@ -266,6 +266,65 @@ static func build(prop_type: String, size_cells: float = 1.0, opts: Dictionary =
 		"mazewall":
 			# Backrooms-style solid rock wall, one cell (2m) wide, 3.2m tall.
 			_add_box(root, Vector3(2.0, 3.2, 2.0), 1.6, Color(0.15, 0.14, 0.17))
+		"pond":
+			# Issue #102: still-water disc (unit radius; scaled by size_cells).
+			# Dark bed for depth + translucent surface. Visual only, no collision.
+			var bed := CylinderMesh.new()
+			bed.top_radius = 1.0
+			bed.bottom_radius = 1.0
+			bed.height = 0.06
+			var bed_mi := MeshInstance3D.new()
+			bed_mi.mesh = bed
+			bed_mi.position = Vector3(0, 0.03, 0)
+			bed_mi.material_override = mat(Color(0.05, 0.10, 0.16))
+			root.add_child(bed_mi)
+			var wmat := StandardMaterial3D.new()
+			wmat.albedo_color = Color(0.16, 0.38, 0.60, 0.85)
+			wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			wmat.roughness = 0.25
+			wmat.metallic = 0.35
+			var surf := CylinderMesh.new()
+			surf.top_radius = 1.0
+			surf.bottom_radius = 1.0
+			surf.height = 0.02
+			var surf_mi := MeshInstance3D.new()
+			surf_mi.mesh = surf
+			surf_mi.position = Vector3(0, 0.09, 0)
+			surf_mi.material_override = wmat
+			root.add_child(surf_mi)
+		"pier":
+			# Issue #102: wooden walkway, 6m along +Z (rotated to face outward).
+			var wood := Color(0.42, 0.30, 0.18)
+			var wood_dark := Color(0.32, 0.22, 0.13)
+			for px in [-0.7, 0.7]:
+				for pz in [-2.8, -1.0, 1.0, 2.8]:
+					_add_trunk_at(root, 0.09, 1.0, wood_dark, Vector3(px, 0.5, pz))
+			for k in 8:
+				_add_box(root, Vector3(1.6, 0.08, 0.6), 1.02, wood, 0.0,
+					Vector3(0, 0, -2.6 + float(k) * 0.74))
+			for px in [-0.75, 0.75]:
+				_add_box(root, Vector3(0.08, 0.08, 5.8), 1.5, wood_dark, 0.0, Vector3(px, 0, 0))
+				for pz in [-2.6, 0.0, 2.6]:
+					_add_trunk_at(root, 0.05, 0.6, wood_dark, Vector3(px, 1.25, pz))
+		"reed":
+			# Issue #102: cattail reed cluster.
+			for k in 5:
+				var ox := float(k % 3 - 1) * 0.22
+				var oz := float(k / 3) * 0.3 - 0.15
+				var h := 0.9 + float(k % 2) * 0.35
+				_add_trunk_at(root, 0.025, h, Color(0.25, 0.45, 0.22), Vector3(ox, h * 0.5, oz))
+				_add_ball_at(root, 0.07, Vector3(ox, h + 0.05, oz), Color(0.45, 0.32, 0.18), 6)
+		"dock_lantern":
+			# Issue #102: post with a hanging warm lantern (emissive only).
+			_add_trunk(root, 0.07, 2.2, Color(0.30, 0.21, 0.13))
+			_add_box(root, Vector3(0.5, 0.08, 0.08), 2.2, Color(0.30, 0.21, 0.13))
+			var lamp := MeshInstance3D.new()
+			var lm := BoxMesh.new()
+			lm.size = Vector3(0.28, 0.34, 0.28)
+			lamp.mesh = lm
+			lamp.position = Vector3(0.22, 1.95, 0)
+			lamp.material_override = mat(Color(1.0, 0.75, 0.35), Color(1.0, 0.6, 0.25), 2.5)
+			root.add_child(lamp)
 		_:
 			_add_ball(root, 0.5, 0.35, Color(0.5, 0.5, 0.5), 7)
 	if size_cells != 1.0:

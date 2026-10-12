@@ -1,7 +1,7 @@
 class_name DepartureBoard
 extends Node3D
-## Station departure board: a big physical 3D board with 5 clickable rows.
-## Voting happens by cursor raycast while in "reading mode" (mouse visible,
+## Station departure board: a big physical 3D board with one clickable row
+## per destination. Voting happens by cursor raycast while in "reading mode" (mouse visible,
 ## E to step away) — no floating HUD panel. Rows are Area3Ds on physics
 ## layer 4 so the player's cursor raycast can hit them.
 
@@ -100,15 +100,22 @@ func _build() -> void:
 	header.outline_size = 12
 	header.position = Vector3(0, 3.32, 0.10)
 	add_child(header)
-	# 5 clickable rows. On apex cycles (issue #5) the warlord row becomes the
-	# APEX ARENA row — board_destinations() is the single source of truth.
+	# One clickable row per destination. On apex cycles (issue #5) the warlord
+	# row becomes the APEX ARENA row; misty docks (issue #102) appends a 6th
+	# opt-in row — board_destinations() is the single source of truth.
+	# Rows fit inside the legacy 5-row bounds (2.88..0.72): 5 rows keep the
+	# exact legacy spacing, more rows compress evenly.
 	var next_level := Station.next_level_number
 	var party_level := _party_level(next_level)
+	var dests: Array = Dungeon.board_destinations(next_level)
+	var spacing := 0.54
+	if dests.size() > 5:
+		spacing = 2.16 / float(dests.size() - 1)
 	var y := 2.88
-	for theme_id in Dungeon.board_destinations(next_level):
+	for theme_id in dests:
 		var tid := str(theme_id)
 		_build_row(tid, y, slate, next_level, party_level)
-		y -= 0.54
+		y -= spacing
 	# Faint gold light so it reads at dusk.
 	var light := OmniLight3D.new()
 	light.light_color = Color(1.0, 0.85, 0.5)

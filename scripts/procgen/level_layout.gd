@@ -16,6 +16,13 @@ var player_spawns: Array[Vector3] = []
 var mob_spawns: Array[Vector3] = []
 ## Dead-end corridor positions (maze themes) -- ideal key hiding spots.
 var maze_dead_ends: Array[Vector3] = []
+## Fishing ponds: { "center": Vector3, "radius": float, "cell": Vector2i }.
+## Visual + zone flag only; pond cells stay FLOOR (water never blocks).
+var ponds: Array[Dictionary] = []
+## E-interact fishing spot positions (pier ends), one per pond.
+var fishing_spots: Array[Vector3] = []
+## E-interact farm plot positions (soil patch centers).
+var farm_plots: Array[Vector3] = []
 
 
 func idx(cx: int, cz: int) -> int:
@@ -77,4 +84,11 @@ func fingerprint() -> String:
 		parts.append("mspawn|%.2f,%.2f" % [s.x, s.z])
 	for d in maze_dead_ends:
 		parts.append("deadend|%.2f,%.2f" % [d.x, d.z])
+	for pd in ponds:
+		var pc: Vector3 = pd["center"]
+		parts.append("pond|%.2f,%.2f|%.2f" % [pc.x, pc.z, float(pd["radius"])])
+	for s in fishing_spots:
+		parts.append("fspot|%.2f,%.2f" % [s.x, s.z])
+	for s in farm_plots:
+		parts.append("fplot|%.2f,%.2f" % [s.x, s.z])
 	return "|".join(parts)

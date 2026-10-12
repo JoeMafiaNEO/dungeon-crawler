@@ -41,6 +41,12 @@ static func generate(theme: LevelTheme, seed_value: int) -> LevelLayout:
 	_place_props(layout, theme, rng)
 	_place_torches(layout, theme, rng)
 	_place_spawns(layout, theme, rng)
+	# Issue #102: strictly gated by theme flags — base themes never enter
+	# these branches, so their layouts (and RNG draw order) are byte-identical.
+	if theme.has_fishing_water:
+		_place_fishing_water(layout, theme, rng)
+	if theme.has_farm_plots:
+		_place_farm_plots(layout, theme, rng)
 
 	return layout
 
@@ -348,6 +354,152 @@ static func _place_spawns(layout: LevelLayout, theme: LevelTheme, rng: RandomNum
 			continue
 		layout.mob_spawns.append(pos)
 		placed += 1
+
+
+# --- Issue #102: fishing + farming ---
+
+## Issue #102: fishing ponds. 2-4 ponds, each a visual water disc (pond cells
+## stay FLOOR — water never blocks) with a wooden pier on one edge and an
+## E-interact fishing spot at the pier's far end. Records pond zones
+## (center + radius) for Phase 2 cast validation, plus reed/lantern dressing.
+static func _place_fishing_water(layout: LevelLayout, theme: LevelTheme, rng: RandomNumberGenerator) -> void:
+	var n := layout.grid_size
+	var cell := layout.cell_size
+	var center := float(n - 1) * 0.5
+	var count := rng.randi_range(2, 4)
+	var placed := 0
+	var attempts := 0
+	var dirs: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	while placed < count and attempts < count * 40:
+		attempts += 1
+		var radius_cells := rng.randi_range(2, 3)
+		var margin := radius_cells + 4
+		var cx := rng.randi_range(margin, n - 1 - margin)
+		var cz := rng.randi_range(margin, n - 1 - margin)
+		# Keep the spawn clearing free.
+		var dcx := float(cx) - center
+		var dcz := float(cz) - center
+		var keep := float(theme.clear_radius + radius_cells + 2)
+		if dcx * dcx + dcz * dcz < keep * keep:
+			continue
+		# Keep ponds apart (12+ cells between centers).
+		var ok := true
+		for pd in layout.ponds:
+			var pc: Vector2i = pd["cell"]
+			var ddx := float(cx - pc.x)
+			var ddz := float(cz - pc.y)
+			if ddx * ddx + ddz * ddz < 144.0:
+				ok = false
+				break
+		if not ok:
+			continue
+		# The pond disc must be open floor (don't flood obstacles).
+		if not _disc_is_floor(layout, cx, cz, radius_cells):
+			continue
+		# Pick a pier direction (shuffled): 3 outward cells must be floor.
+		var order: Array[int] = [0, 1, 2, 3]
+		for i in range(order.size() - 1, 0, -1):
+			var j := rng.randi_range(0, i)
+			var tmp: int = order[i]
+			order[i] = order[j]
+			order[j] = tmp
+		var dir := Vector2i.ZERO
+		for oi in order:
+			var d: Vector2i = dirs[oi]
+			var clear := true
+			for k in range(1, 4):
+				var px: int = cx + d.x * (radius_cells + k)
+				var pz: int = cz + d.y * (radius_cells + k)
+				if not layout.in_bounds(px, pz) or layout.cell_at(px, pz) != LevelLayout.FLOOR:
+					clear = false
+					break
+			if clear:
+				dir = d
+				break
+		if dir == Vector2i.ZERO:
+			continue
+		var wp := layout.cell_to_world(cx, cz)
+		var radius_world := float(radius_cells) * cell
+		layout.ponds.append({"center": wp, "radius": radius_world, "cell": Vector2i(cx, cz)})
+		# Pond visual: unit-radius disc scaled by the PropBuilder to radius_world.
+		layout.props.append({"type": "pond", "pos": wp, "rot": 0.0,
+			"scl": radius_world, "obstacle_visual": false})
+		# Pier: 3-cell walkway from the pond edge outward, along +Z rotated to dir.
+		var pier_dist := float(radius_cells + 2) * cell
+		var pier_pos := wp + Vector3(float(dir.x) * pier_dist, 0.0, float(dir.y) * pier_dist)
+		var pier_angle := atan2(float(dir.x), float(dir.y))
+		layout.props.append({"type": "pier", "pos": pier_pos, "rot": pier_angle,
+			"scl": 1.0, "obstacle_visual": false})
+		# Fishing spot on the pier itself (0.5m shy of the pier's far end, so
+		# world_to_cell lands in the checked r+3 floor cell for both directions).
+		var spot_dist := float(radius_cells + 3) * cell - 0.5
+		var spot_pos := wp + Vector3(float(dir.x) * spot_dist, 0.0, float(dir.y) * spot_dist)
+		layout.fishing_spots.append(spot_pos)
+		# Reeds around the pond edge + one lantern near the pier base.
+		for r in 4:
+			var ang := rng.randf_range(0.0, TAU)
+			var rp := wp + Vector3(cos(ang) * (radius_world + 0.8), 0.0, sin(ang) * (radius_world + 0.8))
+			layout.props.append({"type": "reed", "pos": rp,
+				"rot": rng.randf_range(0.0, TAU), "scl": rng.randf_range(0.8, 1.3),
+				"obstacle_visual": false})
+		var lamp_pos := wp + Vector3(float(dir.x) * (radius_world + 1.2), 0.0,
+			float(dir.y) * (radius_world + 1.2)) + Vector3(float(-dir.y) * 1.6, 0.0, float(dir.x) * 1.6)
+		layout.props.append({"type": "dock_lantern", "pos": lamp_pos,
+			"rot": rng.randf_range(0.0, TAU), "scl": 1.0, "obstacle_visual": false})
+		placed += 1
+
+
+## Issue #102: farm soil plots on the landward side (away from ponds).
+## The FarmPlot node builds its own soil visual; the layout only records
+## E-interact positions. States (tilled/planted/growing) arrive in Phase 3.
+static func _place_farm_plots(layout: LevelLayout, theme: LevelTheme, rng: RandomNumberGenerator) -> void:
+	var n := layout.grid_size
+	var count := 6 # Jesse's call to change; flagged in the Phase 1 report.
+	var placed := 0
+	var attempts := 0
+	var plot_cells: Array[Vector2i] = []
+	while placed < count and attempts < count * 40:
+		attempts += 1
+		var cx := rng.randi_range(2, n - 3)
+		var cz := rng.randi_range(2, n - 3)
+		if layout.cell_at(cx, cz) != LevelLayout.FLOOR:
+			continue
+		# Landward: 8+ cells from any pond.
+		var ok := true
+		for pd in layout.ponds:
+			var pc: Vector2i = pd["cell"]
+			var ddx := float(cx - pc.x)
+			var ddz := float(cz - pc.y)
+			if ddx * ddx + ddz * ddz < 64.0:
+				ok = false
+				break
+		if not ok:
+			continue
+		# Spread plots apart (6+ cells).
+		for pc2 in plot_cells:
+			var ddx2 := float(cx - pc2.x)
+			var ddz2 := float(cz - pc2.y)
+			if ddx2 * ddx2 + ddz2 * ddz2 < 36.0:
+				ok = false
+				break
+		if not ok:
+			continue
+		plot_cells.append(Vector2i(cx, cz))
+		layout.farm_plots.append(layout.cell_to_world(cx, cz))
+		placed += 1
+
+
+## True if every cell within radius r of (cx, cz) is FLOOR.
+static func _disc_is_floor(layout: LevelLayout, cx: int, cz: int, r: int) -> bool:
+	for dz in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			if dx * dx + dz * dz > r * r:
+				continue
+			if not layout.in_bounds(cx + dx, cz + dz):
+				return false
+			if layout.cell_at(cx + dx, cz + dz) != LevelLayout.FLOOR:
+				return false
+	return true
 
 
 # --- Helpers ---

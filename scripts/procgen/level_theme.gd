@@ -55,3 +55,10 @@ extends Resource
 @export var puzzle_key_count: int = 3
 ## When true, ProcGen carves a backrooms-style maze of rock walls (depths).
 @export var maze_walls: bool = false
+
+# --- Fishing + farming (issue #102) ---
+## When true, ProcGen places ponds with piers and records fishing spots.
+## Base themes leave this false and pay nothing (no new RNG draws).
+@export var has_fishing_water: bool = false
+## When true, ProcGen places farm soil plots and records farm plot spots.
+@export var has_farm_plots: bool = false

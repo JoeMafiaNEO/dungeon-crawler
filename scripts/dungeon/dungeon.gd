@@ -32,7 +32,7 @@ const THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket
 ## Danger model (Phase 3): base tier per theme × depth scaling.
 ## Single source of truth for mob HP/damage, XP, and loot sell values.
 ## Risk/reward: picking a harder destination pays more if you survive.
-const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4}
+const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4, "misty_docks": 1}
 const TIER_MULT := {1: 1.0, 2: 1.3, 3: 1.7, 4: 2.2}
 
 ## Apex arena (issue #5): every 3rd cycle the warlord board row becomes the
@@ -75,6 +75,9 @@ static func board_destinations(next_level: int) -> Array[String]:
 			out.append("apex")
 		else:
 			out.append(tid)
+	# Issue #102: misty docks is an opt-in 6th destination — never enters
+	# THEME_ORDER, so the rotation and cycle math are untouched.
+	out.append("misty_docks")
 	if apex and _last_apex_announce_cycle != cycle:
 		_last_apex_announce_cycle = cycle
 		AudioManager.sfx("apex_announce")
@@ -108,6 +111,8 @@ static func arrival_tint(theme_id: String) -> Color:
 			return Color(1.0, 0.55, 0.25)
 		"apex":
 			return Color(1.0, 0.25, 0.2)
+		"misty_docks":
+			return Color(0.45, 0.7, 0.9)
 	return Color.WHITE
 
 static var next_theme_id: String = "village"
@@ -2307,6 +2312,8 @@ func _build_arena_from_layout() -> void:
 	_build_obstacles()
 	_build_props()
 	_build_torches()
+	_build_fishing_spots()
+	_build_farm_plots()
 	StationAnnex.build(self, _annex_plan, _layout)
 	_build_station_annex_content()
 	spawn_points = _layout.player_spawns
@@ -2708,6 +2715,37 @@ func _build_torches() -> void:
 		var sparks := Effects.make_flame()
 		sparks.position = pos + Vector3(0, 0.35, 0)
 		add_child(sparks)
+
+
+# --- Issue #102: fishing spots + farm plots ---
+
+## E-interact fishing spot nodes from the layout (misty docks only).
+## Deterministic names keep every peer's node paths identical.
+func _build_fishing_spots() -> void:
+	if theme == null or not theme.has_fishing_water:
+		return
+	var idx := 0
+	for pos in _layout.fishing_spots:
+		var spot := FishingSpot.new()
+		spot.name = "FishingSpot_%d" % idx
+		spot.spot_index = idx
+		spot.position = pos
+		add_child(spot)
+		idx += 1
+
+
+## E-interact farm plot nodes from the layout (misty docks only).
+func _build_farm_plots() -> void:
+	if theme == null or not theme.has_farm_plots:
+		return
+	var idx := 0
+	for pos in _layout.farm_plots:
+		var plot := FarmPlot.new()
+		plot.name = "FarmPlot_%d" % idx
+		plot.plot_index = idx
+		plot.position = pos
+		add_child(plot)
+		idx += 1
 
 
 # --- Multiplayer save ---
