@@ -131,6 +131,9 @@ var stealthed := false
 var _stealth_t := 0.0
 ## Gilded Cage (Warden): rooted inside the dome while > 0.
 var _caged_t := 0.0
+## Issue #102 Phase 2: true while a fishing session is active. Movement
+## input is suppressed; the server sets/clears it via set_fishing().
+var is_fishing := false
 ## Unseen trait: next attack after veil/blink crits (2x). Set on veil expiry / blink land.
 var unseen_crit_ready := false
 ## Co-op ping: MMB / G drops a "!" marker visible to the whole party.
@@ -609,6 +612,12 @@ func _input(event: InputEvent) -> void:
 				_command_order()
 				return
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			# Issue #102 Phase 2: click reels while a fishing session is
+			# active (same as E) instead of attacking.
+			if is_fishing:
+				if _try_fishing_reel():
+					get_viewport().set_input_as_handled()
+				return
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 				# Issue #65: don't steal the mouse back while the destination
 				# popup is open — clicks on popup rows must stay in UI mode.
@@ -1932,6 +1941,11 @@ func _physics_process(delta: float) -> void:
 		# Gilded Cage: rooted while caged.
 		if _caged_t > 0.0:
 			_caged_t -= delta
+			ix = 0.0
+			iz = 0.0
+		# Issue #102 Phase 2: stationary while fishing (vulnerable —
+		# mobs aggro normally; displacement cancels the session).
+		if is_fishing:
 			ix = 0.0
 			iz = 0.0
 		var wish := Vector3(ix, 0, iz)
@@ -3541,6 +3555,21 @@ func _command_confirm_placement() -> void:
 	get_viewport().set_input_as_handled()
 
 
+## Issue #102 Phase 2: click reels during an active fishing session (same
+## path as E). Returns true when a reel attempt was sent.
+func _try_fishing_reel() -> bool:
+	var me := int(multiplayer.get_unique_id())
+	for n in get_tree().get_nodes_in_group("fishing_spots"):
+		var spot := n as FishingSpot
+		if spot != null and spot.is_session_active_for(me):
+			if multiplayer.is_server():
+				spot.reel_attempt()
+			else:
+				spot.rpc_id(NetworkManager.server_peer_id, "reel_attempt")
+			return true
+	return false
+
+
 func _try_pickup() -> void:
 	# Cipher/board interactions take priority over loot.
 	var interact := _nearest_interact_node()
@@ -3579,6 +3608,18 @@ func on_sold(amount: int) -> void:
 	if hud != null:
 		hud.toast("Sold loot for $%d!" % amount)
 		AudioManager.sfx("cash_register")
+
+
+## Issue #102 Phase 2: server toggles fishing state (movement suppressed
+## while a session is active). call_local so the rpc_id to the fishing peer
+## also executes locally when the fisher IS the server (host/solo) —
+## rpc-to-self with call_remote errors. Server-only caller in production; a
+## client flipping its own flag just gets its session cancelled by the
+## server's displacement check, so no guard is needed (light anti-cheat,
+## co-op).
+@rpc("any_peer", "call_local")
+func set_fishing(fishing: bool) -> void:
+	is_fishing = fishing
 
 
 @rpc("any_peer", "call_local")

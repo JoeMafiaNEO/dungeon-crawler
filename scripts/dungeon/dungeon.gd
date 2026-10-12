@@ -2730,6 +2730,10 @@ func _build_fishing_spots() -> void:
 		spot.name = "FishingSpot_%d" % idx
 		spot.spot_index = idx
 		spot.position = pos
+		# Bobber target: the pond this spot was placed for (1:1 with the
+		# ponds array, appended in the same procgen loop).
+		if idx < _layout.ponds.size():
+			spot.water_point = (_layout.ponds[idx] as Dictionary)["center"]
 		add_child(spot)
 		idx += 1
 

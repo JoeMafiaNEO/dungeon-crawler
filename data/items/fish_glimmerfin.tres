@@ -1,0 +1,12 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "fish_glimmerfin"
+display_name = "Glimmerfin"
+description = "Its scales catch light that isn't there. (Usable effect: Jesse's call, Phase 4.)"
+slot = 2
+rarity = 2
+sell_value = 0

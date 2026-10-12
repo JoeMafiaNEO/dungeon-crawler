@@ -5,6 +5,10 @@ extends Node3D
 ## RPC. The plot state machine (untilled -> tilled -> planted -> growing ->
 ## harvestable) arrives in Phase 3; until then the node is the soil visual
 ## plus the lock.
+##
+## Trust model (Phase 2 hardening): claim/release take no peer id — the
+## server attributes every call via multiplayer.get_remote_sender_id()
+## (P2P peer ids; server = 1, never the 64-bit Steam id).
 
 var plot_index: int = 0
 var occupied_by: int = 0 ## peer id holding the plot; 0 = free
@@ -29,39 +33,59 @@ func interact(player: Player) -> void:
 	var me := int(multiplayer.get_unique_id())
 	if occupied_by == 0:
 		if multiplayer.is_server():
-			claim_plot(me)
+			claim_plot()
 		else:
-			rpc_id(NetworkManager.server_peer_id, "claim_plot", me)
+			rpc_id(NetworkManager.server_peer_id, "claim_plot")
 		if player.hud != null:
 			player.hud.toast("Farm plot claimed")
 	elif occupied_by == me:
 		if multiplayer.is_server():
-			release_plot(me)
+			release_plot()
 		else:
-			rpc_id(NetworkManager.server_peer_id, "release_plot", me)
+			rpc_id(NetworkManager.server_peer_id, "release_plot")
 	elif player.hud != null:
 		player.hud.toast("Someone is already farming this plot.")
 
 
 ## Server-authoritative claim: first valid claim wins, everyone syncs.
+## Takes no peer id — the caller is attributed via get_remote_sender_id().
 @rpc("any_peer", "call_local")
-func claim_plot(claimer: int) -> void:
+func claim_plot() -> void:
 	if not multiplayer.is_server():
 		return
 	if occupied_by != 0:
 		return
-	occupied_by = claimer
+	occupied_by = _sender_peer()
 	rpc("sync_occupant", occupied_by)
 
 
 @rpc("any_peer", "call_local")
-func release_plot(claimer: int) -> void:
+func release_plot() -> void:
 	if not multiplayer.is_server():
 		return
-	if occupied_by != claimer:
+	if occupied_by != _sender_peer():
 		return
 	occupied_by = 0
 	rpc("sync_occupant", 0)
+
+
+## Server-side forced release (peer disconnect). Never called by clients.
+func force_release_peer(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if occupied_by != peer_id:
+		return
+	occupied_by = 0
+	rpc("sync_occupant", 0)
+
+
+## P2P peer id of the RPC sender; local (server) calls fall back to the
+## server's own id. Never a 64-bit Steam id (see AGENTS.md).
+func _sender_peer() -> int:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	return sender
 
 
 @rpc("any_peer", "call_local")

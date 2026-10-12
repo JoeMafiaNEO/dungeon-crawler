@@ -140,6 +140,7 @@ func _run() -> void:
 	_test_steam_ready_once_only()
 	_test_class_sprites_and_namebar()
 	_test_fishing_farming_phase1()
+	_test_fishing_minigame_phase2()
 
 	_print_results()
 	quit()
@@ -6867,19 +6868,23 @@ func _test_fishing_farming_phase1() -> void:
 	_assert((DungeonScript.THEME_ORDER as Array).size() == 5, "THEME_ORDER still 5")
 	_assert(not (DungeonScript.THEME_ORDER as Array).has("misty_docks"), "docks not in THEME_ORDER")
 	# Locking: server-authoritative claim, first claim wins, owner-only release.
+	# Phase 2: claim/release take no peer id — the server attributes the
+	# caller via get_remote_sender_id() (unique_id fallback for local calls).
 	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
 	var spot = SpotScript.new()
 	root.add_child(spot)
 	_assert(spot.is_in_group("fishing_spots"), "spot joins fishing_spots group")
 	_assert(spot.prompt_text() == "Fish here", "free spot prompt")
-	spot.claim_spot(1)
-	_assert(spot.occupied_by == 1, "claim sets occupant")
-	_assert(spot.prompt_text() == "Stop fishing", "owner prompt")
-	spot.claim_spot(2)
+	spot.claim_spot()
+	_assert(spot.occupied_by == 1, "claim attributes to true sender (no spoof arg)")
+	_assert(spot.prompt_text() == "Cast again", "owner prompt")
+	spot.claim_spot()
 	_assert(spot.occupied_by == 1, "second claim rejected")
-	spot.release_spot(2)
-	_assert(spot.occupied_by == 1, "stranger cannot release")
-	spot.release_spot(1)
+	spot.occupied_by = 2 # simulate another peer holding the spot
+	spot.release_spot()
+	_assert(spot.occupied_by == 2, "stranger cannot release")
+	spot.occupied_by = 1
+	spot.release_spot()
 	_assert(spot.occupied_by == 0, "owner release frees spot")
 	_assert(spot.prompt_text() == "Fish here", "prompt resets after release")
 	spot.free()
@@ -6888,12 +6893,120 @@ func _test_fishing_farming_phase1() -> void:
 	root.add_child(plot)
 	_assert(plot.is_in_group("farm_plots"), "plot joins farm_plots group")
 	_assert(plot.prompt_text() == "Claim farm plot", "free plot prompt")
-	plot.claim_plot(3)
-	plot.claim_plot(4)
-	_assert(plot.occupied_by == 3, "plot: first claim wins")
-	plot.release_plot(4)
-	_assert(plot.occupied_by == 3, "plot: stranger cannot release")
-	plot.release_plot(3)
+	plot.claim_plot()
+	_assert(plot.occupied_by == 1, "plot claim attributes to sender")
+	plot.claim_plot()
+	_assert(plot.occupied_by == 1, "plot: second claim rejected")
+	plot.occupied_by = 4
+	plot.release_plot()
+	_assert(plot.occupied_by == 4, "plot: stranger cannot release")
+	plot.occupied_by = 1
+	plot.release_plot()
 	_assert(plot.occupied_by == 0, "plot: owner release frees")
 	plot.free()
 	print("[Playtest] issue #102 Phase 1 done")
+
+
+func _test_fishing_minigame_phase2() -> void:
+	print("[Playtest] issue #102 Phase 2: fishing minigame...")
+	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	# Fish items exist in the ItemDB.
+	for fid in ["fish_minnow", "fish_riverbass", "fish_glimmerfin"]:
+		_assert(ItemDBNode.get_item(fid) != null, "ItemDB has " + fid)
+	# Sim rig: real player + spot in the tree; this instance is the server (peer 1).
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	p.global_position = Vector3.ZERO
+	var spot = SpotScript.new()
+	root.add_child(spot)
+	spot.global_position = Vector3.ZERO
+	spot.water_point = Vector3(0, 0, 4)
+	spot.test_player = p
+	SpotScript.debug_wait_override = 2.0
+	# --- Full cast -> catch cycle (one-E claim+cast) ---
+	SpotScript.debug_now_msec = 100000
+	spot.fish_action()
+	_assert(spot.occupied_by == 1, "claim+cast: spot claimed")
+	_assert(spot.is_session_active_for(1), "claim+cast: session active")
+	_assert(p.is_fishing, "fishing: movement-suppress flag set")
+	_assert(spot.prompt_text() == "Reel in! (E)", "active session prompt")
+	spot.reel_attempt() # early press, before the bite: ignored
+	_assert(spot.is_session_active_for(1), "early reel press ignored")
+	spot._reel_attempt(999) # forged peer: rejected
+	_assert(spot.is_session_active_for(1), "forged peer reel rejected")
+	SpotScript.debug_now_msec = 100000 + 2100 # past the rolled 2s wait
+	spot._process(0.016) # server tick: bite fires
+	_assert(spot._session_state == SpotScript.SessionState.BITING, "bite fired")
+	spot.reel_attempt() # inside the 1.2s window: catch
+	_assert(not spot.is_session_active_for(1), "catch: session resolved")
+	_assert(spot.occupied_by == 1, "catch: spot retained")
+	_assert(not p.is_fishing, "catch: fishing flag cleared")
+	_assert(spot.prompt_text() == "Cast again", "recast prompt after catch")
+	var got_fish := false
+	for e in p.inventory:
+		var it: Variant = (e as Dictionary).get("item")
+		if it != null and str(it.id).begins_with("fish_"):
+			got_fish = true
+	_assert(got_fish, "catch granted a fish item to the inventory")
+	# --- Miss path: window expires with no press ---
+	var inv_before: int = p.inventory.size()
+	SpotScript.debug_now_msec = 200000
+	spot.fish_action() # recast is free, spot retained
+	_assert(spot.is_session_active_for(1), "recast starts a new session")
+	SpotScript.debug_now_msec = 200000 + 2100
+	spot._process(0.016) # bite
+	_assert(spot._session_state == SpotScript.SessionState.BITING, "recast bite fired")
+	SpotScript.debug_now_msec = 200000 + 2100 + 1300 # past the 1.2s window
+	spot._process(0.016) # server tick: miss
+	_assert(not spot.is_session_active_for(1), "miss: session ended")
+	_assert(spot.occupied_by == 1, "miss: spot retained")
+	_assert(not p.is_fishing, "miss: fishing flag cleared")
+	_assert(p.inventory.size() == inv_before, "miss: no fish granted")
+	spot.reel_attempt() # late press: ignored
+	_assert(not spot.is_session_active_for(1), "late reel press ignored")
+	# --- Cancel-on-leave: displacement cancels and releases ---
+	SpotScript.debug_now_msec = 300000
+	spot.fish_action()
+	_assert(spot.is_session_active_for(1), "session for cancel test")
+	p.global_position = Vector3(5, 0, 0) # beyond LEAVE_RADIUS
+	spot._process(0.016)
+	_assert(not spot.is_session_active_for(1), "displacement cancels session")
+	_assert(spot.occupied_by == 0, "displacement releases claim")
+	_assert(not p.is_fishing, "cancel: fishing flag cleared")
+	_assert(spot.prompt_text() == "Fish here", "prompt resets after cancel")
+	# --- Disconnect auto-release (server hook) ---
+	p.global_position = Vector3.ZERO
+	spot.test_player = null
+	spot.occupied_by = 7 # simulate a remote peer's claim + session
+	spot._session_peer = 7
+	spot._session_state = SpotScript.SessionState.WAITING
+	var NM: Variant = root.get_node("NetworkManager")
+	NM._on_peer_disconnected(7)
+	_assert(spot.occupied_by == 0, "disconnect releases the spot lock")
+	_assert(spot._session_state == SpotScript.SessionState.NONE, "disconnect cancels the session")
+	spot.occupied_by = 0
+	NM._on_peer_disconnected(8) # peer holding nothing: no-op
+	_assert(spot.occupied_by == 0, "disconnect of idle peer is a no-op")
+	# --- Rarity weighting: longer wait -> better odds (defaults, Jesse's call) ---
+	spot._wait_duration = 3.0
+	var seen_short := {}
+	for i in 60:
+		seen_short[spot._roll_catch_item()] = true
+	_assert(seen_short.has("fish_minnow"), "short wait: common catch possible")
+	spot._wait_duration = 8.0
+	var seen_long := {}
+	for i in 200:
+		seen_long[spot._roll_catch_item()] = true
+	_assert(seen_long.has("fish_glimmerfin"), "long wait: rare catch possible")
+	for rid in seen_long:
+		_assert(ItemDBNode.get_item(str(rid)) != null, "rolled fish is a real item: " + str(rid))
+	# Cleanup: reset the test seams so later tests see production behavior.
+	SpotScript.debug_wait_override = -1.0
+	SpotScript.debug_now_msec = -1
+	spot.free()
+	p.queue_free()
+	print("[Playtest] issue #102 Phase 2 done")
