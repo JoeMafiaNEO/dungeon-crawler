@@ -419,6 +419,9 @@ func _confirm_placement(screen_pos: Vector2) -> void:
 			builders.append(n.get_path())
 	if builders.is_empty():
 		cancel_placement()
+		var rhud := _find_rts_hud()
+		if rhud != null and rhud.has_method("show_toast"):
+			rhud.show_toast("Please select villager/s before building")
 		return
 	var ground := _screen_to_ground(screen_pos)
 	ground.y = 0.0

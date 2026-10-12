@@ -14,6 +14,8 @@ var _season_label: Label = null
 var _season_manager: Node = null
 var _age_up_btn: Button = null
 var _hint_label: Label = null
+var _toast_label: Label = null
+var _toast_timer := 0.0
 var _guide_panel: PanelContainer = null
 var _guide_timer := 0.0
 # Build menu (B key): pick a building to place.
@@ -83,6 +85,18 @@ func _build_ui() -> void:
 	_hint_label.add_theme_font_size_override("font_size", 14)
 	_hint_label.text = "TAB — Command View"
 	add_child(_hint_label)
+	# Small transient toast (e.g. "select villagers before building").
+	_toast_label = Label.new()
+	_toast_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_toast_label.offset_top = 64.0
+	_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast_label.add_theme_font_size_override("font_size", 16)
+	_toast_label.add_theme_color_override("font_color", Color(1.0, 0.9, 0.6))
+	_toast_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	_toast_label.add_theme_constant_override("shadow_offset_x", 2)
+	_toast_label.add_theme_constant_override("shadow_offset_y", 2)
+	_toast_label.visible = false
+	add_child(_toast_label)
 	_build_panels()
 	_build_guide()
 
@@ -406,6 +420,15 @@ func show_guide() -> void:
 		_guide_timer = 15.0
 
 
+## Small transient message at the top of the screen (auto-hides).
+func show_toast(text: String, duration: float = 3.0) -> void:
+	if _toast_label == null:
+		return
+	_toast_label.text = text
+	_toast_label.visible = true
+	_toast_timer = duration
+
+
 func hide_guide() -> void:
 	if _guide_panel != null:
 		_guide_panel.visible = false
@@ -422,6 +445,10 @@ func set_command_view(active: bool) -> void:
 
 
 func _process(delta: float) -> void:
+	if _toast_timer > 0.0:
+		_toast_timer -= delta
+		if _toast_timer <= 0.0 and _toast_label != null:
+			_toast_label.visible = false
 	if _guide_timer > 0.0:
 		_guide_timer -= delta
 		if _guide_timer <= 0.0:
