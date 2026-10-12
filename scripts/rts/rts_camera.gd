@@ -297,6 +297,12 @@ func _pick_enemy_at(ground: Vector3) -> Node3D:
 		if d < best_d + 1.0:
 			best_d = d
 			best = n
+	# Jesse 2026-10-11: RTS units can be ordered to attack players.
+	for n in get_tree().get_nodes_in_group("players"):
+		var d := ground.distance_to(n.global_position)
+		if d < best_d:
+			best_d = d
+			best = n
 	return best
 
 

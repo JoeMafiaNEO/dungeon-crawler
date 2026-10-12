@@ -93,16 +93,16 @@ func _convert_range() -> float:
 
 # Base stats per type.
 const BASE_STATS := {
-	"villager": {"hp": 40.0, "dmg": 3.0, "range": 1.2, "speed": 3.2},
-	"spearman": {"hp": 80.0, "dmg": 8.0, "range": 1.5, "speed": 3.0},
-	"archer": {"hp": 50.0, "dmg": 10.0, "range": 8.0, "speed": 3.0},
-	"knight": {"hp": 140.0, "dmg": 14.0, "range": 1.8, "speed": 3.8},
-	"trade_cart": {"hp": 60.0, "dmg": 0.0, "range": 0.0, "speed": 4.0},
-	"catapult": {"hp": 80.0, "dmg": 40.0, "range": 15.0, "speed": 2.0},
-	"ram": {"hp": 200.0, "dmg": 25.0, "range": 2.0, "speed": 2.5},
-	"monk": {"hp": 40.0, "dmg": 0.0, "range": 0.0, "speed": 2.8},
-	"fishing_ship": {"hp": 80.0, "dmg": 0.0, "range": 0.0, "speed": 3.5},
-	"war_galley": {"hp": 120.0, "dmg": 15.0, "range": 10.0, "speed": 3.0},
+	"villager": {"hp": 400.0, "dmg": 3.0, "range": 1.2, "speed": 3.2},
+	"spearman": {"hp": 800.0, "dmg": 8.0, "range": 1.5, "speed": 3.0},
+	"archer": {"hp": 500.0, "dmg": 10.0, "range": 8.0, "speed": 3.0},
+	"knight": {"hp": 1400.0, "dmg": 14.0, "range": 1.8, "speed": 3.8},
+	"trade_cart": {"hp": 600.0, "dmg": 0.0, "range": 0.0, "speed": 4.0},
+	"catapult": {"hp": 800.0, "dmg": 40.0, "range": 15.0, "speed": 2.0},
+	"ram": {"hp": 2000.0, "dmg": 25.0, "range": 2.0, "speed": 2.5},
+	"monk": {"hp": 400.0, "dmg": 0.0, "range": 0.0, "speed": 2.8},
+	"fishing_ship": {"hp": 800.0, "dmg": 0.0, "range": 0.0, "speed": 3.5},
+	"war_galley": {"hp": 1200.0, "dmg": 15.0, "range": 10.0, "speed": 3.0},
 }
 
 # Unit types that never auto-attack (economic units).
@@ -698,7 +698,12 @@ func _attack_tick(delta: float, target: Node3D) -> void:
 				dmg *= RTSTuning.get_float("siege", "ram_vs_building", 4.0)
 			else:
 				dmg *= RTSTuning.get_float("siege", "ram_vs_unit", 0.25)
-		target.take_damage(dmg, self)
+		# Jesse 2026-10-11: RTS units can be ordered to attack players.
+		# Player.take_damage expects (float, String); units/buildings take (float, Node3D).
+		if target.is_in_group("players"):
+			target.take_damage(dmg, "RTS " + unit_type)
+		else:
+			target.take_damage(dmg, self)
 
 
 func _do_gather() -> void:
