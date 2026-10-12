@@ -27,6 +27,7 @@ const MAX_QUEUE := 5
 # Base HP per building type (town hall gets civ.townhall_hp_mult).
 const BASE_HP := {
 	"town_hall": 15000.0,
+	"house": 3000.0,
 	"barracks": 6000.0,
 	"archery_range": 6000.0,
 	"market": 5000.0,
@@ -299,6 +300,8 @@ func display_name() -> String:
 	match building_type:
 		"town_hall":
 			return "Town Hall"
+		"house":
+			return "House"
 		"barracks":
 			return "Barracks"
 		"archery_range":
@@ -537,6 +540,29 @@ func _build_visuals() -> void:
 			_box(_body_root, Vector3(0.7, 0.9, 0.06), Vector3(0, 2.2, 1.15), accent)
 			shape.size = Vector3(2.4, 3.6, 2.4)
 			col.position = Vector3(0, 1.8, 0)
+		"house":
+			# Small cottage: 2.2 x 1.4 x 2.0 + gabled roof + chimney.
+			_box(_body_root, Vector3(2.2, 1.4, 2.0), Vector3(0, 0.7, 0), wood)
+			var roof := MeshInstance3D.new()
+			var rm := CylinderMesh.new()
+			rm.radial_segments = 4
+			rm.top_radius = 0.05
+			rm.bottom_radius = 1.7
+			rm.height = 0.9
+			roof.mesh = rm
+			roof.material_override = _mat(roof_c)
+			roof.position = Vector3(0, 1.85, 0)
+			roof.rotation.y = PI / 4.0
+			_body_root.add_child(roof)
+			# Chimney.
+			_box(_body_root, Vector3(0.3, 0.9, 0.3), Vector3(0.7, 2.0, 0.4), stone.darkened(0.1))
+			# Door + window.
+			_box(_body_root, Vector3(0.5, 0.9, 0.08), Vector3(-0.4, 0.45, 1.02), Color(0.15, 0.1, 0.08))
+			_box(_body_root, Vector3(0.4, 0.4, 0.08), Vector3(0.5, 0.8, 1.02), Color(0.95, 0.9, 0.6))
+			# Faction trim along the eaves.
+			_box(_body_root, Vector3(2.3, 0.1, 0.1), Vector3(0, 1.42, 1.0), accent)
+			shape.size = Vector3(2.2, 1.6, 2.0)
+			col.position = Vector3(0, 0.8, 0)
 	add_child(col)
 	# Faction flag on top of every building.
 	_build_flag(accent)
@@ -559,6 +585,8 @@ func _build_flag(accent: Color) -> void:
 			top_y = 2.2
 		"tower":
 			top_y = 3.9
+		"house":
+			top_y = 2.5
 	var pole := MeshInstance3D.new()
 	var pm := CylinderMesh.new()
 	pm.top_radius = 0.03

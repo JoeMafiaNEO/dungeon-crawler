@@ -120,7 +120,7 @@ func _build_panels() -> void:
 	grid.add_theme_constant_override("h_separation", 8)
 	grid.add_theme_constant_override("v_separation", 4)
 	vb.add_child(grid)
-	for btype in ["barracks", "archery_range", "market", "siege_workshop", "monastery", "dock", "tower"]:
+	for btype in ["town_hall", "house", "barracks", "archery_range", "market", "siege_workshop", "monastery", "dock", "tower"]:
 		var btn := Button.new()
 		btn.text = _building_button_text(btype)
 		btn.pressed.connect(_on_build_button.bind(btype))

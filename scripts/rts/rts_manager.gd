@@ -54,6 +54,8 @@ const UNIT_COSTS := {
 	"war_galley": {"wood": 150, "food": 0, "gold": 50, "stone": 0},
 }
 const BUILDING_COSTS := {
+	"town_hall": {"wood": 400, "food": 0, "gold": 0, "stone": 200},
+	"house": {"wood": 50, "food": 0, "gold": 0, "stone": 0},
 	"barracks": {"wood": 150, "food": 0, "gold": 0, "stone": 0},
 	"archery_range": {"wood": 150, "food": 0, "gold": 0, "stone": 0},
 	"market": {"wood": 200, "food": 0, "gold": 0, "stone": 50},
@@ -241,7 +243,15 @@ func age_up(faction_id: int) -> bool:
 
 func get_pop_cap(faction_id: int) -> int:
 	var caps := RTSTuning.get_array("ages", "pop_caps", POP_CAPS)
-	return int(caps[get_age(faction_id)])
+	var cap := int(caps[get_age(faction_id)])
+	# Jesse 2026-10-11: each completed house adds +5 pop cap.
+	for b in get_tree().get_nodes_in_group("rts_buildings"):
+		if int(b.get("faction")) == faction_id \
+				and str(b.get("building_type")) == "house" \
+				and not bool(b.get("under_construction")) \
+				and not bool(b.get("destroyed")):
+			cap += 5
+	return cap
 
 
 func get_gather_mult(faction_id: int) -> float:
