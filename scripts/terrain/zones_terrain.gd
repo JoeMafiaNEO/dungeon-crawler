@@ -29,7 +29,9 @@ extends HeightmapTerrain
 ## block walkers like walls.
 var edge_falloff: float = 1.25
 ## Zones: {center: Vector2 (xz), radius: float, height: float,
-## phase1/phase2: float — angular wobble phases for the blob outline}.
+## phase1/phase2: float — angular wobble phases for the blob outline,
+## radius_z: float (optional) — z half-extent, making the zone an
+## axis-aligned ellipse (bands / terraces / strips; warlords maps)}.
 var zones: Array[Dictionary] = []
 ## Ramps: {base: Vector2 (xz, lower-tier end), dir: Vector2 (unit,
 ## uphill), length: float, width: float, h0/h1: tier heights}.
@@ -42,20 +44,38 @@ var rough_frequency: float = 0.30
 var _rough_noise := FastNoiseLite.new()
 
 
+## Signed band coordinate of a world position for one zone, in
+## metres: positive inside the flat, zero at the nominal edge, negative
+## outside. Circular zones keep the original r - dist form exactly.
+## A zone may add "radius_z" to become an axis-aligned ellipse
+## (radius = x half-extent, radius_z = z half-extent): the band
+## coordinate is then (1 - q) * min(rx, rz) with q the normalised
+## elliptical distance, so the edge band stays ~2 * edge_falloff wide
+## along the zone's short axis. The outline wobble scales both radii.
+func _zone_band(zn: Dictionary, wx: float, wz: float) -> float:
+	var c: Vector2 = zn["center"]
+	var dx := wx - c.x
+	var dz := wz - c.y
+	var ang := atan2(dz, dx)
+	var w := 1.0 \
+		+ 0.16 * sin(3.0 * ang + float(zn["phase1"])) \
+		+ 0.10 * sin(5.0 * ang + float(zn["phase2"]))
+	if zn.has("radius_z"):
+		var rx := float(zn["radius"]) * w
+		var rz := float(zn["radius_z"]) * w
+		var q := sqrt((dx / rx) * (dx / rx) + (dz / rz) * (dz / rz))
+		return (1.0 - q) * minf(float(zn["radius"]), float(zn["radius_z"]))
+	var r := float(zn["radius"]) * w
+	return r - sqrt(dx * dx + dz * dz)
+
+
 ## Zone-only height at a world position (no base noise). Used by the
 ## generate pass and by the test driver for flatness proofs.
 func zone_height_at(wx: float, wz: float) -> float:
 	var best := 0.0
 	for zn in zones:
-		var c: Vector2 = zn["center"]
-		var dx := wx - c.x
-		var dz := wz - c.y
-		var dist := sqrt(dx * dx + dz * dz)
-		var ang := atan2(dz, dx)
-		var r := float(zn["radius"]) * (1.0 \
-			+ 0.16 * sin(3.0 * ang + float(zn["phase1"])) \
-			+ 0.10 * sin(5.0 * ang + float(zn["phase2"])))
-		var t := smoothstep(-edge_falloff, edge_falloff, r - dist)
+		var t := smoothstep(-edge_falloff, edge_falloff,
+			_zone_band(zn, wx, wz))
 		best = maxf(best, float(zn["height"]) * t)
 	for rp in ramps:
 		var b: Vector2 = rp["base"]
@@ -88,15 +108,7 @@ func zone_height_at(wx: float, wz: float) -> float:
 func _rough_scale(wx: float, wz: float) -> float:
 	var scale := 1.0
 	for zn in zones:
-		var c: Vector2 = zn["center"]
-		var dx := wx - c.x
-		var dz := wz - c.y
-		var dist := sqrt(dx * dx + dz * dz)
-		var ang := atan2(dz, dx)
-		var r := float(zn["radius"]) * (1.0 \
-			+ 0.16 * sin(3.0 * ang + float(zn["phase1"])) \
-			+ 0.10 * sin(5.0 * ang + float(zn["phase2"])))
-		var t := clampf((r - dist + edge_falloff)
+		var t := clampf((_zone_band(zn, wx, wz) + edge_falloff)
 			/ (2.0 * edge_falloff), 0.0, 1.0)
 		var band := 4.0 * t * (1.0 - t)
 		scale = minf(scale, 1.0 - 0.8 * band)
