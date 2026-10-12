@@ -254,10 +254,11 @@ func _issue_order(screen_pos: Vector2) -> void:
 	if _selected.is_empty():
 		return
 	var ground := _screen_to_ground(screen_pos)
-	# Check if clicked on enemy, resource, or market.
+	# Check if clicked on enemy, resource, market, or friendly construction.
 	var target_unit := _pick_enemy_at(ground)
 	var target_node := _pick_resource_at(ground)
 	var target_market := _pick_market_at(ground)
+	var target_construction := _pick_construction_at(ground)
 	for n in _selected:
 		if not is_instance_valid(n):
 			continue
@@ -274,6 +275,9 @@ func _issue_order(screen_pos: Vector2) -> void:
 			n.rpc_id(_server_id(), "rpc_order_trade", target_market.get_path())
 		elif target_node and str(n.get("unit_type")) == "villager":
 			n.rpc_id(_server_id(), "rpc_order_gather", target_node.get_path())
+		elif target_construction and str(n.get("unit_type")) == "villager":
+			# Jesse 2026-10-11: more villagers on a building = faster construction.
+			n.rpc_id(_server_id(), "rpc_order_build", target_construction.get_path())
 		else:
 			# Spread move targets slightly.
 			var offset := Vector3(randf_range(-1, 1), 0, randf_range(-1, 1))
@@ -299,6 +303,23 @@ func _pick_enemy_at(ground: Vector3) -> Node3D:
 			best = n
 	# Jesse 2026-10-11: RTS units can be ordered to attack players.
 	for n in get_tree().get_nodes_in_group("players"):
+		var d := ground.distance_to(n.global_position)
+		if d < best_d:
+			best_d = d
+			best = n
+	return best
+
+
+## Jesse 2026-10-11: find a friendly building under construction near the click.
+## Right-clicking it with villagers selected orders them to build (speeds up).
+func _pick_construction_at(ground: Vector3) -> Node3D:
+	var best: Node3D = null
+	var best_d := 3.0
+	for n in get_tree().get_nodes_in_group("rts_buildings"):
+		if int(n.get("faction")) != faction_id:
+			continue
+		if not bool(n.get("under_construction")):
+			continue
 		var d := ground.distance_to(n.global_position)
 		if d < best_d:
 			best_d = d
