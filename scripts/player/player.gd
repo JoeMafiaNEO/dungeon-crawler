@@ -211,6 +211,10 @@ var _prompt_interact := false
 var _command_mode := false
 var _command_selected: Array = []
 var _command_faction := -1
+## Jesse 2026-10-11: FPS building placement state (B in command mode).
+var _placing_type := ""
+var _placing_ghost: MeshInstance3D = null
+var _placing_valid := false
 ## Departure-board reading mode (station only, local per client). While set,
 ## input is modal: cursor raycast votes on the 3D board's rows.
 var _reading_board: DepartureBoard = null
@@ -590,6 +594,14 @@ func _input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		# Jesse 2026-10-11: command mode click handling (warlord domain).
 		if _command_mode and (hud == null or not hud.is_paused):
+			# Placement mode: left confirms, right cancels.
+			if _placing_type != "":
+				if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+					_command_confirm_placement()
+					return
+				elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+					command_cancel_placement()
+					return
 			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 				_command_select()
 				return
@@ -663,6 +675,15 @@ func _input(event: InputEvent) -> void:
 				return
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_pickup()
+		elif k.physical_keycode == KEY_B:
+			# Jesse 2026-10-11: B in command mode opens the RTS build menu.
+			if _command_mode and (hud == null or not hud.is_paused):
+				var dungeon := get_tree().get_first_node_in_group("dungeon")
+				var rhud := dungeon.get_node_or_null("RTSHUD") if dungeon else null
+				if rhud != null and rhud.has_method("toggle_build_menu"):
+					rhud.call("toggle_build_menu")
+					get_viewport().set_input_as_handled()
+				return
 		elif k.physical_keycode == KEY_SHIFT:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_dash()
@@ -2011,6 +2032,9 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	# Jesse 2026-10-11: update FPS placement ghost while placing.
+	if _placing_type != "" and is_multiplayer_authority():
+		_command_update_ghost()
 	# Downed marker pulse (runs on every peer's instance).
 	if _downed_marker != null and _downed_marker.visible:
 		var t := Time.get_ticks_msec() / 1000.0
@@ -3168,6 +3192,11 @@ func _reading_input(event: InputEvent) -> void:
 			exit_reading()
 			get_viewport().set_input_as_handled()
 		elif k.physical_keycode == KEY_ESCAPE:
+			# Jesse 2026-10-11: Esc cancels FPS placement first.
+			if _placing_type != "":
+				command_cancel_placement()
+				get_viewport().set_input_as_handled()
+				return
 			exit_reading()
 			if hud != null:
 				hud.show_pause()
@@ -3291,6 +3320,7 @@ func _toggle_command_mode() -> void:
 		if hud != null:
 			hud.set_hint("Command: E on building | Click select | Right-click order | T exits")
 	else:
+		command_cancel_placement()
 		for u in _command_selected:
 			if is_instance_valid(u) and u.has_method("set_selected"):
 				u.call("set_selected", false)
@@ -3401,6 +3431,112 @@ func _command_order() -> void:
 			u.rpc_id(server_id, "rpc_order_attack", target.get_path())
 		elif ground != Vector3.INF:
 			u.rpc_id(server_id, "rpc_order_move", ground)
+	get_viewport().set_input_as_handled()
+
+
+## Jesse 2026-10-11: FPS building placement (B in command mode).
+## Mirrors RTSCamera.start_placement but positions the ghost via the
+## FPS camera raycast instead of screen coordinates.
+func command_start_placement(btype: String) -> void:
+	command_cancel_placement()
+	_placing_type = btype
+	_placing_ghost = MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(3.0, 2.0, 3.0)
+	_placing_ghost.mesh = bm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.2, 0.9, 0.3, 0.4)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_placing_ghost.material_override = mat
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null and dungeon.has_node("RTS"):
+		dungeon.get_node("RTS").add_child(_placing_ghost)
+	else:
+		get_tree().current_scene.add_child(_placing_ghost)
+	if hud != null:
+		hud.set_hint("Click to place %s | Right-click/Esc cancels" % btype.replace("_", " ").capitalize())
+
+
+func command_cancel_placement() -> void:
+	_placing_type = ""
+	if _placing_ghost != null and is_instance_valid(_placing_ghost):
+		_placing_ghost.queue_free()
+	_placing_ghost = null
+	if _command_mode and hud != null:
+		hud.set_hint("Command: E on building | Click select | Right-click order | T exits")
+
+
+## Update ghost position from the camera raycast each frame while placing.
+func _command_update_ghost() -> void:
+	if _placing_ghost == null or not is_instance_valid(_placing_ghost):
+		return
+	var ground := _command_ground_point()
+	if ground == Vector3.INF:
+		_placing_valid = false
+		return
+	_placing_ghost.position = Vector3(ground.x, 1.0, ground.z)
+	_placing_valid = _command_valid_build_spot(ground)
+	var mat := _placing_ghost.material_override as StandardMaterial3D
+	if mat != null:
+		mat.albedo_color = Color(0.2, 0.9, 0.3, 0.4) if _placing_valid else Color(0.9, 0.2, 0.2, 0.4)
+
+
+## Ground point under the mouse via FPS camera raycast (INF if none).
+func _command_ground_point() -> Vector3:
+	var cam := get("_camera") as Camera3D
+	if cam == null:
+		return Vector3.INF
+	var mp := get_viewport().get_mouse_position()
+	var origin := cam.project_ray_origin(mp)
+	var dir := cam.project_ray_normal(mp)
+	# Try physics raycast first (hits terrain).
+	var query := PhysicsRayQueryParameters3D.create(origin, origin + dir * 200.0)
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if not hit.is_empty():
+		return hit.get("position")
+	# Fallback: intersect y=0 plane.
+	if absf(dir.y) > 0.001:
+		var t := -origin.y / dir.y
+		if t > 0:
+			return origin + dir * t
+	return Vector3.INF
+
+
+func _command_valid_build_spot(ground: Vector3) -> bool:
+	for b in get_tree().get_nodes_in_group("rts_buildings"):
+		if ground.distance_to((b as Node3D).global_position) < 5.0:
+			return false
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null and dungeon.has_method("is_on_water"):
+		if dungeon.call("is_on_water", ground) == true:
+			return false
+	return true
+
+
+## Confirm placement: needs selected villagers as builders.
+func _command_confirm_placement() -> void:
+	if _placing_type == "" or not _placing_valid:
+		return
+	var ground := _command_ground_point()
+	if ground == Vector3.INF:
+		return
+	# Builders = selected villagers (mirrors RTSCamera._confirm_placement).
+	var builders: Array = []
+	for n in _command_selected:
+		if is_instance_valid(n) and str(n.get("unit_type")) == "villager":
+			builders.append(n.get_path())
+	if builders.is_empty():
+		var dungeon2 := get_tree().get_first_node_in_group("dungeon")
+		var rhud := dungeon2.get_node_or_null("RTSHUD") if dungeon2 else null
+		if rhud != null and rhud.has_method("show_toast"):
+			rhud.call("show_toast", "Please select villager/s before building")
+		return
+	var btype := _placing_type
+	command_cancel_placement()
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null and dungeon.has_method("rpc_start_construction"):
+		dungeon.rpc_id(1, "rpc_start_construction", _command_faction, btype, Vector3(ground.x, 0, ground.z), builders)
 	get_viewport().set_input_as_handled()
 
 

@@ -224,6 +224,13 @@ func _refresh_build_buttons() -> void:
 
 
 func _on_build_button(btype: String) -> void:
+	# Jesse 2026-10-11: in FPS command mode, the player handles placement
+	# via camera raycast; otherwise the RTS camera does.
+	for p in get_tree().get_nodes_in_group("players"):
+		if bool(p.get("_command_mode")) and p.has_method("command_start_placement"):
+			p.call("command_start_placement", btype)
+			hide_build_menu()
+			return
 	# Tell the camera to enter placement mode.
 	var cam := get_tree().get_first_node_in_group("rts_camera")
 	if cam != null and cam.has_method("start_placement"):
