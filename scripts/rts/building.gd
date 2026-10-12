@@ -26,14 +26,14 @@ const MAX_QUEUE := 5
 
 # Base HP per building type (town hall gets civ.townhall_hp_mult).
 const BASE_HP := {
-	"town_hall": 1500.0,
-	"barracks": 600.0,
-	"archery_range": 600.0,
-	"market": 500.0,
-	"siege_workshop": 700.0,
-	"monastery": 700.0,
-	"dock": 500.0,
-	"tower": 800.0,
+	"town_hall": 15000.0,
+	"barracks": 6000.0,
+	"archery_range": 6000.0,
+	"market": 5000.0,
+	"siege_workshop": 7000.0,
+	"monastery": 7000.0,
+	"dock": 5000.0,
+	"tower": 8000.0,
 }
 # Which unit types each building may train.
 const PRODUCTION := {
