@@ -253,8 +253,22 @@ func _order_build(btype: String) -> void:
 	pos.y = 0.0
 	var dungeon = get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null and dungeon.has_method("rpc_start_construction"):
-		# Call directly (we're the server).
-		dungeon.rpc_start_construction(faction_id, btype, pos)
+		# Call directly (we're the server). AI picks its own builders:
+		# idle villagers first (up to 3), else any villager of the faction.
+		var picks: Array = []
+		for u in get_tree().get_nodes_in_group("rts_units"):
+			if int(u.get("faction")) != faction_id or str(u.get("unit_type")) != "villager":
+				continue
+			if u.get("_move_target") == Vector3.INF and u.get("_attack_target") == null and u.get("_gather_node") == null:
+				picks.append(u.get_path())
+				if picks.size() >= 3:
+					break
+		if picks.is_empty():
+			for u in get_tree().get_nodes_in_group("rts_units"):
+				if int(u.get("faction")) == faction_id and str(u.get("unit_type")) == "villager":
+					picks.append(u.get_path())
+					break
+		dungeon.rpc_start_construction(faction_id, btype, pos, picks)
 
 
 func _attack(civ_id: String = "") -> void:

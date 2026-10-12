@@ -1361,7 +1361,7 @@ func _on_warlord_winner(winner_faction: int) -> void:
 ## Charges the cost, spawns the building under construction, and orders
 ## an idle villager of the faction to build it.
 @rpc("any_peer", "call_local")
-func rpc_start_construction(faction_id: int, btype: String, pos: Vector3) -> void:
+func rpc_start_construction(faction_id: int, btype: String, pos: Vector3, builder_paths: Array = []) -> void:
 	if not multiplayer.is_server():
 		return
 	if _rts_manager == null:
@@ -1382,20 +1382,17 @@ func rpc_start_construction(faction_id: int, btype: String, pos: Vector3) -> voi
 		return
 	if not _rts_manager.spend(faction_id, cost):
 		return
-	# Find a villager of this faction (prefer idle).
-	var builder: Node3D = null
-	for u in get_tree().get_nodes_in_group("rts_units"):
-		if int(u.get("faction")) != faction_id or str(u.get("unit_type")) != "villager":
-			continue
-		if u.get("_move_target") == Vector3.INF and u.get("_attack_target") == null and u.get("_gather_node") == null:
-			builder = u
-			break
-	if builder == null:
-		for u in get_tree().get_nodes_in_group("rts_units"):
-			if int(u.get("faction")) == faction_id and str(u.get("unit_type")) == "villager":
-				builder = u
-				break
-	if builder == null:
+	# Jesse 2026-10-11: no more server auto-find. Builders come from the
+	# player's selection (or the AI warlord, which passes its own picks).
+	# Empty list = refund, no building.
+	var builders: Array[Node3D] = []
+	for p in builder_paths:
+		var u := get_node_or_null(p) as Node3D
+		if u != null and is_instance_valid(u) \
+				and int(u.get("faction")) == faction_id \
+				and str(u.get("unit_type")) == "villager":
+			builders.append(u)
+	if builders.is_empty():
 		for k in cost:  # refund
 			_rts_manager.add_resource(faction_id, k, int(cost[k]))
 		return
@@ -1403,7 +1400,8 @@ func rpc_start_construction(faction_id: int, btype: String, pos: Vector3) -> voi
 	var bid := _rts_manager.alloc_building_id()
 	var b := _spawn_building_local(faction_id, btype, pos, civ.civ_id, bid)
 	rpc("client_spawn_building", faction_id, btype, pos, civ.civ_id, bid)
-	builder.rpc("rpc_order_build", b.get_path())
+	for builder in builders:
+		builder.rpc("rpc_order_build", b.get_path())
 
 
 @rpc("any_peer", "call_local")

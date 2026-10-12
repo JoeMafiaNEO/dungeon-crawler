@@ -411,14 +411,22 @@ func _is_valid_build_spot(ground: Vector3) -> bool:
 func _confirm_placement(screen_pos: Vector2) -> void:
 	if _placing_type == "" or not _ghost_valid:
 		return
+	# Jesse 2026-10-11: must have at least one villager selected to place a building.
+	# No more server auto-find — the player assigns builders explicitly.
+	var builders: Array[NodePath] = []
+	for n in _selected:
+		if is_instance_valid(n) and str(n.get("unit_type")) == "villager":
+			builders.append(n.get_path())
+	if builders.is_empty():
+		cancel_placement()
+		return
 	var ground := _screen_to_ground(screen_pos)
 	ground.y = 0.0
 	var btype := _placing_type
 	cancel_placement()
-	# Ask the server to start construction (validates cost, finds a villager).
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null and dungeon.has_method("rpc_start_construction"):
-		dungeon.rpc_id(_server_id(), "rpc_start_construction", faction_id, btype, ground)
+		dungeon.rpc_id(_server_id(), "rpc_start_construction", faction_id, btype, ground, builders)
 
 
 func _server_id() -> int:
