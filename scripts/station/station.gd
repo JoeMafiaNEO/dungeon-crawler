@@ -46,7 +46,7 @@ const DRESSING_LAMPS := {
 	"supermarket": Color(1.0, 1.0, 0.95),
 	"warlord": Color(1.0, 0.55, 0.25),
 	"apex": Color(1.0, 0.25, 0.2),
-	"misty_docks": Color(0.45, 0.75, 0.9),
+	"misty_docks": Color(0.45, 0.7, 0.9),
 }
 
 ## Owning dungeon: player roster + departure hop target.

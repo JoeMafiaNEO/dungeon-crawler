@@ -6,7 +6,7 @@
 script = ExtResource("1")
 id = "fish_glimmerfin"
 display_name = "Glimmerfin"
-description = "Its scales catch light that isn't there. (Usable effect: Jesse's call, Phase 4.)"
+description = "Its scales catch light that isn't there. The dock merchant pays top farm cash for one."
 slot = 2
 rarity = 2
 sell_value = 12

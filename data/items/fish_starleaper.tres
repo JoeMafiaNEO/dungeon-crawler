@@ -1,0 +1,13 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "fish_starleaper"
+display_name = "Starleaper"
+description = "A legendary fish that leaps through the stars reflected on still water. A Dock Trophy — the Collection tab remembers it forever. (Issue #102)"
+slot = 2
+rarity = 4
+sell_value = 0
+dock_good = true

@@ -196,6 +196,10 @@ func _harvest(peer: int) -> void:
 	var player := _player_for_peer(peer)
 	if player != null:
 		player.rpc_id(peer, "receive_item", item_id)
+	# Phase 5 validation fix: the harvest is a server grant — record it
+	# in the DockEconomy stock ledger or the vendor's sell validation
+	# (spend_stock) rejects the very crop the server just gave.
+	DockEconomy.grant_stock(peer, item_id)
 	if item_id == CROP_LEGENDARY:
 		# Each peer records the trophy in their own profile (Collection
 		# tab), paralleling dungeon.record_apex_kill.

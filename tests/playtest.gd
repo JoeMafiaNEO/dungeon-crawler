@@ -143,6 +143,7 @@ func _run() -> void:
 	_test_fishing_minigame_phase2()
 	_test_farming_loop_phase3()
 	_test_dock_economy_phase4()
+	_test_misty_docks_phase5()
 
 	_print_results()
 	quit()
@@ -7421,3 +7422,220 @@ func _farm_inv_count(pl, item_id: String) -> int:
 		if it != null and str(it.id) == item_id:
 			return int((e as Dictionary).get("count", 0))
 	return 0
+
+
+func _test_misty_docks_phase5() -> void:
+	print("[Playtest] issue #102 Phase 5: theme polish + legendary fish + run sim...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var StationScript := load("res://scripts/station/station.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var SM: Node = root.get_node("SaveManager")
+	# --- Theme data coherence: the .tres audited end-to-end ---
+	var docks: Resource = load("res://data/levels/theme_misty_docks.tres")
+	var village: Resource = load("res://data/levels/theme_village.tres")
+	_assert(docks != null, "p5: theme loads")
+	_assert(float(docks.get("fog_density")) > float(village.get("fog_density")),
+		"p5: docks is the mistiest theme (fog)")
+	_assert(float(docks.get("sun_energy")) < float(village.get("sun_energy")),
+		"p5: docks sun dimmer than village")
+	_assert(int(docks.get("torch_count")) > 0, "p5: dock light sources placed")
+	_assert((docks.get("torch_light_color") as Color).g > 0.5, "p5: lantern light is warm")
+	for mid in (docks.get("mob_mix") as Dictionary).keys():
+		_assert(FileAccess.file_exists("res://data/mobs/%s.tres" % str(mid)),
+			"p5: mob mix id exists: " + str(mid))
+	var pbsrc := FileAccess.get_file_as_string("res://scripts/procgen/prop_builder.gd")
+	for e in (docks.get("obstacle_entries") as Array):
+		_assert(pbsrc.contains("\"%s\":" % str(e.get("type"))),
+			"p5: obstacle type buildable: " + str(e.get("type")))
+	for e in (docks.get("prop_entries") as Array):
+		_assert(pbsrc.contains("\"%s\":" % str(e.get("type"))),
+			"p5: prop type buildable: " + str(e.get("type")))
+	_assert(int(DungeonScript.DANGER_TIERS.get("misty_docks", -1)) == 1, "p5: danger tier 1")
+	_assert(str(StationScript.BOARD_STARS.get("misty_docks")) == "★☆☆☆", "p5: stars match tier 1")
+	_assert((StationScript.DRESSING_LAMPS as Dictionary).get("misty_docks")
+		== DungeonScript.arrival_tint("misty_docks"), "p5: lamp tint == arrival tint")
+	_assert(str(docks.get("boss_id")) == "", "p5: no boss (downtime level)")
+	# --- Legendary fish: item + catch-roll table (golden-crop pattern) ---
+	var star: Variant = ItemDBNode.get_item("fish_starleaper")
+	_assert(star != null, "p5: ItemDB has fish_starleaper")
+	_assert(int(star.get("rarity")) == 4, "p5: starleaper is LEGENDARY rarity")
+	_assert(int(star.get("sell_value")) == 0, "p5: starleaper unsellable (trophy item)")
+	_assert(bool(star.get("dock_good")), "p5: starleaper is a dock good")
+	_assert(not bool(star.get("supermarket_loot")), "p5: starleaper not supermarket loot")
+	_assert(EconScript.sell_value_for("fish_starleaper") == 0, "p5: merchant pays 0 for starleaper")
+	var spot = SpotScript.new()
+	root.add_child(spot)
+	spot._wait_duration = 8.0 # t = 1 (longest wait, best odds)
+	SpotScript.debug_catch_roll = 0.04
+	_assert(spot._roll_catch_item() == "fish_starleaper", "p5: roll 0.04 @max wait: legendary")
+	SpotScript.debug_catch_roll = 0.10
+	_assert(spot._roll_catch_item() == "fish_glimmerfin", "p5: roll 0.10 @max wait: rare")
+	SpotScript.debug_catch_roll = 0.50
+	_assert(spot._roll_catch_item() == "fish_riverbass", "p5: roll 0.50 @max wait: uncommon")
+	SpotScript.debug_catch_roll = 0.90
+	_assert(spot._roll_catch_item() == "fish_minnow", "p5: roll 0.90 @max wait: common")
+	spot._wait_duration = 3.0 # t = 0 (shortest wait)
+	SpotScript.debug_catch_roll = 0.005
+	_assert(spot._roll_catch_item() == "fish_starleaper", "p5: roll 0.005 @min wait: legendary")
+	SpotScript.debug_catch_roll = -1.0
+	spot._wait_duration = 8.0
+	var seen := {}
+	for i in 400:
+		seen[spot._roll_catch_item()] = true
+	_assert(seen.size() == 4 and seen.has("fish_starleaper"), "p5: all 4 fish tiers roll @max wait")
+	# --- FULL THEME RUN SIM: one continuous misty-docks visit ---
+	# Real generated layout; spot/plot placed at the layout's own
+	# positions, exactly as dungeon._build_fishing_spots/_build_farm_plots.
+	var layout = ProcGenScript.generate(docks, 424242)
+	_assert(layout.ponds.size() >= 2 and layout.fishing_spots.size() == layout.ponds.size(),
+		"sim: ponds + one spot each")
+	_assert(layout.farm_plots.size() == 6, "sim: 6 farm plots")
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	p.global_position = layout.fishing_spots[0]
+	spot.global_position = layout.fishing_spots[0]
+	spot.water_point = (layout.ponds[0] as Dictionary)["center"]
+	spot.test_player = p
+	var plot = PlotScript.new()
+	root.add_child(plot)
+	plot.global_position = layout.farm_plots[0]
+	plot.test_player = p
+	var merch = MerchScript.new()
+	root.add_child(merch)
+	merch.global_position = layout.farm_plots[0] + Vector3(2.0, 0, 0)
+	merch.test_player = p
+	EconScript.debug_reset()
+	PlotScript._seed_ledger.clear()
+	var gold_before: int = p.get("supermarket_cash")
+	# Level entry (mirrors dungeon._do_spawn on a farm theme).
+	PlotScript.grant_starter_seeds(1)
+	for s in PlotScript.STARTER_SEED_COUNT:
+		p.receive_item(PlotScript.SEED_ITEM)
+	_assert(_farm_inv_count(p, "seed_packet") == PlotScript.STARTER_SEED_COUNT,
+		"sim: starter seeds in hand")
+	# 1) FISH: full cast -> bite -> reel cycle (forced plain catch so the
+	# sell math below is deterministic; the legendary has its own section).
+	SpotScript.debug_wait_override = 2.0
+	SpotScript.debug_now_msec = 400000
+	SpotScript.debug_catch_roll = 0.9
+	spot.fish_action()
+	_assert(spot.is_session_active_for(1) and p.is_fishing, "sim: cast out, fishing")
+	SpotScript.debug_now_msec = 400000 + 2100
+	spot._process(0.016)
+	_assert(spot._session_state == SpotScript.SessionState.BITING, "sim: bite fired")
+	spot.reel_attempt()
+	_assert(_farm_inv_count(p, "fish_minnow") == 1, "sim: catch landed a minnow")
+	_assert(EconScript.stock_count(1, "fish_minnow") == 1,
+		"sim: catch granted sellable stock (Phase 5 fix)")
+	SpotScript.debug_catch_roll = -1.0
+	# 2) SELL the catch at the vendor — the real flow, no manual grants.
+	merch.request_sell("fish_minnow")
+	_assert(EconScript.cash_balance(1) == 2, "sim: minnow sold for 2 fc")
+	_assert(_farm_inv_count(p, "farm_cash") == 2, "sim: farm cash in inventory")
+	_assert(_farm_inv_count(p, "fish_minnow") == 0, "sim: minnow sold out")
+	# 3) FARM: till + plant with a starter seed.
+	plot.plot_action()
+	plot.plot_action()
+	_assert(plot.plot_state == "planted", "sim: planted")
+	# 4) WAVES: three cleared waves mature the crop (the dungeon's hook).
+	plot.on_wave_cleared()
+	plot.on_wave_cleared()
+	_assert(plot.plot_state == "growing", "sim: still growing after 2 waves")
+	plot.on_wave_cleared()
+	_assert(plot.plot_state == "harvestable", "sim: harvestable after 3 waves")
+	# 5) HARVEST (forced common) — stock-granted for the vendor, too.
+	PlotScript.debug_harvest_roll = 0.5
+	plot.plot_action()
+	_assert(_farm_inv_count(p, "crop_sunroot") == 1, "sim: harvested a sunroot")
+	_assert(EconScript.stock_count(1, "crop_sunroot") == 1,
+		"sim: harvest granted sellable stock (Phase 5 fix)")
+	PlotScript.debug_harvest_roll = -1.0
+	# 6) SELL the crop, BUY a consumable with the combined earnings.
+	merch.request_sell("crop_sunroot")
+	_assert(EconScript.cash_balance(1) == 5, "sim: 2 + 3 = 5 fc after crop sale")
+	merch.request_buy("dock_salve")
+	_assert(EconScript.cash_balance(1) == 0, "sim: salve bought for 5 fc")
+	_assert(_farm_inv_count(p, "dock_salve") == 1, "sim: salve in inventory")
+	# The trophy fish can never be sold, even when held.
+	p.receive_item("fish_starleaper")
+	merch.request_sell("fish_starleaper")
+	_assert(_farm_inv_count(p, "fish_starleaper") == 1, "sim: starleaper unsellable, kept")
+	_assert(EconScript.cash_balance(1) == 0, "sim: refused sale paid nothing")
+	_assert(int(p.get("supermarket_cash")) == gold_before, "sim: no gold leakage")
+	# --- Legendary catch: trophy records (scratch profile, Phase 3 pattern) ---
+	if FileAccess.file_exists("user://profile_test_dock5.cfg"):
+		DirAccess.remove_absolute("user://profile_test_dock5.cfg")
+	var p2 = PlayerScene.instantiate()
+	p2.class_id = "warrior"
+	root.add_child(p2)
+	p2.global_position = layout.fishing_spots[0]
+	var spot2 = SpotScript.new()
+	root.add_child(spot2)
+	spot2.global_position = layout.fishing_spots[0]
+	spot2.water_point = (layout.ponds[0] as Dictionary)["center"]
+	spot2.test_player = p2
+	SM.set("_test_account_pin", "test_dock5")
+	SM.load_game()
+	_assert(not SM.has_dock_trophy("legendary_fish"), "p5: fish trophy not recorded yet")
+	SpotScript.debug_wait_override = 2.0
+	SpotScript.debug_now_msec = 500000
+	SpotScript.debug_catch_roll = 0.001 # force the legendary slice
+	spot2.fish_action()
+	SpotScript.debug_now_msec = 500000 + 2100
+	spot2._process(0.016)
+	_assert(spot2._session_state == SpotScript.SessionState.BITING, "p5: legendary bite fired")
+	spot2.reel_attempt()
+	_assert(_farm_inv_count(p2, "fish_starleaper") == 1, "p5: starleaper granted")
+	_assert(SM.has_dock_trophy("legendary_fish"), "p5: legendary fish trophy recorded")
+	_assert(not SM.call("record_dock_trophy", "legendary_fish"), "p5: trophy: no dupes")
+	SpotScript.debug_catch_roll = -1.0
+	# Collection tab: BOTH dock trophies earned -> no ??? rows remain.
+	SM.call("record_dock_trophy", "golden_crop")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	hud._refresh_dock_trophy_section()
+	var clog = hud.get_node("%CollectionLog")
+	var header_ok := false
+	var unknowns := 0
+	var fish_known := 0
+	for child in clog.get_children():
+		if child is Label and str(child.text).begins_with("Dock Trophies"):
+			header_ok = true
+			_assert(str(child.text).contains("2/2"), "p5: dock header shows 2/2")
+		if child is HBoxContainer:
+			for gc in child.get_children():
+				if gc is Label and str(gc.text).begins_with("???"):
+					unknowns += 1
+				if gc is Label and str(gc.text).contains("Legendary Fish"):
+					fish_known += 1
+	_assert(header_ok, "p5: dock section header present")
+	_assert(unknowns == 0, "p5: both trophies earned, no locked rows")
+	_assert(fish_known == 1, "p5: legendary fish row earned")
+	hud.queue_free()
+	SM.set("_test_account_pin", "")
+	SM.load_game()
+	var scratch := "user://profile_test_dock5.cfg"
+	if FileAccess.file_exists(scratch):
+		DirAccess.remove_absolute(scratch)
+	# Cleanup: reset the test seams so later tests see production behavior.
+	SpotScript.debug_wait_override = -1.0
+	SpotScript.debug_now_msec = -1
+	SpotScript.debug_catch_roll = -1.0
+	EconScript.debug_reset()
+	PlotScript._seed_ledger.clear()
+	spot.free()
+	spot2.free()
+	plot.free()
+	merch.free()
+	p.queue_free()
+	p2.queue_free()
+	print("[Playtest] issue #102 Phase 5 done")

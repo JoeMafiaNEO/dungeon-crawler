@@ -1805,8 +1805,8 @@ func _refresh_trophy_section() -> void:
 
 
 
-## Dock trophies (issue #102 Phase 3): misty docks trophies. The legendary
-## fish joins this section in a later phase. Issue #55: compact, same
+## Dock trophies (issue #102 Phase 3): misty docks trophies — the golden
+## crop plus the legendary fish (Phase 5). Issue #55: compact, same
 ## pattern as the apex trophy rows (earned = gold row, locked = ??? + hint).
 func _refresh_dock_trophy_section() -> void:
 	var trophies: Array = SaveManager.get_dock_trophies()
@@ -1818,7 +1818,7 @@ func _refresh_dock_trophy_section() -> void:
 	%CollectionLog.add_child(header)
 	var rows := [
 		{"id": "golden_crop", "name": "Golden Gourd", "hint": "Harvest the legendary golden crop"},
-		{"id": "legendary_fish", "name": "Legendary Fish", "hint": "Land the legendary fish (later phase)"},
+		{"id": "legendary_fish", "name": "Legendary Fish", "hint": "Land the legendary fish"},
 	]
 	for r in rows:
 		var earned: bool = str(r["id"]) in trophies

@@ -10,6 +10,9 @@ extends Node3D
 ## attempt and releases the claim; the player is stationary and
 ## vulnerable while fishing (movement suppressed client-side, mobs
 ## aggro normally).
+## Phase 5: legendary fish (fish_starleaper) on the catch roll's top
+## slice; landing it records the "legendary_fish" dock trophy,
+## paralleling the golden crop.
 ##
 ## Trust model: the server owns the lock AND the session. Claim RPCs
 ## take no peer id — the server attributes every call via
@@ -23,11 +26,22 @@ const WAIT_MAX := 8.0
 const REEL_WINDOW_MSEC := 1200 ## 1.2s reel window after the bite cue
 const LEAVE_RADIUS := 3.0 ## horizontal meters from the spot: leaving cancels
 
+## Issue #102 Phase 5: legendary fish + dock trophy, mirroring the
+## Phase 3 golden crop (crop_goldengourd / "golden_crop"). Top slice of
+## the catch roll; inert trophy item (no sell value — the merchant's
+## FISH_SELL table has no entry for it).
+const FISH_LEGENDARY := "fish_starleaper"
+const DOCK_TROPHY_LEGENDARY_FISH := "legendary_fish"
+const CATCH_LEGENDARY_BASE := 0.01 ## Legendary chance at minimum wait. Jesse's numbers call.
+const CATCH_LEGENDARY_T := 0.04 ## Scales to 5% at maximum wait (the crop legendary weight).
+
 ## TEST SEAMS (never set in production): debug_wait_override >= 0 forces
 ## the wait roll; debug_now_msec >= 0 replaces Time.get_ticks_msec();
+## debug_catch_roll >= 0 forces the catch rarity roll;
 ## test_player overrides _player_for_peer().
 static var debug_wait_override: float = -1.0
 static var debug_now_msec: int = -1
+static var debug_catch_roll: float = -1.0
 var test_player: Player = null
 
 var spot_index: int = 0
@@ -221,6 +235,14 @@ func _resolve_catch(peer: int) -> void:
 	var player := _player_for_peer(peer)
 	if player != null:
 		player.rpc_id(peer, "receive_item", item_id)
+	# Phase 5 validation fix: the catch is a server grant — record it in
+	# the DockEconomy stock ledger or the vendor's sell validation
+	# (spend_stock) rejects the very fish the server just gave.
+	DockEconomy.grant_stock(peer, item_id)
+	if item_id == FISH_LEGENDARY:
+		# Each peer records the trophy in their own profile (Collection
+		# tab), paralleling farm_plot's golden-crop harvest.
+		rpc_id(peer, "record_dock_trophy", DOCK_TROPHY_LEGENDARY_FISH)
 	_end_session()
 	rpc_id(peer, "on_catch", item_id)
 
@@ -255,11 +277,15 @@ func _end_session() -> void:
 ## (Numbers are defaults for Jesse to tune; flagged in the report.)
 ## Bait (issue #102 Phase 4): while _bait_this_cast, both rare thresholds
 ## shift up by DockEconomy.BAIT_RARE_SHIFT (Jesse's call).
+## Phase 5: the legendary slice sits on top of the table, mirroring the
+## farm_plot harvest weights (legendary checked first, then rare bands).
 func _roll_catch_item() -> String:
 	var t := clampf((_wait_duration - WAIT_MIN) / (WAIT_MAX - WAIT_MIN), 0.0, 1.0)
 	var shift := DockEconomy.BAIT_RARE_SHIFT if _bait_this_cast else 0.0
 	_bait_this_cast = false
-	var roll := randf()
+	var roll := debug_catch_roll if debug_catch_roll >= 0.0 else randf()
+	if roll < CATCH_LEGENDARY_BASE + CATCH_LEGENDARY_T * t + shift:
+		return FISH_LEGENDARY
 	if roll < 0.05 + 0.15 * t + shift:
 		return "fish_glimmerfin"
 	if roll < 0.25 + 0.35 * t + shift:
@@ -348,6 +374,15 @@ func on_miss() -> void:
 func on_cancel() -> void:
 	_clear_visual()
 	_toast_local("Fishing interrupted.")
+
+
+## Each peer records the dock trophy in their own profile + toast
+## (server RPC, paralleling farm_plot.record_dock_trophy).
+@rpc("any_peer", "call_local")
+func record_dock_trophy(trophy_id: String) -> void:
+	if SaveManager.record_dock_trophy(trophy_id):
+		_toast_local("TROPHY: Starleaper landed!")
+		AudioManager.sfx("unlock")
 
 
 func _clear_visual() -> void:
