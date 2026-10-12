@@ -205,6 +205,12 @@ var net_bonus_aura := 0.0
 var _bob_t := 0.0
 var _prompt_pickup: ItemPickup = null
 var _prompt_interact := false
+## Jesse 2026-10-11: RTS command mode (warlord domain). When active, the
+## player can E-interact with friendly buildings and click/order RTS units
+## via camera raycast. Toggled by the Command special ability.
+var _command_mode := false
+var _command_selected: Array = []
+var _command_faction := -1
 ## Departure-board reading mode (station only, local per client). While set,
 ## input is modal: cursor raycast votes on the 3D board's rows.
 var _reading_board: DepartureBoard = null
@@ -582,6 +588,14 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
+		# Jesse 2026-10-11: command mode click handling (warlord domain).
+		if _command_mode and (hud == null or not hud.is_paused):
+			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+				_command_select()
+				return
+			elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+				_command_order()
+				return
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 				# Issue #65: don't steal the mouse back while the destination
@@ -642,6 +656,10 @@ func _input(event: InputEvent) -> void:
 		elif k.physical_keycode == KEY_E:
 			# Cipher/destination popups handle their own E/Esc; reading mode intercepts earlier.
 			if hud != null and (hud.cipher_popup_open or _reading_board != null or hud.get("dest_popup_open") == true):
+				return
+			# Jesse 2026-10-11: E in command mode interacts with RTS buildings.
+			if _command_mode and (hud == null or not hud.is_paused):
+				_command_interact_building()
 				return
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_pickup()
@@ -911,6 +929,13 @@ func refresh_abilities() -> Dictionary:
 				if class_fams.has(class_id) and fid in class_fams[class_id]:
 					if not fresh.any(func(x): return x["id"] == sig["id"]):
 						fresh.append(sig)
+	# Jesse 2026-10-11: warlord domain grants the Command ability — enables
+	# RTS unit/building interaction from first-person view.
+	var _dungeon := get_tree().get_first_node_in_group("dungeon")
+	if _dungeon != null and _dungeon.get("is_warlord") == true:
+		if not fresh.any(func(x): return x["id"] == "command"):
+			fresh.append({"id": "command", "name": "Command", "unlock": 1,
+				"desc": "Issue RTS orders: E on buildings, click to select/order units."})
 	unlocked_abilities = fresh
 	if selected_ability >= unlocked_abilities.size():
 		selected_ability = 0
@@ -966,6 +991,10 @@ func _selected_ability_id() -> String:
 func _use_class_ability() -> void:
 	# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
 	_notify_echo_ability(_selected_ability_id())
+	# Jesse 2026-10-11: Command ability toggles RTS command mode in warlord domain.
+	if _selected_ability_id() == "command":
+		_toggle_command_mode()
+		return
 	if class_id == "warrior":
 		_place_totem()
 	elif class_id == "rogue":
@@ -3249,6 +3278,130 @@ func _nearest_interact_node() -> Node3D:
 				best_d = d
 				best = node
 	return best
+
+
+## Jesse 2026-10-11: toggles RTS command mode (warlord domain only).
+## Frees the mouse for click/drag selection; recaptures on exit.
+func _toggle_command_mode() -> void:
+	_command_mode = not _command_mode
+	if _command_mode:
+		# Cache the player's RTS faction.
+		_command_faction = int(get("rts_faction"))
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		if hud != null:
+			hud.set_hint("Command: E on building | Click select | Right-click order | T exits")
+	else:
+		for u in _command_selected:
+			if is_instance_valid(u) and u.has_method("set_selected"):
+				u.call("set_selected", false)
+		_command_selected.clear()
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		if hud != null:
+			hud.set_hint("")
+
+
+## Nearest friendly RTS building within interact range.
+func _nearest_command_building() -> Node3D:
+	var best: Node3D = null
+	var best_d := 4.0
+	for n in get_tree().get_nodes_in_group("rts_buildings"):
+		if int(n.get("faction")) != _command_faction:
+			continue
+		if n.get("destroyed") == true:
+			continue
+		var d := (n as Node3D).global_position.distance_to(global_position)
+		if d < best_d:
+			best_d = d
+			best = n
+	return best
+
+
+## E in command mode: open the building's menu (train/build).
+func _command_interact_building() -> void:
+	var b := _nearest_command_building()
+	if b == null:
+		return
+	# Reuse the RTS HUD train panel (works in any view).
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		return
+	var rts_hud := dungeon.get_node_or_null("RTSHUD")
+	if rts_hud != null and rts_hud.has_method("show_train_menu"):
+		rts_hud.call("show_train_menu", b)
+		get_viewport().set_input_as_handled()
+
+
+## Raycast from the FPS camera through the mouse position.
+func _command_raycast() -> Dictionary:
+	var cam := get("_camera") as Camera3D
+	if cam == null:
+		return {}
+	var mouse_pos := get_viewport().get_mouse_position()
+	var from := cam.project_ray_origin(mouse_pos)
+	var to := from + cam.project_ray_normal(mouse_pos) * 200.0
+	var query := PhysicsRayQueryParameters3D.create(from, to)
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	var space := get_world_3d().direct_space_state
+	return space.intersect_ray(query)
+
+
+## Left-click in command mode: select RTS units of the player's faction.
+func _command_select() -> void:
+	var hit := _command_raycast()
+	for u in _command_selected:
+		if is_instance_valid(u) and u.has_method("set_selected"):
+			u.call("set_selected", false)
+	_command_selected.clear()
+	if hit.is_empty():
+		return
+	var collider := hit.get("collider") as Node3D
+	if collider != null and collider.is_in_group("rts_units"):
+		if int(collider.get("faction")) == _command_faction:
+			_command_selected.append(collider)
+			# Show selection ring (reuse unit's ring if available).
+			if collider.has_method("set_selected"):
+				collider.call("set_selected", true)
+	get_viewport().set_input_as_handled()
+
+
+## Right-click in command mode: order selected units.
+## Clicked enemy/unit/building -> attack; otherwise -> move.
+func _command_order() -> void:
+	if _command_selected.is_empty():
+		return
+	var hit := _command_raycast()
+	var target: Node3D = null
+	var ground := Vector3.INF
+	if not hit.is_empty():
+		var collider := hit.get("collider") as Node3D
+		if collider != null and (collider.is_in_group("rts_units") or collider.is_in_group("rts_buildings")):
+			# Only order attacks on enemies.
+			var tf := int(collider.get("faction"))
+			if tf != _command_faction:
+				target = collider
+		if target == null:
+			ground = hit.get("position")
+	else:
+		# No hit: project mouse ray to y=0 plane for a move target.
+		var cam := get("_camera") as Camera3D
+		if cam != null:
+			var mp := get_viewport().get_mouse_position()
+			var origin := cam.project_ray_origin(mp)
+			var dir := cam.project_ray_normal(mp)
+			if absf(dir.y) > 0.001:
+				var t := -origin.y / dir.y
+				if t > 0:
+					ground = origin + dir * t
+	var server_id := 1  # NetworkManager.server_peer_id
+	for u in _command_selected:
+		if not is_instance_valid(u):
+			continue
+		if target != null:
+			u.rpc_id(server_id, "rpc_order_attack", target.get_path())
+		elif ground != Vector3.INF:
+			u.rpc_id(server_id, "rpc_order_move", ground)
+	get_viewport().set_input_as_handled()
 
 
 func _try_pickup() -> void:
