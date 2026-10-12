@@ -17,6 +17,10 @@ func _run() -> void:
 	_test_boot()
 	_test_rts_costs()
 	_test_rts_production()
+	_test_rts_spatial_hash()
+	_test_rts_dormancy()
+	_test_rts_batched_sync()
+	_test_rts_multimesh()
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
@@ -200,6 +204,98 @@ func _test_rts_production() -> void:
 	for btype in bld_script.PRODUCTION:
 		for utype in bld_script.PRODUCTION[btype]:
 			_assert(mgr_script.UNIT_COSTS.has(utype), "Unit %s has cost" % utype)
+
+
+func _test_rts_spatial_hash() -> void:
+	print("[Playtest] RTS spatial hash...")
+	var hash_script = load("res://scripts/rts/rts_spatial_hash.gd")
+	_assert(hash_script != null, "RTSSpatialHash loads")
+	if hash_script == null:
+		return
+	var h = hash_script.new()
+	# Create mock units (plain Node3Ds with positions).
+	var units: Array = []
+	for i in 10:
+		var n := Node3D.new()
+		n.position = Vector3(i * 3.0, 0, 0)  # 0,3,6,...,27
+		root.add_child(n)
+		units.append(n)
+		h.insert(n)
+	# Query near origin with radius 8 should find units at 0,3,6 (cells 0,0 cover x in [-8,16)).
+	var near: Array = h.query(Vector3.ZERO, 8.0)
+	_assert(near.size() >= 3, "Hash query finds nearby units (got %d)" % near.size())
+	# Query far away finds nothing.
+	var far: Array = h.query(Vector3(100, 0, 100), 8.0)
+	_assert(far.is_empty(), "Hash query far away is empty")
+	# Move a unit across a cell boundary; update re-buckets.
+	units[0].position = Vector3(50, 0, 0)
+	h.update(units[0])
+	var near_after: Array = h.query(Vector3.ZERO, 8.0)
+	_assert(not near_after.has(units[0]), "Moved unit leaves old cell")
+	var at_new: Array = h.query(Vector3(50, 0, 0), 8.0)
+	_assert(at_new.has(units[0]), "Moved unit found in new cell")
+	# Remove works.
+	h.remove(units[1])
+	var after_remove: Array = h.query(Vector3(3, 0, 0), 8.0)
+	_assert(not after_remove.has(units[1]), "Removed unit not in query")
+	# Cleanup.
+	for n in units:
+		n.queue_free()
+
+
+func _test_rts_dormancy() -> void:
+	print("[Playtest] RTS dormancy...")
+	var unit_script = load("res://scripts/rts/unit.gd")
+	_assert(unit_script != null, "RTSUnit loads")
+	if unit_script == null:
+		return
+	var u = unit_script.new()
+	root.add_child(u)
+	# Fresh unit with no orders is idle.
+	_assert(u.call("_is_idle"), "Fresh unit is idle")
+	# order_move wakes (sets _dormant=false) and makes non-idle.
+	u.order_move(Vector3(10, 0, 10))
+	_assert(not u.get("_dormant"), "order_move wakes unit")
+	_assert(not u.call("_is_idle"), "Unit with move order not idle")
+	# Simulate order completion: clear targets, then _sleep.
+	u.set("_move_target", Vector3.INF)
+	_assert(u.call("_is_idle"), "Unit idle after order cleared")
+	u.call("_sleep")
+	_assert(bool(u.get("_dormant")), "Unit dormant after _sleep")
+	# Damage wakes.
+	u.call("_apply_damage", 1.0)
+	_assert(not u.get("_dormant"), "Damage wakes dormant unit")
+	u.queue_free()
+
+
+func _test_rts_batched_sync() -> void:
+	print("[Playtest] RTS batched sync...")
+	var mgr_script = load("res://scripts/rts/rts_manager.gd")
+	_assert(mgr_script != null, "RTSManager loads for sync test")
+	if mgr_script == null:
+		return
+	var mgr = mgr_script.new()
+	root.add_child(mgr)
+	# Manager has sync interval and broadcast method.
+	_assert(mgr.get("SYNC_INTERVAL") == 0.12, "Sync interval is 0.12s (8Hz)")
+	_assert(mgr.has_method("_broadcast_army_sync"), "Manager has _broadcast_army_sync")
+	_assert(mgr.has_method("client_sync_army"), "Manager has client_sync_army rpc")
+	_assert(mgr.get("spatial_hash") != null, "Manager owns spatial hash")
+	mgr.queue_free()
+
+
+func _test_rts_multimesh() -> void:
+	print("[Playtest] RTS multimesh renderer...")
+	var rend_script = load("res://scripts/rts/rts_unit_renderer.gd")
+	_assert(rend_script != null, "RTSUnitRenderer loads")
+	if rend_script == null:
+		return
+	var r = rend_script.new()
+	root.add_child(r)
+	_assert(r.has_method("register_unit"), "Renderer has register_unit")
+	_assert(r.has_method("unregister_unit"), "Renderer has unregister_unit")
+	_assert(r.has_method("_update_instances"), "Renderer has _update_instances")
+	r.queue_free()
 
 
 func _test_save_roundtrip() -> void:
