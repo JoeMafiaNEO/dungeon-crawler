@@ -139,6 +139,9 @@ func _input(event: InputEvent) -> void:
 func toggle() -> void:
 	active = not active
 	current = active
+	# Jesse 2026-10-11: units reorient their sprites for the active view
+	# (flat in command view, upright in FPS view).
+	get_tree().call_group("rts_units", "_on_command_view_toggled", active)
 	# Free the mouse for click/drag orders in command view; recapture for FPS.
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if active else Input.MOUSE_MODE_CAPTURED
 	# Hide the FPS viewmodel (sword/dagger/staff) in top-down view.

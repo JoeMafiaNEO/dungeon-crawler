@@ -170,10 +170,7 @@ func _build_visual() -> void:
 	if ResourceLoader.exists(tex_path):
 		sprite.texture = load(tex_path) as Texture2D
 	sprite.pixel_size = 0.0035  # ~0.9m tall for a 256px sprite.
-	# Jesse 2026-10-11: laid flat manually (no billboard) — camera never
-	# rotates, so a fixed orientation keeps feet toward the screen bottom.
-	sprite.billboard = BaseMaterial3D.BILLBOARD_DISABLED
-	sprite.rotation = Vector3(PI / 2, 0, PI)
+	_update_sprite_orientation()
 	sprite.position.y = 0.45
 	add_child(sprite)
 	_sprite = sprite
@@ -235,6 +232,29 @@ func _build_visual() -> void:
 	_hp_fill.position = Vector3(0, 1.05, 0.005)
 	add_child(_hp_fill)
 	_update_hp_bar()
+
+
+## Jesse 2026-10-11: sprite faces the active camera. Command (top-down)
+## view lays it flat with feet toward the screen bottom; FPS view stands
+## it upright with Y-fixed billboard (matches dungeon mobs).
+func _update_sprite_orientation() -> void:
+	if _sprite == null or not is_instance_valid(_sprite):
+		return
+	var command_view := false
+	var cam := get_tree().get_first_node_in_group("rts_camera")
+	if cam != null and bool(cam.get("active")):
+		command_view = true
+	if command_view:
+		_sprite.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		_sprite.rotation = Vector3(PI / 2, 0, PI)
+	else:
+		_sprite.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+		_sprite.rotation = Vector3.ZERO
+
+
+## Called by the RTS camera when TAB toggles command view.
+func _on_command_view_toggled(_active: bool) -> void:
+	_update_sprite_orientation()
 
 
 ## Refresh the unit HP bar; hidden at full HP.
