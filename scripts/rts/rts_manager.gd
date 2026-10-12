@@ -55,7 +55,7 @@ const UNIT_COSTS := {
 }
 const BUILDING_COSTS := {
 	"town_hall": {"wood": 400, "food": 0, "gold": 0, "stone": 200},
-	"house": {"wood": 50, "food": 0, "gold": 0, "stone": 0},
+	"house": {"wood": 300, "food": 0, "gold": 0, "stone": 0},
 	"barracks": {"wood": 150, "food": 0, "gold": 0, "stone": 0},
 	"archery_range": {"wood": 150, "food": 0, "gold": 0, "stone": 0},
 	"market": {"wood": 200, "food": 0, "gold": 0, "stone": 50},
