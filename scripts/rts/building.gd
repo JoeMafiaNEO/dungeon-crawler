@@ -566,6 +566,8 @@ func _build_visuals() -> void:
 	add_child(col)
 	# Faction flag on top of every building.
 	_build_flag(accent)
+	# Jesse 2026-10-11: billboarded name label above the building.
+	_build_name_label()
 
 
 func _build_flag(accent: Color) -> void:
@@ -642,6 +644,40 @@ func _build_hp_bar() -> void:
 	_hp_fill.position = Vector3(0, h, 0.005)
 	add_child(_hp_fill)
 	_update_hp_bar()
+
+
+## Jesse 2026-10-11: billboarded building name above the HP bar.
+func _build_name_label() -> void:
+	var h := 4.4
+	match building_type:
+		"town_hall":
+			h = 4.6
+		"house":
+			h = 3.1
+		"barracks":
+			h = 3.2
+		"archery_range":
+			h = 3.8
+		"market":
+			h = 3.4
+		"siege_workshop":
+			h = 3.6
+		"monastery":
+			h = 5.2
+		"dock":
+			h = 3.2
+		"tower":
+			h = 5.0
+	var label := Label3D.new()
+	label.text = display_name()
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.font_size = 48
+	label.pixel_size = 0.008
+	label.outline_size = 8
+	label.outline_modulate = Color(0, 0, 0, 0.9)
+	label.modulate = Color(1.0, 0.95, 0.85)
+	label.position = Vector3(0, h, 0)
+	add_child(label)
 
 
 func _update_hp_bar() -> void:

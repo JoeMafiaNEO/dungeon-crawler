@@ -170,7 +170,9 @@ func _build_visual() -> void:
 	if ResourceLoader.exists(tex_path):
 		sprite.texture = load(tex_path) as Texture2D
 	sprite.pixel_size = 0.0035  # ~0.9m tall for a 256px sprite.
-	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	# Jesse 2026-10-11: Y-fixed billboard so units read as upright
+	# characters under the top-down camera (spherical billboard lays flat).
+	sprite.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 	sprite.position.y = 0.45
 	add_child(sprite)
 	_sprite = sprite
