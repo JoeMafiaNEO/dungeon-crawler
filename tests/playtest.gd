@@ -142,6 +142,7 @@ func _run() -> void:
 	_test_fishing_farming_phase1()
 	_test_fishing_minigame_phase2()
 	_test_farming_loop_phase3()
+	_test_dock_economy_phase4()
 
 	_print_results()
 	quit()
@@ -7185,6 +7186,229 @@ func _test_farming_loop_phase3() -> void:
 	plot3.free()
 	p.queue_free()
 	print("[Playtest] issue #102 Phase 3 done")
+
+
+func _test_dock_economy_phase4() -> void:
+	print("[Playtest] issue #102 Phase 4: farm cash economy + vendor...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	# --- Vendor items exist; sell values filled (the Phase 2/3 seam) ---
+	for iid in ["farm_cash", "bait_lure", "fertilizer", "dock_salve",
+			"harbor_draught", "swift_current", "barnacle_bulwark"]:
+		_assert(ItemDBNode.get_item(iid) != null, "ItemDB has " + iid)
+	_assert(int(ItemDBNode.get_item("fish_minnow").get("sell_value")) == 2, "minnow sells for 2 fc")
+	_assert(int(ItemDBNode.get_item("fish_riverbass").get("sell_value")) == 5, "bass sells for 5 fc")
+	_assert(int(ItemDBNode.get_item("fish_glimmerfin").get("sell_value")) == 12, "glimmerfin sells for 12 fc")
+	_assert(int(ItemDBNode.get_item("crop_sunroot").get("sell_value")) == 3, "sunroot sells for 3 fc")
+	_assert(int(ItemDBNode.get_item("crop_moonmelon").get("sell_value")) == 0, "moonmelon not sellable (usable)")
+	_assert(int(ItemDBNode.get_item("crop_goldengourd").get("sell_value")) == 0, "golden gourd not sellable (trophy)")
+	# No gold path: none of the dock goods are supermarket loot, so the
+	# supermarket checkout (gold) can never touch them.
+	for iid in ["farm_cash", "bait_lure", "fertilizer", "fish_minnow",
+			"fish_riverbass", "fish_glimmerfin", "crop_sunroot",
+			"crop_moonmelon", "seed_packet"]:
+		_assert(not bool(ItemDBNode.get_item(iid).get("supermarket_loot")),
+			iid + " not supermarket loot (no gold leakage by construction)")
+	# Buff items carry wave durations.
+	_assert(int(ItemDBNode.get_item("harbor_draught").get("buff_waves")) == 3, "draught: 3-wave buff")
+	_assert(int(ItemDBNode.get_item("barnacle_bulwark").get("buff_waves")) == 3, "bulwark: 3-wave buff")
+	# Economy isolation: the station vendor (run cash) never stocks dock
+	# goods — run cash can't buy into the farm-cash economy.
+	var StationScript: GDScript = load("res://scripts/station/station.gd")
+	var stock: Array = StationScript.build_vendor_stock()
+	_assert(stock.size() > 0, "station stock builds")
+	for entry in stock:
+		var sid := str((entry as Dictionary).get("id"))
+		var sitem = ItemDBNode.get_item(sid)
+		_assert(sitem == null or not bool(sitem.get("dock_good")),
+			"station stock excludes dock goods: " + sid)
+	# --- Sim rig: real player + merchant; this instance is the server ---
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	p.global_position = Vector3.ZERO
+	var merch = MerchScript.new()
+	root.add_child(merch)
+	merch.test_player = p
+	EconScript.debug_reset()
+	PlotScript._seed_ledger.clear()
+	var gold_before: int = p.get("supermarket_cash")
+	# --- Earn: server grants (mirrors catch/harvest) + inventory mirror ---
+	EconScript.grant_stock(1, "fish_minnow", 2)
+	p.receive_item("fish_minnow")
+	p.receive_item("fish_minnow")
+	EconScript.grant_stock(1, "crop_sunroot", 1)
+	p.receive_item("crop_sunroot")
+	EconScript.grant_stock(1, "fish_riverbass", 2)
+	p.receive_item("fish_riverbass")
+	p.receive_item("fish_riverbass")
+	EconScript.grant_stock(1, "fish_glimmerfin", 1)
+	p.receive_item("fish_glimmerfin")
+	# --- Sell: ledger cash up, goods down, gold untouched ---
+	merch.request_sell("fish_minnow")
+	_assert(EconScript.cash_balance(1) == 2, "sell minnow 1: +2 fc")
+	_assert(_farm_inv_count(p, "fish_minnow") == 1, "sell minnow 1: stack down")
+	_assert(_farm_inv_count(p, "farm_cash") == 2, "sell minnow 1: cash in inventory")
+	merch.request_sell("fish_minnow")
+	merch.request_sell("crop_sunroot")
+	merch.request_sell("fish_riverbass")
+	merch.request_sell("fish_riverbass")
+	merch.request_sell("fish_glimmerfin")
+	_assert(EconScript.cash_balance(1) == 29, "full sell: 29 fc earned")
+	_assert(_farm_inv_count(p, "farm_cash") == 29, "full sell: 29 fc in inventory")
+	_assert(_farm_inv_count(p, "fish_minnow") == 0, "sold-out minnow gone")
+	# Failed sells change nothing.
+	merch.request_sell("fish_minnow") # nothing left
+	merch.request_sell("crop_moonmelon") # not sellable
+	_assert(EconScript.cash_balance(1) == 29, "failed sells: balance untouched")
+	# --- Buy: seeds (closes the Phase 3 seed-ledger seam) ---
+	merch.request_buy("seed_packet")
+	merch.request_buy("seed_packet")
+	_assert(EconScript.cash_balance(1) == 25, "2 seeds bought: 25 fc left")
+	_assert(PlotScript.seed_count(1) == 2, "seed buy: SERVER LEDGER updated")
+	_assert(_farm_inv_count(p, "seed_packet") == 2, "seed buy: packets in inventory")
+	# --- Buy: bait + fertilizer ---
+	merch.request_buy("bait_lure")
+	_assert(EconScript.cash_balance(1) == 22, "bait bought: 22 fc left")
+	_assert(EconScript.stock_count(1, "bait_lure") == 1, "bait: server stock")
+	_assert(_farm_inv_count(p, "bait_lure") == 1, "bait: in inventory")
+	merch.request_buy("fertilizer")
+	merch.request_buy("fertilizer")
+	_assert(EconScript.cash_balance(1) == 14, "2 fertilizer bought: 14 fc left")
+	_assert(EconScript.stock_count(1, "fertilizer") == 2, "fertilizer: server stock")
+	# --- Buy: salve + damage buff ---
+	merch.request_buy("dock_salve")
+	_assert(EconScript.cash_balance(1) == 9, "salve bought: 9 fc left")
+	_assert(_farm_inv_count(p, "dock_salve") == 1, "salve: in inventory")
+	merch.request_buy("harbor_draught")
+	_assert(EconScript.cash_balance(1) == 1, "draught bought: 1 fc left")
+	_assert(_farm_inv_count(p, "harbor_draught") == 1, "draught: in inventory")
+	# Failed buys change nothing.
+	merch.request_buy("fertilizer") # need 4, have 1
+	merch.request_buy("no_such_item")
+	_assert(EconScript.cash_balance(1) == 1, "failed buys: balance untouched")
+	_assert(EconScript.stock_count(1, "fertilizer") == 2, "failed buys: stock untouched")
+	# --- Bought seeds plant (ledger + inventory agree, Phase 3 path) ---
+	var plot = PlotScript.new()
+	root.add_child(plot)
+	plot.test_player = p
+	plot.plot_action() # till
+	plot.plot_action() # plant: spends 1 bought seed
+	_assert(plot.plot_state == "planted", "bought seed plants")
+	_assert(PlotScript.seed_count(1) == 1, "plant: ledger 2 -> 1")
+	_assert(_farm_inv_count(p, "seed_packet") == 1, "plant: inventory 2 -> 1")
+	# --- Fertilizer: exactly one tick per application ---
+	plot.on_wave_cleared() # ticks 1, growing
+	_assert(plot.plot_state == "growing" and plot.growth_ticks == 1, "pre-fertilizer: growing @1")
+	plot.plot_action() # E with fertilizer: +1 tick
+	_assert(plot.growth_ticks == 2 and plot.plot_state == "growing", "fertilizer: one tick (2, still growing)")
+	_assert(EconScript.stock_count(1, "fertilizer") == 1, "fertilizer: stock spent 1")
+	_assert(_farm_inv_count(p, "fertilizer") == 1, "fertilizer: inventory spent 1")
+	plot.plot_action() # E with fertilizer at 1 tick left: matures
+	_assert(plot.plot_state == "harvestable", "fertilizer at 1-left: harvestable")
+	_assert(EconScript.stock_count(1, "fertilizer") == 0, "fertilizer: stock spent")
+	# No fertilizer: E only prompts, state untouched.
+	var plot3 = PlotScript.new()
+	root.add_child(plot3)
+	plot3.test_player = p
+	plot3.plot_action() # till
+	plot3.plot_action() # plant (ledger 1 -> 0)
+	plot3.on_wave_cleared() # growing @1
+	plot3.plot_action() # E with no fertilizer
+	_assert(plot3.plot_state == "growing" and plot3.growth_ticks == 1, "no fertilizer: state untouched")
+	_assert(plot3.prompt_text() == "Growing (2 waves left)", "no fertilizer: prompt unchanged")
+	# --- Bait: auto-consumes on cast, shifts the roll ---
+	var spot = SpotScript.new()
+	root.add_child(spot)
+	spot.test_player = p
+	spot._start_session(1) # server-side cast with bait in stock
+	_assert(EconScript.stock_count(1, "bait_lure") == 0, "bait: consumed on cast (server)")
+	_assert(_farm_inv_count(p, "bait_lure") == 0, "bait: consumed on cast (inventory)")
+	_assert(spot._bait_this_cast, "bait: armed for this cast's roll")
+	spot._end_session()
+	_assert(not spot._bait_this_cast, "bait: cleared on session end")
+	# Statistical shift: baited rolls beat baseline rolls toward rare.
+	spot._wait_duration = 5.5 # mid-range wait for both samples
+	var base_hit := 0
+	for i in 400:
+		spot._bait_this_cast = false
+		var rid: String = spot._roll_catch_item()
+		if rid != "fish_minnow":
+			base_hit += 1
+	var bait_hit := 0
+	for i in 400:
+		spot._bait_this_cast = true
+		var rid2: String = spot._roll_catch_item()
+		if rid2 != "fish_minnow":
+			bait_hit += 1
+	_assert(bait_hit > base_hit + 20, "bait: rare shift (base %d vs baited %d)" % [base_hit, bait_hit])
+	_assert(not spot._bait_this_cast, "bait: flag consumed by the roll")
+	# --- Wave buff: usable in "later levels", expires after N waves ---
+	var didx := -1
+	for i in range(p.inventory.size()):
+		var e: Dictionary = p.inventory[i]
+		var it = e.get("item")
+		if it != null and str(it.id) == "harbor_draught":
+			didx = i
+			break
+	_assert(didx >= 0, "draught in inventory")
+	p.on_wave_cleared() # two waves pass in a later level...
+	p.on_wave_cleared()
+	p.use_item(didx) # ...then the buff is used there
+	_assert(p._buff_mult("damage") == 1.25, "draught: +25% damage active in later level")
+	p.on_wave_cleared()
+	p.on_wave_cleared()
+	_assert(p._buff_mult("damage") == 1.25, "draught: still active after 2 waves")
+	p.on_wave_cleared()
+	_assert(p._buff_mult("damage") == 1.0, "draught: expired after 3 waves")
+	_assert(_farm_inv_count(p, "harbor_draught") == 0, "draught: consumed on use")
+	# --- Salve heals ---
+	var sidx := -1
+	for i in range(p.inventory.size()):
+		var e2: Dictionary = p.inventory[i]
+		var it2 = e2.get("item")
+		if it2 != null and str(it2.id) == "dock_salve":
+			sidx = i
+			break
+	p.hp = p.max_hp * 0.5
+	p.use_item(sidx)
+	_assert(p.hp > p.max_hp * 0.5, "salve: healed")
+	# --- Bulwark reduces damage taken ---
+	p.receive_item("barnacle_bulwark")
+	var bidx := -1
+	for i in range(p.inventory.size()):
+		var e3: Dictionary = p.inventory[i]
+		var it3 = e3.get("item")
+		if it3 != null and str(it3.id) == "barnacle_bulwark":
+			bidx = i
+			break
+	p.use_item(bidx)
+	_assert(p._buff_mult("defense") == 0.75, "bulwark: defense mult 0.75")
+	p.hp = p.max_hp
+	p.take_damage(40.0, "test")
+	_assert(p.hp == p.max_hp - 30.0, "bulwark: 40 damage -> 30 taken")
+	# --- Death clears the server ledgers (mirrors notify_player_died) ---
+	EconScript.grant_cash(1, 10)
+	PlotScript.grant_seeds(1, 5)
+	EconScript.reset_peer(1)
+	PlotScript.clear_ledger(1)
+	_assert(EconScript.cash_balance(1) == 0, "death: farm cash ledger cleared")
+	_assert(PlotScript.seed_count(1) == 0, "death: seed ledger cleared")
+	# --- No gold leakage across the whole loop ---
+	_assert(int(p.get("supermarket_cash")) == gold_before, "no gold leakage: supermarket_cash unchanged")
+	# Cleanup: reset seams so later tests see production behavior.
+	EconScript.debug_reset()
+	PlotScript._seed_ledger.clear()
+	plot.free()
+	plot3.free()
+	spot.free()
+	merch.free()
+	p.queue_free()
+	print("[Playtest] issue #102 Phase 4 done")
 
 
 ## Farm-phase helper: count of an item id in a player's inventory.

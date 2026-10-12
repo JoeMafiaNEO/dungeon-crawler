@@ -320,6 +320,10 @@ static func build_vendor_stock() -> Array:
 			continue
 		if bool(item.get("supermarket_loot")):
 			continue
+		# Issue #102 Phase 4: dock-economy goods are balance-isolated —
+		# run cash ("gold") never buys them and they never convert to it.
+		if bool(item.get("dock_good")):
+			continue
 		if bool(item.get("meta_locked")) and not SaveManager.is_item_unlocked(id):
 			continue
 		pool.append(id)

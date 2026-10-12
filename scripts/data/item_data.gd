@@ -59,11 +59,22 @@ static func rarity_color(r: int) -> Color:
 @export var buff_stat: String = ""
 @export var buff_mult: float = 1.0
 @export var buff_duration: float = 0.0
+## Issue #102 Phase 4: wave-counted buff duration. When > 0, using the item
+## grants a wave buff lasting this many cleared waves (decremented by
+## Player.on_wave_cleared, broadcast by the dungeon per wave). Mult < 1.0
+## reduces the stat (defense = damage taken).
+@export var buff_waves: int = 0
 ## Supermarket loot: sellable for cash, cleared from inventory on leaving
 ## the supermarket level. Potions are NOT supermarket loot.
 @export var supermarket_loot: bool = false
 ## Cash value when sold at the supermarket checkout.
 @export var sell_value: int = 0
+## Issue #102 Phase 4: dock-economy good (fish, crops, seeds, farm cash,
+## bait, fertilizer, dock vendor wares). Excluded from the station vendor
+## pool and every other run-cash commerce path: the dock economy is
+## balance-isolated by design — farm cash never converts to run cash
+## ("gold") and run cash never buys dock goods.
+@export var dock_good: bool = false
 ## Meta-locked: must be unlocked via achievements before it enters the drop pool.
 @export var meta_locked: bool = false
 ## Relic Vault special (issue #5): if set, picking this up earns/activates the

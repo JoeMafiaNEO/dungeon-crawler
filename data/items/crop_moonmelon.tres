@@ -12,3 +12,4 @@ rarity = 2
 consumable = true
 heal_fraction = 0.5
 sell_value = 0
+dock_good = true

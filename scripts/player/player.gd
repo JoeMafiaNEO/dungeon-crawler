@@ -182,6 +182,16 @@ const DASH_SPEED := 16.0
 var _buffs := {
 	"speed": {"mult": 1.0, "until": 0.0},
 	"damage": {"mult": 1.0, "until": 0.0},
+	"defense": {"mult": 1.0, "until": 0.0},
+}
+## Issue #102 Phase 4: wave-counted buffs: stat -> {"mult": float, "waves": int}.
+## Granted by items with buff_waves > 0; decremented by on_wave_cleared,
+## which the dungeon broadcasts per cleared wave. Mult < 1.0 on "defense"
+## reduces damage taken.
+var _wave_buffs := {
+	"speed": {"mult": 1.0, "waves": 0},
+	"damage": {"mult": 1.0, "waves": 0},
+	"defense": {"mult": 1.0, "waves": 0},
 }
 var _buff_announced := {"speed": false, "damage": false}
 var _snapshot := 0.0
@@ -3312,7 +3322,7 @@ func _update_pickup_prompt() -> void:
 func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "fishing_spots", "farm_plots"]:
+	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "fishing_spots", "farm_plots", "dock_merchant"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:
@@ -3738,12 +3748,21 @@ func use_item(index: int) -> void:
 		hp = minf(max_hp, hp + amount)
 		effect = "+%d HP" % int(amount)
 		Effects.burst(get_parent(), global_position + Vector3(0, 1.2, 0), Color(0.3, 1.0, 0.4), 18, 4.0)
-	if item.buff_stat != "" and _buffs.has(item.buff_stat):
+	if item.buff_stat != "" and _buffs.has(item.buff_stat) and item.buff_duration > 0.0:
 		_buffs[item.buff_stat]["mult"] = item.buff_mult
 		_buffs[item.buff_stat]["until"] = now + item.buff_duration
 		_buff_announced[item.buff_stat] = true
 		effect += (" " if effect != "" else "") + "+%d%% %s (%ds)" % [
 			int((item.buff_mult - 1.0) * 100.0), item.buff_stat, int(item.buff_duration)]
+	# Issue #102 Phase 4: wave-counted buffs (buff_waves). Defense uses
+	# mult < 1.0 (damage taken multiplier), shown as a reduction.
+	if item.buff_stat != "" and int(item.buff_waves) > 0 and _wave_buffs.has(item.buff_stat):
+		_wave_buffs[item.buff_stat]["mult"] = item.buff_mult
+		_wave_buffs[item.buff_stat]["waves"] = int(item.buff_waves)
+		var pct := int(absf(item.buff_mult - 1.0) * 100.0)
+		var sign := "+" if item.buff_mult >= 1.0 else "-"
+		effect += (" " if effect != "" else "") + "%s%d%% %s (%d waves)" % [
+			sign, pct, item.buff_stat, int(item.buff_waves)]
 	entry["count"] = int(entry["count"]) - 1
 	if int(entry["count"]) <= 0:
 		inventory.remove_at(index)
@@ -3778,6 +3797,66 @@ func consume_seed_item() -> void:
 			return
 
 
+## Issue #102 Phase 4: the server spends one dock good (sold fish/crop,
+## bait, fertilizer) from the peer's own stack. Mirrors consume_seed_item:
+## inventory is per-peer authoritative, so the server rpc_ids the owner and
+## the client drops from its own stack.
+@rpc("any_peer", "call_local")
+func consume_dock_good(item_id: String) -> void:
+	if not is_multiplayer_authority():
+		return
+	for i in range(inventory.size()):
+		var entry: Dictionary = inventory[i]
+		var item := entry["item"] as ItemData
+		if item != null and item.id == item_id:
+			entry["count"] = int(entry["count"]) - 1
+			if int(entry["count"]) <= 0:
+				inventory.remove_at(i)
+			_recalc_stats()
+			if hud != null:
+				hud.refresh_inventory(self)
+				hud.refresh_loadout(self)
+			return
+
+
+## Issue #102 Phase 4: spend n farm cash from the peer's own stack.
+@rpc("any_peer", "call_local")
+func consume_farm_cash(n: int) -> void:
+	if not is_multiplayer_authority():
+		return
+	for i in range(inventory.size()):
+		var entry: Dictionary = inventory[i]
+		var item := entry["item"] as ItemData
+		if item != null and item.id == "farm_cash":
+			entry["count"] = int(entry["count"]) - n
+			if int(entry["count"]) <= 0:
+				inventory.remove_at(i)
+			_recalc_stats()
+			if hud != null:
+				hud.refresh_inventory(self)
+				hud.refresh_loadout(self)
+			return
+
+
+## Issue #102 Phase 4: farm cash balance as seen in this peer's inventory
+## (display mirror; the server's DockEconomy ledger is authoritative).
+func farm_cash_count() -> int:
+	for entry in inventory:
+		var item := entry["item"] as ItemData
+		if item != null and item.id == "farm_cash":
+			return int(entry["count"])
+	return 0
+
+
+## Issue #102 Phase 4: tick down wave-counted buffs. The dungeon broadcasts
+## this per cleared wave (server); each peer decrements its own player.
+@rpc("any_peer", "call_local")
+func on_wave_cleared() -> void:
+	for stat in _wave_buffs:
+		var w: Dictionary = _wave_buffs[stat]
+		w["waves"] = maxi(0, int(w["waves"]) - 1)
+
+
 ## Base camera FOV from the settings panel (default 75).
 func _base_fov() -> float:
 	if has_node("/root/SaveManager"):
@@ -3790,6 +3869,10 @@ func _buff_mult(stat: String) -> float:
 	var b: Dictionary = _buffs.get(stat, {"mult": 1.0, "until": 0.0})
 	if Time.get_ticks_msec() / 1000.0 < float(b["until"]):
 		mult *= float(b["mult"])
+	# Issue #102 Phase 4: wave-counted buffs stack multiplicatively too.
+	var wb: Dictionary = _wave_buffs.get(stat, {"mult": 1.0, "waves": 0})
+	if int(wb["waves"]) > 0:
+		mult *= float(wb["mult"])
 	# War Horn totem aura: +25% damage, scaled by Warden/Conqueror aura strength.
 	if stat == "damage" and _warhorn_t > 0.0:
 		mult *= 1.0 + 0.25 * _warhorn_strength
@@ -3834,6 +3917,8 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	# knockback, so there is nothing further to skip.)
 	if _reinforce_t > 0.0:
 		amount *= 0.5
+	# Barnacle Bulwark (issue #102): wave-counted damage reduction.
+	amount *= _buff_mult("defense")
 	# Remember who hit us so the death screen can name the killer.
 	if not attacker_name.is_empty():
 		run_death_cause = attacker_name

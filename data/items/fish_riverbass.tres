@@ -9,4 +9,5 @@ display_name = "River Bass"
 description = "A feisty river bass. Patience pays off."
 slot = 2
 rarity = 1
-sell_value = 0
+sell_value = 5
+dock_good = true

@@ -1,0 +1,17 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "swift_current"
+display_name = "Swift Current Tonic"
+description = "Use: +25% move speed for 3 waves. Works in any level. (Issue #102)"
+slot = 2
+rarity = 2
+consumable = true
+buff_stat = "speed"
+buff_mult = 1.25
+buff_waves = 3
+sell_value = 0
+dock_good = true

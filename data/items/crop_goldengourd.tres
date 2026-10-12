@@ -10,3 +10,4 @@ description = "A legendary golden crop. A Dock Trophy — the Collection tab rem
 slot = 2
 rarity = 4
 sell_value = 0
+dock_good = true

@@ -54,6 +54,19 @@ static func grant_starter_seeds(peer: int) -> void:
 	_seed_ledger[peer] = seed_count(peer) + STARTER_SEED_COUNT
 
 
+## Issue #102 Phase 4: vendor seed purchases add to the ledger (the Phase 3
+## flagged seam). Additive like the starter grant.
+static func grant_seeds(peer: int, n: int) -> void:
+	_seed_ledger[peer] = seed_count(peer) + n
+
+
+## Issue #102 Phase 4: death wipes the inventory mirror, so the ledger must
+## go too (else phantom seeds after respawn). Called by the dungeon's
+## notify_player_died (server).
+static func clear_ledger(peer: int) -> void:
+	_seed_ledger.erase(peer)
+
+
 static func seed_count(peer: int) -> int:
 	return int(_seed_ledger.get(peer, 0))
 
@@ -121,7 +134,23 @@ func plot_action() -> void:
 			else:
 				rpc_id(peer, "on_plot_toast", "Out of seeds.")
 		"planted", "growing":
-			rpc_id(peer, "on_plot_toast", "Still growing (%d waves left)." % _waves_left())
+			# Issue #102 Phase 4: fertilizer (same E, no separate UI — the
+			# flagged interaction choice). Holding fertilizer consumes one
+			# and advances exactly one growth tick immediately (may mature
+			# the crop); without it, the existing "still growing" prompt.
+			if DockEconomy.spend_stock(peer, DockEconomy.FERTILIZER_ITEM):
+				var fplayer := _player_for_peer(peer)
+				if fplayer != null:
+					fplayer.rpc_id(peer, "consume_dock_good", DockEconomy.FERTILIZER_ITEM)
+				growth_ticks += 1
+				plot_state = "harvestable" if growth_ticks >= GROWTH_TICKS else "growing"
+				_sync_plot()
+				if plot_state == "harvestable":
+					rpc_id(peer, "on_plot_toast", "Fertilized — ready to harvest!")
+				else:
+					rpc_id(peer, "on_plot_toast", "Fertilized — %d waves left." % _waves_left())
+			else:
+				rpc_id(peer, "on_plot_toast", "Still growing (%d waves left)." % _waves_left())
 		"harvestable":
 			_harvest(peer)
 

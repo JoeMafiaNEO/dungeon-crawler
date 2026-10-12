@@ -1,0 +1,13 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "bait_lure"
+display_name = "Shiny Lure"
+description = "Auto-used on your next cast: much better odds at rare fish. (Issue #102)"
+slot = 2
+rarity = 1
+sell_value = 0
+dock_good = true

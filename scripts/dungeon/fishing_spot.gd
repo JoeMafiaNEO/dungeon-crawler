@@ -36,6 +36,11 @@ var occupied_by: int = 0 ## peer id holding the spot; 0 = free
 
 var _session_state: int = SessionState.NONE
 var _session_peer: int = 0
+## Issue #102 Phase 4: bait auto-consumes on cast (server ledger + client
+## stack drop in _start_session). While true, the next _roll_catch_item
+## shifts rarity toward rare/uncommon, then clears. Cancelled sessions
+## clear it in _end_session so it never leaks into a later cast.
+var _bait_this_cast := false
 var _wait_duration: float = 0.0
 var _bite_at_msec: int = 0
 var _reel_deadline_msec: int = 0
@@ -180,6 +185,15 @@ func _start_session(peer: int) -> void:
 	if player == null:
 		return
 	_session_peer = peer
+	# Issue #102 Phase 4: bait is consumed per cast and applies to this
+	# cast's roll (the flagged design choice — no separate "use" step, so
+	# the one-E claim+cast flow stays frictionless and the server owns the
+	# odds shift).
+	if DockEconomy.spend_stock(peer, DockEconomy.BAIT_ITEM):
+		_bait_this_cast = true
+		var bplayer := _player_for_peer(peer)
+		if bplayer != null:
+			bplayer.rpc_id(peer, "consume_dock_good", DockEconomy.BAIT_ITEM)
 	_wait_duration = _roll_wait()
 	_bite_at_msec = _now_msec() + int(_wait_duration * 1000.0)
 	_reel_deadline_msec = 0
@@ -231,6 +245,7 @@ func _end_session() -> void:
 	var peer := _session_peer
 	_session_state = SessionState.NONE
 	_session_peer = 0
+	_bait_this_cast = false
 	var player := _player_for_peer(peer)
 	if player != null:
 		player.rpc_id(peer, "set_fishing", false)
@@ -238,12 +253,16 @@ func _end_session() -> void:
 
 ## Catch rarity weighted by wait time: longer wait -> better odds.
 ## (Numbers are defaults for Jesse to tune; flagged in the report.)
+## Bait (issue #102 Phase 4): while _bait_this_cast, both rare thresholds
+## shift up by DockEconomy.BAIT_RARE_SHIFT (Jesse's call).
 func _roll_catch_item() -> String:
 	var t := clampf((_wait_duration - WAIT_MIN) / (WAIT_MAX - WAIT_MIN), 0.0, 1.0)
+	var shift := DockEconomy.BAIT_RARE_SHIFT if _bait_this_cast else 0.0
+	_bait_this_cast = false
 	var roll := randf()
-	if roll < 0.05 + 0.15 * t:
+	if roll < 0.05 + 0.15 * t + shift:
 		return "fish_glimmerfin"
-	if roll < 0.25 + 0.35 * t:
+	if roll < 0.25 + 0.35 * t + shift:
 		return "fish_riverbass"
 	return "fish_minnow"
 

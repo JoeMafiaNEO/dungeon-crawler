@@ -9,4 +9,5 @@ display_name = "Minnow"
 description = "A small river minnow. The docks vendor buys fish for farm cash."
 slot = 2
 rarity = 0
-sell_value = 0
+sell_value = 2
+dock_good = true

@@ -1890,6 +1890,17 @@ func _wave_cleared() -> void:
 		for n in get_tree().get_nodes_in_group("farm_plots"):
 			if n.has_method("on_wave_cleared"):
 				n.call("on_wave_cleared")
+	# Issue #102 Phase 4: wave-counted buffs (buff_waves) tick down on every
+	# peer's own player. SteamMultiplayerPeer can't rpc_id its own peer id:
+	# direct call for the host's own player, rpc_id for remote owners.
+	if is_inside_tree():
+		for pnode in get_tree().get_nodes_in_group("players"):
+			if pnode.has_method("on_wave_cleared"):
+				var auth := int(pnode.get_multiplayer_authority())
+				if auth == multiplayer.get_unique_id():
+					pnode.on_wave_cleared()
+				else:
+					pnode.rpc_id(auth, "on_wave_cleared")
 	if wave >= TOTAL_WAVES:
 		wave_state = WaveState.CLEARED
 		_shower_loot()
@@ -2334,6 +2345,7 @@ func _build_arena_from_layout() -> void:
 	StationAnnex.build(self, _annex_plan, _layout)
 	_build_station_annex_content()
 	spawn_points = _layout.player_spawns
+	_build_dock_merchant()
 	# Train disembark (issue #3 Phase 3): the party steps out of the car into
 	# the annex hall, so spawn there instead of the arena spawn points.
 	if spawn_in_annex:
@@ -2769,6 +2781,20 @@ func _build_farm_plots() -> void:
 		idx += 1
 
 
+## E-interact dock merchant (issue #102 Phase 4, misty docks only). One
+## merchant per level, placed 3m east of the party spawn (guaranteed floor
+## on the spawn clearing; placement is Jesse's call to move).
+func _build_dock_merchant() -> void:
+	if theme == null or not theme.has_farm_plots:
+		return
+	if spawn_points.is_empty():
+		return
+	var merch := DockMerchant.new()
+	merch.name = "DockMerchant"
+	merch.position = spawn_points[0] + Vector3(3.0, 0.0, 0.0)
+	add_child(merch)
+
+
 # --- Multiplayer save ---
 
 ## Save a multiplayer run: collect each peer's state, then write the roster.
@@ -2901,6 +2927,14 @@ func rpc_submit_save_state(state: Dictionary, slot_index: int) -> void:
 func notify_player_died() -> void:
 	if not multiplayer.is_server():
 		return
+	# Issue #102 Phase 4: death wipes the inventory mirror, so the
+	# server-side dock ledgers must go too (else phantom farm cash, seeds,
+	# bait or fertilizer after respawn).
+	var dead_peer := multiplayer.get_remote_sender_id()
+	if dead_peer == 0:
+		dead_peer = multiplayer.get_unique_id()
+	DockEconomy.reset_peer(dead_peer)
+	FarmPlot.clear_ledger(dead_peer)
 	# Defer one frame so the death flag settles.
 	await get_tree().process_frame
 	check_party_wipe()

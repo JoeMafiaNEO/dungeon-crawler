@@ -1,0 +1,15 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "dock_salve"
+display_name = "Dockside Salve"
+description = "Use: restores 35% of max health. Sold by the dock merchant. (Issue #102)"
+slot = 2
+rarity = 1
+consumable = true
+heal_fraction = 0.35
+sell_value = 0
+dock_good = true

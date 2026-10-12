@@ -675,6 +675,145 @@ func _on_vendor_buy(st: Node, item_id: String) -> void:
 	AudioManager.sfx("ui_click")
 
 
+# --- Dock merchant (issue #102 Phase 4) ---
+
+var dock_vendor_open := false
+var _dock_cash_label: Label = null
+
+
+## Dock merchant panel: buy seeds/bait/fertilizer/consumables/buffs for
+## farm cash, sell fish/crops for farm cash. Compact, no scroll. Reuses the
+## cipher popup shell (mouse visible, E/Esc closes), mirroring show_vendor.
+func show_dock_vendor() -> void:
+	var merch := get_tree().get_first_node_in_group("dock_merchant")
+	if merch == null or _player == null:
+		return
+	dock_vendor_open = true
+	var vb := _cipher_panel()
+	var title := Label.new()
+	title.text = "Dock Merchant"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(0.65, 0.95, 1.0))
+	vb.add_child(title)
+	_dock_cash_label = Label.new()
+	_dock_cash_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_dock_cash_label.add_theme_font_size_override("font_size", 14)
+	_dock_cash_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(_dock_cash_label)
+	# Local mirror first; the server answers with the authoritative ledger
+	# balance right after (request_dock_balance -> dock_balance).
+	_dock_cash_label.text = "Farm cash: %d" % _player.farm_cash_count()
+	if multiplayer.is_server():
+		merch.request_dock_balance()
+	else:
+		merch.rpc_id(NetworkManager.server_peer_id, "request_dock_balance")
+	var buy_head := Label.new()
+	buy_head.text = "— Buy —"
+	buy_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	buy_head.add_theme_font_size_override("font_size", 13)
+	buy_head.add_theme_color_override("font_color", Color(0.7, 0.7, 0.75))
+	vb.add_child(buy_head)
+	for entry in merch.get_catalog():
+		var item_id := str(entry.get("id"))
+		var price := int(entry.get("price"))
+		var item: ItemData = ItemDB.get_item(item_id)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		var nl := Label.new()
+		nl.text = item.display_name if item != null else item_id
+		nl.custom_minimum_size = Vector2(230, 0)
+		nl.add_theme_font_size_override("font_size", 14)
+		row.add_child(nl)
+		var pl := Label.new()
+		pl.text = "%d fc" % price
+		pl.custom_minimum_size = Vector2(64, 0)
+		pl.add_theme_font_size_override("font_size", 14)
+		pl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		row.add_child(pl)
+		var buy := Button.new()
+		buy.text = "BUY"
+		buy.pressed.connect(_on_dock_buy.bind(merch, item_id))
+		row.add_child(buy)
+		vb.add_child(row)
+	var sell_head := Label.new()
+	sell_head.text = "— Sell (your holdings) —"
+	sell_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sell_head.add_theme_font_size_override("font_size", 13)
+	sell_head.add_theme_color_override("font_color", Color(0.7, 0.7, 0.75))
+	vb.add_child(sell_head)
+	var any_sell := false
+	for inv_entry in _player.inventory:
+		var e_item: ItemData = inv_entry.get("item")
+		if e_item == null:
+			continue
+		var value := DockEconomy.sell_value_for(e_item.id)
+		if value <= 0:
+			continue
+		any_sell = true
+		var srow := HBoxContainer.new()
+		srow.add_theme_constant_override("separation", 10)
+		var snl := Label.new()
+		snl.text = "%s x%d" % [e_item.display_name, int(inv_entry.get("count"))]
+		snl.custom_minimum_size = Vector2(230, 0)
+		snl.add_theme_font_size_override("font_size", 14)
+		srow.add_child(snl)
+		var spl := Label.new()
+		spl.text = "+%d fc" % value
+		spl.custom_minimum_size = Vector2(64, 0)
+		spl.add_theme_font_size_override("font_size", 14)
+		spl.add_theme_color_override("font_color", Color(0.55, 1.0, 0.6))
+		srow.add_child(spl)
+		var sell := Button.new()
+		sell.text = "SELL"
+		sell.pressed.connect(_on_dock_sell.bind(merch, e_item.id))
+		srow.add_child(sell)
+		vb.add_child(srow)
+	if not any_sell:
+		var none := Label.new()
+		none.text = "(nothing to sell — go fish)"
+		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		none.add_theme_font_size_override("font_size", 12)
+		none.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+		vb.add_child(none)
+	var close_hint := Label.new()
+	close_hint.text = "E / Esc — close"
+	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_hint.add_theme_font_size_override("font_size", 12)
+	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+	vb.add_child(close_hint)
+	_open_cipher_popup(vb.get_parent() as Control)
+
+
+## Server-authoritative balance lands here (merchant.dock_balance RPC).
+func set_dock_balance(balance: int) -> void:
+	if _dock_cash_label != null and is_instance_valid(_dock_cash_label):
+		_dock_cash_label.text = "Farm cash: %d" % balance
+
+
+## Rebuild the panel after a buy/sell so holdings + buttons refresh.
+func refresh_dock_vendor() -> void:
+	if dock_vendor_open:
+		show_dock_vendor()
+
+
+func _on_dock_buy(merch: Node, item_id: String) -> void:
+	# SteamMultiplayerPeer can't rpc_id its own peer ID: call directly as server.
+	if multiplayer.is_server():
+		merch.request_buy(item_id)
+	else:
+		merch.rpc_id(NetworkManager.server_peer_id, "request_buy", item_id)
+	AudioManager.sfx("ui_click")
+
+
+func _on_dock_sell(merch: Node, item_id: String) -> void:
+	if multiplayer.is_server():
+		merch.request_sell(item_id)
+	else:
+		merch.rpc_id(NetworkManager.server_peer_id, "request_sell", item_id)
+	AudioManager.sfx("ui_click")
+
+
 # --- Bounty Board (issue #7 Phase 2) ---
 
 var bounty_open := false
@@ -962,11 +1101,13 @@ func close_cipher_popup() -> void:
 		_cipher_popup.queue_free()
 	_cipher_popup = null
 	vendor_open = false
+	dock_vendor_open = false
 	bounty_open = false
 	if was_vault:
 		AudioManager.sfx("vault_close")
 	vault_open = false
 	_vendor_cash_label = null
+	_dock_cash_label = null
 	cipher_popup_open = false
 	if was_vault:
 		AudioManager.sfx("vault_close")

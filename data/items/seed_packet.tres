@@ -10,3 +10,4 @@ description = "A packet of dockside seeds. E at a tilled farm plot to plant. (Is
 slot = 2
 rarity = 0
 sell_value = 0
+dock_good = true

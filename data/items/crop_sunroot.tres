@@ -9,4 +9,5 @@ display_name = "Sunroot"
 description = "A hardy dockside root. The docks vendor buys crops for farm cash. (Issue #102)"
 slot = 2
 rarity = 0
-sell_value = 0
+sell_value = 3
+dock_good = true
