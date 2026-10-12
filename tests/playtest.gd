@@ -5879,7 +5879,7 @@ func _test_warlord_spawn_avoids_river() -> void:
 	_assert(RTSManager.faction_color(12) == RTSManager.faction_color(0),
 		"warlord: palette wraps past 12")
 	var usrc := FileAccess.get_file_as_string("res://scripts/rts/unit.gd")
-	_assert(usrc.contains("FactionRing") and usrc.contains("RTSManager.faction_color(faction)"),
+	_assert(usrc.contains("FactionRing") and usrc.contains("RTSManager.faction_color("),
 		"warlord: units get a faction-colored ring")
 	var bsrc := FileAccess.get_file_as_string("res://scripts/rts/building.gd")
 	_assert(bsrc.contains("RTSManager.faction_color(faction)"),

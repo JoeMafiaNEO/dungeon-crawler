@@ -34,6 +34,14 @@ var _rts_mgr: RTSManager = null
 # Jesse 2026-10-11: dormancy — idle units skip per-frame work.
 var _dormant := false
 var _dormant_check := 0.0
+# Jesse 2026-10-12: staggered aggro scan — every unit scanning for enemies
+# every physics frame was the biggest per-frame cost at 1500 units.
+var _aggro_tick := 0.0
+# Jesse 2026-10-12: staggered separation — the 3x3-cell neighbor scan every
+# frame was the remaining per-frame bottleneck in dense crowds. Separation
+# is cached and refreshed ~5x/sec per unit, staggered.
+var _sep_cache := Vector3.ZERO
+var _sep_tick := 0.0
 # Trade route state (trade_cart only).
 var _home_market: Node3D = null
 var _trade_target: Node3D = null
@@ -60,17 +68,8 @@ func set_selected(on: bool) -> void:
 	if on:
 		if _select_ring == null or not is_instance_valid(_select_ring):
 			_select_ring = MeshInstance3D.new()
-			var tm := TorusMesh.new()
-			tm.inner_radius = 0.42
-			tm.outer_radius = 0.58
-			_select_ring.mesh = tm
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = Color(0.25, 1.0, 0.35)
-			mat.emission_enabled = true
-			mat.emission = Color(0.25, 1.0, 0.35)
-			mat.emission_energy_multiplier = 1.5
-			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			_select_ring.material_override = mat
+			_select_ring.mesh = _select_mesh()
+			_select_ring.material_override = _select_mat()
 			# Flat on the ground (not billboarded) so it reads as a ring from top-down.
 			_select_ring.rotation = Vector3.ZERO
 			_select_ring.position = Vector3(0, 0.08, 0)
@@ -92,6 +91,73 @@ func _process_select_ring(delta: float) -> void:
 # AoE-style conversion: channel time and leash range (tunable via [monks]).
 const CONVERT_TIME := 5.0
 const CONVERT_RANGE := 6.0
+
+# Jesse 2026-10-12: shared ring meshes/materials. Creating a unique
+# TorusMesh + StandardMaterial3D per unit made selecting 1500 units hitch
+# ~450ms; now one mesh/material is built once and reused by every ring.
+static var _shared_select_mesh: TorusMesh = null
+static var _shared_select_mat: StandardMaterial3D = null
+static var _shared_faction_mesh: TorusMesh = null
+static var _shared_faction_mats: Dictionary = {}
+static var _shared_convert_mesh: TorusMesh = null
+static var _shared_convert_mat: StandardMaterial3D = null
+
+
+static func _select_mesh() -> TorusMesh:
+	if _shared_select_mesh == null:
+		_shared_select_mesh = TorusMesh.new()
+		_shared_select_mesh.inner_radius = 0.42
+		_shared_select_mesh.outer_radius = 0.58
+	return _shared_select_mesh
+
+
+static func _select_mat() -> StandardMaterial3D:
+	if _shared_select_mat == null:
+		_shared_select_mat = StandardMaterial3D.new()
+		_shared_select_mat.albedo_color = Color(0.25, 1.0, 0.35)
+		_shared_select_mat.emission_enabled = true
+		_shared_select_mat.emission = Color(0.25, 1.0, 0.35)
+		_shared_select_mat.emission_energy_multiplier = 1.5
+		_shared_select_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return _shared_select_mat
+
+
+static func _faction_mesh() -> TorusMesh:
+	if _shared_faction_mesh == null:
+		_shared_faction_mesh = TorusMesh.new()
+		_shared_faction_mesh.inner_radius = 0.32
+		_shared_faction_mesh.outer_radius = 0.44
+	return _shared_faction_mesh
+
+
+static func _faction_mat(p_faction: int) -> StandardMaterial3D:
+	if not _shared_faction_mats.has(p_faction):
+		var fcol := RTSManager.faction_color(p_faction)
+		var m := StandardMaterial3D.new()
+		m.albedo_color = fcol
+		m.emission_enabled = true
+		m.emission = fcol
+		m.emission_energy_multiplier = 0.6
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_shared_faction_mats[p_faction] = m
+	return _shared_faction_mats[p_faction]
+
+
+static func _convert_mesh() -> TorusMesh:
+	if _shared_convert_mesh == null:
+		_shared_convert_mesh = TorusMesh.new()
+		_shared_convert_mesh.inner_radius = 0.3
+		_shared_convert_mesh.outer_radius = 0.42
+	return _shared_convert_mesh
+
+
+static func _convert_mat() -> StandardMaterial3D:
+	if _shared_convert_mat == null:
+		_shared_convert_mat = StandardMaterial3D.new()
+		_shared_convert_mat.albedo_color = Color(1.0, 0.85, 0.3)
+		_shared_convert_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_shared_convert_mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	return _shared_convert_mat
 
 
 func _convert_time() -> float:
@@ -128,6 +194,10 @@ func _ready() -> void:
 	_rts_mgr = get_tree().get_first_node_in_group("rts_manager") as RTSManager
 	if _rts_mgr != null and _rts_mgr.spatial_hash != null:
 		_rts_mgr.spatial_hash.insert(self)
+	# Jesse 2026-10-12: stagger the first aggro scan so all units don't
+	# scan on the same frame after a mass order.
+	_aggro_tick = float(get_instance_id() % 30) * 0.01
+	_sep_tick = float(get_instance_id() % 12) * 0.016
 	# Jesse 2026-10-11: register with the MultiMesh renderer.
 	var renderer := get_tree().get_first_node_in_group("rts_unit_renderer")
 	if renderer != null and renderer.has_method("register_unit"):
@@ -197,18 +267,8 @@ func _build_visual() -> void:
 	# faction, code-generated (no art assets). Sits below the selection ring.
 	var fring := MeshInstance3D.new()
 	fring.name = "FactionRing"
-	var tm := TorusMesh.new()
-	tm.inner_radius = 0.32
-	tm.outer_radius = 0.44
-	fring.mesh = tm
-	var fmat := StandardMaterial3D.new()
-	var fcol := RTSManager.faction_color(faction)
-	fmat.albedo_color = fcol
-	fmat.emission_enabled = true
-	fmat.emission = fcol
-	fmat.emission_energy_multiplier = 0.6
-	fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	fring.material_override = fmat
+	fring.mesh = _faction_mesh()
+	fring.material_override = _faction_mat(faction)
 	fring.rotation = Vector3.ZERO
 	fring.position = Vector3(0, 0.05, 0)
 	add_child(fring)
@@ -411,15 +471,8 @@ func set_convert_highlight(on: bool) -> void:
 	if on:
 		if _convert_ring == null or not is_instance_valid(_convert_ring):
 			_convert_ring = MeshInstance3D.new()
-			var tm := TorusMesh.new()
-			tm.inner_radius = 0.3
-			tm.outer_radius = 0.42
-			_convert_ring.mesh = tm
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = Color(1.0, 0.85, 0.3)
-			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-			_convert_ring.material_override = mat
+			_convert_ring.mesh = _convert_mesh()
+			_convert_ring.material_override = _convert_mat()
 			_convert_ring.position = Vector3(0, 0.15, 0)
 			add_child(_convert_ring)
 		_convert_ring.visible = true
@@ -661,6 +714,13 @@ func _physics_process(delta: float) -> void:
 				_wake()
 		return
 
+	# Jesse 2026-10-12: refresh the cached separation vector on a stagger.
+	if not _dormant:
+		_sep_tick -= delta
+		if _sep_tick <= 0.0:
+			_sep_tick = 0.2
+			_sep_cache = _compute_separation()
+
 	# Ships float at water level (river surface is at y=0.08).
 	if _is_ship():
 		global_position.y = 0.08
@@ -715,8 +775,14 @@ func _physics_process(delta: float) -> void:
 					mgr.sim_bump(faction, "fish_food", amt)
 
 	# Auto-attack nearest enemy (combat units only).
+	# Jesse 2026-10-12: staggered — scanning every physics frame for every
+	# unit was the dominant per-frame cost at 1500 units (3.7s/frame total).
+	# A 0.3s reaction delay is imperceptible in practice.
 	if not unit_type in NO_AUTO_ATTACK and _attack_target == null:
-		_attack_target = _find_nearest_enemy(8.0)
+		_aggro_tick -= delta
+		if _aggro_tick <= 0.0:
+			_aggro_tick = 0.3
+			_attack_target = _find_nearest_enemy(8.0)
 
 	# Attack behavior.
 	if is_instance_valid(_attack_target):
@@ -927,7 +993,7 @@ func _move_toward(pos: Vector3, delta: float, skip_avoid_building: Node3D = null
 		# away from the very target we're trying to reach (avoidance radius
 		# exceeds melee range, so units would otherwise orbit forever).
 		var avoid := _building_avoid_steer(dir, skip_avoid_building) + _resource_avoid_steer(dir)
-		dir = (dir + _separation_steer() * 1.5 + avoid * 2.5).normalized()
+		dir = (dir + _sep_cache * 1.5 + avoid * 2.5).normalized()
 		# Stuck? If we barely moved in the last 0.8s, force a hard sidestep.
 		_stuck_sample_time += delta
 		if _stuck_sample_time >= 0.8:
@@ -949,7 +1015,9 @@ func _move_toward(pos: Vector3, delta: float, skip_avoid_building: Node3D = null
 
 ## Push away from nearby units so groups don't clump into a blob.
 ## Jesse 2026-10-11: uses spatial hash instead of O(n) group scan.
-func _separation_steer() -> Vector3:
+## Jesse 2026-10-12: result is cached; callers use _sep_cache (refreshed on
+## a stagger in _physics_process).
+func _compute_separation() -> Vector3:
 	var push := Vector3.ZERO
 	var count := 0
 	var neighbors: Array = []
@@ -960,7 +1028,8 @@ func _separation_steer() -> Vector3:
 	for other in neighbors:
 		if other == self:
 			continue
-		var onode := other as Node3D
+		# Jesse 2026-10-12: typed access (see _find_nearest_enemy).
+		var onode := other as RTSUnit
 		if onode == null:
 			continue
 		var diff: Vector3 = global_position - onode.global_position
@@ -1030,9 +1099,15 @@ func _find_nearest_enemy(max_dist: float) -> Node3D:
 	for n in candidates:
 		if n == self:
 			continue
-		if int(n.get("faction")) == faction:
+		# Jesse 2026-10-12: typed access — .get("faction") on 270+ dense
+		# neighbors every frame was a major cost; direct member access is
+		# far cheaper. The spatial hash only holds RTSUnits.
+		var u := n as RTSUnit
+		if u == null:
 			continue
-		if not bool(n.get("alive")):
+		if u.faction == faction:
+			continue
+		if not u.alive:
 			continue
 		var d := global_position.distance_to(n.global_position)
 		if d < best_d:

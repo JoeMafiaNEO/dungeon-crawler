@@ -153,10 +153,17 @@ func rpc_order_move_squad(unit_ids: Array, target: Vector3) -> void:
 
 func order_move_squad(unit_ids: Array, target: Vector3) -> void:
 	# Resolve IDs to units.
+	# Jesse 2026-10-12: was O(n*m) — `id in unit_ids` linear-scanned the
+	# whole order array per unit (~550ms for 1500 units). Dictionary set
+	# makes it O(n), plus typed unit_id access instead of .get().
+	var id_set := {}
+	for id in unit_ids:
+		id_set[int(id)] = true
 	var units: Array = []
 	for n in get_tree().get_nodes_in_group("rts_units"):
-		if int(n.get("unit_id")) in unit_ids:
-			units.append(n)
+		var u := n as RTSUnit
+		if u != null and id_set.has(u.unit_id):
+			units.append(u)
 	var new_squads: Array = RTSSquad.partition(units)
 	if new_squads.is_empty():
 		# Under threshold: individual orders.
@@ -203,17 +210,19 @@ func dissolve_squads_for(units: Array) -> void:
 func _broadcast_army_sync() -> void:
 	var by_faction: Dictionary = {}
 	for n in get_tree().get_nodes_in_group("rts_units"):
-		if not bool(n.get("alive")):
+		# Jesse 2026-10-12: typed access instead of .get() (see unit.gd).
+		var u := n as RTSUnit
+		if u == null or not u.alive:
 			continue
-		var f := int(n.get("faction"))
+		var f := u.faction
 		if not by_faction.has(f):
 			by_faction[f] = {"ids": PackedInt32Array(), "pos": PackedVector3Array(),
 				"rot": PackedFloat32Array(), "hp": PackedFloat32Array()}
 		var d: Dictionary = by_faction[f]
-		(d["ids"] as PackedInt32Array).append(int(n.get("unit_id")))
-		(d["pos"] as PackedVector3Array).append((n as Node3D).global_position)
-		(d["rot"] as PackedFloat32Array).append((n as Node3D).rotation.y)
-		(d["hp"] as PackedFloat32Array).append(float(n.get("hp")))
+		(d["ids"] as PackedInt32Array).append(u.unit_id)
+		(d["pos"] as PackedVector3Array).append(u.global_position)
+		(d["rot"] as PackedFloat32Array).append(u.rotation.y)
+		(d["hp"] as PackedFloat32Array).append(u.hp)
 	for f in by_faction:
 		rpc("client_sync_army", f, by_faction[f])
 

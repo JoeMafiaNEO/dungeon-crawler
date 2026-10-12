@@ -101,14 +101,28 @@ func is_valid() -> bool:
 
 
 func check_combat(mgr: RTSManager) -> bool:
-	## Returns true if any member found an enemy (squad should dissolve).
+	## Returns true if the squad met enemies (squad should dissolve).
+	## Jesse 2026-10-12: was every member scanning every frame (~317ms/frame
+	## at 1500 units). Now checks the leader plus two sampled members — the
+	## spearhead is what meets the enemy first, and members auto-attack on
+	## their own staggered scans anyway.
 	if mgr == null or mgr.spatial_hash == null:
 		return false
-	for u in units:
-		if not is_instance_valid(u):
-			continue
+	var sample: Array = []
+	if leader != null and is_instance_valid(leader):
+		sample.append(leader)
+	var step := maxi(1, units.size() / 3)
+	var i := 0
+	while i < units.size() and sample.size() < 3:
+		var u = units[i]
+		if is_instance_valid(u) and u != leader:
+			sample.append(u)
+		i += step
+	for u in sample:
 		var enemies: Array = mgr.spatial_hash.query((u as Node3D).global_position, 8.0)
 		for e in enemies:
-			if e != u and int(e.get("faction")) != faction and bool(e.get("alive")):
+			# Jesse 2026-10-12: typed access (see RTSUnit._find_nearest_enemy).
+			var eu := e as RTSUnit
+			if eu != null and eu != u and eu.faction != faction and eu.alive:
 				return true
 	return false
