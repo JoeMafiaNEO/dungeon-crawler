@@ -123,13 +123,13 @@ func _input(event: InputEvent) -> void:
 	# Right click: order.
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		_issue_order(event.position)
-	# Mouse wheel: zoom.
+	# Mouse wheel: zoom (Jesse 2026-10-11: 6m close-up to 40m wide).
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_zoom = clampf(_zoom - 5.0, 20.0, 60.0)
+			_zoom = clampf(_zoom - 5.0, 6.0, 40.0)
 			position.y = _zoom
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_zoom = clampf(_zoom + 5.0, 20.0, 60.0)
+			_zoom = clampf(_zoom + 5.0, 6.0, 40.0)
 			position.y = _zoom
 	# Drag box visual.
 	if event is InputEventMouseMotion and _drag_start != Vector2.INF:
