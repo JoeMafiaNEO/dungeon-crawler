@@ -3,9 +3,13 @@ extends Node3D
 ## TEST SCENE ONLY — no production code is modified.
 ##
 ## Instead of rolling noise hills: the terrain stays relatively FLAT
-## (±0.3m noise) and the height lives in discrete plateau zones —
-## a mid tier at +3m and a peak tier at +6m stamped onto the heightmap
-## as irregular blobs. Steepness concentrates at the plateau edges
+## and the height lives in discrete plateau zones — a mid tier at +3m
+## and a peak tier at +6m stamped onto the heightmap as irregular
+## blobs. The flats carry real surface roughness (Jesse's follow-up:
+## the first pass read too smooth/machined): a ±0.3m low-frequency
+## base plus a ±0.45m higher-frequency texture noise, damped inside
+## the ramps and the plateau edge bands (ZonesTerrain._rough_scale).
+## Steepness concentrates at the plateau edges
 ## (2.5m terrace bands peaking ~180% grade — over the 119% physics
 ## floor limit, so walkers CANNOT climb them) and at two carved ramps
 ## (the only way up, smoothstep channels capped near 45% grade).
@@ -139,7 +143,7 @@ func _build_terrain() -> void:
 	_terrain.cell_size = 1.0
 	_terrain.terrain_seed = 4242
 	_terrain.noise_frequency = 0.045
-	_terrain.amplitude = 0.6 # ±0.3m — flats that don't look machined
+	_terrain.amplitude = 0.6 # ±0.3m low-freq base; +±0.45m rough texture on top (ZonesTerrain)
 	_terrain.water_level = -0.45 # below the noise floor: pond-only water
 	_terrain.smooth_passes = 1
 	_terrain.pond_radius = 6.0
@@ -260,9 +264,9 @@ func _report_tiers() -> void:
 		" stddev=", snappedf(float(peak["stddev"]), 0.01),
 		" max_dev_from_6=", snappedf(float(peak["max_dev"]), 0.01))
 	for st in [low, mid, peak]:
-		if float(st["max_dev"]) > 0.4:
+		if float(st["max_dev"]) > 0.9:
 			_fails += 1
-			printerr("[ZONES] FAIL tier max_dev ", st["max_dev"], " > 0.4")
+			printerr("[ZONES] FAIL tier max_dev ", st["max_dev"], " > 0.9 (roughness bound)")
 
 
 func _report_grades() -> void:

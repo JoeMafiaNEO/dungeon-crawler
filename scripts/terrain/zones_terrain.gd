@@ -14,6 +14,14 @@ extends HeightmapTerrain
 ##   height toward a smooth ramp profile inside an oriented channel:
 ##   crossing an edge inside a ramp channel follows the ramp's capped
 ##   grade instead of the steep band.
+##
+## Surface roughness (Jesse's follow-up: the first pass read too
+## smooth/machined on the flats): a second, higher-frequency noise
+## adds ±rough_amplitude of ground texture at ~3m wavelength — bumps
+## and dips the slope tinting picks up as dirt patches. It is DAMPED
+## inside ramp channels (ramps stay walkable) and inside the plateau
+## edge bands (no climbable notch in the terrace wall), and it is
+## zero-mean, so tier means stay at their tier heights.
 
 ## Half-width of a plateau edge band: the full rise happens over
 ## 2 * edge_falloff metres (~2.5m total). A 3m tier over 2.5m peaks
@@ -26,6 +34,12 @@ var zones: Array[Dictionary] = []
 ## Ramps: {base: Vector2 (xz, lower-tier end), dir: Vector2 (unit,
 ## uphill), length: float, width: float, h0/h1: tier heights}.
 var ramps: Array[Dictionary] = []
+## Flats roughness: ±metres at full strength, and its noise frequency
+## (~0.3 → ~3m features: texture, not rolling hills).
+var rough_amplitude: float = 0.45
+var rough_frequency: float = 0.30
+
+var _rough_noise := FastNoiseLite.new()
 
 
 ## Zone-only height at a world position (no base noise). Used by the
@@ -66,15 +80,67 @@ func zone_height_at(wx: float, wz: float) -> float:
 	return best
 
 
+## Roughness strength at a world position: full (1.0) on the flats,
+## damped inside plateau edge bands (down to 0.2 mid-band, so the
+## texture can't carve a climbable notch into the terrace wall) and
+## inside ramp channels (down to 0.1, so ramp centrelines stay near
+## their capped profile).
+func _rough_scale(wx: float, wz: float) -> float:
+	var scale := 1.0
+	for zn in zones:
+		var c: Vector2 = zn["center"]
+		var dx := wx - c.x
+		var dz := wz - c.y
+		var dist := sqrt(dx * dx + dz * dz)
+		var ang := atan2(dz, dx)
+		var r := float(zn["radius"]) * (1.0 \
+			+ 0.16 * sin(3.0 * ang + float(zn["phase1"])) \
+			+ 0.10 * sin(5.0 * ang + float(zn["phase2"])))
+		var t := clampf((r - dist + edge_falloff)
+			/ (2.0 * edge_falloff), 0.0, 1.0)
+		var band := 4.0 * t * (1.0 - t)
+		scale = minf(scale, 1.0 - 0.8 * band)
+	for rp in ramps:
+		var b: Vector2 = rp["base"]
+		var dir: Vector2 = rp["dir"]
+		var rx := wx - b.x
+		var rz := wz - b.y
+		var s := rx * dir.x + rz * dir.y
+		var lat := rx * -dir.y + rz * dir.x
+		var len := float(rp["length"])
+		if s < -1.5 or s > len + 1.5:
+			continue
+		var half_w := float(rp["width"]) * 0.5
+		var m_lat := 1.0 - smoothstep(half_w - 1.0, half_w + 1.0, absf(lat))
+		if m_lat <= 0.0:
+			continue
+		var m_end := smoothstep(-1.5, 1.5, s) \
+			* (1.0 - smoothstep(len - 1.5, len + 1.5, s))
+		scale = minf(scale, 1.0 - 0.9 * m_lat * m_end)
+	return scale
+
+
+## Roughness height at a world position (zero-mean texture noise,
+## modulated by _rough_scale).
+func _rough_at(wx: float, wz: float) -> float:
+	return _rough_noise.get_noise_2d(wx, wz) * rough_amplitude \
+		* _rough_scale(wx, wz)
+
+
 func generate() -> void:
 	# Mirrors HeightmapTerrain.generate() (the parent has no
 	# mid-generation hook): gentle base noise first, relaxed while the
 	# field is still zone-free so plateau edges stay crisp, then the
-	# zone heights are added on top, then ponds are carved.
+	# zone heights + flat roughness are added on top, then ponds are
+	# carved.
 	_noise.seed = terrain_seed
 	_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	_noise.frequency = noise_frequency
 	_noise.fractal_octaves = 3
+	_rough_noise.seed = terrain_seed + 1013
+	_rough_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_rough_noise.frequency = rough_frequency
+	_rough_noise.fractal_octaves = 2
 	_heights.resize(map_points * map_points)
 	for z in map_points:
 		for x in map_points:
@@ -88,7 +154,8 @@ func generate() -> void:
 		for x in map_points:
 			var wx := (float(x) - float(map_points - 1) * 0.5) * cell_size
 			var wz := (float(z) - float(map_points - 1) * 0.5) * cell_size
-			_heights[z * map_points + x] += zone_height_at(wx, wz)
+			_heights[z * map_points + x] += zone_height_at(wx, wz) \
+				+ _rough_at(wx, wz)
 	_carve_ponds()
 	_min_height = _heights[0]
 	for h in _heights:
