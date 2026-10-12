@@ -21,6 +21,7 @@ func _run() -> void:
 	_test_rts_dormancy()
 	_test_rts_batched_sync()
 	_test_rts_multimesh()
+	_test_rts_squads()
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
@@ -296,6 +297,39 @@ func _test_rts_multimesh() -> void:
 	_assert(r.has_method("unregister_unit"), "Renderer has unregister_unit")
 	_assert(r.has_method("_update_instances"), "Renderer has _update_instances")
 	r.queue_free()
+
+
+func _test_rts_squads() -> void:
+	print("[Playtest] RTS squads...")
+	var squad_script = load("res://scripts/rts/rts_squad.gd")
+	_assert(squad_script != null, "RTSSquad loads")
+	if squad_script == null:
+		return
+	# Thresholds.
+	_assert(squad_script.squad_size_for(10) == 0, "10 units: no squads")
+	_assert(squad_script.squad_size_for(24) == 0, "24 units: no squads")
+	_assert(squad_script.squad_size_for(25) == 12, "25 units: squads of 12")
+	_assert(squad_script.squad_size_for(99) == 12, "99 units: squads of 12")
+	_assert(squad_script.squad_size_for(100) == 25, "100 units: squads of 25")
+	_assert(squad_script.squad_size_for(500) == 25, "500 units: squads of 25")
+	# Partition.
+	var mock_units: Array = []
+	for i in 50:
+		var n := Node3D.new()
+		n.set_meta("faction", 0)
+		mock_units.append(n)
+	# Mock get() for faction — use a simple approach.
+	var squads: Array = squad_script.partition(mock_units)
+	_assert(squads.size() == 5, "50 units -> 5 squads of 10 (got %d)" % squads.size())
+	for n in mock_units:
+		n.queue_free()
+	# Manager has squad methods.
+	var mgr_script = load("res://scripts/rts/rts_manager.gd")
+	var mgr = mgr_script.new()
+	_assert(mgr.has_method("order_move_squad"), "Manager has order_move_squad")
+	_assert(mgr.has_method("rpc_order_move_squad"), "Manager has rpc_order_move_squad")
+	_assert(mgr.has_method("dissolve_squads_for"), "Manager has dissolve_squads_for")
+	mgr.queue_free()
 
 
 func _test_save_roundtrip() -> void:

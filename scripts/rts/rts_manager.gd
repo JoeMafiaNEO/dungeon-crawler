@@ -72,6 +72,8 @@ var spatial_hash: RTSSpatialHash = null
 # Jesse 2026-10-11: batched network sync (replaces per-unit 12Hz RPCs).
 var _sync_tick := 0.0
 const SYNC_INTERVAL := 0.12  # ~8Hz
+# Jesse 2026-10-11: active squads for adaptive squad movement.
+var squads: Array = []
 # faction_id -> peer_id (for players). AI factions have peer_id = -1.
 var faction_peers: Dictionary = {}
 ## Deterministic network IDs for RTS entities (Jesse 2026-10-10: units/buildings
@@ -137,6 +139,64 @@ func _process(delta: float) -> void:
 		return
 	_sync_tick = 0.0
 	_broadcast_army_sync()
+	# Jesse 2026-10-11: check squads for combat/dissolution.
+	_update_squads()
+
+
+## Jesse 2026-10-11: squad management.
+@rpc("any_peer", "call_local")
+func rpc_order_move_squad(unit_ids: Array, target: Vector3) -> void:
+	if not multiplayer.is_server():
+		return
+	order_move_squad(unit_ids, target)
+
+
+func order_move_squad(unit_ids: Array, target: Vector3) -> void:
+	# Resolve IDs to units.
+	var units: Array = []
+	for n in get_tree().get_nodes_in_group("rts_units"):
+		if int(n.get("unit_id")) in unit_ids:
+			units.append(n)
+	var new_squads: Array = RTSSquad.partition(units)
+	if new_squads.is_empty():
+		# Under threshold: individual orders.
+		for u in units:
+			if u.has_method("order_move"):
+				var offset := Vector3(randf_range(-1, 1), 0, randf_range(-1, 1))
+				u.order_move(target + offset)
+	else:
+		# Form squads.
+		for s in new_squads:
+			(s as RTSSquad).set_target(target)
+			squads.append(s)
+
+
+func _update_squads() -> void:
+	var to_remove: Array = []
+	for s in squads:
+		var squad := s as RTSSquad
+		if not squad.is_valid():
+			to_remove.append(s)
+		elif squad.check_combat(self):
+			# Combat: dissolve, units fight individually.
+			squad.dissolve()
+			to_remove.append(s)
+	for s in to_remove:
+		squads.erase(s)
+
+
+func dissolve_squads_for(units: Array) -> void:
+	## Call when units are deselected or given individual orders.
+	var to_remove: Array = []
+	for s in squads:
+		var squad := s as RTSSquad
+		for u in units:
+			if u in squad.units:
+				squad.dissolve()
+				to_remove.append(s)
+				break
+	for s in to_remove:
+		squads.erase(s)
 
 
 ## Gather all living units by faction and broadcast packed transforms.

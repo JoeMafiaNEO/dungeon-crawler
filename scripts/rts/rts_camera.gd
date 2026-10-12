@@ -262,6 +262,19 @@ func _issue_order(screen_pos: Vector2) -> void:
 	var target_node := _pick_resource_at(ground)
 	var target_market := _pick_market_at(ground)
 	var target_construction := _pick_construction_at(ground)
+	# Jesse 2026-10-11: adaptive squads — large move orders go through
+	# the manager's batch path, which partitions into squads.
+	if target_unit == null and target_node == null and target_market == null \
+			and target_construction == null:
+		var unit_ids: Array = []
+		for n in _selected:
+			if is_instance_valid(n) and not n.is_in_group("rts_buildings"):
+				unit_ids.append(int(n.get("unit_id")))
+		if RTSSquad.squad_size_for(unit_ids.size()) > 0:
+			var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
+			if mgr != null:
+				mgr.rpc_id(_server_id(), "rpc_order_move_squad", unit_ids, ground)
+				return
 	for n in _selected:
 		if not is_instance_valid(n):
 			continue

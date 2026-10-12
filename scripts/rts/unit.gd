@@ -1,5 +1,9 @@
 class_name RTSUnit
-extends CharacterBody3D
+extends Node3D
+## Jesse 2026-10-11: converted from CharacterBody3D to Node3D for
+## thousands-scale performance. Movement is manual position integration;
+## separation uses the spatial hash, building avoidance uses steering.
+## The physics engine was the bottleneck at 3000+ units.
 ## Small-scale RTS unit (~0.6m tall). Villagers gather, troops fight.
 ## Server-authoritative for HP and state.
 
@@ -16,6 +20,8 @@ var damage: float = 5.0
 var attack_range: float = 1.5
 var move_speed: float = 3.0
 var alive: bool = true
+# Jesse 2026-10-11: manual velocity (was CharacterBody3D.velocity).
+var velocity: Vector3 = Vector3.ZERO
 
 # Orders.
 var _move_target: Vector3 = Vector3.INF
@@ -625,6 +631,20 @@ func _sleep() -> void:
 	# The early return in _physics_process handles the skip.
 
 
+## Jesse 2026-10-11: manual movement integration (replaces move_and_slide).
+## Applies velocity, keeps units on the ground plane, clamps to map bounds.
+func _apply_movement(delta: float) -> void:
+	global_position += velocity * delta
+	# Keep on ground plane (ships at water level).
+	if _is_ship():
+		global_position.y = 0.08
+	else:
+		global_position.y = 0.0
+	# Clamp to reasonable map bounds (200x200).
+	global_position.x = clampf(global_position.x, -100.0, 100.0)
+	global_position.z = clampf(global_position.z, -100.0, 100.0)
+
+
 func _physics_process(delta: float) -> void:
 	if not multiplayer.is_server():
 		return
@@ -671,13 +691,13 @@ func _physics_process(delta: float) -> void:
 			else:
 				_build_target = null  # done or destroyed
 			velocity = Vector3.ZERO
-			move_and_slide()
+			_apply_movement(delta)
 			return
 		else:
 			# Walk to the site.
 			var bdir := (_build_target.global_position - global_position).normalized()
 			velocity = Vector3(bdir.x, 0, bdir.z) * move_speed
-			move_and_slide()
+			_apply_movement(delta)
 			return
 	elif _build_target != null:
 		_build_target = null  # target freed
@@ -710,7 +730,7 @@ func _physics_process(delta: float) -> void:
 			# building-avoidance push us away from it (see _move_toward).
 			var skip_b: Node3D = _attack_target if _attack_target.is_in_group("rts_buildings") else null
 			_move_toward(_attack_target.global_position, delta, skip_b)
-		move_and_slide()
+		_apply_movement(delta)
 		return
 	elif _attack_target != null:
 		_attack_target = null
@@ -726,7 +746,7 @@ func _physics_process(delta: float) -> void:
 				_do_gather()
 		else:
 			_move_toward(_gather_node.global_position, delta)
-		move_and_slide()
+		_apply_movement(delta)
 		return
 	elif _gather_node != null:
 		_gather_node = null
@@ -739,10 +759,10 @@ func _physics_process(delta: float) -> void:
 			velocity = Vector3.ZERO
 		else:
 			_move_toward(_move_target, delta)
-		move_and_slide()
+		_apply_movement(delta)
 	else:
 		velocity = Vector3.ZERO
-		move_and_slide()
+		_apply_movement(delta)
 	# Replicate transform to clients ~12 Hz (unreliable).
 	# Jesse 2026-10-11: per-unit sync removed — RTSManager broadcasts
 	# batched army transforms per faction at ~8Hz instead.
@@ -803,7 +823,7 @@ func _process_trade(delta: float) -> void:
 		# Market destroyed: stop trading.
 		_clear_trade()
 		velocity = Vector3.ZERO
-		move_and_slide()
+		_apply_movement(delta)
 		return
 	var dist := global_position.distance_to(dest.global_position)
 	if dist <= 2.5:
@@ -826,7 +846,7 @@ func _process_trade(delta: float) -> void:
 		velocity = Vector3.ZERO
 	else:
 		_move_toward(dest.global_position, delta)
-	move_and_slide()
+	_apply_movement(delta)
 
 
 ## Monk conversion channel. Server-side, called from _physics_process.
@@ -836,27 +856,27 @@ func _convert_tick(delta: float) -> void:
 	if _convert_target == null or not is_instance_valid(_convert_target):
 		_cancel_convert()
 		velocity = Vector3.ZERO
-		move_and_slide()
+		_apply_movement(delta)
 		return
 	if not bool(_convert_target.get("alive")):
 		_cancel_convert()
 		velocity = Vector3.ZERO
-		move_and_slide()
+		_apply_movement(delta)
 		return
 	var dist := global_position.distance_to(_convert_target.global_position)
 	if dist > conv_range + 2.0:
 		# Target escaped the leash: cancel.
 		_cancel_convert()
 		velocity = Vector3.ZERO
-		move_and_slide()
+		_apply_movement(delta)
 		return
 	if dist > 4.5:
 		# Chase to stay in channel range.
 		_move_toward(_convert_target.global_position, delta)
-		move_and_slide()
+		_apply_movement(delta)
 		return
 	velocity = Vector3.ZERO
-	move_and_slide()
+	_apply_movement(delta)
 	if dist <= conv_range:
 		_convert_timer += delta
 		if _convert_timer >= conv_time:
@@ -928,10 +948,16 @@ func _move_toward(pos: Vector3, delta: float, skip_avoid_building: Node3D = null
 
 
 ## Push away from nearby units so groups don't clump into a blob.
+## Jesse 2026-10-11: uses spatial hash instead of O(n) group scan.
 func _separation_steer() -> Vector3:
 	var push := Vector3.ZERO
 	var count := 0
-	for other in get_tree().get_nodes_in_group("rts_units"):
+	var neighbors: Array = []
+	if _rts_mgr != null and _rts_mgr.spatial_hash != null:
+		neighbors = _rts_mgr.spatial_hash.query(global_position, 1.2)
+	else:
+		neighbors = get_tree().get_nodes_in_group("rts_units")
+	for other in neighbors:
 		if other == self:
 			continue
 		var onode := other as Node3D
