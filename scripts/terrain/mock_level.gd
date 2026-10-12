@@ -1,10 +1,12 @@
 extends Node3D
 ## Issue #103 mock level scenes — TEST SCENES ONLY, no integration into
-## dungeon.gd / procgen / level themes. One driver, three flavors selected
-## by the exported `flavor` in the .tscn (field / docks / highlands).
-## Each builds a HeightmapTerrain with per-flavor params, dresses it with
-## existing repo props (PropBuilder) snapped to get_ground_height(), and
-## drops a walker + perf units in for scale.
+## dungeon.gd / procgen / level themes. One driver, five flavors selected
+## by the exported `flavor` in the .tscn (field / docks / highlands /
+## dungeon / depths). Each builds a HeightmapTerrain with per-flavor
+## params, dresses it with existing repo props (PropBuilder) snapped to
+## get_ground_height(), and drops a walker + perf units in for scale.
+## The depths flavor additionally stands the REAL ProcGen maze layout
+## (theme_depths, read-only) on the terrain, one mazewall per solid cell.
 ##
 ## Run modes:
 ##   shots: Xvfb screenshots (overview + low angle) — INSPECT the PNGs
@@ -12,7 +14,7 @@ extends Node3D
 ##       --resolution 1920x1080 -- --mode=shots --shot-dir=/tmp/shots
 ##   (default): builds the scene and idles — open in the editor / F6 to look.
 
-@export_enum("field", "docks", "highlands") var flavor: String = "field"
+@export_enum("field", "docks", "highlands", "dungeon", "depths") var flavor: String = "field"
 
 var _terrain: HeightmapTerrain
 var _units: Array[TerrainPerfUnit] = []
@@ -20,6 +22,9 @@ var _cam: Camera3D
 var _mode := "run"
 var _shot_dir := "/tmp/terrain_mock_shots"
 var _fails := 0
+## Depths flavor: real maze layout (read-only) + corridor view for shots.
+var _maze_layout: LevelLayout
+var _depths_low: Array = []
 
 
 func _config() -> Dictionary:
@@ -46,6 +51,43 @@ func _config() -> Dictionary:
 				"bg": Color(0.55, 0.62, 0.68), "sun_energy": 0.85,
 				"sun_color": Color(0.9, 0.95, 1.0), "fog": 0.005,
 				"amb_energy": 0.85,
+			}
+		"dungeon":
+			return {
+				"seed": 6106, "freq": 0.05, "amp": 3.4, "water": -0.85,
+				"smooth": 2, "flatten_r": 8.0, "points": 49,
+				"pois": [Vector3(0, 0, 0)],
+				"ponds": [Vector3(16, 0, 12)],
+				"pond_r": 5.5, "pond_depth": 1.7,
+				"bg": Color(0.03, 0.03, 0.05), "sun_energy": 0.35,
+				"sun_color": Color(0.8, 0.8, 0.9), "fog": 0.028,
+				"fog_color": Color(0.04, 0.04, 0.07),
+				"amb_energy": 0.5,
+				"tint_bed": Color(0.10, 0.10, 0.12),
+				"tint_low": Color(0.20, 0.20, 0.23),
+				"tint_mid": Color(0.30, 0.30, 0.33),
+				"tint_high": Color(0.42, 0.41, 0.45),
+				"water_shallow": Color(0.10, 0.16, 0.22, 0.9),
+				"water_deep": Color(0.02, 0.05, 0.09, 0.95),
+				"ov_pos": Vector3(0, 44, 46),
+			}
+		"depths":
+			return {
+				# Terrain sized to the real depths arena: 24 cells x 2m = 48m.
+				"seed": 777, "maze_seed": 20240, "freq": 0.035, "amp": 2.4,
+				"water": -3.2, "smooth": 2, "flatten_r": 8.0, "points": 49,
+				"pois": [Vector3(0, 0, 0)],
+				"ponds": [],
+				"pond_r": 5.0, "pond_depth": 1.5,
+				"bg": Color(0.02, 0.01, 0.04), "sun_energy": 0.45,
+				"sun_color": Color(0.7, 0.6, 1.0), "fog": 0.012,
+				"fog_color": Color(0.08, 0.05, 0.14),
+				"amb_energy": 0.6,
+				"tint_bed": Color(0.08, 0.07, 0.11),
+				"tint_low": Color(0.13, 0.11, 0.17),
+				"tint_mid": Color(0.18, 0.16, 0.24),
+				"tint_high": Color(0.27, 0.25, 0.35),
+				"ov_pos": Vector3(0, 44, 46),
 			}
 		_: # highlands
 			return {
@@ -103,7 +145,7 @@ func _setup_env(cfg: Dictionary) -> void:
 	e.ambient_light_energy = cfg["amb_energy"]
 	if float(cfg["fog"]) > 0.0:
 		e.fog_enabled = true
-		e.fog_light_color = Color(0.62, 0.68, 0.75)
+		e.fog_light_color = cfg.get("fog_color", Color(0.62, 0.68, 0.75))
 		e.fog_density = cfg["fog"]
 	env.environment = e
 	add_child(env)
@@ -115,12 +157,20 @@ func _setup_env(cfg: Dictionary) -> void:
 
 func _build_terrain(cfg: Dictionary) -> void:
 	_terrain = HeightmapTerrain.new()
-	_terrain.map_points = 97
+	_terrain.map_points = int(cfg.get("points", 97))
 	_terrain.cell_size = 1.0
 	_terrain.terrain_seed = cfg["seed"]
 	_terrain.noise_frequency = cfg["freq"]
 	_terrain.amplitude = cfg["amp"]
 	_terrain.water_level = cfg["water"]
+	if cfg.has("tint_bed"):
+		_terrain.tint_bed = cfg["tint_bed"]
+		_terrain.tint_low = cfg["tint_low"]
+		_terrain.tint_mid = cfg["tint_mid"]
+		_terrain.tint_high = cfg["tint_high"]
+	if cfg.has("water_shallow"):
+		_terrain.water_shallow = cfg["water_shallow"]
+		_terrain.water_deep = cfg["water_deep"]
 	_terrain.smooth_passes = cfg["smooth"]
 	_terrain.flatten_radius = cfg["flatten_r"]
 	_terrain.pond_radius = cfg["pond_r"]
@@ -164,6 +214,7 @@ func _far_enough(p: Vector3, placed: Array, min_dist: float) -> bool:
 ## Scatter dry-land props: not in water, slope-capped, min-dist spaced.
 func _scatter(type: String, count: int, rng: RandomNumberGenerator, placed: Array,
 		min_dist: float, max_slope: float, r_min: float = 0.0, r_max: float = 44.0) -> void:
+	r_max = minf(r_max, _terrain.half_extent() - 2.0)
 	var done := 0
 	var guard := 0
 	while done < count and guard < count * 60:
@@ -198,6 +249,7 @@ func _scatter_shore(type: String, count: int, rng: RandomNumberGenerator) -> voi
 
 func _dry_points(rng: RandomNumberGenerator, count: int, max_slope: float,
 		center := Vector3.ZERO, r_max := 44.0) -> Array[Vector3]:
+	r_max = minf(r_max, _terrain.half_extent() - 2.0)
 	var pts: Array[Vector3] = []
 	var guard := 0
 	while pts.size() < count and guard < 600:
@@ -220,6 +272,8 @@ func _dress(cfg: Dictionary) -> void:
 	match flavor:
 		"field": _dress_field(rng, placed)
 		"docks": _dress_docks(rng, placed)
+		"dungeon": _dress_dungeon(rng, placed)
+		"depths": _dress_depths(rng, placed)
 		_: _dress_highlands(rng, placed)
 
 
@@ -315,36 +369,213 @@ func _dress_highlands(rng: RandomNumberGenerator, placed: Array) -> void:
 	_scatter("mushroom", 5, rng, placed, 2.0, 0.9)
 
 
+func _dress_dungeon(rng: RandomNumberGenerator, placed: Array) -> void:
+	# Pillar hall: two rows flanking the flattened center, like the real
+	# dungeon theme's pillar obstacles.
+	for side in [-6.0, 6.0]:
+		for z in [-14.0, -7.0, 0.0, 7.0, 14.0]:
+			var pp := Vector3(side, 0, z)
+			placed.append(pp)
+			_place("pillar", pp)
+	# Torch ring around the hall + a pair at the pool shore.
+	for tp in [Vector3(-10, 0, -10), Vector3(10, 0, -10), Vector3(-10, 0, 10),
+			Vector3(10, 0, 10), Vector3(0, 0, -16), Vector3(0, 0, 16),
+			Vector3(-16, 0, 0), Vector3(16, 0, -2), Vector3(11, 0, 8), Vector3(21, 0, 5)]:
+		_place("torch", tp)
+	_scatter("rubble", 10, rng, placed, 3.0, 0.9)
+	_scatter("bones", 6, rng, placed, 3.0, 0.8)
+	_scatter("crate", 6, rng, placed, 3.0, 0.7)
+	_scatter("stalagmite", 7, rng, placed, 4.0, 1.1)
+	_scatter("rock", 8, rng, placed, 4.0, 1.0)
+	_scatter("mushroom", 4, rng, placed, 2.0, 0.8)
+
+
+## Depths: stand the REAL maze layout on the terrain. The layout comes
+## from ProcGen.generate(theme_depths, seed) — read-only, procgen itself
+## is untouched. Every solid cell (border WALL + maze OBSTACLE) gets one
+## PropBuilder mazewall whose base y is the LOWEST terrain sample under
+## its 2m footprint, so no wall floats; the box sinks into the high side.
+func _dress_depths(rng: RandomNumberGenerator, placed: Array) -> void:
+	var theme := load("res://data/levels/theme_depths.tres") as LevelTheme
+	_maze_layout = ProcGen.generate(theme, int(_config()["maze_seed"]))
+	var n := _maze_layout.grid_size
+	var cell := _maze_layout.cell_size
+	var walls := 0
+	var worst_range := 0.0
+	var worst_slope := 0.0
+	for cz in n:
+		for cx in n:
+			var kind := _maze_layout.cell_at(cx, cz)
+			if kind == LevelLayout.FLOOR:
+				# Steepest step between adjacent floor cells = corridor read.
+				for d in [Vector2i(1, 0), Vector2i(0, 1)]:
+					if _maze_layout.cell_at(cx + d.x, cz + d.y) == LevelLayout.FLOOR:
+						var a := _maze_layout.cell_to_world(cx, cz)
+						var b := _maze_layout.cell_to_world(cx + d.x, cz + d.y)
+						worst_slope = maxf(worst_slope,
+							absf(_ground(a) - _ground(b)) / cell)
+				continue
+			var wp := _maze_layout.cell_to_world(cx, cz)
+			# 3x3 samples over the footprint (terrain grid is 1m, cell 2m).
+			var hmin := INF
+			var hmax := -INF
+			for dz in [-1.0, 0.0, 1.0]:
+				for dx in [-1.0, 0.0, 1.0]:
+					var h := _ground(wp + Vector3(dx, 0, dz))
+					hmin = minf(hmin, h)
+					hmax = maxf(hmax, h)
+			worst_range = maxf(worst_range, hmax - hmin)
+			var wall := PropBuilder.build("mazewall", 1.0, {"pos": wp})
+			wall.position = Vector3(wp.x, hmin, wp.z)
+			add_child(wall)
+			walls += 1
+	# The layout's own dressing props (crystals, bones, ...) on floor cells.
+	var dressed := 0
+	for p in _maze_layout.props:
+		if str(p["type"]) == "mazewall":
+			continue
+		var pp: Vector3 = p["pos"]
+		var prop := PropBuilder.build(str(p["type"]), float(p["scl"]), {"pos": pp})
+		prop.position = Vector3(pp.x, _ground(pp), pp.z)
+		prop.rotation.y = float(p["rot"])
+		add_child(prop)
+		dressed += 1
+	# Torches at dead ends (the real game's key spots) + around the arena.
+	var torch_spots: Array[Vector3] = []
+	for i in mini(6, _maze_layout.maze_dead_ends.size()):
+		torch_spots.append(_maze_layout.maze_dead_ends[i])
+	for tp in [Vector3(5, 0, 5), Vector3(-5, 0, 5), Vector3(5, 0, -5), Vector3(-5, 0, -5)]:
+		torch_spots.append(tp)
+	for tp in torch_spots:
+		_place("torch", tp, 0.0)
+	# Corridor low-view: farthest E-W corridor run from the center.
+	_depths_low = _find_corridor_view()
+	print("[MOCK] depths maze: walls=", walls, " dressed=", dressed,
+		" worst under-wall height range=", snappedf(worst_range, 0.01), "m",
+		" worst corridor step slope=", snappedf(worst_slope, 0.01))
+
+
+## Find a horizontal corridor segment (FLOOR with FLOOR east+west, solid
+## north+south) far from the arena; return [cam_pos, look_target].
+func _find_corridor_view() -> Array:
+	var n := _maze_layout.grid_size
+	var best := Vector2i(-1, -1)
+	var best_d := -1.0
+	for cz in n:
+		for cx in n:
+			if _maze_layout.cell_at(cx, cz) != LevelLayout.FLOOR:
+				continue
+			if _maze_layout.cell_at(cx + 1, cz) != LevelLayout.FLOOR:
+				continue
+			if _maze_layout.cell_at(cx - 1, cz) != LevelLayout.FLOOR:
+				continue
+			if _maze_layout.cell_at(cx, cz - 1) == LevelLayout.FLOOR:
+				continue
+			if _maze_layout.cell_at(cx, cz + 1) == LevelLayout.FLOOR:
+				continue
+			var d := Vector2(cx - n / 2, cz - n / 2).length()
+			if d > best_d:
+				best_d = d
+				best = Vector2i(cx, cz)
+	if best.x < 0:
+		var c := Vector3(0, 0, -6)
+		return [Vector3(c.x, _ground(c) + 1.7, c.z), Vector3(0, _ground(Vector3.ZERO) + 1.0, 6)]
+	var wp := _maze_layout.cell_to_world(best.x, best.y)
+	var east := _maze_layout.cell_to_world(best.x + 2, best.y)
+	return [Vector3(wp.x, _ground(wp) + 1.7, wp.z),
+		Vector3(east.x, _ground(east) + 1.2, east.z)]
+
+
+## BFS path over FLOOR cells from the center cell to the farthest dead
+## end — the walker's route through the real corridors (depths flavor).
+func _maze_path_waypoints() -> Array[Vector3]:
+	var n := _maze_layout.grid_size
+	var start := Vector2i(n / 2, n / 2)
+	var prev := {start: start}
+	var queue: Array[Vector2i] = [start]
+	var dirs: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	while not queue.is_empty():
+		var cur: Vector2i = queue.pop_front()
+		for d in dirs:
+			var nb := cur + d
+			if prev.has(nb) or not _maze_layout.in_bounds(nb.x, nb.y):
+				continue
+			if _maze_layout.cell_at(nb.x, nb.y) != LevelLayout.FLOOR:
+				continue
+			prev[nb] = cur
+			queue.append(nb)
+	# Target: the reachable dead end farthest (BFS depth) from the start.
+	var target := start
+	var target_d := -1.0
+	for de in _maze_layout.maze_dead_ends:
+		var c := _maze_layout.world_to_cell(de)
+		if not prev.has(c):
+			continue
+		var wp0 := _maze_layout.cell_to_world(c.x, c.y)
+		var dist := wp0.distance_to(_maze_layout.cell_to_world(start.x, start.y))
+		if dist > target_d:
+			target_d = dist
+			target = c
+	var cells: Array[Vector2i] = []
+	var cur2 := target
+	while cur2 != start:
+		cells.append(cur2)
+		cur2 = prev[cur2]
+	cells.append(start)
+	cells.reverse()
+	var pts: Array[Vector3] = []
+	for c in cells:
+		pts.append(_maze_layout.cell_to_world(c.x, c.y))
+	# Walk out and back so the patrol loops.
+	var back := pts.duplicate()
+	back.reverse()
+	pts.append_array(back)
+	return pts
+
+
 # --- population --------------------------------------------------------------
 
 func _populate(cfg: Dictionary) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = int(cfg["seed"]) * 17 + 3
-	var counts := {"field": 20, "docks": 10, "highlands": 12}
+	var counts := {"field": 20, "docks": 10, "highlands": 12, "dungeon": 14, "depths": 8}
 	var max_slope := 0.55 if flavor != "highlands" else 0.7
-	for p in _dry_points(rng, counts[flavor], max_slope):
-		var u := TerrainPerfUnit.new()
-		u.terrain = _terrain
-		u.position = Vector3(p.x, _ground(p), p.z)
-		add_child(u)
-		_units.append(u)
+	if flavor == "depths":
+		# Units hold position in the spawn arena (they have no wall
+		# avoidance; the maze corridors are the walker's job below).
+		for s in _maze_layout.player_spawns:
+			_spawn_unit(Vector3(s.x, 0, s.z), 0.0)
+		for off in [Vector3(3, 0, 2), Vector3(-3, 0, -2), Vector3(2, 0, -3), Vector3(-2, 0, 3)]:
+			_spawn_unit(off, 0.0)
+	else:
+		for p in _dry_points(rng, counts[flavor], max_slope):
+			_spawn_unit(p, 3.0)
 	if flavor == "field":
 		# A party cluster standing in the spawn arena.
 		for off in [Vector3(1, 0, 1), Vector3(-1.5, 0, 0.5), Vector3(0.5, 0, -1.5), Vector3(-0.5, 0, -0.5)]:
-			var u := TerrainPerfUnit.new()
-			u.terrain = _terrain
-			u.position = Vector3(off.x, _ground(off), off.z)
-			add_child(u)
-			_units.append(u)
-	# One walker patrolling dry waypoints near the middle.
+			_spawn_unit(off, 3.0)
+	# One walker patrolling: the real maze path (depths), else dry waypoints.
 	var w := TerrainWalker.new()
 	w.terrain = _terrain
-	var center := Vector3(0, 0, -10) if flavor == "docks" else Vector3.ZERO
-	var r_max := 30.0 if flavor != "highlands" else 14.0
-	w.waypoints = _dry_points(rng, 4, 0.6, center, r_max)
+	if flavor == "depths":
+		w.waypoints = _maze_path_waypoints()
+	else:
+		var center := Vector3(0, 0, -10) if flavor == "docks" else Vector3.ZERO
+		var r_max := 30.0 if flavor != "highlands" else 14.0
+		r_max = minf(r_max, _terrain.half_extent() - 4.0)
+		w.waypoints = _dry_points(rng, 4, 0.6, center, r_max)
 	var spawn := w.waypoints[0] if not w.waypoints.is_empty() else Vector3.ZERO
 	w.position = Vector3(spawn.x, _ground(spawn) + 2.0, spawn.z)
 	add_child(w)
+
+
+func _spawn_unit(p: Vector3, spd: float) -> void:
+	var u := TerrainPerfUnit.new()
+	u.terrain = _terrain
+	u.speed = spd
+	u.position = Vector3(p.x, _ground(p), p.z)
+	add_child(u)
+	_units.append(u)
 
 
 # --- screenshots -------------------------------------------------------------
@@ -362,7 +593,7 @@ func _run_shots(cfg: Dictionary) -> void:
 		for u in _units:
 			u.tick(1.0 / 60.0)
 	# View 1: overview.
-	_cam.position = Vector3(0, 60, 64)
+	_cam.position = cfg.get("ov_pos", Vector3(0, 60, 64))
 	_cam.look_at(Vector3(0, 0, 0))
 	await _settle(20)
 	await _snap("mock_" + flavor + "_overview.png")
@@ -383,6 +614,15 @@ func _low_view() -> Array:
 		"docks":
 			var from := Vector3(-8, 0, -6)
 			return [Vector3(from.x, _ground(from) + 2.6, from.z), Vector3(10, _terrain.water_level + 0.3, 26)]
+		"dungeon":
+			# Stand by the dark pool, look across the pillar hall.
+			var from := Vector3(10, 0, 18)
+			return [Vector3(from.x, _ground(from) + 2.2, from.z), Vector3(-4, _ground(Vector3(-4, 0, -6)) + 1.4, -6)]
+		"depths":
+			if not _depths_low.is_empty():
+				return _depths_low
+			var c := Vector3(0, 0, -6)
+			return [Vector3(c.x, _ground(c) + 1.7, c.z), Vector3(0, _ground(Vector3.ZERO) + 1.0, 6)]
 		_: # highlands: stand at camp, look up the valley at the peaks.
 			var from := Vector3(2, 0, 12)
 			return [Vector3(from.x, _ground(from) + 2.2, from.z), Vector3(-18, _ground(Vector3(-18, 0, -20)) + 5.0, -20)]

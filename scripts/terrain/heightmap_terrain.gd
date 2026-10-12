@@ -16,6 +16,15 @@ extends Node3D
 @export var flatten_radius: float = 8.0 ## POI flatten radius (spec: layout-constrained gen)
 @export var pond_radius: float = 5.0
 @export var pond_depth: float = 1.6
+## Vertex-color palette (defaults = the original grass/dirt/rock look;
+## cave flavors override toward dark rock).
+@export var tint_bed: Color = Color(0.72, 0.66, 0.47) ## under water
+@export var tint_low: Color = Color(0.28, 0.52, 0.24)
+@export var tint_mid: Color = Color(0.50, 0.40, 0.28)
+@export var tint_high: Color = Color(0.45, 0.45, 0.48)
+## Water plane shader colors.
+@export var water_shallow: Color = Color(0.25, 0.55, 0.72, 0.88)
+@export var water_deep: Color = Color(0.10, 0.28, 0.48, 0.92)
 
 ## Flatten targets: terrain relaxes toward the center height near these.
 var poi_points: Array[Vector3] = []
@@ -23,6 +32,7 @@ var poi_points: Array[Vector3] = []
 var pond_centers: Array[Vector3] = []
 
 var _heights := PackedFloat32Array()
+var _min_height := 0.0
 var _noise := FastNoiseLite.new()
 var _mesh_instance: MeshInstance3D
 var _water_mesh: MeshInstance3D
@@ -48,6 +58,9 @@ func generate() -> void:
 	_carve_ponds()
 	for i in smooth_passes:
 		_relax()
+	_min_height = _heights[0]
+	for h in _heights:
+		_min_height = minf(_min_height, h)
 	_build_mesh()
 	_build_collision()
 	_build_water()
@@ -143,15 +156,12 @@ func _slope_at(x: int, z: int) -> float:
 
 func _vertex_color(h: float, slope: float) -> Color:
 	if h < water_level:
-		return Color(0.72, 0.66, 0.47) # sand under water
+		return tint_bed # sand (or cave bed) under water
 	var t := clampf((h - water_level) / maxf(amplitude * 0.5, 0.01), 0.0, 1.0)
-	var grass := Color(0.28, 0.52, 0.24)
-	var dirt := Color(0.50, 0.40, 0.28)
-	var rock := Color(0.45, 0.45, 0.48)
-	var c := grass.lerp(dirt, clampf(t * 2.0, 0.0, 1.0))
-	c = c.lerp(rock, clampf((t - 0.5) * 2.0, 0.0, 1.0))
+	var c := tint_low.lerp(tint_mid, clampf(t * 2.0, 0.0, 1.0))
+	c = c.lerp(tint_high, clampf((t - 0.5) * 2.0, 0.0, 1.0))
 	if slope > 0.9:
-		c = rock.lerp(c, 0.3)
+		c = tint_high.lerp(c, 0.3)
 	return c
 
 
@@ -225,6 +235,12 @@ func _build_collision() -> void:
 func _build_water() -> void:
 	if _water_mesh != null:
 		_water_mesh.queue_free()
+		_water_mesh = null
+	# A plane fully below the terrain can never be seen in play — skip it
+	# (dry flavors like the depths would otherwise show a rim under the
+	# terrain slab in flyover views).
+	if water_level <= _min_height:
+		return
 	var plane := PlaneMesh.new()
 	var ext := half_extent() * 2.0
 	plane.size = Vector2(ext, ext)
@@ -246,6 +262,8 @@ void fragment() {
 """
 	var smat := ShaderMaterial.new()
 	smat.shader = sh
+	smat.set_shader_parameter("shallow", water_shallow)
+	smat.set_shader_parameter("deep", water_deep)
 	_water_mesh.material_override = smat
 	_water_mesh.name = "WaterPlane"
 	add_child(_water_mesh)
