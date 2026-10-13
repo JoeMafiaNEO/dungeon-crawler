@@ -57,6 +57,7 @@ func _run() -> void:
 	_test_audio_new_features()
 	_test_train_ambient()
 	_test_audio_combat_cues()
+	_test_audio_113_cues()
 	_test_station_annex()
 	_test_lobby_room()
 	_test_lobby_doors()
@@ -1453,6 +1454,23 @@ func _test_audio_combat_cues() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains('sfx("dagger_throw")'), "dagger throw call site")
 	_assert(psrc.contains('sfx("dagger_catch")'), "dagger catch call site")
+
+
+func _test_audio_113_cues() -> void:
+	print("[Playtest] Audio: weapon upgrade + architect tool cues (issue #113)...")
+	# Sound commission for #113: upgrade kit apply (Phase 1), wrench repair
+	# loop + completion (Phase 3), hammer smash + shockwave (Phase 4). The
+	# cues are commissioned ahead of the builders so integration is a
+	# drop-in: AudioManager.sfx("<name>") at each surface. Every cue must
+	# synth a non-empty stream AND be registered in the builder list —
+	# unregistered names are silently dropped by sfx().
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	for sfx in ["upgrade_apply", "wrench_turn", "repair_complete",
+			"hammer_smash", "hammer_shockwave"]:
+		var w: AudioStreamWAV = SoundScript.call(sfx)
+		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
+		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
 
 
 func _test_lobby_room() -> void:

@@ -399,6 +399,63 @@ static func dagger_catch() -> AudioStreamWAV:
 	]))
 
 
+# --- upgrades / architect tools (issue #113) ---
+
+static func upgrade_apply() -> AudioStreamWAV:
+	# Weapon upgrade kit applied (issue #113 Phase 1): ratchet clamp bites,
+	# then a tempering ring rises and sets — mechanical work, magical result.
+	return _wav(_mix([
+		_tone(1400.0, 900.0, 0.05, "square", 40.0, 0.35),
+		_tone(1500.0, 1000.0, 0.05, "square", 40.0, 0.30, 0.07),
+		_noise(0.10, 30.0, 0.35, 0.0, 0.30),
+		_tone(880.0, 1760.0, 0.30, "sine", 9.0, 0.40, 0.14),
+		_tone(2640.0, 2640.0, 0.22, "sine", 12.0, 0.25, 0.20),
+	]))
+
+
+static func wrench_turn() -> AudioStreamWAV:
+	# One ratchet turn of the architect's wrench (issue #113 Phase 3): the
+	# repair loop plays this per turn — clank, click-train, settle.
+	return _wav(_mix([
+		_tone(900.0, 620.0, 0.06, "square", 35.0, 0.45),
+		_tone(2100.0, 1900.0, 0.03, "square", 50.0, 0.25, 0.05),
+		_tone(2300.0, 2050.0, 0.03, "square", 50.0, 0.22, 0.09),
+		_tone(2500.0, 2200.0, 0.03, "square", 50.0, 0.20, 0.13),
+		_noise(0.05, 45.0, 0.30, 0.0, 0.25),
+	]))
+
+
+static func repair_complete() -> AudioStreamWAV:
+	# Repair finished (issue #113 Phase 3): solid thunk + bright two-note
+	# confirm — the building is whole again.
+	return _wav(_mix([
+		_tone(220.0, 110.0, 0.10, "sine", 25.0, 0.65),
+		_tone(1318.0, 1318.0, 0.16, "sine", 12.0, 0.35, 0.08),
+		_tone(1760.0, 1760.0, 0.24, "sine", 10.0, 0.35, 0.16),
+	]))
+
+
+static func hammer_smash() -> AudioStreamWAV:
+	# Architect hammer smash (issue #113 Phase 4): deep sub thud, metal ring,
+	# debris burst — the ground takes the hit.
+	return _wav(_mix([
+		_tone(90.0, 32.0, 0.45, "sine", 7.0, 1.15),
+		_tone(1250.0, 900.0, 0.20, "square", 16.0, 0.35),
+		_noise(0.25, 12.0, 0.70, 0.0, 0.55),
+		_noise(0.06, 45.0, 0.45),
+	]))
+
+
+static func hammer_shockwave() -> AudioStreamWAV:
+	# Shockwave rolling out from the smash (issue #113 Phase 4): low swell
+	# that pushes past the listener and rumbles off.
+	return _wav(_mix([
+		_tone(55.0, 38.0, 0.65, "sine", 5.0, 1.0),
+		_noise(0.55, 6.0, 0.65, 0.0, 0.70),
+		_tone(180.0, 60.0, 0.40, "sawtooth", 8.0, 0.30, 0.03),
+	]))
+
+
 # --- loot / progression ---
 
 static func pickup() -> AudioStreamWAV:
