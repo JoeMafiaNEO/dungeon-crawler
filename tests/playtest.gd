@@ -148,6 +148,7 @@ func _run() -> void:
 	_test_popup_open_flags()
 	_test_equip_system_phase1()
 	_test_mp_save_c1_fix()
+	_test_character_panel_phase2()
 
 	_print_results()
 	quit()
@@ -8308,3 +8309,131 @@ func _test_mp_save_c1_fix() -> void:
 	SaveMgr.set("_test_runs_dir", "")
 	SaveMgr.set("_test_account_pin", "")
 	print("[Playtest] mp save c1 fix done")
+
+
+func _test_character_panel_phase2() -> void:
+	print("[Playtest] Character panel phase 2 (issue #104)...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+
+	# --- Old ItemList panel is gone (source + scene).
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
+	_assert(not tsrc.contains("InventoryList"), "panel: ItemList node removed from hud.tscn")
+	_assert(not tsrc.contains("type=\"ItemList\""), "panel: no ItemList type in hud.tscn")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(not hsrc.contains("%InventoryList"), "panel: hud.gd no longer references %InventoryList")
+	_assert(hsrc.contains("func _build_character_panel"), "panel: character panel builder exists")
+
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	hud._player = p
+	_assert(hud.find_child("InventoryList", true, false) == null,
+		"panel: no ItemList in the live HUD scene")
+
+	# --- Structure: 4 slot boxes + exactly 12 bag rows, no ScrollContainer.
+	var panel = hud.find_child("InventoryPanel", true, false)
+	_assert(panel != null, "panel: InventoryPanel exists")
+	var slot_col = hud.find_child("SlotColumn", true, false)
+	var bag_col = hud.find_child("BagColumn", true, false)
+	_assert(slot_col != null and bag_col != null, "panel: slot + bag columns exist")
+	for slot_name in ["WEAPON", "ARMOR", "TRINKET", "TOOL"]:
+		_assert(hud.find_child("Slot_" + slot_name, true, false) != null,
+			"panel: slot box exists for " + slot_name)
+	var row_count := 0
+	for child in bag_col.get_children():
+		if str(child.name).begins_with("BagRow_"):
+			row_count += 1
+	_assert(row_count == 12, "panel: bag renders exactly INVENTORY_MAX (12) fixed rows")
+	_assert(hud.find_child("EquipButton", true, false) != null, "panel: Equip button exists")
+	_assert(hud.find_child("UseButton", true, false) != null, "panel: Use button retained")
+	_assert(hud.find_child("DisposeButton", true, false) != null, "panel: Dispose button retained")
+	var has_scroll := false
+	var stack: Array = [panel]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		if n is ScrollContainer:
+			has_scroll = true
+		for c in n.get_children():
+			stack.append(c)
+	_assert(not has_scroll, "panel: zero ScrollContainers (zero-scroll by construction)")
+
+	# --- Fill the bag: gear, a class-restricted stack, a TOOL, potions.
+	p.receive_item("iron_sword")
+	p.receive_item("leather_armor")
+	p.receive_item("phoenix_feather")
+	p.receive_item("health_potion")
+	p.receive_item("health_potion")
+	var tome = ItemDBNode.get_item("scholar_tome").duplicate()
+	var only_mage: Array[String] = ["mage"]
+	tome.set("allowed_classes", only_mage)
+	p.inventory.append({"item": tome, "count": 1, "equipped_slot": ""})
+	hud.refresh_inventory(p)
+	var rows: Array = hud.get("_bag_rows")
+	var find_row := func(item_id: String) -> int:
+		for i in p.inventory.size():
+			var it = p.inventory[i].get("item")
+			if it != null and str(it.get("id")) == item_id:
+				return i
+		return -1
+	# Starter weapon shows in its slot box; bag rows are labeled.
+	var slot_weapon = hud.find_child("SlotItem_WEAPON", true, false)
+	_assert(str(slot_weapon.get("text")).contains("Rusty Sword"),
+		"panel: WEAPON slot box shows the equipped starter")
+	var iron_row: int = find_row.call("iron_sword")
+	_assert(iron_row >= 0 and str(rows[iron_row].get("text")).contains("Iron Sword"),
+		"panel: bag row shows the iron sword")
+	var tome_row: int = find_row.call("scholar_tome")
+	_assert(tome_row >= 0 and str(rows[tome_row].get("text")).contains("Mage only"),
+		"panel: class-restricted row carries the 'Mage only' tag")
+
+	# --- Mouse-only equip flow: select row + Equip button.
+	(rows[iron_row] as Object).call("set_pressed", true)
+	hud._on_equip_pressed()
+	var eq = p.equipped_entry("WEAPON")
+	_assert(not eq.is_empty() and str((eq["item"] as Object).get("id")) == "iron_sword",
+		"panel: Equip button equips the selected row")
+	hud.refresh_inventory(p)
+	_assert(str(rows[iron_row].get("text")).begins_with("[EQ]"),
+		"panel: equipped bag row is marked [EQ]")
+	_assert(str(slot_weapon.get("text")).contains("Iron Sword"),
+		"panel: slot box updates after equip")
+	_assert(hud.find_child("SlotIcon_WEAPON", true, false) != null,
+		"panel: slot icon element exists (hard-sized TextureRect)")
+
+	# --- Denied equip: class-restricted row refuses through the panel.
+	hud._equip_row(tome_row)
+	_assert(str(p.inventory[tome_row].get("equipped_slot", "")) == "",
+		"panel: class-restricted equip refused (denial path)")
+
+	# --- TOOL slot flow + click-slot-to-unequip.
+	var feather_row: int = find_row.call("phoenix_feather")
+	hud._equip_row(feather_row)
+	_assert(not p.equipped_entry("TOOL").is_empty(), "panel: feather equips into TOOL")
+	hud._on_slot_pressed("TOOL")
+	_assert(p.equipped_entry("TOOL").is_empty(), "panel: clicking a filled slot unequips it")
+
+	# --- Use + Dispose retained for the selected row.
+	var pot_row: int = find_row.call("health_potion")
+	var pot_before := int(p.inventory[pot_row]["count"])
+	(rows[pot_row] as Object).call("set_pressed", true)
+	hud._on_use_pressed()
+	_assert(int(p.inventory[pot_row]["count"]) == pot_before - 1,
+		"panel: Use consumes one from the selected stack")
+	(rows[tome_row] as Object).call("set_pressed", true)
+	hud._on_dispose_pressed()
+	_assert(find_row.call("scholar_tome") == -1, "panel: Dispose removes the selected stack")
+
+	# --- Fixed rows persist at any fill level (zero-scroll invariant).
+	hud.refresh_inventory(p)
+	var rows_after := 0
+	for child in bag_col.get_children():
+		if str(child.name).begins_with("BagRow_"):
+			rows_after += 1
+	_assert(rows_after == 12, "panel: still exactly 12 rows after inventory changes")
+	hud.queue_free()
+	p.queue_free()
+	print("[Playtest] character panel phase 2 done")

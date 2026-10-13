@@ -61,6 +61,7 @@ var _save_quit_btn: Button
 
 func _ready() -> void:
 	add_to_group("hud")
+	_build_character_panel()
 	_build_pause_tabs()
 	_build_bounty_tracker()
 	_build_potion_slot()
@@ -2342,9 +2343,249 @@ func _layout_pause() -> void:
 		panel.offset_right = 240.0
 
 
+# --- Character panel (issue #104 Phase 2) --------------------------------
+## The I-key inventory panel is now a character panel: LEFT = the four
+## equipment slot boxes, RIGHT = the bag as exactly INVENTORY_MAX fixed
+## rows. Zero-scroll BY CONSTRUCTION: the row count is constant (empty
+## rows render disabled), there is no ScrollContainer anywhere in the
+## panel, and the panel is sized for the full layout at any inventory
+## state. Gear lacking an icon texture renders as rarity-colored name
+## text in its slot box (the spec's art-gap fallback).
+const SLOT_ORDER: Array[String] = ["WEAPON", "ARMOR", "TRINKET", "TOOL"]
+var _slot_boxes: Dictionary = {} # slot name -> {box, icon, item_label}
+var _bag_rows: Array = [] # Array[Button], INVENTORY_MAX entries
+var _bag_group := ButtonGroup.new()
+var _equip_button: Button
+
+
+func _build_character_panel() -> void:
+	var vbox := %InventoryPanel.get_node("InvVBox") as VBoxContainer
+	var body := HBoxContainer.new()
+	body.name = "CharBody"
+	body.add_theme_constant_override("separation", 10)
+	vbox.add_child(body)
+	# LEFT: equipment slot boxes.
+	var slot_col := VBoxContainer.new()
+	slot_col.name = "SlotColumn"
+	slot_col.add_theme_constant_override("separation", 6)
+	body.add_child(slot_col)
+	var slot_head := Label.new()
+	slot_head.text = "EQUIPPED"
+	slot_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	slot_head.add_theme_font_size_override("font_size", 13)
+	slot_col.add_child(slot_head)
+	for slot_name in SLOT_ORDER:
+		# A PanelContainer, NOT a Button with an icon: Button icons render
+		# at native texture size and blow the box (and the whole panel)
+		# up. The TextureRect is hard-sized to 52x52 instead.
+		var box := PanelContainer.new()
+		box.name = "Slot_" + slot_name
+		box.custom_minimum_size = Vector2(188, 66)
+		box.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.09, 0.09, 0.12, 0.95)
+		sb.set_corner_radius_all(4)
+		sb.set_border_width_all(1)
+		sb.border_color = Color(0.45, 0.38, 0.25, 0.9)
+		sb.content_margin_left = 6.0
+		sb.content_margin_right = 6.0
+		sb.content_margin_top = 4.0
+		sb.content_margin_bottom = 4.0
+		box.add_theme_stylebox_override("panel", sb)
+		box.gui_input.connect(_on_slot_gui_input.bind(slot_name))
+		var hb := HBoxContainer.new()
+		hb.add_theme_constant_override("separation", 8)
+		box.add_child(hb)
+		var icon := TextureRect.new()
+		icon.name = "SlotIcon_" + slot_name
+		icon.custom_minimum_size = Vector2(52, 52)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hb.add_child(icon)
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 2)
+		vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		hb.add_child(vb)
+		var slot_label := Label.new()
+		slot_label.text = slot_name
+		slot_label.add_theme_font_size_override("font_size", 12)
+		slot_label.add_theme_color_override("font_color", Color(0.65, 0.62, 0.55))
+		slot_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vb.add_child(slot_label)
+		var item_label := Label.new()
+		item_label.name = "SlotItem_" + slot_name
+		item_label.text = "—"
+		item_label.add_theme_font_size_override("font_size", 12)
+		item_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		item_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		item_label.custom_minimum_size = Vector2(104, 0)
+		item_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vb.add_child(item_label)
+		slot_col.add_child(box)
+		_slot_boxes[slot_name] = {"box": box, "icon": icon, "item_label": item_label}
+	# RIGHT: the bag — exactly INVENTORY_MAX fixed rows, always rendered.
+	var bag_col := VBoxContainer.new()
+	bag_col.name = "BagColumn"
+	bag_col.add_theme_constant_override("separation", 2)
+	body.add_child(bag_col)
+	var bag_head := Label.new()
+	bag_head.text = "BAG"
+	bag_head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bag_head.add_theme_font_size_override("font_size", 13)
+	bag_col.add_child(bag_head)
+	for i in Player.INVENTORY_MAX:
+		var row := Button.new()
+		row.name = "BagRow_%d" % i
+		row.custom_minimum_size = Vector2(436, 24)
+		row.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		row.clip_text = true
+		row.toggle_mode = true
+		row.button_group = _bag_group
+		row.add_theme_font_size_override("font_size", 13)
+		row.text = "—"
+		row.disabled = true
+		row.pressed.connect(_on_bag_row_pressed.bind(i))
+		row.gui_input.connect(_on_bag_row_gui_input.bind(i))
+		bag_col.add_child(row)
+		_bag_rows.append(row)
+	# Hint + action row (Equip joins the retained Use/Dispose).
+	var hint := Label.new()
+	hint.name = "CharHint"
+	hint.text = "Only EQUIPPED gear grants bonuses. Double-click a row to equip; click a filled slot to unequip."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_font_size_override("font_size", 12)
+	vbox.add_child(hint)
+	var actions := HBoxContainer.new()
+	actions.name = "CharActions"
+	actions.add_theme_constant_override("separation", 8)
+	vbox.add_child(actions)
+	_equip_button = Button.new()
+	_equip_button.name = "EquipButton"
+	_equip_button.text = "Equip selected"
+	_equip_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_equip_button.pressed.connect(_on_equip_pressed)
+	actions.add_child(_equip_button)
+	var use_b := Button.new()
+	use_b.name = "UseButton"
+	use_b.text = "Use selected (consumable)"
+	use_b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	use_b.pressed.connect(_on_use_pressed)
+	actions.add_child(use_b)
+	var dis_b := Button.new()
+	dis_b.name = "DisposeButton"
+	dis_b.text = "Dispose selected stack"
+	dis_b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dis_b.pressed.connect(_on_dispose_pressed)
+	actions.add_child(dis_b)
+
+
+func _selected_bag_index() -> int:
+	for i in _bag_rows.size():
+		if (_bag_rows[i] as Button).button_pressed:
+			return i
+	return -1
+
+
+func _class_tag(item: ItemData) -> String:
+	var names: Array[String] = []
+	for c in item.allowed_classes:
+		names.append(c.capitalize())
+	return " / ".join(names)
+
+
+## Shared equip path for the Equip button and row double-clicks. Denials
+## toast the specific reason (the player's equip_stack re-checks in code
+## regardless — Phase 1 enforcement).
+func _equip_row(index: int) -> void:
+	if _player == null:
+		return
+	if index < 0 or index >= _player.inventory.size():
+		toast("Select a stack first.")
+		return
+	var entry: Dictionary = _player.inventory[index]
+	var item := entry["item"] as ItemData
+	if item == null:
+		return
+	if not ItemData.is_gear(item):
+		toast("%s can't be equipped." % item.display_name)
+		return
+	if not item.allowed_classes.is_empty() and not item.allowed_classes.has(_player.class_id):
+		toast("%s only." % _class_tag(item))
+		return
+	if str(entry.get("equipped_slot", "")) == ItemData.slot_name(item.slot):
+		toast("Already equipped.")
+		return
+	_player.equip_stack(index)
+
+
+func _on_equip_pressed() -> void:
+	_equip_row(_selected_bag_index())
+
+
+func _on_bag_row_pressed(_index: int) -> void:
+	# Selection state lives in the rows' ButtonGroup; nothing else to do.
+	pass
+
+
+func _on_bag_row_gui_input(event: InputEvent, index: int) -> void:
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and mb.double_click and mb.button_index == MOUSE_BUTTON_LEFT:
+			_equip_row(index)
+
+
+func _on_slot_gui_input(event: InputEvent, slot_name: String) -> void:
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			_on_slot_pressed(slot_name)
+
+
+## Clicking a filled slot box unequips that stack.
+func _on_slot_pressed(slot_name: String) -> void:
+	if _player == null:
+		return
+	var entry: Dictionary = _player.equipped_entry(slot_name)
+	if entry.is_empty():
+		toast("No %s equipped." % slot_name.capitalize())
+		return
+	for i in _player.inventory.size():
+		if _player.inventory[i] == entry:
+			_player.unequip_stack(i)
+			return
+
+
 func refresh_inventory(p: Player) -> void:
-	%InventoryList.clear()
-	for i in p.inventory.size():
+	for slot_name in SLOT_ORDER:
+		var parts: Dictionary = _slot_boxes.get(slot_name, {})
+		if parts.is_empty():
+			continue
+		var icon := parts["icon"] as TextureRect
+		var item_label := parts["item_label"] as Label
+		var entry: Dictionary = p.equipped_entry(slot_name)
+		if entry.is_empty():
+			icon.texture = null
+			item_label.text = "—"
+			item_label.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+		else:
+			var item := entry["item"] as ItemData
+			var label := item.display_name
+			if int(entry["count"]) > 1:
+				label += " x%d" % int(entry["count"])
+			icon.texture = item.icon
+			item_label.text = label
+			item_label.add_theme_color_override("font_color", ItemData.rarity_color(item.rarity))
+	for i in _bag_rows.size():
+		var row := _bag_rows[i] as Button
+		if i >= p.inventory.size():
+			row.text = "—"
+			row.disabled = true
+			row.set_pressed_no_signal(false)
+			continue
 		var entry: Dictionary = p.inventory[i]
 		var item := entry["item"] as ItemData
 		var label := item.display_name
@@ -2352,8 +2593,21 @@ func refresh_inventory(p: Player) -> void:
 			label += " x%d" % int(entry["count"])
 		if item.consumable:
 			label = "[USE] " + label
-		var idx: int = %InventoryList.add_item("%s  %s" % [label, _item_summary(item)])
-		%InventoryList.set_item_custom_fg_color(idx, ItemData.rarity_color(item.rarity))
+		elif str(entry.get("equipped_slot", "")) != "":
+			label = "[EQ] " + label
+		var summary := _item_summary(item)
+		if summary != "":
+			label += "  " + summary
+		if not item.allowed_classes.is_empty():
+			label += "  [%s only]" % _class_tag(item)
+		row.text = label
+		row.disabled = false
+		var restricted := not item.allowed_classes.is_empty() \
+			and not item.allowed_classes.has(p.class_id)
+		if restricted:
+			row.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+		else:
+			row.add_theme_color_override("font_color", ItemData.rarity_color(item.rarity))
 	# Potion quick-slot: refresh from the player's inventory.
 	_potion_player = p
 	refresh_potion_slot()
@@ -2362,21 +2616,21 @@ func refresh_inventory(p: Player) -> void:
 func _on_dispose_pressed() -> void:
 	if _player == null:
 		return
-	var sel: PackedInt32Array = %InventoryList.get_selected_items()
-	if sel.is_empty():
+	var sel := _selected_bag_index()
+	if sel < 0 or sel >= _player.inventory.size():
 		toast("Select a stack first.")
 		return
-	_player.dispose_item(sel[0])
+	_player.dispose_item(sel)
 
 
 func _on_use_pressed() -> void:
 	if _player == null:
 		return
-	var sel: PackedInt32Array = %InventoryList.get_selected_items()
-	if sel.is_empty():
+	var sel := _selected_bag_index()
+	if sel < 0 or sel >= _player.inventory.size():
 		toast("Select a stack first.")
 		return
-	_player.use_item(sel[0])
+	_player.use_item(sel)
 
 
 func _item_summary(item: ItemData) -> String:
