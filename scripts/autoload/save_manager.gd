@@ -13,6 +13,38 @@ extends Node
 ## read-through at boot. Every cloud call is guarded by _cloud_available()
 ## (SteamManager.initialized); headless/offline is local-only, zero errors.
 ## Last-write-wins, no conflict resolution.
+##
+## RUN SAVE FORMAT CONTRACT (v1, SAVE_VERSION = 1) — frozen by issue #111
+## (Save-Format Future-Proofing). save_run() below is the ONLY sanctioned
+## run-save writer; every run dict passes through migrate_run() on load.
+## A slot file stores ONE Dictionary under ConfigFile section "run", key
+## "data". Fields a future converter may rely on:
+##   Run top level: theme_id (String), level_number (int), seed (int),
+##     wave (int, dungeon runs), at_station (bool), is_multiplayer (bool,
+##     stamped by save_run from the mode), host_difficulty (float, MP),
+##     host_loot_mult (float, MP), lobby (Dictionary, MP: {max_players,
+##     lobby_name, visibility}), roster (Array of roster entries, MP),
+##     class_id (String), player_state (Dictionary), saved_at (String,
+##     stamped by save_run), save_version (int, stamped by save_run).
+##   Roster entries (MP): steam_id (int64 — THE roster key; when no Steam
+##     identity exists the session peer id is stored in its place),
+##     player_name (String), class_id (String), player_state (Dictionary),
+##     rts_faction (int, -1 = none), is_host (bool).
+##   player_state (Player.get_state): level, xp, xp_next, stat_points,
+##     bonus_damage, bonus_health, bonus_speed, bonus_aura, inventory
+##     (Array of {id: String, count: int, slot: int equip marker}),
+##     run_start_msec, run_kills, run_damage_dealt, supermarket_cash,
+##     bounty_progress (Dictionary), totem_charges, specialization,
+##     affinity (Dictionary), family_collection (Dictionary),
+##     equipped_special, no_death_streak, second_wind_armed,
+##     second_wind_used.
+##   DERIVED MIRROR: in MP runs the top-level class_id / player_state are
+##   a DERIVED mirror of roster[0] (the host), written by the save path
+##   for backwards compatibility — NOT an independent record; converters
+##   must treat roster[0] as authoritative. (Solo runs have no roster;
+##   there the same two keys are the run's primary character record.)
+##   Unknown keys at any level are outside this contract and must survive
+##   load/save round-trips untouched (converter readiness).
 
 const SETTINGS_PATH := "user://settings.cfg"
 
@@ -761,6 +793,19 @@ func save_run(run: Dictionary, mode: String, slot: int, keep_saved_at := false) 
 	return true
 
 
+## Migration hook (issue #111, Save-Format Future-Proofing): every run
+## dict passes through here on load — load_run is the ONLY caller. Pure
+## dict -> dict: the input is never mutated, no key is ever deleted,
+## and the transform is idempotent. At SAVE_VERSION 1 this is a true
+## identity; the hook exists so a future format converter has exactly
+## one place to upgrade old saves. is_save_compatible keeps its own
+## semantics and does not route through here.
+func migrate_run(run: Dictionary) -> Dictionary:
+	var out := run.duplicate(true)
+	# v1: no transformations.
+	return out
+
+
 ## Load a run from a slot. {} when empty or the slot is invalid.
 func load_run(mode: String, slot: int) -> Dictionary:
 	var path := _slot_path(mode, slot)
@@ -770,7 +815,9 @@ func load_run(mode: String, slot: int) -> Dictionary:
 	if cfg.load(path) != OK:
 		return {}
 	var data = cfg.get_value("run", "data", {})
-	return data if data is Dictionary else {}
+	if data is Dictionary:
+		return migrate_run(data)
+	return {}
 
 
 func has_run(mode: String, slot: int) -> bool:

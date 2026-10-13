@@ -79,6 +79,7 @@ func _run() -> void:
 	_test_train_spots_12p()
 	_test_mp_save_steam_ids()
 	_test_mp_save_bughunt()
+	_test_save_format_pf1()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -3025,6 +3026,200 @@ func _test_mp_save_bughunt() -> void:
 		"bughunt: cloud sync-down only fetches locally-listed slots")
 	_assert(csd.contains("_cloud_fetch(_profile_path_for(_profile_account))"),
 		"bughunt: profile fetch is unconditional (meta syncs cross-device, runs do not)")
+
+
+func _pf1_gd_files(dir_path: String, out: Array) -> void:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if not name.begins_with("."):
+			var full := dir_path.path_join(name)
+			if dir.current_is_dir():
+				_pf1_gd_files(full, out)
+			elif name.ends_with(".gd"):
+				out.append(full)
+		name = dir.get_next()
+	dir.list_dir_end()
+
+
+func _test_save_format_pf1() -> void:
+	print("[Playtest] Save format PF Phase 1 (funnel + hook + fixtures)...")
+	# Issue #111 pulled-forward item, PF Phase 1 (Eng 4): save_run is the
+	# only sanctioned run-save writer (funnel lock), migrate_run is the
+	# single load-side migration hook, and the v1 format is pinned by
+	# frozen fixtures so v1 convertibility can never silently break.
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var sm_src := FileAccess.get_file_as_string("res://scripts/autoload/save_manager.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+
+	# --- Funnel lock: tree grep over PRODUCTION code (scripts/ + scenes/).
+	# The run-cfg write pattern may appear only inside save_manager.gd.
+	# tools/ is deliberately out of scope: tools/migrate_check writes
+	# legacy run cfg data on purpose (whitelisted by the gate note).
+	var gd_files: Array = []
+	_pf1_gd_files("res://scripts", gd_files)
+	_pf1_gd_files("res://scenes", gd_files)
+	_assert(gd_files.size() > 50, "pf1: production tree walk finds the scripts")
+	_assert(sm_src.contains("cfg.set_value(\"run\", \"data\", data)"),
+		"pf1: save_manager holds the single production run-write site")
+	var bypass: Array = []
+	for f in gd_files:
+		if f == "res://scripts/autoload/save_manager.gd":
+			continue
+		if FileAccess.get_file_as_string(f).contains("set_value(\"run\""):
+			bypass.append(f)
+	_assert(bypass.is_empty(), "pf1: no production script bypasses save_run (funnel lock)")
+	var mc_src := FileAccess.get_file_as_string("res://tools/migrate_check/migrate_check.gd")
+	_assert(mc_src.contains("set_value(\"run\", \"data\""),
+		"pf1: grep pattern is real (migrate_check writes run cfg; tools/ out of scope)")
+	# The four verified producers write exclusively through save_run.
+	_assert(dsrc.count("SaveManager.save_run(") >= 2,
+		"pf1: dungeon.gd producers (boarding + MP save) go through save_run")
+	_assert(hsrc.contains("SaveManager.save_run("), "pf1: hud.gd pause-save producer uses save_run")
+	_assert(stsrc.contains("SaveManager.save_run("), "pf1: station.gd producer uses save_run")
+
+	# --- Scratch SaveManager for everything below (never the real slots).
+	var mgr = SaveScript.new()
+	var scratch := "user://runs_pf1_test"
+	if DirAccess.dir_exists_absolute(scratch):
+		for f in DirAccess.get_files_at(scratch):
+			DirAccess.remove_absolute(scratch.path_join(f))
+		DirAccess.remove_absolute(scratch)
+	mgr.set("_test_runs_dir", scratch)
+	mgr.set("_test_account_pin", "pf1_scratch")
+
+	# --- Four-producer stamp test: dicts in each producer's exact shape
+	# come back stamped save_version == SAVE_VERSION on every written slot.
+	var pstate := {"level": 4, "xp": 90, "xp_next": 150, "stat_points": 1,
+		"bonus_damage": 1.5, "bonus_health": 0.0, "bonus_speed": 0.0, "bonus_aura": 0.0,
+		"inventory": [{"id": "health_potion", "count": 3, "slot": -1}],
+		"run_start_msec": 123456, "run_kills": 7, "run_damage_dealt": 42.5,
+		"supermarket_cash": 12, "bounty_progress": {}, "totem_charges": 0,
+		"specialization": "", "affinity": {}, "family_collection": {},
+		"equipped_special": "", "no_death_streak": 0,
+		"second_wind_armed": false, "second_wind_used": false}
+	var host_entry := {"steam_id": 76561198000000111, "player_name": "Host",
+		"class_id": "warrior", "player_state": pstate, "rts_faction": -1, "is_host": true}
+	var producers := [
+		{"mode": "solo", "run": {"theme_id": "dungeon", "level_number": 2,
+			"class_id": "warrior", "player_state": pstate, "seed": 777}},
+		{"mode": "solo", "run": {"theme_id": "village", "level_number": 1,
+			"seed": 5, "at_station": false, "wave": 0,
+			"class_id": "mage", "player_state": pstate}},
+		{"mode": "mp", "run": {"theme_id": "dungeon", "level_number": 3,
+			"seed": 42, "is_multiplayer": true, "at_station": false, "wave": 1,
+			"host_difficulty": 1.0, "host_loot_mult": 1.0,
+			"lobby": {"max_players": 4, "lobby_name": "Host's Dungeon", "visibility": "public"},
+			"roster": [host_entry], "class_id": "warrior", "player_state": pstate}},
+		{"mode": "mp", "run": {"theme_id": "village", "level_number": 2,
+			"seed": 9, "is_multiplayer": true, "at_station": true,
+			"host_difficulty": 1.0, "host_loot_mult": 1.0,
+			"lobby": {"max_players": 4, "lobby_name": "Host's Dungeon"},
+			"roster": [host_entry]}},
+	]
+	var pidx := 0
+	for p in producers:
+		_assert(mgr.save_run(p["run"], p["mode"], pidx), "pf1: producer %d save accepted" % pidx)
+		var ploaded: Dictionary = mgr.load_run(p["mode"], pidx)
+		_assert(int(ploaded.get("save_version", 0)) == mgr.SAVE_VERSION,
+			"pf1: producer %d slot stamped save_version == SAVE_VERSION" % pidx)
+		pidx += 1
+
+	# --- migrate_run: identity at v1, idempotent, non-mutating, no deletes.
+	_assert(sm_src.contains("return migrate_run(data)"), "pf1: load_run routes through migrate_run")
+	var msrc_dict := {"theme_id": "dungeon", "save_version": 1,
+		"player_state": {"level": 2, "future_key": {"nested": [1, 2]}},
+		"roster": [{"steam_id": 5, "unknown_entry_key": "x"}]}
+	var frozen := str(msrc_dict)
+	var once: Dictionary = mgr.migrate_run(msrc_dict)
+	_assert(str(msrc_dict) == frozen, "pf1: migrate_run does not mutate its input")
+	_assert(str(once) == frozen, "pf1: migrate_run is a true identity at v1")
+	_assert(str(mgr.migrate_run(once)) == str(once), "pf1: migrate_run is idempotent")
+	var keys_ok := true
+	for k in msrc_dict.keys():
+		if not once.has(k):
+			keys_ok = false
+	_assert(keys_ok and (once["player_state"] as Dictionary).has("future_key")
+		and ((once["roster"] as Array)[0] as Dictionary).has("unknown_entry_key"),
+		"pf1: migrate_run never deletes a key (unknown keys kept at every level)")
+
+	# --- FROZEN v1 FIXTURES — do not edit without a SAVE_VERSION bump.
+	var fixture_solo := {"theme_id": "dungeon", "level_number": 3, "seed": 31337,
+		"at_station": false, "wave": 2, "class_id": "rogue",
+		"player_state": {"level": 6, "xp": 210, "xp_next": 300, "stat_points": 0,
+			"bonus_damage": 2.0, "bonus_health": 5.0, "bonus_speed": 0.5, "bonus_aura": 0.0,
+			"inventory": [{"id": "iron_sword", "count": 1, "slot": 0},
+				{"id": "health_potion", "count": 7, "slot": -1}],
+			"run_start_msec": 999, "run_kills": 11, "run_damage_dealt": 88.0,
+			"supermarket_cash": 0, "bounty_progress": {}, "totem_charges": 1,
+			"specialization": "", "affinity": {}, "family_collection": {},
+			"equipped_special": "", "no_death_streak": 2,
+			"second_wind_armed": true, "second_wind_used": false}}
+	var guest_state := (fixture_solo["player_state"] as Dictionary).duplicate(true)
+	guest_state["level"] = 5
+	var fixture_mp := {"theme_id": "dungeon", "level_number": 3, "seed": 31337,
+		"is_multiplayer": true, "at_station": false, "wave": 2,
+		"host_difficulty": 1.25, "host_loot_mult": 2.0,
+		"lobby": {"max_players": 6, "lobby_name": "Frozen's Dungeon", "visibility": "public"},
+		"roster": [
+			{"steam_id": 76561198000000111, "player_name": "FrozenHost",
+				"class_id": "rogue", "player_state": fixture_solo["player_state"],
+				"rts_faction": -1, "is_host": true},
+			{"steam_id": 76561198000000222, "player_name": "FrozenGuest",
+				"class_id": "mage", "player_state": guest_state,
+				"rts_faction": -1, "is_host": false}],
+		"class_id": "rogue", "player_state": fixture_solo["player_state"]}
+	_assert(mgr.save_run(fixture_solo, "solo", 10), "pf1: frozen solo fixture saves")
+	var fsolo: Dictionary = mgr.load_run("solo", 10)
+	_assert(str(fsolo.get("class_id", "")) == "rogue"
+		and int((fsolo.get("player_state", {}) as Dictionary).get("level", 0)) == 6
+		and int(fsolo.get("seed", 0)) == 31337,
+		"pf1: frozen solo fixture loads (class/level/seed)")
+	_assert(mgr.save_run(fixture_mp, "mp", 11), "pf1: frozen MP fixture saves")
+	var fmp: Dictionary = mgr.load_run("mp", 11)
+	var froster: Array = fmp.get("roster", [])
+	_assert(froster.size() == 2, "pf1: frozen MP fixture loads with a 2-entry roster")
+	_assert(int((froster[0] as Dictionary).get("steam_id", 0)) == 76561198000000111
+		and int((froster[1] as Dictionary).get("steam_id", 0)) == 76561198000000222,
+		"pf1: fixture roster steam_ids survive exactly (int64 keying)")
+	var fhost_inv: Array = ((froster[0] as Dictionary).get("player_state", {}) as Dictionary).get("inventory", [])
+	_assert(fhost_inv.size() == 2 and str((fhost_inv[0] as Dictionary).get("id", "")) == "iron_sword"
+		and int((fhost_inv[0] as Dictionary).get("slot", -99)) == 0,
+		"pf1: fixture inventory entries keep id/count/slot (equip marker)")
+	_assert(str(fmp.get("class_id", "")) == str((froster[0] as Dictionary).get("class_id", "")),
+		"pf1: top-level class_id is the roster[0] mirror (format contract)")
+
+	# --- Unknown-key injection at all three levels survives a round-trip.
+	var inj: Dictionary = fmp.duplicate(true)
+	inj["pf1_future_top"] = {"a": 1}
+	var inj_roster: Array = inj["roster"]
+	(inj_roster[0] as Dictionary)["pf1_future_entry"] = "keep"
+	((inj_roster[0] as Dictionary)["player_state"] as Dictionary)["pf1_future_state"] = [3, 4]
+	(inj["player_state"] as Dictionary)["pf1_future_mirror"] = "keep"
+	_assert(mgr.save_run(inj, "mp", 12), "pf1: injected run saves")
+	var back: Dictionary = mgr.load_run("mp", 12)
+	_assert(back.has("pf1_future_top"), "pf1: unknown TOP-LEVEL key survives round-trip")
+	var broster: Array = back.get("roster", [])
+	_assert(((broster[0] as Dictionary).get("pf1_future_entry", "") as String) == "keep",
+		"pf1: unknown ROSTER-ENTRY key survives round-trip")
+	_assert((((broster[0] as Dictionary)["player_state"] as Dictionary).get("pf1_future_state", []) as Array) == [3, 4],
+		"pf1: unknown PLAYER_STATE key survives round-trip")
+	_assert(str((back.get("player_state", {}) as Dictionary).get("pf1_future_mirror", "")) == "keep",
+		"pf1: unknown key in the mirror player_state survives round-trip")
+	_assert(mgr.is_save_compatible("mp", 12), "pf1: injected save stays version-compatible")
+
+	# Scratch cleanup.
+	for f in DirAccess.get_files_at(scratch):
+		DirAccess.remove_absolute(scratch.path_join(f))
+	DirAccess.remove_absolute(scratch)
+	if FileAccess.file_exists("user://profile_pf1_scratch.cfg"):
+		DirAccess.remove_absolute("user://profile_pf1_scratch.cfg")
+	mgr.free()
 
 
 func _test_lobby_strip() -> void:
