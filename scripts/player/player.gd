@@ -4578,6 +4578,31 @@ func rpc_earn_special(special_id: String) -> void:
 
 
 ## Serialize run-persistent state so it survives procedural level transitions.
+## Issue #111 PF Phase 2: the player_state keys apply_state consumes.
+## Any OTHER key in a loaded state is stashed in _state_extras and
+## merged back by get_state() — unknown keys (written by a newer build
+## or a future converter) survive a load -> continue -> save cycle
+## losslessly instead of being silently dropped at restore.
+const STATE_KEYS: Array[String] = [
+	"level", "xp", "xp_next", "stat_points", "bonus_damage",
+	"bonus_health", "bonus_speed", "bonus_aura", "inventory",
+	"run_start_msec", "run_kills", "run_damage_dealt",
+	"supermarket_cash", "bounty_progress", "totem_charges",
+	"specialization", "affinity", "family_collection",
+	"equipped_special", "no_death_streak", "second_wind_armed",
+	"second_wind_used",
+]
+var _state_extras: Dictionary = {}
+
+
+func _deep_dup(v: Variant) -> Variant:
+	if v is Dictionary:
+		return (v as Dictionary).duplicate(true)
+	if v is Array:
+		return (v as Array).duplicate(true)
+	return v
+
+
 func get_state() -> Dictionary:
 	var inv: Array = []
 	for entry in inventory:
@@ -4586,7 +4611,7 @@ func get_state() -> Dictionary:
 			# Issue #104 Phase 1: persist the equip marker as "slot".
 			inv.append({"id": item.id, "count": int(entry["count"]),
 				"slot": _entry_equipped_slot(entry)})
-	return {
+	var state := {
 		"level": level,
 		"xp": xp,
 		"xp_next": xp_next,
@@ -4611,10 +4636,22 @@ func get_state() -> Dictionary:
 		"second_wind_armed": second_wind_armed,
 		"second_wind_used": second_wind_used,
 	}
+	# PF Phase 2: carried-through unknown keys ride along (live fields
+	# above always win — a key that becomes consumed later takes over).
+	for k in _state_extras:
+		if not state.has(k):
+			state[k] = _deep_dup(_state_extras[k])
+	return state
 
 
 ## Restore state after a level transition. Full heal on arrival.
 func apply_state(s: Dictionary) -> void:
+	# PF Phase 2: stash every key this build does NOT consume, so
+	# get_state() can merge it back verbatim (lossless round-trip).
+	_state_extras.clear()
+	for k in s.keys():
+		if not STATE_KEYS.has(k):
+			_state_extras[k] = _deep_dup(s[k])
 	level = int(s.get("level", 1))
 	xp = int(s.get("xp", 0))
 	xp_next = int(s.get("xp_next", 25))

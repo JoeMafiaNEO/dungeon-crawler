@@ -902,17 +902,36 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 			"rts_faction": -1,
 			"is_host": sid == my_sid,
 		})
-	SaveManager.save_run({
-		"theme_id": theme_id,
-		"level_number": level_number,
-		"seed": level_seed,
-		"is_multiplayer": true,
-		"at_station": true,
-		"host_difficulty": NetworkManager.host_difficulty,
-		"host_loot_mult": NetworkManager.host_loot_mult,
-		"lobby": {
-			"max_players": NetworkManager.MAX_PLAYERS,
-			"lobby_name": "%s's Dungeon" % SteamManager.persona_name if SteamManager.initialized else "Dungeon",
-		},
-		"roster": roster,
-	}, SaveManager.MODE_MP, NetworkManager.active_run_slot)
+	# Issue #111 PF Phase 2: loaded-dict-first (the _save_base pattern,
+	# mirroring Dungeon.save_multiplayer_run) — unknown top-level keys
+	# survive this write-back; roster entries gain the previous entry's
+	# unknown keys by steam_id (fresh fields win). NOTE: station saves
+	# REPLACE the roster with the locally present players (existing
+	# behavior, unchanged) — absent members are not carried here.
+	var base: Dictionary = SaveManager.load_run(SaveManager.MODE_MP,
+		NetworkManager.active_run_slot).duplicate(true)
+	var prev_by_sid := {}
+	for e in base.get("roster", []):
+		prev_by_sid[int((e as Dictionary).get("steam_id", 0))] = e
+	for entry in roster:
+		var prev_e: Dictionary = prev_by_sid.get(int(entry.get("steam_id", 0)), {})
+		for k in prev_e.keys():
+			if not entry.has(k):
+				entry[k] = prev_e[k]
+	base["theme_id"] = theme_id
+	base["level_number"] = level_number
+	base["seed"] = level_seed
+	base["is_multiplayer"] = true
+	base["at_station"] = true
+	base["host_difficulty"] = NetworkManager.host_difficulty
+	base["host_loot_mult"] = NetworkManager.host_loot_mult
+	var lobby: Dictionary = (base.get("lobby", {}) as Dictionary).duplicate(true)
+	lobby["max_players"] = NetworkManager.MAX_PLAYERS
+	lobby["lobby_name"] = ("%s's Dungeon" % SteamManager.persona_name) \
+		if SteamManager.initialized else "Dungeon"
+	# Issue #110 (M-5) parity with the dungeon producer: persist the
+	# lobby visibility so station saves don't drop it.
+	lobby["visibility"] = NetworkManager.lobby_visibility
+	base["lobby"] = lobby
+	base["roster"] = roster
+	SaveManager.save_run(base, SaveManager.MODE_MP, NetworkManager.active_run_slot)

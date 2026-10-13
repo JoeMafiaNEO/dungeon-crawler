@@ -80,6 +80,7 @@ func _run() -> void:
 	_test_mp_save_steam_ids()
 	_test_mp_save_bughunt()
 	_test_save_format_pf1()
+	_test_save_format_pf2()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -1855,7 +1856,7 @@ func _test_annex_departure() -> void:
 	# 2. Sequence order: ride rpc -> wait -> save -> interior boarding rpc.
 	var h_start := dsrc.find("func _on_station_departure_resolved")
 	_assert(h_start > 0, "departure: handler found")
-	var h := dsrc.substr(h_start, 2600)
+	var h := dsrc.substr(h_start, 3400) # widened for PF2: the solo producer grew (loaded-dict-first)
 	var p_ride := h.find("begin_annex_departure")
 	var p_wait := h.find("create_timer(3.5)")
 	var p_save := h.find("save_multiplayer_run")
@@ -2076,7 +2077,7 @@ func _test_train_interior() -> void:
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	var hpos := dsrc.find("func _on_station_departure_resolved")
 	_assert(hpos > 0, "interior: departure handler found")
-	var hblock := dsrc.substr(hpos, 2600)
+	var hblock := dsrc.substr(hpos, 3400) # widened for PF2 (see departure test)
 	_assert(hblock.contains('rpc("board_train_interior"'), "interior: departure rpcs boarding")
 	_assert(not hblock.contains("hop_to_next_level"), "interior: direct hop gone from departure")
 
@@ -3002,8 +3003,8 @@ func _test_mp_save_bughunt() -> void:
 	# visibility and continue_multiplayer re-hosts with it, instead of
 	# hardcoding friends-only; legacy saves keep the friends-only default.
 	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
-	_assert(dsrc.contains("\"visibility\": NetworkManager.lobby_visibility"),
-		"bughunt: run saves persist the lobby visibility (M-5 fixed)")
+	_assert(dsrc.contains("lobby[\"visibility\"] = NetworkManager.lobby_visibility"),
+		"bughunt: run saves persist the lobby visibility (M-5 fixed; PF2 merged-lobby form)")
 	var cont := _bughunt_body(nsrc, "continue_multiplayer")
 	_assert(cont.contains("lobby.get(\"visibility\", \"friends\")"),
 		"bughunt: continue reads stored visibility, friends-only legacy default (M-5 fixed)")
@@ -8985,3 +8986,135 @@ func _test_class_tagging_phase4() -> void:
 	rt2.queue_free()
 	pv.queue_free()
 	print("[Playtest] class tagging phase 4 done")
+
+
+func _test_save_format_pf2() -> void:
+	print("[Playtest] Save format PF Phase 2 (lossless round-trip)...")
+	# Issue #111 pulled-forward item, PF Phase 2 (Eng 3): unknown keys
+	# survive a load -> continue -> re-save cycle at all three levels —
+	# player_state (Player._state_extras), roster entry (producer merge
+	# by steam_id), and run top level (loaded-dict-first producers).
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(psrc.contains("_state_extras"), "pf2: player carries _state_extras")
+	_assert(psrc.contains("STATE_KEYS"), "pf2: consumed-key set is explicit")
+	# Loaded-dict-first seeding present in all four producers (the two
+	# MP producers + station are also driven live / merged below; the
+	# solo literals are pinned here — they share the identical pattern).
+	_assert(dsrc.contains("_save_base = SaveManager.load_run(SaveManager.MODE_MP,"),
+		"pf2: dungeon MP producer seeds _save_base from the loaded dict")
+	_assert(dsrc.contains("SaveManager.MODE_SOLO, NetworkManager.active_run_slot).duplicate(true)"),
+		"pf2: dungeon solo producer is loaded-dict-first")
+	_assert(hsrc.contains("SaveManager.MODE_SOLO, NetworkManager.active_run_slot).duplicate(true)"),
+		"pf2: hud pause-save producer is loaded-dict-first")
+	_assert(stsrc.contains("SaveManager.load_run(SaveManager.MODE_MP,"),
+		"pf2: station producer is loaded-dict-first")
+	_assert(dsrc.contains("prev_by_sid") and stsrc.contains("prev_by_sid"),
+		"pf2: roster-entry unknown-key merge in both MP producers")
+
+	# --- Player level: unknown keys survive apply_state -> get_state.
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	var p = PlayerScene.instantiate()
+	p.class_id = "mage"
+	root.add_child(p)
+	var st: Dictionary = p.get_state()
+	st["level"] = 9
+	st["pf2_future_state"] = {"nested": [1, 2, 3], "note": "from a newer build"}
+	st["pf2_future_scalar"] = 42
+	p.apply_state(st)
+	var back: Dictionary = p.get_state()
+	_assert(int(back.get("level", 0)) == 9, "pf2: live fields apply normally")
+	_assert(int(back.get("pf2_future_scalar", 0)) == 42,
+		"pf2: unknown scalar key survives apply -> get")
+	_assert(str(back.get("pf2_future_state", {})) == str({"nested": [1, 2, 3], "note": "from a newer build"}),
+		"pf2: unknown nested key survives verbatim")
+	p.apply_state({"level": 3})
+	_assert(not p.get_state().has("pf2_future_scalar"),
+		"pf2: extras track the LAST applied state (no stale carry)")
+
+	# --- Live load -> continue -> re-save through the real MP write
+	# path. Scratch-pinned autoload SaveManager (never real slots).
+	var SM: Variant = root.get_node("SaveManager")
+	SM.set("_test_runs_dir", "user://runs_pf2_test")
+	SM.set("_test_account_pin", "pf2test")
+	var slot := 4
+	var pstate := {"level": 6, "xp": 210, "xp_next": 300, "stat_points": 0,
+		"bonus_damage": 2.0, "bonus_health": 5.0, "bonus_speed": 0.5, "bonus_aura": 0.0,
+		"inventory": [{"id": "iron_sword", "count": 1, "slot": "WEAPON"}],
+		"run_start_msec": 999, "run_kills": 11, "run_damage_dealt": 88.0,
+		"supermarket_cash": 0, "bounty_progress": {}, "totem_charges": 1,
+		"specialization": "", "affinity": {}, "family_collection": {},
+		"equipped_special": "", "no_death_streak": 2,
+		"second_wind_armed": true, "second_wind_used": false,
+		"pf2_future_state": {"x": [1, 2]}}
+	var guest_state: Dictionary = pstate.duplicate(true)
+	guest_state["level"] = 5
+	guest_state.erase("pf2_future_state")
+	var fixture := {"theme_id": "dungeon", "level_number": 3, "seed": 31337,
+		"is_multiplayer": true, "at_station": false, "wave": 2,
+		"host_difficulty": 1.25, "host_loot_mult": 2.0,
+		"lobby": {"max_players": 6, "lobby_name": "PF2's Dungeon", "visibility": "public"},
+		"roster": [
+			{"steam_id": 1, "player_name": "Host", "class_id": "rogue",
+				"player_state": pstate, "rts_faction": -1, "is_host": true,
+				"pf2_future_entry": "keep-me"},
+			{"steam_id": 76561198000000222, "player_name": "Guest", "class_id": "mage",
+				"player_state": guest_state, "rts_faction": -1, "is_host": false,
+				"pf2_guest_entry": 7}],
+		"class_id": "rogue", "player_state": pstate,
+		"pf2_future_top": {"a": 1}}
+	_assert(SM.save_run(fixture, "mp", slot), "pf2: injected fixture saves")
+	var loaded: Dictionary = SM.load_run("mp", slot)
+	# Continue: the host restores from the loaded roster entry.
+	var host = PlayerScene.instantiate()
+	host.class_id = "rogue"
+	root.add_child(host)
+	host.apply_state((loaded["roster"][0] as Dictionary)["player_state"])
+	# Re-save via the real write path on a detached Dungeon rig
+	# (save_multiplayer_run's collection shell needs a live scene; its
+	# deterministic core — _save_base seeding + _write_multiplayer_save —
+	# is driven here exactly as the producer composes it).
+	var d = DungeonScript.new()
+	d.set("_save_slot", slot)
+	var base: Dictionary = SM.load_run("mp", slot).duplicate(true)
+	base["theme_id"] = "dungeon"
+	base["level_number"] = 3
+	base["seed"] = 31337
+	d.set("_save_base", base)
+	d.set("_save_roster", [{"steam_id": 1, "player_name": "Host",
+		"class_id": "rogue", "player_state": host.get_state(),
+		"rts_faction": -1, "is_host": true}])
+	d.call("_write_multiplayer_save")
+	var resaved: Dictionary = SM.load_run("mp", slot)
+	# Zero key loss at all three levels.
+	_assert((resaved.get("pf2_future_top", {}) as Dictionary).get("a", 0) == 1,
+		"pf2: unknown TOP-LEVEL key survives the producer write-back")
+	var rroster: Array = resaved.get("roster", [])
+	var hentry: Dictionary = {}
+	var gentry: Dictionary = {}
+	for e in rroster:
+		if int(e.get("steam_id", 0)) == 1:
+			hentry = e
+		if int(e.get("steam_id", 0)) == 76561198000000222:
+			gentry = e
+	_assert(str(hentry.get("pf2_future_entry", "")) == "keep-me",
+		"pf2: unknown ROSTER-ENTRY key merged into the fresh host entry")
+	_assert(((hentry.get("player_state", {}) as Dictionary).get("pf2_future_state", {}) as Dictionary).has("x"),
+		"pf2: unknown PLAYER_STATE key survives through the real player + producer")
+	_assert(int(gentry.get("pf2_guest_entry", 0)) == 7,
+		"pf2: absent guest entry carried forward verbatim (unknown key intact)")
+	_assert(((resaved.get("player_state", {}) as Dictionary).get("pf2_future_state", {}) as Dictionary).has("x"),
+		"pf2: host mirror player_state keeps the unknown key")
+	_assert(int(resaved.get("level_number", 0)) == 3 and int(resaved.get("seed", 0)) == 31337,
+		"pf2: producer fields written as called (diff-clean otherwise)")
+	d.free()
+	host.queue_free()
+	p.queue_free()
+	SM.set("_test_runs_dir", "")
+	SM.set("_test_account_pin", "")
+	print("[Playtest] save format pf2 done")

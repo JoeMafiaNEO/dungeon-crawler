@@ -2486,13 +2486,17 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				if steam_to_peer.has(sid):
 					saved_player_states[steam_to_peer[sid]] = entry.get("player_state", {})
 		else:
-			SaveManager.save_run({
-				"theme_id": theme_id,
-				"level_number": new_level,
-				"class_id": me.class_id,
-				"player_state": me.get_state(),
-				"seed": seed,
-			}, SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
+			# Issue #111 PF Phase 2: loaded-dict-first (see
+			# save_multiplayer_run) — unknown top-level keys survive.
+			var solo_base: Dictionary = SaveManager.load_run(
+				SaveManager.MODE_SOLO, NetworkManager.active_run_slot).duplicate(true)
+			solo_base["theme_id"] = theme_id
+			solo_base["level_number"] = new_level
+			solo_base["class_id"] = me.class_id
+			solo_base["player_state"] = me.get_state()
+			solo_base["seed"] = seed
+			SaveManager.save_run(solo_base, SaveManager.MODE_SOLO,
+				NetworkManager.active_run_slot)
 	# Jesse 2026-10-10 fix: send the collected states with the boarding RPC
 	# so clients don't rely on local capture.
 	rpc("board_train_interior", theme_id, seed, new_level, peer_classes, saved_player_states)
@@ -3006,24 +3010,29 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 		wave_number = wave
 		if wave_state == WaveState.ACTIVE:
 			wave_number = max(0, wave_number - 1)
-	_save_base = {
-		"theme_id": theme_id,
-		"level_number": level_number,
-		"seed": level_seed,
-		"is_multiplayer": true,
-		"at_station": at_station,
-		"wave": wave_number,
-		"host_difficulty": NetworkManager.host_difficulty,
-		"host_loot_mult": NetworkManager.host_loot_mult,
-		"lobby": {
-			"max_players": NetworkManager.MAX_PLAYERS,
-			"lobby_name": "%s's Dungeon" % SteamManager.persona_name if SteamManager.initialized else "Dungeon",
-			# Issue #110 (M-5): persist the lobby visibility so a
-			# continued run re-hosts with the same visibility it was
-			# started with (continue paths used to force friends-only).
-			"visibility": NetworkManager.lobby_visibility,
-		},
-	}
+	# Issue #111 PF Phase 2: start from the loaded dict for this slot
+	# (the _save_base pattern) so unknown top-level keys written by a
+	# newer build survive this write-back instead of being dropped by
+	# a fresh literal. A fresh slot loads {} and behaves exactly like
+	# the old literal. Known fields are overwritten below.
+	_save_base = SaveManager.load_run(SaveManager.MODE_MP,
+		NetworkManager.active_run_slot).duplicate(true)
+	_save_base["theme_id"] = theme_id
+	_save_base["level_number"] = level_number
+	_save_base["seed"] = level_seed
+	_save_base["is_multiplayer"] = true
+	_save_base["at_station"] = at_station
+	_save_base["wave"] = wave_number
+	_save_base["host_difficulty"] = NetworkManager.host_difficulty
+	_save_base["host_loot_mult"] = NetworkManager.host_loot_mult
+	var lobby: Dictionary = (_save_base.get("lobby", {}) as Dictionary).duplicate(true)
+	lobby["max_players"] = NetworkManager.MAX_PLAYERS
+	lobby["lobby_name"] = ("%s's Dungeon" % SteamManager.persona_name) \
+		if SteamManager.initialized else "Dungeon"
+	# Issue #110 (M-5): persist the lobby visibility so a continued run
+	# re-hosts with the same visibility it was started with.
+	lobby["visibility"] = NetworkManager.lobby_visibility
+	_save_base["lobby"] = lobby
 	_save_roster.clear()
 	_save_pending.clear()
 	_save_slot = NetworkManager.active_run_slot
@@ -3103,6 +3112,18 @@ func _write_multiplayer_save() -> void:
 	# their saved character by missing one save point.
 	var previous: Dictionary = SaveManager.load_run(SaveManager.MODE_MP, _save_slot)
 	_save_roster = carry_forward_roster(_save_roster, previous.get("roster", []))
+	# Issue #111 PF Phase 2: unknown keys on a previous roster entry
+	# survive into its fresh replacement (keyed by steam_id; the fresh
+	# entry's own fields always win). Absent members' entries already
+	# carried forward verbatim above.
+	var prev_by_sid := {}
+	for e in previous.get("roster", []):
+		prev_by_sid[int((e as Dictionary).get("steam_id", 0))] = e
+	for entry in _save_roster:
+		var prev_e: Dictionary = prev_by_sid.get(int(entry.get("steam_id", 0)), {})
+		for k in prev_e.keys():
+			if not entry.has(k):
+				entry[k] = prev_e[k]
 	_save_base["roster"] = _save_roster
 	# class_id at top level for backwards compat (host's class).
 	if not _save_roster.is_empty():

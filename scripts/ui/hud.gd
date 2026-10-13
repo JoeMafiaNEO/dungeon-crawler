@@ -1489,15 +1489,19 @@ func _on_save_quit_pressed() -> void:
 			_on_quit_pressed()
 			return
 	else:
-		SaveManager.save_run({
-			"theme_id": theme_id,
-			"level_number": level_number,
-			"seed": level_seed,
-			"at_station": at_station,
-			"wave": wave_number,
-			"class_id": _player.class_id,
-			"player_state": _player.get_state(),
-		}, SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
+		# Issue #111 PF Phase 2: loaded-dict-first (the _save_base
+		# pattern) — unknown top-level keys survive a pause-save.
+		var solo_base: Dictionary = SaveManager.load_run(
+			SaveManager.MODE_SOLO, NetworkManager.active_run_slot).duplicate(true)
+		solo_base["theme_id"] = theme_id
+		solo_base["level_number"] = level_number
+		solo_base["seed"] = level_seed
+		solo_base["at_station"] = at_station
+		solo_base["wave"] = wave_number
+		solo_base["class_id"] = _player.class_id
+		solo_base["player_state"] = _player.get_state()
+		SaveManager.save_run(solo_base, SaveManager.MODE_SOLO,
+			NetworkManager.active_run_slot)
 	_on_quit_pressed()
 
 
