@@ -4245,42 +4245,32 @@ func _test_specials_phase1() -> void:
 	_assert(not SD.earn("bogus"), "earn unknown id fails")
 
 	# 2. Vault persistence: earn is idempotent and survives a profile reload.
-	# Backup is abort-safe: the original is moved to a .phase6bak sidecar
-	# (never deleted), so a script error mid-test can't lose it — a later
-	# run self-heals from the sidecar.
-	var prof_path := "user://profile_local.cfg"
-	var prof_bak := "user://profile_local.cfg.phase6bak"
-	if not FileAccess.file_exists(prof_path) and FileAccess.file_exists(prof_bak):
-		_copy_file(prof_bak, prof_path) # previous run aborted mid-test
-		DirAccess.remove_absolute(prof_bak)
-	var prof_backup := PackedByteArray()
-	if FileAccess.file_exists(prof_path):
-		prof_backup = FileAccess.get_file_as_bytes(prof_path)
-		var bf := FileAccess.open(prof_bak, FileAccess.WRITE)
-		bf.store_buffer(prof_backup)
-		DirAccess.remove_absolute(prof_path)
+	# Hermetic (issue #114): the old version sidecar-backed the LIVE profile
+	# file and deleted it for the section's duration — any other writer of
+	# that path (a concurrent suite run, leftover state from a crashed one)
+	# flipped the earn/roundtrip asserts below. Instead, pin a scratch
+	# account + scratch runs dir on the autoload for the whole section: the
+	# live profile and real run slots are never touched, and the section
+	# always starts from a fresh-seeded profile. Scratch leftovers from an
+	# aborted run are wiped at entry, so the start state is deterministic.
 	var mgr: Node = root.get_node("SaveManager")
-	mgr.call("load_game") # fresh seeded profile
+	var scratch_prof := "user://profile_specials1_test.cfg"
+	var scratch_runs := "user://runs_specials1_test"
+	mgr.set("_test_account_pin", "specials1_test")
+	mgr.set("_test_runs_dir", scratch_runs)
+	if FileAccess.file_exists(scratch_prof):
+		DirAccess.remove_absolute(scratch_prof) # aborted prior run's leftovers
+	if DirAccess.dir_exists_absolute(scratch_runs):
+		for f in DirAccess.get_files_at(scratch_runs):
+			DirAccess.remove_absolute(scratch_runs.path_join(f))
+		DirAccess.remove_absolute(scratch_runs)
+	mgr.call("load_game") # fresh seeded scratch profile
 	_assert(not SD.is_earned("iron_resolve"), "iron_resolve starts unearned")
 	_assert(not SD.is_earned("holy_light"), "holy_light starts unearned")
 
-	# 3. Player-level behavior on real player scenes. Run slots get the same
-	# abort-safe sidecar treatment: death paths clear the solo slot (die()).
-	var slot_backup := {}
-	var slot_baks := {}
-	for mode in ["solo", "mp"]:
-		for slot in range(3):
-			var p := "user://runs/%s_%d.cfg" % [mode, slot]
-			var b := "%s.phase6bak" % p
-			slot_baks[p] = b
-			if not FileAccess.file_exists(p) and FileAccess.file_exists(b):
-				_copy_file(b, p) # previous run aborted mid-test
-				DirAccess.remove_absolute(b)
-			if FileAccess.file_exists(p):
-				slot_backup[p] = FileAccess.get_file_as_bytes(p)
-				var bf2 := FileAccess.open(b, FileAccess.WRITE)
-				bf2.store_buffer(slot_backup[p])
-				DirAccess.remove_absolute(p)
+	# 3. Player-level behavior on real player scenes. Death paths clear the
+	# solo slot via SaveManager.clear_run -> _slot_path, which honors the
+	# _test_runs_dir pin above — real run slots are never touched either.
 	var holder := Node3D.new() # -s mode has no current_scene; positional sfx needs one
 	root.add_child(holder)
 	current_scene = holder
@@ -4389,25 +4379,20 @@ func _test_specials_phase1() -> void:
 	_assert(psrc.contains("func _apply_equipped_special"),
 		"player _apply_equipped_special exists")
 
-	# Restore profile + run slots, reset the autoload's in-memory profile.
-	# Abort-safe: the originals live in .phase6bak sidecars until now.
+	# Restore: unpin and drop the scratch state, then reload the real
+	# profile into the autoload. The live profile was never touched, so
+	# there is nothing to write back; a mid-section abort leaves only the
+	# pins + scratch files, which the next run's entry wipe handles (and
+	# the pins are section-scoped state the suite resets on load_game).
 	holder.queue_free()
-	if not prof_backup.is_empty():
-		var pf := FileAccess.open(prof_path, FileAccess.WRITE)
-		pf.store_buffer(prof_backup)
-		if FileAccess.file_exists(prof_bak):
-			DirAccess.remove_absolute(prof_bak)
-	elif FileAccess.file_exists(prof_bak):
-		_copy_file(prof_bak, prof_path)
-		DirAccess.remove_absolute(prof_bak)
-	elif FileAccess.file_exists(prof_path):
-		DirAccess.remove_absolute(prof_path) # test-created only
-	for p in slot_backup.keys():
-		var f := FileAccess.open(p, FileAccess.WRITE)
-		f.store_buffer(slot_backup[p])
-		var b: String = slot_baks[p]
-		if FileAccess.file_exists(b):
-			DirAccess.remove_absolute(b)
+	mgr.set("_test_account_pin", "")
+	mgr.set("_test_runs_dir", "")
+	if FileAccess.file_exists(scratch_prof):
+		DirAccess.remove_absolute(scratch_prof)
+	if DirAccess.dir_exists_absolute(scratch_runs):
+		for f in DirAccess.get_files_at(scratch_runs):
+			DirAccess.remove_absolute(scratch_runs.path_join(f))
+		DirAccess.remove_absolute(scratch_runs)
 	mgr.call("load_game")
 
 
