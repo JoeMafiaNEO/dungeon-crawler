@@ -147,6 +147,7 @@ func _run() -> void:
 	_test_misty_docks_phase5()
 	_test_popup_open_flags()
 	_test_equip_system_phase1()
+	_test_mp_save_c1_fix()
 
 	_print_results()
 	quit()
@@ -2929,14 +2930,19 @@ func _test_mp_save_bughunt() -> void:
 	mgr.free()
 
 	# --- Part 5: source-structure evidence for the audit findings.
-	# C-1 chain: the timeout fill-in stamps a marker nothing ever reads.
-	_assert(dsrc.contains("entry[\"disconnected\"] = true"),
-		"bughunt: timeout entries are stamped disconnected")
-	_assert(dsrc.count("\"disconnected\"") == 1,
-		"bughunt: the disconnected stamp is never read (dead marker)")
+	# C-1 chain — FIXED (issue #105, Eng 3): the pre-fix asserts here
+	# documented the bug's presence (dead "disconnected" stamp + replica
+	# snapshot); they now assert the fixed behavior. M-1/M-2/M-3 evidence
+	# below is unchanged — those findings are still open.
+	_assert(not dsrc.contains("entry[\"disconnected\"] = true"),
+		"bughunt: timeout entries are NOT stamped disconnected (C-1 fixed)")
+	_assert(dsrc.count("\"disconnected\"") == 0,
+		"bughunt: the dead disconnected marker is gone (C-1 fixed)")
 	var mm := _bughunt_body(dsrc, "_mark_missing_disconnected")
-	_assert(mm.contains("_roster_entry(sid, pid, node)"),
-		"bughunt: timeout fill-in snapshots the server-side replica node")
+	_assert(not mm.contains("_roster_entry(sid, pid, node)"),
+		"bughunt: timeout fill-in never snapshots the replica node (C-1 fixed)")
+	_assert(mm.contains("find_roster_entry"),
+		"bughunt: timeout fill-in carries the previous roster entry forward (C-1 fixed)")
 	# M-3: save-state submissions are trusted verbatim — the claimed
 	# steam_id is never checked against the sender's known mapping.
 	var sub := _bughunt_body(dsrc, "rpc_submit_save_state")
@@ -8210,3 +8216,95 @@ func _test_equip_system_phase1() -> void:
 	_assert(dsrc.split("kept.append(entry)").size() - 1 >= 2,
 		"equip audit: dungeon filters carry inventory entries by reference")
 	print("[Playtest] equip system phase 1 done")
+
+
+func _test_mp_save_c1_fix() -> void:
+	print("[Playtest] MP save C-1 fix (issue #105)...")
+	# C-1: a peer missing the 3s save-state window was filled in from its
+	# server-side replica node (near-fresh: inventory never replicates),
+	# and that wiped state overwrote the peer's real save. The fix makes
+	# _mark_missing_disconnected carry the PREVIOUS roster entry forward
+	# (keyed by Steam64), or write an empty state + the peer's real class.
+	var SaveMgr: Variant = root.get_node("SaveManager")
+	var DungeonScript: Variant = load("res://scripts/dungeon/dungeon.gd")
+	var scratch := "user://runs_c1fix_test"
+	if DirAccess.dir_exists_absolute(scratch):
+		for f in DirAccess.get_files_at(scratch):
+			DirAccess.remove_absolute(scratch.path_join(f))
+		DirAccess.remove_absolute(scratch)
+	SaveMgr.set("_test_runs_dir", scratch)
+	SaveMgr.set("_test_account_pin", "c1fix_scratch")
+
+	# Previous good save in slot 7: a progressed rogue (sid ...77).
+	var sid_a := 76561198000000077
+	var sid_b := 76561198000000088
+	var rich_state := {"level": 7, "xp": 432, "xp_next": 600,
+		"inventory": [{"id": "dragonscale_armor", "count": 1},
+			{"id": "iron_sword", "count": 2}]}
+	var prev_run := {"theme_id": "dungeon", "level_number": 4, "seed": 99,
+		"is_multiplayer": true, "at_station": false,
+		"roster": [{"steam_id": sid_a, "player_name": "Veteran", "class_id": "rogue",
+			"player_state": rich_state, "rts_faction": 2, "is_host": false}]}
+	_assert(SaveMgr.save_run(prev_run, "mp", 7), "c1fix: previous run saved to scratch slot")
+
+	# Dungeon rig (script instance, never added to the tree): peers 77
+	# and 88 both missed the window; 88 has NO previous entry.
+	var d = DungeonScript.new()
+	d.set("_save_slot", 7)
+	d.set("_save_roster", [])
+	d.set("_save_pending", {77: true, 88: true})
+	d.set("peer_steam_ids", {77: sid_a, 88: sid_b})
+	d.set("peer_classes", {77: "rogue", 88: "mage"})
+	d.call("_mark_missing_disconnected")
+	var roster: Array = d.get("_save_roster")
+	_assert(roster.size() == 2, "c1fix: both missed peers get roster entries")
+	var entry_a: Dictionary = {}
+	var entry_b: Dictionary = {}
+	for e in roster:
+		if int(e.get("steam_id", 0)) == sid_a:
+			entry_a = e
+		elif int(e.get("steam_id", 0)) == sid_b:
+			entry_b = e
+	# The missed peer's PREVIOUS character survives verbatim.
+	_assert(not entry_a.is_empty(), "c1fix: previous peer present in new roster")
+	var ps_a: Dictionary = entry_a.get("player_state", {})
+	_assert(int(ps_a.get("level", 0)) == 7 and int(ps_a.get("xp", 0)) == 432,
+		"c1fix: missed-window peer keeps previous level/xp (no replica wipe)")
+	_assert((ps_a.get("inventory", []) as Array).size() == 2,
+		"c1fix: missed-window peer keeps previous inventory")
+	_assert(str(entry_a.get("class_id", "")) == "rogue",
+		"c1fix: previous class carried forward")
+	_assert(not entry_a.has("disconnected"),
+		"c1fix: dead disconnected marker no longer stamped")
+	# No previous entry: empty state (restore = no restore) + REAL class.
+	_assert(not entry_b.is_empty(), "c1fix: new peer present in new roster")
+	_assert((entry_b.get("player_state", {"x": 1}) as Dictionary).is_empty(),
+		"c1fix: no-previous-entry writes EMPTY state (never a replica capture)")
+	_assert(str(entry_b.get("class_id", "")) == "mage",
+		"c1fix: fallback uses the peer's real class from peer_classes (not hardcoded)")
+	d.free()
+
+	# Source discipline: the fill-in must not consult the replica at all,
+	# and the dead marker must be gone from the whole file.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var start := dsrc.find("func _mark_missing_disconnected")
+	var end := dsrc.find("\nfunc ", start + 10)
+	var body := dsrc.substr(start, end - start)
+	_assert(not body.contains("_roster_entry(sid, pid, node)"),
+		"c1fix: fill-in never snapshots the replica node")
+	_assert(not body.contains(".get_state("),
+		"c1fix: fill-in never calls get_state on any node")
+	_assert(not dsrc.contains("\"disconnected\""),
+		"c1fix: dead disconnected marker fully removed")
+	_assert(body.contains("find_roster_entry"),
+		"c1fix: fill-in merges the previous roster by Steam64")
+
+	# Cleanup + restore the autoload's test hooks.
+	for f in DirAccess.get_files_at(scratch):
+		DirAccess.remove_absolute(scratch.path_join(f))
+	DirAccess.remove_absolute(scratch)
+	if FileAccess.file_exists("user://profile_c1fix_scratch.cfg"):
+		DirAccess.remove_absolute("user://profile_c1fix_scratch.cfg")
+	SaveMgr.set("_test_runs_dir", "")
+	SaveMgr.set("_test_account_pin", "")
+	print("[Playtest] mp save c1 fix done")

@@ -3022,16 +3022,36 @@ func _roster_entry(steam_id: int, peer_id: int, player_node: Node) -> Dictionary
 
 
 func _mark_missing_disconnected() -> void:
+	if _save_pending.is_empty():
+		return
+	# Issue #105 (C-1, CRITICAL): a peer that missed the save-state
+	# window must NEVER be filled in from its server-side replica node.
+	# Inventory is per-peer authoritative and never replicates, so a
+	# replica get_state() is a near-fresh character (xp 0, starter kit)
+	# — writing it over the peer's saved entry permanently destroys
+	# their earned progression on continue. Instead, carry the
+	# previously saved roster entry forward verbatim (keyed by Steam64),
+	# the same discipline pick_boarding_state applies on the boarding
+	# path. Load the current slot BEFORE _write_multiplayer_save
+	# overwrites it.
+	var previous: Dictionary = SaveManager.load_run(SaveManager.MODE_MP, _save_slot)
+	var prev_roster: Array = previous.get("roster", [])
 	for pid in _save_pending:
-		var node := get_player_node(pid)
 		# Jesse 2026-10-10 fix: use the mapped Steam ID if we know it.
 		var sid: int = int(peer_steam_ids.get(pid, pid))
-		var entry := _roster_entry(sid, pid, node) if node != null else {
+		var prev := find_roster_entry(prev_roster, sid)
+		if not prev.is_empty():
+			# Last known-good character survives the missed window.
+			_save_roster.append(prev)
+			continue
+		# No previous entry: store NO state (restore treats an empty
+		# player_state as "no restore") with the peer's real class —
+		# never a replica capture, never a hardcoded class.
+		_save_roster.append({
 			"steam_id": sid, "player_name": NetworkManager.member_name(sid),
-			"class_id": "warrior", "player_state": {}, "rts_faction": -1, "is_host": false,
-		}
-		entry["disconnected"] = true
-		_save_roster.append(entry)
+			"class_id": str(peer_classes.get(pid, "warrior")), "player_state": {},
+			"rts_faction": -1, "is_host": false,
+		})
 
 
 func _write_multiplayer_save() -> void:
