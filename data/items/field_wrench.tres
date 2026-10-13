@@ -1,0 +1,23 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/icons/wrench.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = "field_wrench"
+display_name = "Field Wrench"
+description = "The Architect's starting tool. Equip it and hold E near a damaged friendly structure or building to repair it. Never sold, never dropped — a lost wrench is re-issued at the next run start."
+icon = ExtResource("2")
+slot = 0
+rarity = 2
+allowed_classes = Array[String](["architect"])
+damage_bonus = 8.0
+health_bonus = 0.0
+speed_bonus = 0.0
+damage_mult = 1.1
+health_mult = 1.0
+speed_mult = 1.0
+xp_mult = 1.0
+world_model = "res://assets/models/kaykit/weapons/wrench.glb"
+starting_gear = true

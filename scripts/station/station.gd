@@ -324,6 +324,9 @@ static func build_vendor_stock() -> Array:
 		# run cash ("gold") never buys them and they never convert to it.
 		if bool(item.get("dock_good")):
 			continue
+		# Issue #113 Phase 3: starting gear is never purchasable.
+		if bool(item.get("starting_gear")):
+			continue
 		if bool(item.get("meta_locked")) and not SaveManager.is_item_unlocked(id):
 			continue
 		pool.append(id)

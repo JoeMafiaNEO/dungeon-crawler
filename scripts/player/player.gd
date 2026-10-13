@@ -97,6 +97,31 @@ const REVIVE_WINDOW := 30.0
 const REVIVE_CHANNEL := 3.0
 const REVIVE_RANGE := 3.5
 
+## Issue #113 Phase 3: the Architect's starting tools. Both are granted
+## at run start (wrench equipped, hammer bagged) and re-granted into the
+## bag whenever a restore finds one missing — disposal is allowed but
+## never permanent. Neither grants a basic attack.
+const ARCHITECT_TOOL_IDS: Array[String] = ["field_wrench", "forge_hammer"]
+const WRENCH_ITEM_ID := "field_wrench"
+## Wrench repair channel (placeholders — Jesse's tuning): free, limited
+## only by the channel itself. Server ticks on its own timer; clients
+## send start/stop intents only.
+const REPAIR_REACH := 3.5
+const REPAIR_TICK_HP := 25.0
+const REPAIR_TICK_TIME := 0.6
+## Server-side range slack over REPAIR_REACH: snapshot positions lag a
+## frame or two, and a legit channel must not false-refuse.
+const REPAIR_SERVER_SLACK := 1.0
+## Client channel state (the authority peer's own view).
+var _repair_target: Node3D = null
+var _repair_sending := false
+var _prompt_repair := false
+var _near_repairable := false
+## Server channel state (the server's copy of this player node).
+var _srv_repair_target: Node3D = null
+var _srv_repair_t := 0.0
+var _srv_repair_anchor := Vector3.ZERO
+
 # --- Run statistics (shown on the death screen) ---
 var run_start_msec := 0
 var run_kills := 0
@@ -314,6 +339,56 @@ func _give_starter_kit() -> void:
 			inventory.append({"item": item, "count": 1, "equipped_slot": marker})
 			_recalc_stats()
 			hp = max_hp
+	# Issue #113 Phase 3: a brand-new architect also starts with BOTH
+	# tools — the wrench equipped (builder identity first), the hammer
+	# in the bag, swappable through the ordinary equip action.
+	if class_id == "architect":
+		ensure_architect_tools(true)
+		hp = max_hp
+
+
+## Issue #113 Phase 3: guarantee both architect tools are in the
+## inventory. Missing tools are appended to the bag (unequipped);
+## existing stacks are never duplicated or re-marked. With
+## equip_wrench, the wrench takes the WEAPON slot (any other weapon's
+## marker is cleared — the ordinary one-per-slot swap). Called at run
+## start for new architects and from apply_state for restores, which is
+## what re-grants disposed tools and migrates legacy architect saves.
+func ensure_architect_tools(equip_wrench: bool = false) -> void:
+	if class_id != "architect":
+		return
+	var wrench_entry: Dictionary = {}
+	for entry in inventory:
+		var it := entry.get("item") as ItemData
+		if it != null and it.id == WRENCH_ITEM_ID:
+			wrench_entry = entry
+	for tool_id in ARCHITECT_TOOL_IDS:
+		var found := false
+		for entry in inventory:
+			var it := entry.get("item") as ItemData
+			if it != null and it.id == tool_id:
+				found = true
+				break
+		if not found:
+			var item := ItemDB.get_item(tool_id)
+			if item != null:
+				var e := {"item": item, "count": 1, "equipped_slot": ""}
+				inventory.append(e)
+				if tool_id == WRENCH_ITEM_ID:
+					wrench_entry = e
+	if equip_wrench and not wrench_entry.is_empty():
+		for entry in inventory:
+			if entry != wrench_entry and _entry_equipped_slot(entry) == "WEAPON":
+				entry["equipped_slot"] = ""
+		wrench_entry["equipped_slot"] = "WEAPON"
+	_recalc_stats()
+
+
+## True when the Field Wrench is the equipped WEAPON. Reads the
+## replicated equipped_ids, so the server can validate repair channels
+## for remote peers (inventory itself never replicates — issue #105).
+func has_wrench_equipped() -> bool:
+	return str(equipped_ids.get("WEAPON", "")) == WRENCH_ITEM_ID
 
 
 func _recalc_stats() -> void:
@@ -1023,6 +1098,200 @@ func _nearest_downed_teammate() -> Node3D:
 			best_d = d
 			best = p
 	return best
+
+
+## --- Wrench repair channel (issue #113 Phase 3) ----------------------
+## Hold E with the Field Wrench equipped near a damaged friendly
+## repairable. The client sends start/stop INTENTS only; the server
+## validates (sender is this node's authority, architect, wrench in the
+## WEAPON slot via the replicated equipped_ids, target friendly +
+## damaged + in range) and applies the ticks on its own timer. Repair
+## is free — the channel is the only limiter. Damage taken does NOT
+## interrupt in v1; releasing E, moving, unequipping the wrench, or the
+## target filling / being destroyed / leaving reach ends the channel.
+
+## Is this node a repairable this player may repair? Friendly means:
+## a dungeon Structure placed by a player (owner_peer > 0 — neutral
+## owner 0 is refused), or an RTS building of the player's own faction
+## that is not destroyed.
+func _is_friendly_repairable(n: Node) -> bool:
+	if n is Structure:
+		var s := n as Structure
+		return s.owner_peer > 0 and s.hp > 0.0 and s.hp < s.max_hp
+	if n is RTSBuilding:
+		var b := n as RTSBuilding
+		return not b.destroyed and not b.under_construction \
+			and b.faction == rts_faction \
+			and b.hp > 0.0 and b.hp < b.max_hp
+	return false
+
+
+## Nearest damaged friendly repairable within reach of pos, described
+## as {node, kind, key, name, hp, max_hp}. kind/key are the network
+## identity the server resolves independently: structures by uid,
+## RTS buildings by building_id.
+func repair_target_at(pos: Vector3, reach: float = REPAIR_REACH) -> Dictionary:
+	var best: Node3D = null
+	var best_d := reach
+	for group in ["structures", "rts_buildings"]:
+		for n in get_tree().get_nodes_in_group(group):
+			var node := n as Node3D
+			if node == null or not is_instance_valid(node) or node.is_queued_for_deletion():
+				continue
+			if not _is_friendly_repairable(node):
+				continue
+			var d := node.global_position.distance_to(pos)
+			if d < best_d:
+				best_d = d
+				best = node
+	if best == null:
+		return {}
+	if best is Structure:
+		var s := best as Structure
+		return {"node": best, "kind": "structure", "key": s.uid,
+			"name": s.display_name(), "hp": s.hp, "max_hp": s.max_hp}
+	var b := best as RTSBuilding
+	return {"node": best, "kind": "building", "key": str(b.building_id),
+		"name": b.display_name(), "hp": b.hp, "max_hp": b.max_hp}
+
+
+## Resolve a network target key on the server.
+func _resolve_repair_target(kind: String, key: String) -> Node3D:
+	if kind == "structure":
+		for n in get_tree().get_nodes_in_group("structures"):
+			var s := n as Structure
+			if s != null and s.uid == key and not s.is_queued_for_deletion():
+				return s
+	elif kind == "building":
+		for n in get_tree().get_nodes_in_group("rts_buildings"):
+			var b := n as RTSBuilding
+			if b != null and str(b.building_id) == key and not b.is_queued_for_deletion():
+				return b
+	return null
+
+
+func _repair_move_input() -> bool:
+	return Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_A) \
+		or Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_D) \
+		or Input.is_physical_key_pressed(KEY_UP) or Input.is_physical_key_pressed(KEY_DOWN) \
+		or Input.is_physical_key_pressed(KEY_LEFT) or Input.is_physical_key_pressed(KEY_RIGHT)
+
+
+## Client channel driver (authority peer only), mirroring the revive
+## channel's shape. Runs every physics frame.
+func _tick_repair_channel(_delta: float) -> void:
+	var want: bool = alive and has_wrench_equipped() \
+		and Input.is_physical_key_pressed(KEY_E) \
+		and not _repair_move_input() \
+		and _nearest_downed_teammate() == null \
+		and (hud == null or not hud.is_paused)
+	var target: Node3D = null
+	if want:
+		var t := repair_target_at(global_position)
+		if not t.is_empty():
+			target = t["node"] as Node3D
+	if target == null:
+		if _repair_sending:
+			_stop_repair_channel()
+		_repair_target = null
+	else:
+		if not _repair_sending or _repair_target != target:
+			_start_repair_channel(target)
+		_repair_target = target
+	# Wrench raised while channeling (viewmodel nudge, local only).
+	if _viewmodel != null:
+		var lift := Vector3(0, 0.07, -0.03) if _repair_sending else Vector3.ZERO
+		_viewmodel.position = _vm_base + lift
+
+
+func _start_repair_channel(target: Node3D) -> void:
+	var t := repair_target_at(global_position)
+	if t.is_empty() or (t["node"] as Node3D) != target:
+		return
+	_repair_sending = true
+	if multiplayer.is_server():
+		repair_start(str(t["kind"]), str(t["key"]))
+	else:
+		rpc_id(NetworkManager.server_peer_id, "repair_start",
+			str(t["kind"]), str(t["key"]))
+
+
+func _stop_repair_channel() -> void:
+	_repair_sending = false
+	if multiplayer.is_server():
+		repair_stop()
+	else:
+		rpc_id(NetworkManager.server_peer_id, "repair_stop")
+
+
+## Server intent endpoint: a client asks to start channeling on a
+## target. Everything is re-validated here — the client's word is
+## never enough.
+@rpc("any_peer", "call_local")
+func repair_start(kind: String, key: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	if class_id != "architect" or not has_wrench_equipped():
+		return
+	var target := _resolve_repair_target(kind, key)
+	if target == null or not _is_friendly_repairable(target):
+		return
+	if target.global_position.distance_to(global_position) > REPAIR_REACH + REPAIR_SERVER_SLACK:
+		return
+	_srv_repair_target = target
+	_srv_repair_t = 0.0
+	_srv_repair_anchor = global_position
+
+
+@rpc("any_peer", "call_local")
+func repair_stop() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	_srv_repair_target = null
+	_srv_repair_t = 0.0
+
+
+## Server notice: the channel ended server-side (target filled,
+## destroyed, out of range, wrench unequipped). The client clears its
+## sending state so prompt/FX stop.
+@rpc("any_peer", "call_local")
+func repair_channel_ended() -> void:
+	if int(get_multiplayer_authority()) != multiplayer.get_unique_id():
+		return
+	_repair_sending = false
+	_repair_target = null
+
+
+## Server tick driver: runs on the server's copy of every player node.
+func _server_repair_tick(delta: float) -> void:
+	if _srv_repair_target == null:
+		return
+	var target := _srv_repair_target
+	var valid := alive and not downed \
+		and is_instance_valid(target) and not target.is_queued_for_deletion() \
+		and class_id == "architect" and has_wrench_equipped() \
+		and _is_friendly_repairable(target) \
+		and target.global_position.distance_to(global_position) <= REPAIR_REACH + REPAIR_SERVER_SLACK \
+		and global_position.distance_to(_srv_repair_anchor) <= 1.5
+	if not valid:
+		_srv_repair_target = null
+		_srv_repair_t = 0.0
+		if int(get_multiplayer_authority()) != multiplayer.get_unique_id():
+			rpc_id(int(get_multiplayer_authority()), "repair_channel_ended")
+		else:
+			repair_channel_ended()
+		return
+	_srv_repair_t += delta
+	if _srv_repair_t >= REPAIR_TICK_TIME:
+		_srv_repair_t = 0.0
+		if target.has_method("repair"):
+			target.call("repair", REPAIR_TICK_HP)
 
 
 static func class_abilities(cid: String) -> Array:
@@ -2171,6 +2440,10 @@ func family_signature(fid: String) -> Dictionary:
 
 
 func _physics_process(delta: float) -> void:
+	# Issue #113 Phase 3: the server ticks repair channels on its own
+	# copies of player nodes (validity includes alive/not-downed).
+	if multiplayer.is_server():
+		_server_repair_tick(delta)
 	if downed:
 		if is_multiplayer_authority():
 			_tick_downed(delta)
@@ -2179,6 +2452,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if is_multiplayer_authority():
 		_tick_revive_channel(delta)
+		_tick_repair_channel(delta)
 		var ix := 0.0
 		var iz := 0.0
 		if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
@@ -2888,6 +3162,10 @@ func legend_state() -> String:
 		return "hl_charging"
 	if _hl_state == HLState.ARMED:
 		return "hl_armed"
+	# Issue #113 Phase 3: repair context (wrench equipped + a damaged
+	# friendly repairable in reach).
+	if _near_repairable and has_wrench_equipped():
+		return "repair_ready"
 	# Issue #104 Phase 3: fishing context near a spot.
 	if _near_fishing_spot:
 		return "fishing_ready" if has_rod_equipped() else "fishing_blocked"
@@ -2898,6 +3176,13 @@ func _set_near_fishing_spot(v: bool) -> void:
 	if v == _near_fishing_spot:
 		return
 	_near_fishing_spot = v
+	click_state_changed.emit()
+
+
+func _set_near_repairable(v: bool) -> void:
+	if v == _near_repairable:
+		return
+	_near_repairable = v
 	click_state_changed.emit()
 
 
@@ -3534,6 +3819,9 @@ func _update_pickup_prompt() -> void:
 	# Issue #104 Phase 3: fishing proximity drives the mouse legend's
 	# fishing states (rod context vs requirement line).
 	_set_near_fishing_spot(_nearest_interact_node() is FishingSpot)
+	# Issue #113 Phase 3: repair context for the prompt + mouse legend.
+	var repair := repair_target_at(global_position) if has_wrench_equipped() else {}
+	_set_near_repairable(not repair.is_empty())
 	# Reading mode owns the hint label.
 	if _reading_board != null:
 		hud.set_hint(READ_HINT)
@@ -3542,8 +3830,23 @@ func _update_pickup_prompt() -> void:
 	if _nearest_downed_teammate() != null:
 		if _prompt_pickup != null:
 			_prompt_pickup = null
+		if _prompt_repair:
+			_prompt_repair = false
+			hud.set_pickup_prompt(false, "")
 		hud.set_hint("Hold E to revive teammate")
 		return
+	# Repair prompt (wrench equipped + damaged friendly repairable near).
+	if not repair.is_empty():
+		if _prompt_pickup != null:
+			_prompt_pickup = null
+		_prompt_repair = true
+		hud.set_pickup_prompt(true, "%s — Hold E to repair (%d/%d HP)" % [
+			str(repair["name"]), int(ceil(float(repair["hp"]))),
+			int(ceil(float(repair["max_hp"])))])
+		return
+	if _prompt_repair:
+		_prompt_repair = false
+		hud.set_pickup_prompt(false, "")
 	# Cipher note / lockbox / departure board / vendor stall prompt.
 	var c := _nearest_interact_node()
 	if c != null:
@@ -4722,6 +5025,11 @@ func apply_state(s: Dictionary) -> void:
 			push_warning("[Restore] Dropped unknown item '%s' x%d (not in ItemDB)" % [drop_id, drop_count])
 	if not has_markers and not raw_inv.is_empty():
 		_migrate_auto_equip()
+	# Issue #113 Phase 3: restoring an architect re-grants any missing
+	# starting tool into the bag (disposed tools are never permanently
+	# lost; legacy architect saves gain both tools here — no converter).
+	if class_id == "architect":
+		ensure_architect_tools(false)
 	alive = true
 	_recalc_stats()
 	_update_staff_glow()

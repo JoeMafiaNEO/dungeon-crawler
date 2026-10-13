@@ -36,6 +36,13 @@ const REGISTRY := {
 		"rogue": {"left": "Attack", "right": "E at spot: cast / reel", "middle": "Ping"},
 		"architect": {"left": "Cast selected ability", "right": "E at spot: cast / reel", "middle": "Ping"},
 	},
+	# Issue #113 Phase 3: architect with the Field Wrench equipped near a
+	# damaged friendly repairable (player.legend_state picks the state).
+	# The right slot carries the hold-E context line, same pattern as the
+	# fishing rows.
+	"repair_ready": {
+		"architect": {"left": "Cast selected ability", "right": "Hold E — Repair", "middle": "Ping"},
+	},
 	"fishing_blocked": {
 		"warrior": {"left": "Attack", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
 		"mage": {"left": "Cast selected ability", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},

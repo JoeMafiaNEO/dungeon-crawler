@@ -301,6 +301,43 @@ func take_structure_damage(amount: float, from_peer: int) -> void:
 			dungeon.rpc("break_structure", uid)
 
 
+## Issue #113 Phase 3: player-facing name for the repair prompt.
+func display_name() -> String:
+	match structure_id:
+		"sentry_turret":
+			return "Sentry Turret"
+		"bulwark_wall":
+			return "Bulwark Wall"
+		"spike_trap":
+			return "Spike Trap"
+		"keystone":
+			return "Keystone"
+		"mud_mound":
+			return "Mud Mound"
+	return structure_id
+
+
+## Issue #113 Phase 3: server-side repair (the mirror of
+## take_structure_damage). The wrench channel calls this on the server
+## only; the dungeon's structure_repaired RPC syncs the new HP to every
+## peer's copy and plays the weld FX. Destroyed structures are gone
+## (queue_freed on break) — a structure at hp <= 0 is never resurrected.
+func repair(amount: float) -> void:
+	if not multiplayer.is_server():
+		return
+	if hp <= 0.0 or hp >= max_hp:
+		return
+	hp = minf(max_hp, hp + amount)
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null:
+		dungeon.rpc("structure_repaired", uid, hp)
+	else:
+		Effects.burst(get_parent(), global_position + Vector3(0, 0.9, 0),
+			Color(0.55, 0.95, 0.6), 6, 2.5)
+		AudioManager.sfx("repair_complete" if hp >= max_hp else "wrench_turn",
+			global_position)
+
+
 ## Demolish: big explosion, never the quiet expire path.
 func demolish() -> void:
 	Effects.burst(get_parent(), global_position + Vector3(0, 1.0, 0), Color(1.0, 0.6, 0.2), 30, 7.0)

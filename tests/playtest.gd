@@ -84,6 +84,7 @@ func _run() -> void:
 	_test_save_format_pf2()
 	_test_warlord_rebind_m1()
 	_test_station_roster_carry_forward()
+	_test_architect_tools_repair()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -9583,3 +9584,266 @@ func _test_111_minor_pause_save_snapshot() -> void:
 	for n in parked_stations:
 		n.add_to_group("station")
 	print("[Playtest] 111 minor 3 done")
+
+
+func _test_architect_tools_repair() -> void:
+	print("[Playtest] Architect starting tools + wrench repair (issue #113 P3)...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var StructureScript = load("res://scripts/combat/structure.gd")
+	var BuildingScript = load("res://scripts/rts/building.gd")
+	var StationScript = load("res://scripts/station/station.gd")
+	var LegendScript = load("res://scripts/ui/mouse_legend.gd")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+
+	# --- ItemData: both tools exist with the specced shape.
+	var wrench = ItemDBNode.get_item("field_wrench")
+	var hammer = ItemDBNode.get_item("forge_hammer")
+	_assert(wrench != null and hammer != null, "tools113: both tool items exist in ItemDB")
+	_assert(int(wrench.get("slot")) == 0 and int(hammer.get("slot")) == 0,
+		"tools113: both tools are WEAPON slot")
+	_assert(int(wrench.get("rarity")) == 2, "tools113: wrench is RARE")
+	_assert(int(hammer.get("rarity")) == 3, "tools113: hammer is EPIC")
+	_assert((wrench.get("allowed_classes") as Array) == ["architect"]
+		and (hammer.get("allowed_classes") as Array) == ["architect"],
+		"tools113: both tools are architect-only at equip time")
+	_assert(bool(wrench.get("starting_gear")) and bool(hammer.get("starting_gear")),
+		"tools113: both tools flagged starting_gear")
+	_assert(wrench.get("icon") != null and hammer.get("icon") != null,
+		"tools113: both tools carry the Art icons")
+	_assert(ResourceLoader.exists(str(wrench.get("world_model")))
+		and ResourceLoader.exists(str(hammer.get("world_model"))),
+		"tools113: both tools have world models")
+
+	# --- Never loot, never purchasable.
+	var stock_clean := true
+	for i in 40:
+		for e in StationScript.build_vendor_stock():
+			if str(e.get("id", "")) in ["field_wrench", "forge_hammer"]:
+				stock_clean = false
+	_assert(stock_clean, "tools113: vendor stock never sells the tools (40 rolls)")
+	var drops_clean := true
+	for f in DirAccess.get_files_at("res://data/mobs"):
+		if f.ends_with(".tres"):
+			var txt := FileAccess.get_file_as_string("res://data/mobs/" + f)
+			if txt.contains("field_wrench") or txt.contains("forge_hammer"):
+				drops_clean = false
+	_assert(drops_clean, "tools113: tools appear in no mob drop pool")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(_bughunt_body(dsrc, "_shower_loot").contains("starting_gear"),
+		"tools113: loot shower excludes starting gear")
+
+	# Holder as current_scene: positional sfx in structure/build FX
+	# need a scene to attach to in -s mode.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+
+	# --- Starting grant: both tools, wrench equipped, hammer bagged.
+	var arch = PlayerScene.instantiate()
+	arch.class_id = "architect"
+	root.add_child(arch)
+	var ids := {}
+	var markers := {}
+	for e in arch.inventory:
+		var it = e["item"]
+		ids[str(it.get("id"))] = int(e["count"])
+		markers[str(it.get("id"))] = str(e.get("equipped_slot", ""))
+	_assert(ids.has("field_wrench") and ids.has("forge_hammer"),
+		"tools113: a new architect starts with both tools")
+	_assert(str(markers.get("field_wrench", "")) == "WEAPON",
+		"tools113: the wrench starts equipped")
+	_assert(str(markers.get("forge_hammer", "x")) == "",
+		"tools113: the hammer starts in the bag")
+	_assert(arch.has_wrench_equipped(), "tools113: has_wrench_equipped reads WEAPON")
+	_assert(absf(float(arch.get("damage")) - 22.0) < 0.01,
+		"tools113: equipped wrench stats apply ((12+8) x 1.1 = 22)")
+
+	# --- Equip swap both ways through the ordinary #104 action.
+	var hammer_idx := -1
+	var wrench_idx := -1
+	for i in arch.inventory.size():
+		var iid := str((arch.inventory[i]["item"] as Object).get("id"))
+		if iid == "forge_hammer":
+			hammer_idx = i
+		if iid == "field_wrench":
+			wrench_idx = i
+	_assert(arch.equip_stack(hammer_idx), "tools113: hammer equips via the ordinary swap")
+	_assert(str(arch.equipped_item("WEAPON").get("id")) == "forge_hammer",
+		"tools113: hammer now holds the WEAPON slot")
+	_assert(not arch.has_wrench_equipped(), "tools113: wrench is bagged after the swap")
+	_assert(absf(float(arch.get("damage")) - 51.3) < 0.01,
+		"tools113: equipped hammer stats apply ((12+26) x 1.35 = 51.3)")
+	_assert(arch.equip_stack(wrench_idx), "tools113: wrench swaps back")
+
+	# --- Non-architects: never granted, cannot equip.
+	var war = PlayerScene.instantiate()
+	war.class_id = "warrior"
+	root.add_child(war)
+	var war_has_tools := false
+	for e in war.inventory:
+		if str((e["item"] as Object).get("id")) in ["field_wrench", "forge_hammer"]:
+			war_has_tools = true
+	_assert(not war_has_tools, "tools113: non-architects are not granted the tools")
+	war.inventory.append({"item": wrench, "count": 1, "equipped_slot": ""})
+	_assert(not war.equip_stack(war.inventory.size() - 1),
+		"tools113: a warrior carrying the wrench cannot equip it")
+	war.apply_state({"inventory": []})
+	_assert(war.inventory.is_empty(),
+		"tools113: restoring a non-architect grants nothing")
+
+	# --- Re-grant: disposed tools return on restore, bagged, no dupes.
+	var arch2 = PlayerScene.instantiate()
+	arch2.class_id = "architect"
+	root.add_child(arch2)
+	var disposed: Dictionary = arch2.get_state()
+	var kept: Array = []
+	for e in disposed.get("inventory", []):
+		if str(e.get("id", "")) not in ["field_wrench", "forge_hammer"]:
+			kept.append(e)
+	disposed["inventory"] = kept
+	arch2.apply_state(disposed)
+	arch2.apply_state(disposed) # twice: must not duplicate
+	var regranted := {}
+	var regrant_markers := {}
+	for e in arch2.inventory:
+		var it = e["item"]
+		regranted[str(it.get("id"))] = int(e["count"])
+		regrant_markers[str(it.get("id"))] = str(e.get("equipped_slot", ""))
+	_assert(int(regranted.get("field_wrench", 0)) == 1
+		and int(regranted.get("forge_hammer", 0)) == 1,
+		"tools113: disposed tools are re-granted exactly once on restore")
+	_assert(str(regrant_markers.get("field_wrench", "x")) == ""
+		and str(regrant_markers.get("forge_hammer", "x")) == "",
+		"tools113: re-granted tools land in the bag, unequipped")
+	# Legacy marker-less state (no slot keys at all, no tools).
+	arch2.apply_state({"inventory": [{"id": "iron_sword", "count": 1}]})
+	var legacy_tools := 0
+	for e in arch2.inventory:
+		if str((e["item"] as Object).get("id")) in ["field_wrench", "forge_hammer"]:
+			legacy_tools += 1
+	_assert(legacy_tools == 2, "tools113: legacy architect saves gain both tools")
+
+	# --- Repair: dungeon Structure, server ticks.
+	var st1 = StructureScript.new()
+	st1.setup("sentry_turret", 1, 1, 1.0, "t113-turret")
+	holder.add_child(st1)
+	st1.position = Vector3(2, 0, 0)
+	st1.hp = 40.0
+	var t = arch.repair_target_at(arch.global_position)
+	_assert(not t.is_empty() and str(t.get("kind", "")) == "structure",
+		"tools113: scan finds the damaged friendly turret")
+	_assert(str(t.get("name", "")) == "Sentry Turret",
+		"tools113: repair prompt name resolves")
+	arch.repair_start("structure", "t113-turret")
+	_assert(arch.get("_srv_repair_target") == st1,
+		"tools113: server accepts the repair channel")
+	arch._server_repair_tick(0.6)
+	_assert(absf(st1.hp - 65.0) < 0.01, "tools113: one server tick repairs 25 HP")
+	arch._server_repair_tick(0.6)
+	arch._server_repair_tick(0.6)
+	_assert(absf(st1.hp - 100.0) < 0.01, "tools113: repair caps at max_hp, never above")
+	arch._server_repair_tick(0.6)
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: channel ends when the target is full")
+	arch.repair_start("structure", "t113-turret")
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: a full structure is refused")
+
+	# Refusals: neutral owner, destroyed, out of range.
+	var st2 = StructureScript.new()
+	st2.setup("bulwark_wall", 0, 1, 1.0, "t113-neutral")
+	holder.add_child(st2)
+	st2.position = Vector3(-2, 0, 0)
+	st2.hp = 50.0
+	arch.repair_start("structure", "t113-neutral")
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: a neutral (owner 0) structure is refused")
+	var st3 = StructureScript.new()
+	st3.setup("spike_trap", 1, 1, 1.0, "t113-dead")
+	holder.add_child(st3)
+	st3.position = Vector3(0, 0, 2)
+	st3.hp = 0.0
+	arch.repair_start("structure", "t113-dead")
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: a destroyed structure is refused (no resurrect)")
+	var st4 = StructureScript.new()
+	st4.setup("keystone", 1, 1, 1.0, "t113-far")
+	holder.add_child(st4)
+	st4.position = Vector3(20, 0, 0)
+	st4.hp = 100.0
+	arch.repair_start("structure", "t113-far")
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: an out-of-range structure is refused")
+	_assert(arch.repair_target_at(arch.global_position).is_empty(),
+		"tools113: no valid target among full/neutral/destroyed/far")
+
+	# No wrench equipped -> no channel; stop intent clears a live one.
+	st1.hp = 40.0
+	arch.unequip_stack(wrench_idx)
+	arch.repair_start("structure", "t113-turret")
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: no channel without the wrench equipped")
+	arch.equip_stack(wrench_idx)
+	arch.repair_start("structure", "t113-turret")
+	_assert(arch.get("_srv_repair_target") == st1, "tools113: channel restarts")
+	arch.repair_stop()
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: the stop intent clears the channel")
+	# A forged replica (non-architect claiming the wrench) is refused.
+	war.set("equipped_ids", {"WEAPON": "field_wrench"})
+	war.repair_start("structure", "t113-turret")
+	_assert(war.get("_srv_repair_target") == null,
+		"tools113: a non-architect is refused even with forged equipped_ids")
+
+	# --- Repair: RTS building, faction-gated.
+	arch.position = Vector3(30, 0, 0)
+	arch.set("rts_faction", 0)
+	var b1 = BuildingScript.new()
+	b1.setup(0, "tower", null)
+	b1.building_id = 771
+	holder.add_child(b1)
+	b1.position = Vector3(32, 0, 0)
+	b1.hp = 7000.0
+	var tb = arch.repair_target_at(arch.global_position)
+	_assert(not tb.is_empty() and str(tb.get("kind", "")) == "building",
+		"tools113: scan finds the damaged friendly RTS tower")
+	arch.repair_start("building", "771")
+	_assert(arch.get("_srv_repair_target") == b1,
+		"tools113: server accepts the building channel")
+	arch._server_repair_tick(0.6)
+	_assert(absf(b1.hp - 7025.0) < 0.01, "tools113: building tick repairs 25 HP")
+	arch.repair_stop()
+	var b2 = BuildingScript.new()
+	b2.setup(1, "barracks", null)
+	b2.building_id = 772
+	holder.add_child(b2)
+	b2.position = Vector3(28, 0, 0)
+	b2.hp = 100.0
+	arch.repair_start("building", "772")
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: an enemy-faction building is refused")
+	b1.destroyed = true
+	arch.repair_start("building", "771")
+	_assert(arch.get("_srv_repair_target") == null,
+		"tools113: a destroyed building is refused (no resurrect)")
+
+	# --- No melee anywhere; legend carries the repair line.
+	var legend_std: Dictionary = LegendScript.actions_for("architect", "standard")
+	_assert(str(legend_std.get("left", "")) == "Cast selected ability",
+		"tools113: the architect keeps NO basic attack (LMB casts abilities)")
+	var legend_rep: Dictionary = LegendScript.actions_for("architect", "repair_ready")
+	_assert(str(legend_rep.get("right", "")) == "Hold E — Repair",
+		"tools113: the mouse legend shows the repair line in repair context")
+	_assert(not _bughunt_body(psrc, "_server_repair_tick").contains("take_damage"),
+		"tools113: the repair tick path never deals damage")
+
+	# Cleanup.
+	for n in [st1, st2, st3, st4, b1, b2]:
+		(n as Node).free()
+	arch.free()
+	war.free()
+	arch2.free()
+	current_scene = null
+	holder.free()
+	print("[Playtest] architect tools + repair done")

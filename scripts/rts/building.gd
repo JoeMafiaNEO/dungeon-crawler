@@ -296,6 +296,25 @@ func _apply_damage(amount: float) -> void:
 			rts_manager.call("on_building_destroyed", self)
 
 
+## Issue #113 Phase 3: server-side repair (the mirror of _apply_damage).
+## The wrench channel calls this on the server only. Destroyed buildings
+## are never resurrected; HP syncs through the existing sync_hp path.
+func repair(amount: float) -> void:
+	if not multiplayer.is_server():
+		return
+	if destroyed or hp <= 0.0 or hp >= max_hp:
+		return
+	hp = minf(max_hp, hp + amount)
+	rpc("sync_hp", hp)
+	rpc("repair_fx", hp >= max_hp)
+
+
+@rpc("any_peer", "call_local")
+func repair_fx(complete: bool = false) -> void:
+	Effects.burst(get_parent(), global_position + Vector3(0, 1.2, 0), Color(0.55, 0.95, 0.6), 8, 3.0)
+	AudioManager.sfx("repair_complete" if complete else "wrench_turn", global_position)
+
+
 func display_name() -> String:
 	match building_type:
 		"town_hall":

@@ -2023,7 +2023,8 @@ func _shower_loot() -> void:
 	var ids: Array = []
 	for id in ItemDB.items.keys():
 		var item = ItemDB.items[id]
-		if not bool(item.get("supermarket_loot")):
+		# Issue #113 Phase 3: starting gear never drops as loot.
+		if not bool(item.get("supermarket_loot")) and not bool(item.get("starting_gear")):
 			ids.append(id)
 	if ids.is_empty():
 		return
@@ -2226,6 +2227,21 @@ func break_structure(uid: String) -> void:
 			Effects.burst(s.get_parent(), s.global_position + Vector3(0, 0.8, 0), Color(0.5, 0.48, 0.45), 12, 4.0)
 			AudioManager.sfx("totem_expire", s.global_position)
 			s.queue_free()
+			return
+
+
+## Issue #113 Phase 3: the server repaired a structure. Client copies
+## carry no HP of their own (damage is server-only), so the new value is
+## pushed here for the repair prompt; every peer plays the weld FX.
+@rpc("any_peer", "call_local")
+func structure_repaired(uid: String, new_hp: float) -> void:
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.uid == uid and not s.is_queued_for_deletion():
+			s.hp = new_hp
+			Effects.burst(s.get_parent(), s.global_position + Vector3(0, 0.9, 0), Color(0.55, 0.95, 0.6), 6, 2.5)
+			AudioManager.sfx("repair_complete" if new_hp >= s.max_hp else "wrench_turn",
+				s.global_position)
 			return
 
 

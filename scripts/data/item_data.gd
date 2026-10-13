@@ -129,6 +129,11 @@ static func rarity_color(r: int) -> Color:
 @export var dock_good: bool = false
 ## Meta-locked: must be unlocked via achievements before it enters the drop pool.
 @export var meta_locked: bool = false
+## Issue #113 Phase 3: class starting gear (the Architect's tools).
+## Granted at run start and re-granted when missing — never loot, never
+## purchasable: catalog-wide pool builders (vendor stock, loot shower)
+## must exclude these, and they are never added to MobData drop pools.
+@export var starting_gear: bool = false
 ## Relic Vault special (issue #5): if set, picking this up earns/activates the
 ## named special (SpecialData id) instead of entering the inventory.
 @export var grants_special: String = ""
