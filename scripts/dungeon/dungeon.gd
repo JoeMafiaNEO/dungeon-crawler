@@ -1643,6 +1643,8 @@ func _sell_player_loot(player: Node) -> void:
 	var sender := int(player.get_multiplayer_authority())
 	var total := 0
 	var kept: Array = []
+	# Issue #104 marker-preservation audit: entries are carried by
+	# reference (never rebuilt), so "equipped_slot" markers survive.
 	for entry in player.get("inventory"):
 		var item = entry["item"]
 		if bool(item.get("supermarket_loot")):
@@ -2518,6 +2520,8 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 		var me := _my_player()
 		if me != null:
 			var kept: Array = []
+			# Issue #104 marker-preservation audit: entries carried by
+			# reference (never rebuilt) — "equipped_slot" markers survive.
 			for entry in me.get("inventory"):
 				var item = entry["item"]
 				if not bool(item.get("supermarket_loot")):

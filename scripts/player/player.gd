@@ -298,7 +298,12 @@ func _give_starter_kit() -> void:
 	if not class_data.starting_weapon.is_empty():
 		var item := ItemDB.get_item(class_data.starting_weapon)
 		if item != null:
-			inventory.append({"item": item, "count": 1})
+			# Issue #104 Phase 1 (Co-founder amendment): a brand-new
+			# character's starting weapon starts EQUIPPED — under
+			# equip-only recalc, an unequipped starter would leave every
+			# new player powerless until they opened the panel.
+			var marker := ItemData.slot_name(item.slot) if ItemData.is_gear(item) else ""
+			inventory.append({"item": item, "count": 1, "equipped_slot": marker})
 			_recalc_stats()
 			hp = max_hp
 
@@ -316,6 +321,11 @@ func _recalc_stats() -> void:
 	attack_cooldown = class_data.base_attack_cooldown
 	attack_range = class_data.base_attack_range
 	for entry in inventory:
+		# Issue #104 Phase 1: ONLY equipped stacks grant stats. Bag stacks
+		# are inert (Jesse's equip-only decision); per-copy math below is
+		# unchanged for the stacks that do count.
+		if _entry_equipped_slot(entry) == "":
+			continue
 		var item := entry["item"] as ItemData
 		var count := int(entry["count"])
 		max_hp += item.health_bonus * count
@@ -335,6 +345,137 @@ func _recalc_stats() -> void:
 	damage *= ms
 	max_hp *= ms
 	hp = minf(hp, max_hp)
+
+
+# --- Equipment (issue #104 Phase 1) -------------------------------------
+## Items never leave the inventory: each stack dict carries an
+## "equipped_slot" marker ("" = in the bag, inert). Invariants: at most
+## one stack per slot; a stack equips only into its own ItemData.slot;
+## picking up more copies of an equipped item grows the equipped stack;
+## new pickups NEVER auto-equip (old-save migration and the new-character
+## starting weapon are the only exceptions).
+
+## Slot name a stack is equipped into ("" = not equipped). Entries built
+## before this system may lack the key — missing means unequipped.
+func _entry_equipped_slot(entry: Dictionary) -> String:
+	return str(entry.get("equipped_slot", ""))
+
+
+## The inventory entry currently equipped in the given slot, or {}.
+func equipped_entry(slot_name_str: String) -> Dictionary:
+	if slot_name_str == "":
+		return {}
+	for entry in inventory:
+		if _entry_equipped_slot(entry) == slot_name_str:
+			return entry
+	return {}
+
+
+## Item equipped in the given slot, or null.
+func equipped_item(slot_name_str: String) -> ItemData:
+	var e := equipped_entry(slot_name_str)
+	if e.is_empty():
+		return null
+	return e.get("item") as ItemData
+
+
+## True when the item may be equipped by this player's class. The class
+## restriction is equip-time only: anyone may carry anything.
+func _class_may_equip(item: ItemData) -> bool:
+	return item.allowed_classes.is_empty() or item.allowed_classes.has(class_id)
+
+
+## Equip the stack at index into its own slot, moving the marker off any
+## stack currently holding that slot (swap). Refuses non-gear and
+## class-restricted stacks regardless of caller. Returns true on success.
+func equip_stack(index: int) -> bool:
+	if not is_multiplayer_authority():
+		return false
+	if index < 0 or index >= inventory.size():
+		return false
+	var entry: Dictionary = inventory[index]
+	var item := entry.get("item") as ItemData
+	if item == null or not ItemData.is_gear(item):
+		if hud != null:
+			hud.toast("That item can't be equipped.")
+		return false
+	if not _class_may_equip(item):
+		if hud != null:
+			hud.toast("Your class can't equip that.")
+		return false
+	var target := ItemData.slot_name(item.slot)
+	if _entry_equipped_slot(entry) == target:
+		return true
+	for i in inventory.size():
+		if i != index and _entry_equipped_slot(inventory[i]) == target:
+			inventory[i]["equipped_slot"] = ""
+	entry["equipped_slot"] = target
+	_recalc_stats()
+	health_changed.emit(hp, max_hp)
+	if hud != null:
+		hud.refresh_inventory(self)
+		hud.refresh_loadout(self)
+	return true
+
+
+## Remove the equip marker from the stack at index. Returns true when a
+## marker was actually cleared.
+func unequip_stack(index: int) -> bool:
+	if not is_multiplayer_authority():
+		return false
+	if index < 0 or index >= inventory.size():
+		return false
+	var entry: Dictionary = inventory[index]
+	if _entry_equipped_slot(entry) == "":
+		return false
+	entry["equipped_slot"] = ""
+	_recalc_stats()
+	health_changed.emit(hp, max_hp)
+	if hud != null:
+		hud.refresh_inventory(self)
+		hud.refresh_loadout(self)
+	return true
+
+
+## Old-save migration (issue #104 Phase 1): saves with no equip markers
+## auto-equip the highest-power stack per slot so a resumed player is
+## not powerless under equip-only recalc. Score = ItemData.stack_power_score
+## (what the whole stack grants: flat bonuses x count + compounded mult
+## deviation from 1.0); ties keep inventory order. Zero-score stacks are
+## skipped: equipping them would grant nothing.
+func _migrate_auto_equip() -> void:
+	for slot_idx in [ItemData.Slot.WEAPON, ItemData.Slot.ARMOR, ItemData.Slot.TRINKET, ItemData.Slot.TOOL]:
+		var slot_str := ItemData.slot_name(slot_idx)
+		var best: Dictionary = {}
+		var best_score := 0.0
+		for entry in inventory:
+			var item := entry.get("item") as ItemData
+			if item == null or not ItemData.is_gear(item):
+				continue
+			if ItemData.slot_name(item.slot) != slot_str:
+				continue
+			if not _class_may_equip(item):
+				continue
+			var score := ItemData.stack_power_score(item, int(entry.get("count", 1)))
+			if score > best_score:
+				best_score = score
+				best = entry
+		if not best.is_empty():
+			best["equipped_slot"] = slot_str
+
+
+## Class switch (issue #104 Phase 1): stacks the new class may not equip
+## come off; carrying them stays legal. Returns the removed item names.
+func _unequip_class_restricted() -> Array:
+	var removed: Array = []
+	for entry in inventory:
+		if _entry_equipped_slot(entry) == "":
+			continue
+		var item := entry.get("item") as ItemData
+		if item != null and not _class_may_equip(item):
+			entry["equipped_slot"] = ""
+			removed.append(item.display_name)
+	return removed
 
 
 ## Milestone bonuses: +10% at 25, +10% at 50, +15% at 75, +25% at 100.
@@ -1759,6 +1900,8 @@ func switch_class(new_class: String) -> void:
 	# collections are permanent account meta, not per-run state.
 	family_collection = SaveManager.load_collections(new_class)
 	_affinity_enemy_cd.clear()
+	# Issue #104 Phase 1: gear the new class may not equip comes off.
+	var unequipped := _unequip_class_restricted()
 	_recalc_stats()
 	hp = max_hp
 	health_changed.emit(hp, max_hp)
@@ -1774,6 +1917,8 @@ func switch_class(new_class: String) -> void:
 	_push_aura()
 	refresh_abilities()  # rebuild unlocked_abilities for the new class + HUD bar
 	if hud != null:
+		if not unequipped.is_empty():
+			hud.toast("Unequipped (class): %s" % ", ".join(unequipped))
 		hud.set_level(level, self)  # refresh "Lv 1 Warrior" label
 
 
@@ -3691,7 +3836,10 @@ func receive_item(item_id: String, sell_value: int = -1) -> void:
 		if hud != null:
 			hud.toast("Inventory full! Press I to manage it.")
 		return
-	inventory.append({"item": item, "count": 1})
+	# Issue #104 Phase 1: new pickups NEVER auto-equip. (If a stack of
+	# this item already exists, the merge path above grows it in place —
+	# an equipped stack stays equipped and grows.)
+	inventory.append({"item": item, "count": 1, "equipped_slot": ""})
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
 	var rare := _pickup_feedback(item)
@@ -3718,6 +3866,11 @@ func dispose_item(index: int) -> void:
 		return
 	var entry: Dictionary = inventory[index]
 	var item := entry["item"] as ItemData
+	# Issue #104 Phase 1: disposing an EQUIPPED stack is blocked.
+	if _entry_equipped_slot(entry) != "":
+		if hud != null:
+			hud.toast("Unequip first.")
+		return
 	inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
@@ -4319,7 +4472,9 @@ func get_state() -> Dictionary:
 	for entry in inventory:
 		var item := entry["item"] as ItemData
 		if item != null:
-			inv.append({"id": item.id, "count": int(entry["count"])})
+			# Issue #104 Phase 1: persist the equip marker as "slot".
+			inv.append({"id": item.id, "count": int(entry["count"]),
+				"slot": _entry_equipped_slot(entry)})
 	return {
 		"level": level,
 		"xp": xp,
@@ -4373,10 +4528,36 @@ func apply_state(s: Dictionary) -> void:
 	second_wind_used = bool(s.get("second_wind_used", false))
 	_apply_equipped_special()
 	inventory.clear()
-	for e in s.get("inventory", []):
+	var raw_inv: Array = s.get("inventory", [])
+	# Issue #104 Phase 1: a state is NEW-format when its entries carry the
+	# "slot" key at all (even all-empty — a player who deliberately
+	# unequipped everything must not be re-migrated). Marker-less states
+	# are old saves and get the auto-equip migration below.
+	var has_markers := false
+	for e in raw_inv:
+		if e is Dictionary and (e as Dictionary).has("slot"):
+			has_markers = true
+			break
+	var claimed: Dictionary = {} # slot name -> true (one stack per slot)
+	for e in raw_inv:
 		var item := ItemDB.get_item(str(e.get("id", "")))
 		if item != null:
-			inventory.append({"item": item, "count": maxi(1, int(e.get("count", 1)))})
+			var marker := ""
+			if has_markers:
+				# Re-validate the saved marker: it must name the item's
+				# own slot, the item must still be gear, this class must
+				# still be allowed, and the slot must be unclaimed —
+				# otherwise the marker is dropped.
+				var want := str(e.get("slot", ""))
+				if want != "" and want == ItemData.slot_name(item.slot) \
+						and ItemData.is_gear(item) and _class_may_equip(item) \
+						and not claimed.has(want):
+					marker = want
+					claimed[want] = true
+			inventory.append({"item": item, "count": maxi(1, int(e.get("count", 1))),
+				"equipped_slot": marker})
+	if not has_markers and not raw_inv.is_empty():
+		_migrate_auto_equip()
 	alive = true
 	_recalc_stats()
 	_update_staff_glow()

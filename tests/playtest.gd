@@ -145,6 +145,7 @@ func _run() -> void:
 	_test_dock_economy_phase4()
 	_test_misty_docks_phase5()
 	_test_popup_open_flags()
+	_test_equip_system_phase1()
 
 	_print_results()
 	quit()
@@ -7736,3 +7737,218 @@ func _test_popup_open_flags() -> void:
 	merch.free()
 	p.queue_free()
 	print("[Playtest] popup open-flags done")
+
+
+func _test_equip_system_phase1() -> void:
+	print("[Playtest] Equipment system phase 1 (issue #104)...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var ItemDataScr: Variant = load("res://scripts/data/item_data.gd")
+	var find_idx := func(pl, item_id: String) -> int:
+		for i in pl.inventory.size():
+			var it = pl.inventory[i].get("item")
+			if it != null and str(it.get("id")) == item_id:
+				return i
+		return -1
+
+	# --- Data layer: TOOL slot, gear definition, allowed_classes default.
+	_assert(ItemDataScr.slot_name(3) == "TOOL", "equip: Slot.TOOL exists (slot 3)")
+	_assert(ItemDataScr.slot_name(0) == "WEAPON", "equip: slot 0 is WEAPON")
+	var sword = ItemDBNode.get_item("iron_sword")
+	var potion = ItemDBNode.get_item("health_potion")
+	var feather = ItemDBNode.get_item("phoenix_feather")
+	_assert(ItemDataScr.is_gear(sword), "equip: iron sword is gear")
+	_assert(not ItemDataScr.is_gear(potion), "equip: potion is not gear (consumable)")
+	_assert(ItemDataScr.is_gear(feather), "equip: phoenix feather (slot 3) is TOOL gear")
+	_assert((sword.get("allowed_classes") as Array).is_empty(),
+		"equip: allowed_classes defaults empty (all classes)")
+
+	# --- Non-gear stat audit (spec: run BEFORE the recalc change; locked
+	# in here as a regression test): no non-gear item may carry nonzero
+	# passive bonuses, or equip-only recalc would silently change totals.
+	var all_items: Dictionary = ItemDBNode.get("items")
+	var audit_ok := true
+	for id in all_items:
+		var it = all_items[id]
+		if not ItemDataScr.is_gear(it):
+			if float(it.get("damage_bonus")) != 0.0 or float(it.get("health_bonus")) != 0.0 \
+					or float(it.get("speed_bonus")) != 0.0 \
+					or float(it.get("damage_mult")) != 1.0 or float(it.get("health_mult")) != 1.0 \
+					or float(it.get("speed_mult")) != 1.0 or float(it.get("xp_mult")) != 1.0:
+				audit_ok = false
+	_assert(audit_ok, "equip audit: no non-gear item carries passive stat bonuses")
+
+	# --- New character (Co-founder amendment): starting weapon EQUIPPED.
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var starter_idx: int = find_idx.call(p, "rusty_sword")
+	_assert(starter_idx >= 0, "equip: starter weapon in inventory")
+	_assert(str(p.inventory[starter_idx].get("equipped_slot", "")) == "WEAPON",
+		"equip: brand-new character's starting weapon starts EQUIPPED")
+	var base_damage: float = p.damage # warrior base + rusty (+4), equipped
+
+	# --- Bag stacks are inert; new pickups never auto-equip.
+	p.receive_item("iron_sword")
+	p.receive_item("iron_sword")
+	var iron_idx: int = find_idx.call(p, "iron_sword")
+	_assert(iron_idx >= 0, "equip: iron sword stack present")
+	_assert(int(p.inventory[iron_idx]["count"]) == 2, "equip: pickups merge into one stack")
+	_assert(str(p.inventory[iron_idx].get("equipped_slot", "")) == "",
+		"equip: new pickup never auto-equips")
+	_assert(p.damage == base_damage, "equip: unequipped gear grants no stats")
+
+	# --- Equip + swap: marker moves, old weapon comes off.
+	_assert(p.equip_stack(iron_idx), "equip: equip_stack succeeds for gear")
+	_assert(str(p.inventory[iron_idx].get("equipped_slot", "")) == "WEAPON",
+		"equip: iron sword equipped into WEAPON")
+	_assert(str(p.inventory[starter_idx].get("equipped_slot", "")) == "",
+		"equip: swap unequips the previous weapon")
+	_assert(p.damage > base_damage, "equip: equipped gear grants its stats")
+	# Pickup grows the equipped stack and keeps the marker.
+	p.receive_item("iron_sword")
+	_assert(int(p.inventory[iron_idx]["count"]) == 3, "equip: pickup grows the equipped stack")
+	_assert(str(p.inventory[iron_idx].get("equipped_slot", "")) == "WEAPON",
+		"equip: grown stack stays equipped")
+
+	# --- Consumables can never equip.
+	p.receive_item("health_potion")
+	var pot_idx: int = find_idx.call(p, "health_potion")
+	_assert(pot_idx >= 0, "equip: potion stack present")
+	_assert(not p.equip_stack(pot_idx), "equip: consumable equip refused")
+
+	# --- Class restriction enforced in code (equip-time only).
+	var tome = ItemDBNode.get_item("scholar_tome").duplicate()
+	var only_mage: Array[String] = ["mage"]
+	tome.set("allowed_classes", only_mage)
+	p.inventory.append({"item": tome, "count": 1, "equipped_slot": ""})
+	var tome_idx: int = p.inventory.size() - 1
+	_assert(not p.equip_stack(tome_idx), "equip: class-restricted equip refused for warrior")
+	_assert(str(p.inventory[tome_idx].get("equipped_slot", "")) == "",
+		"equip: refused equip leaves the marker empty")
+
+	# --- Disposal of an equipped stack is blocked ("Unequip first").
+	var size_before: int = p.inventory.size()
+	p.dispose_item(iron_idx)
+	_assert(p.inventory.size() == size_before, "equip: disposing an equipped stack is blocked")
+	_assert(p.unequip_stack(iron_idx), "equip: unequip_stack clears the marker")
+	_assert(str(p.inventory[iron_idx].get("equipped_slot", "")) == "", "equip: marker cleared")
+	p.dispose_item(iron_idx)
+	_assert(p.inventory.size() == size_before - 1, "equip: dispose works once unequipped")
+	p.queue_free()
+
+	# --- Migration: marker-less legacy state auto-equips highest power.
+	var q = PlayerScene.instantiate()
+	q.class_id = "warrior"
+	root.add_child(q)
+	var legacy := {
+		"level": 3, "xp": 0, "xp_next": 100, "stat_points": 0,
+		"bonus_damage": 0.0, "bonus_health": 0.0, "bonus_speed": 0.0, "bonus_aura": 0.0,
+		"inventory": [
+			{"id": "rusty_sword", "count": 1},
+			{"id": "iron_sword", "count": 1},
+			{"id": "leather_armor", "count": 2},
+			{"id": "health_potion", "count": 3},
+		],
+	}
+	q.apply_state(legacy)
+	var q_iron: int = find_idx.call(q, "iron_sword")
+	var q_rusty: int = find_idx.call(q, "rusty_sword")
+	var q_leather: int = find_idx.call(q, "leather_armor")
+	var q_pot: int = find_idx.call(q, "health_potion")
+	_assert(str(q.inventory[q_iron].get("equipped_slot", "")) == "WEAPON",
+		"equip migration: highest-power weapon auto-equipped (iron over rusty)")
+	_assert(str(q.inventory[q_rusty].get("equipped_slot", "")) == "",
+		"equip migration: lower-power weapon stays in the bag")
+	_assert(str(q.inventory[q_leather].get("equipped_slot", "")) == "ARMOR",
+		"equip migration: armor auto-equipped")
+	_assert(str(q.inventory[q_pot].get("equipped_slot", "")) == "",
+		"equip migration: consumable never auto-equipped")
+	# Recalc equivalence: migrated totals equal the old all-items totals
+	# for this loadout (one equipped stack per slot, per-copy math).
+	var cd = q.get("class_data")
+	var exp_dmg := (float(cd.get("base_damage")) + 4.0 + 10.0) * 1.12
+	_assert(is_equal_approx(q.damage, exp_dmg),
+		"equip migration: damage matches old totals when gear equipped")
+	var exp_hp := (float(cd.get("base_health")) + 30.0 + 50.0) * pow(1.05, 2)
+	_assert(is_equal_approx(q.max_hp, exp_hp),
+		"equip migration: max HP matches old totals when gear equipped")
+
+	# --- Save roundtrip: markers persist; all-empty markers do NOT
+	# trigger re-migration (deliberate unequip is respected).
+	var st: Dictionary = q.get_state()
+	var slot_keys_ok := true
+	var iron_slot := ""
+	for e in st["inventory"]:
+		if not (e as Dictionary).has("slot"):
+			slot_keys_ok = false
+		if str(e.get("id", "")) == "iron_sword":
+			iron_slot = str(e.get("slot", ""))
+	_assert(slot_keys_ok, "equip: get_state writes a slot key per entry")
+	_assert(iron_slot == "WEAPON", "equip: get_state records the equipped slot")
+	var r = PlayerScene.instantiate()
+	r.class_id = "warrior"
+	root.add_child(r)
+	r.apply_state(st)
+	var r_iron: int = find_idx.call(r, "iron_sword")
+	_assert(str(r.inventory[r_iron].get("equipped_slot", "")) == "WEAPON",
+		"equip: marker survives save/load roundtrip")
+	r.queue_free()
+	q.unequip_stack(q_iron)
+	q.unequip_stack(q_leather)
+	var st2: Dictionary = q.get_state()
+	var r2 = PlayerScene.instantiate()
+	r2.class_id = "warrior"
+	root.add_child(r2)
+	r2.apply_state(st2)
+	var any_equipped := false
+	for e in r2.inventory:
+		if str(e.get("equipped_slot", "")) != "":
+			any_equipped = true
+	_assert(not any_equipped, "equip: all-empty markers do NOT re-trigger migration")
+	r2.queue_free()
+	q.queue_free()
+
+	# Migration scoring is STACK-level: a big stack of a weaker weapon
+	# out-grants a single stronger one, so the stack wins the slot.
+	var q2 = PlayerScene.instantiate()
+	q2.class_id = "warrior"
+	root.add_child(q2)
+	var legacy2 := {
+		"level": 1, "xp": 0, "xp_next": 25, "stat_points": 0,
+		"bonus_damage": 0.0, "bonus_health": 0.0, "bonus_speed": 0.0, "bonus_aura": 0.0,
+		"inventory": [
+			{"id": "rusty_sword", "count": 5},
+			{"id": "iron_sword", "count": 1},
+		],
+	}
+	q2.apply_state(legacy2)
+	var q2_rusty: int = find_idx.call(q2, "rusty_sword")
+	var q2_iron: int = find_idx.call(q2, "iron_sword")
+	_assert(str(q2.inventory[q2_rusty].get("equipped_slot", "")) == "WEAPON",
+		"equip migration: stack-level score — 5x rusty (20) beats 1x iron (10.12)")
+	_assert(str(q2.inventory[q2_iron].get("equipped_slot", "")) == "",
+		"equip migration: single stronger weapon stays in the bag")
+	q2.queue_free()
+
+	# --- Class switch auto-unequips restricted gear.
+	var m = PlayerScene.instantiate()
+	m.class_id = "mage"
+	root.add_child(m)
+	var tome2 = ItemDBNode.get_item("scholar_tome").duplicate()
+	var only_mage2: Array[String] = ["mage"]
+	tome2.set("allowed_classes", only_mage2)
+	m.inventory.append({"item": tome2, "count": 1, "equipped_slot": ""})
+	var m_tome: int = m.inventory.size() - 1
+	_assert(m.equip_stack(m_tome), "equip: mage can equip a mage-only item")
+	m.switch_class("warrior")
+	_assert(str(m.inventory[m_tome].get("equipped_slot", "")) == "",
+		"equip: class switch auto-unequips restricted stacks")
+	m.queue_free()
+
+	# --- Marker-preservation audit (source): both dungeon transition
+	# filters carry entry dicts by reference, never rebuild them.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.split("kept.append(entry)").size() - 1 >= 2,
+		"equip audit: dungeon filters carry inventory entries by reference")
+	print("[Playtest] equip system phase 1 done")
