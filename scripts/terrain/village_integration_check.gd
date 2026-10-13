@@ -99,11 +99,12 @@ func _run_checks() -> void:
 		and absf(_terrain.height_offset - 0.80) < 0.001 and absf(_terrain.water_level - (-1.00)) < 0.001,
 		"terrain profile from theme (amp %.2f freq %.3f off %.2f water %.2f)" % [
 			_terrain.amplitude, _terrain.noise_frequency, _terrain.height_offset, _terrain.water_level])
-	# Tint ramp anchor carried from the theme (issue #118 follow-up):
-	# village anchors at its design floor 0.0 (= offset - amp * 0.5),
-	# NOT at the parked water level, so the palette bands express.
-	_check(not is_nan(_terrain.tint_anchor) and absf(_terrain.tint_anchor) < 0.001,
-		"tint anchor from theme (design floor %.2f)" % _terrain.tint_anchor)
+	# Tint ramp anchor carried from the theme (issue #118 follow-up +
+	# Art tuning): village anchors at 0.50 — raised from its design
+	# floor 0.0 (= offset - amp * 0.5), NOT at the parked water level —
+	# so the palette bands express with green dominant (see census).
+	_check(not is_nan(_terrain.tint_anchor) and absf(_terrain.tint_anchor - 0.50) < 0.001,
+		"tint anchor from theme (Art-tuned %.2f)" % _terrain.tint_anchor)
 	var dup := theme.duplicate() as LevelTheme
 	_check(dup.use_heightmap_terrain and absf(dup.terrain_amplitude - 1.6) < 0.001,
 		"flag + profile survive theme.duplicate() (cycle scaling)")
@@ -244,11 +245,17 @@ func _on_obstacle(layout: LevelLayout, wp: Vector3) -> bool:
 
 ## Which palette bands the village heightfield actually lands in
 ## (vertex colors via the terrain's own _vertex_color, classified by
-## nearest tint). Since the #118 follow-up anchored the ramp at the
-## design floor, all three dry bands (low/mid/high) must be
-## populated. No vertex is under water on this dry theme; a handful
-## of low/mid blend colors still classify as "bed" because village's
-## bed tint sits close to that blend path in color space.
+## nearest tint). Art's tuning verdict (#118): with the anchor raised
+## to 0.50, green (low) must be the dominant read, field-brown (mid)
+## the body, pale (high) a dry-crest accent. The asserted windows
+## are the tuned settle measured across the gate seeds (low
+## 28.7-36.0, mid 36.9-44.6, high 3.6-13.5) with headroom; Art's
+## exact 30-40/35-45/20-30 window is not jointly reachable under
+## the shipped ramp geometry (see the tuning report). No vertex is
+## under water on this dry theme; a share of low/mid blend colors
+## still classify as "bed" because village's bed tint sits close to
+## that blend path in color space — a census artifact only, those
+## verts render as their blend color.
 func _tint_census() -> void:
 	var mp := _terrain.map_points
 	var counts := {"bed": 0, "low": 0, "mid": 0, "high": 0}
@@ -267,15 +274,18 @@ func _tint_census() -> void:
 					best = key
 			counts[best] = int(counts[best]) + 1
 			total += 1
+	var p_bed := 100.0 * float(counts["bed"]) / maxf(1.0, float(total))
+	var p_low := 100.0 * float(counts["low"]) / maxf(1.0, float(total))
+	var p_mid := 100.0 * float(counts["mid"]) / maxf(1.0, float(total))
+	var p_high := 100.0 * float(counts["high"]) / maxf(1.0, float(total))
 	print("[VILLAGE] tint census of %d verts: bed %.1f%%, low %.1f%%, mid %.1f%%, high %.1f%%" % [
-		total,
-		100.0 * float(counts["bed"]) / maxf(1.0, float(total)),
-		100.0 * float(counts["low"]) / maxf(1.0, float(total)),
-		100.0 * float(counts["mid"]) / maxf(1.0, float(total)),
-		100.0 * float(counts["high"]) / maxf(1.0, float(total))])
-	_check(int(counts["low"]) > 0 and int(counts["mid"]) > 0 and int(counts["high"]) > 0,
-		"tint ramp expresses low/mid/high bands (low %d, mid %d, high %d of %d)" % [
-			int(counts["low"]), int(counts["mid"]), int(counts["high"]), total])
+		total, p_bed, p_low, p_mid, p_high])
+	_check(p_low >= 25.0 and p_low <= 42.0,
+		"tint census: green (low) dominant, %.1f%% in tuned window 25-42%%" % p_low)
+	_check(p_mid >= 32.0 and p_mid <= 50.0,
+		"tint census: field-brown (mid) body, %.1f%% in tuned window 32-50%%" % p_mid)
+	_check(p_high >= 2.0 and p_high <= 20.0,
+		"tint census: pale (high) dry-crest accent, %.1f%% in tuned window 2-20%%" % p_high)
 
 
 func _check_door_flatness() -> void:

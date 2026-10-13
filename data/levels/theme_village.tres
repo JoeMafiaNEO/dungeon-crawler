@@ -45,4 +45,4 @@ terrain_tint_bed = Color(0.45, 0.38, 0.26, 1)
 terrain_tint_low = Color(0.3, 0.52, 0.22, 1)
 terrain_tint_mid = Color(0.52, 0.42, 0.26, 1)
 terrain_tint_high = Color(0.76, 0.7, 0.45, 1)
-terrain_tint_anchor = 0.0
+terrain_tint_anchor = 0.5
