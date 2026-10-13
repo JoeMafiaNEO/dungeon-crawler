@@ -81,6 +81,7 @@ func _run() -> void:
 	_test_mp_save_bughunt()
 	_test_save_format_pf1()
 	_test_save_format_pf2()
+	_test_warlord_rebind_m1()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -2937,8 +2938,9 @@ func _test_mp_save_bughunt() -> void:
 	# --- Part 5: source-structure evidence for the audit findings.
 	# C-1 chain — FIXED (issue #105, Eng 3): the pre-fix asserts here
 	# documented the bug's presence (dead "disconnected" stamp + replica
-	# snapshot); they now assert the fixed behavior. M-1/M-2/M-3 evidence
-	# below is unchanged — those findings are still open.
+	# snapshot); they now assert the fixed behavior. M-1 evidence is
+	# likewise flipped (issue #106, Eng 3), as is M-2 (issue #107,
+	# Eng 4). M-3 evidence below is unchanged — still open at the time.
 	_assert(not dsrc.contains("entry[\"disconnected\"] = true"),
 		"bughunt: timeout entries are NOT stamped disconnected (C-1 fixed)")
 	_assert(dsrc.count("\"disconnected\"") == 0,
@@ -3012,15 +3014,25 @@ func _test_mp_save_bughunt() -> void:
 		"bughunt: continue creates the lobby with the stored visibility type (M-5 fixed)")
 	_assert(not cont.contains("Steam.createLobby(Steam.LOBBY_TYPE_FRIENDS_ONLY"),
 		"bughunt: continue no longer hardcodes friends-only (M-5 fixed)")
-	# M-1: warlord continued-run binding keys its map by peer authority
-	# but queries it by Steam64 — the host (authority 1) can never match.
-	_assert(dsrc.contains("connected[int(pl.get_multiplayer_authority())] = pl"),
-		"bughunt: warlord setup keys connected map by peer authority")
+	# M-1 — FIXED (issue #106, Eng 3): the connected map is keyed by
+	# Steam64 (player steam_id, peer_steam_ids fallback), registration
+	# stores the node's PEER id in faction_peers, and reclaims that
+	# arrive before _rts_manager exists queue in _pending_reclaims
+	# instead of dropping into the late-joiner path.
+	_assert(dsrc.contains("connected[psid] = pl"),
+		"bughunt: warlord setup keys connected map by Steam64 (M-1 fixed)")
+	_assert(not dsrc.contains("connected[int(pl.get_multiplayer_authority())] = pl"),
+		"bughunt: authority keying gone (M-1 fixed)")
+	_assert(dsrc.contains("int(connected[sid].get_multiplayer_authority())"),
+		"bughunt: registration stores the peer id, not the Steam64 (M-1 fixed)")
 	_assert(dsrc.contains("if connected.has(sid):"),
-		"bughunt: warlord setup queries that map by Steam64")
-	var sim_connected := {1: "host"}
-	_assert(not sim_connected.has(76561198000000001),
-		"bughunt: authority-keyed map can never contain a Steam64 (host never rebinds)")
+		"bughunt: warlord setup still queries the map by roster Steam64")
+	var rec := _bughunt_body(dsrc, "_reclaim_faction")
+	_assert(rec.contains("_pending_reclaims[peer_id] = faction_id"),
+		"bughunt: early reclaim queues until the manager exists (M-1 fixed)")
+	var sim_connected := {76561198000000001: "host"}
+	_assert(sim_connected.has(76561198000000001),
+		"bughunt: Steam64-keyed map matches the roster steam_id (host rebinds)")
 	# M-2 — FIXED (issue #107, Eng 4): sync-down still fetches the
 	# profile unconditionally and every locally-known slot, and now ALSO
 	# enumerates the cloud's own file list so slot files that exist only
@@ -9144,3 +9156,82 @@ func _test_save_format_pf2() -> void:
 	SM.set("_test_runs_dir", "")
 	SM.set("_test_account_pin", "")
 	print("[Playtest] save format pf2 done")
+
+
+func _test_warlord_rebind_m1() -> void:
+	print("[Playtest] Warlord faction rebind (issue #106 M-1)...")
+	# M-1: _setup_warlord keyed its connected map by peer authority but
+	# queried it by roster Steam64 (never matched — the host above all
+	# could never rebind), and _reclaim_faction dropped reclaims that
+	# arrived before _rts_manager existed, sending fast loaders to the
+	# late-joiner path for a brand-new faction.
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var RTSScript = load("res://scripts/rts/rts_manager.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var setup := _bughunt_body(dsrc, "_setup_warlord")
+	_assert(setup.contains("_pending_reclaims.clear()"),
+		"m1: setup flushes queued reclaims once factions are registered")
+	var late := _bughunt_body(dsrc, "_warlord_assign_late_joiners")
+	_assert(late.contains("_pending_reclaims.has(int(p.get_multiplayer_authority()))"),
+		"m1: late-joiner assignment never overrides a queued reclaim")
+
+	# --- Reclaim queue behavior (detached rig: the queue path returns
+	# before any tree access when the manager is null).
+	var rig = DungeonScript.new()
+	_assert((rig.get("_pending_reclaims") as Dictionary).is_empty(),
+		"m1: reclaim queue starts empty")
+	rig.call("_reclaim_faction", 7, 3)
+	rig.call("_reclaim_faction", 9, 0)
+	rig.call("_reclaim_faction", 7, -1) # invalid faction: never queued
+	var pend: Dictionary = rig.get("_pending_reclaims")
+	_assert(int(pend.get(7, -99)) == 3 and int(pend.get(9, -99)) == 0
+		and pend.size() == 2,
+		"m1: early reclaims queue by peer id (invalid faction ignored)")
+
+	# --- The fixed keying against real player nodes: a roster Steam64
+	# now finds its player, and the value registration must store is
+	# the node's PEER authority (faction_peers' namespace).
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	var host = PlayerScene.instantiate()
+	host.class_id = "warrior"
+	root.add_child(host)
+	host.set("steam_id", 76561198000000001)
+	var guest = PlayerScene.instantiate()
+	guest.class_id = "mage"
+	root.add_child(guest)
+	guest.set_multiplayer_authority(7)
+	guest.set("steam_id", 76561198000000002)
+	var peer_steam_ids: Dictionary = rig.get("peer_steam_ids")
+	var connected := {}
+	for pl in get_nodes_in_group("players"):
+		var peer_id := int(pl.get_multiplayer_authority())
+		var psid := int(pl.get("steam_id")) if pl.get("steam_id") != null else 0
+		if psid == 0:
+			psid = int(peer_steam_ids.get(peer_id, peer_id))
+		connected[psid] = pl
+	_assert(connected.has(76561198000000001),
+		"m1: host roster Steam64 finds the host player (host rebinds)")
+	_assert(connected.has(76561198000000002),
+		"m1: guest roster Steam64 finds the guest player")
+	_assert(int(connected[76561198000000001].get_multiplayer_authority()) == 1,
+		"m1: registration value for the host is peer id 1, not the Steam64")
+	_assert(int(connected[76561198000000002].get_multiplayer_authority()) == 7,
+		"m1: registration value for the guest is its peer id")
+
+	# --- faction_peers invariant with a real manager: register_faction
+	# stores exactly the peer id it is handed (what the fix passes).
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var mgr = RTSScript.new()
+	holder.add_child(mgr)
+	mgr.register_faction(3, 1, "warrior")
+	_assert(int(mgr.faction_peers.get(3, -99)) == 1,
+		"m1: faction_peers[3] holds peer id 1 after fixed registration")
+	holder.queue_free()
+	host.queue_free()
+	guest.queue_free()
+	rig.free()
+	print("[Playtest] warlord rebind m1 done")

@@ -174,6 +174,9 @@ var _season_manager: Node = null
 ## Issue #10 Phase 2: seasons can be disabled (sim harness baseline).
 var seasons_enabled := true
 var _warlord_setup_pending := false
+## Issue #106 (M-1): peer_id -> faction_id reclaims that arrived
+## before _rts_manager existed; flushed at the end of _setup_warlord.
+var _pending_reclaims: Dictionary = {}
 ## Warlord setup: how long we've waited for all players to load (timeout
 ## fallback so a slow/disconnected loader can't stall the level forever).
 var _warlord_setup_wait := 0.0
@@ -527,7 +530,15 @@ func apply_continued_state(ps: Dictionary) -> void:
 
 ## A returning player takes their saved Warlord faction back from AI control.
 func _reclaim_faction(peer_id: int, faction_id: int) -> void:
-	if _rts_manager == null or faction_id < 0:
+	if faction_id < 0:
+		return
+	if _rts_manager == null:
+		# Issue #106 (M-1): a fast loader can reclaim before warlord
+		# setup creates the manager. Queue the reclaim instead of
+		# dropping it — a dropped reclaim fell through to
+		# _warlord_assign_late_joiners and a brand-new faction.
+		# Flushed at the end of _setup_warlord.
+		_pending_reclaims[peer_id] = faction_id
 		return
 	if not _rts_manager.factions.has(faction_id):
 		return
@@ -949,6 +960,8 @@ func _warlord_assign_late_joiners() -> void:
 	for p in get_tree().get_nodes_in_group("players"):
 		if int(p.get("rts_faction")) >= 0:
 			continue
+		if _pending_reclaims.has(int(p.get_multiplayer_authority())):
+			continue # M-1: a saved-faction reclaim is queued — never fresh-assign over it
 		var fid := 0
 		for existing in _rts_manager.factions:
 			fid = maxi(fid, int(existing) + 1)
@@ -973,9 +986,20 @@ func _setup_warlord() -> void:
 	if not continued_roster.is_empty():
 		# Continued run: pre-register ALL roster factions by saved ID.
 		# No-shows become AI immediately; rejoiners reclaim via _reclaim_faction.
+		# Issue #106 (M-1): key the connected map by STEAM64 — roster
+		# entries are Steam64-keyed, while get_multiplayer_authority()
+		# is a peer id; the two namespaces never collide, so the old
+		# authority-keyed map never matched and no saved faction (the
+		# host's above all — the host has no register_class reclaim
+		# path) ever bound as present. faction_peers stores PEER ids,
+		# so registration passes the node's authority, never the sid.
 		var connected := {}
 		for pl in get_tree().get_nodes_in_group("players"):
-			connected[int(pl.get_multiplayer_authority())] = pl
+			var peer_id := int(pl.get_multiplayer_authority())
+			var psid := int(pl.get("steam_id")) if pl.get("steam_id") != null else 0
+			if psid == 0:
+				psid = int(peer_steam_ids.get(peer_id, peer_id))
+			connected[psid] = pl
 		for entry in continued_roster:
 			var fid := int(entry.get("rts_faction", -1))
 			if fid < 0:
@@ -983,7 +1007,8 @@ func _setup_warlord() -> void:
 			var sid := int(entry.get("steam_id", 0))
 			var cls := str(entry.get("class_id", "warrior"))
 			if connected.has(sid):
-				_rts_manager.register_faction(fid, sid, cls)
+				_rts_manager.register_faction(fid,
+					int(connected[sid].get_multiplayer_authority()), cls)
 				connected[sid].set("rts_faction", fid)
 			else:
 				# No-show: faction stays registered (reclaimable on rejoin);
@@ -1020,6 +1045,14 @@ func _setup_warlord() -> void:
 			ai.faction_id = faction_id
 			add_child(ai)
 			faction_id += 1
+
+	# Issue #106 (M-1): apply any reclaims queued before the manager
+	# existed (fast loaders) now that all factions are registered.
+	if not _pending_reclaims.is_empty():
+		var pending := _pending_reclaims.duplicate()
+		_pending_reclaims.clear()
+		for pid in pending:
+			_reclaim_faction(int(pid), int(pending[pid]))
 
 	# Scatter resource nodes.
 	_spawn_resource_nodes()
