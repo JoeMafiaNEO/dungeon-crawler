@@ -471,6 +471,30 @@ static func bind_submitted_state(state: Dictionary, sender: int, mapping: Dictio
 	return bound
 
 
+## Issue #109 (M-4): merge the previous save's roster into a freshly
+## collected one. The collection only covers peers connected right now,
+## so without this merge a roster member who misses a single save point
+## (sat out a level, crashed before the transition) is silently deleted
+## from the run. Entries keyed by Steam64 that the new collection does
+## not represent are carried forward verbatim; current-session entries
+## always win. A character leaves the roster only through an explicit
+## removal path, never through absence.
+static func carry_forward_roster(new_roster: Array, prev_roster: Array) -> Array:
+	var out := new_roster.duplicate()
+	var have := {}
+	for e in out:
+		if e is Dictionary:
+			have[int(e.get("steam_id", 0))] = true
+	for e in prev_roster:
+		if not (e is Dictionary):
+			continue
+		var sid := int(e.get("steam_id", 0))
+		if sid != 0 and not have.has(sid):
+			out.append(e)
+			have[sid] = true
+	return out
+
+
 ## Pick one peer's boarding state from the host-collected map. Pure so tests
 ## can verify the fallback without a live dungeon. Returns the host state
 ## when it's non-empty; returns {} when the entry is missing or empty so the
@@ -3069,6 +3093,12 @@ func _mark_missing_disconnected() -> void:
 
 
 func _write_multiplayer_save() -> void:
+	# Issue #109 (M-4): read the save being overwritten BEFORE writing
+	# and carry its roster forward — the fresh collection covers only
+	# currently connected peers, and an absent member must not lose
+	# their saved character by missing one save point.
+	var previous: Dictionary = SaveManager.load_run(SaveManager.MODE_MP, _save_slot)
+	_save_roster = carry_forward_roster(_save_roster, previous.get("roster", []))
 	_save_base["roster"] = _save_roster
 	# class_id at top level for backwards compat (host's class).
 	if not _save_roster.is_empty():

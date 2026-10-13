@@ -2971,6 +2971,30 @@ func _test_mp_save_bughunt() -> void:
 		"bughunt: victim's entry survives a forged submission intact (M-3)")
 	_assert(DungeonScript.bind_submitted_state(forged, 42, mapping).is_empty(),
 		"bughunt: sender with no server-assigned identity is rejected (M-3)")
+	# M-4 — FIXED (issue #109, Eng 4): the write path carries the
+	# previous save's roster forward, so an absent member is never
+	# deleted by missing a save point.
+	var wr := _bughunt_body(dsrc, "_write_multiplayer_save")
+	_assert(wr.contains("carry_forward_roster(_save_roster, previous.get(\"roster\", []))"),
+		"bughunt: save write merges the previous roster (M-4 fixed)")
+	# Behavioral: previous roster {A, B}; this session only A connects
+	# (with newer state). The merged roster keeps A's new entry and B's
+	# entry byte-identical.
+	var prev_roster := [
+		{"steam_id": 76561198000000111, "class_id": "mage", "player_state": {"level": 5, "xp": 50}},
+		{"steam_id": 76561198000000222, "class_id": "rogue", "player_state": {"level": 7, "xp": 70}},
+	]
+	var new_roster := [
+		{"steam_id": 76561198000000111, "class_id": "mage", "player_state": {"level": 6, "xp": 61}},
+	]
+	var merged: Array = DungeonScript.carry_forward_roster(new_roster, prev_roster)
+	_assert(merged.size() == 2, "bughunt: absent player survives the save (M-4)")
+	var kept_b: Dictionary = DungeonScript.find_roster_entry(merged, 76561198000000222)
+	_assert(str(kept_b) == str(prev_roster[1]),
+		"bughunt: absent player's entry is carried forward byte-identical (M-4)")
+	var kept_a: Dictionary = DungeonScript.find_roster_entry(merged, 76561198000000111)
+	_assert(int((kept_a.get("player_state", {}) as Dictionary).get("level", 0)) == 6,
+		"bughunt: connected player's fresh state wins over carry-forward (M-4)")
 	# M-1: warlord continued-run binding keys its map by peer authority
 	# but queries it by Steam64 — the host (authority 1) can never match.
 	_assert(dsrc.contains("connected[int(pl.get_multiplayer_authority())] = pl"),
