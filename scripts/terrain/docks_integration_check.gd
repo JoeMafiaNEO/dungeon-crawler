@@ -179,16 +179,55 @@ func _run_checks() -> void:
 	# --- Walk: merchant -> fishing pier, claim + cast + reel ---
 	var spot := _dungeon.get_node_or_null("FishingSpot_0") as FishingSpot
 	_check(spot != null, "fishing spot 0 exists")
+	# Test scaffolding (issue #104 Phase 3): claiming a spot requires
+	# the fishing rod EQUIPPED in the TOOL slot — the claim is refused
+	# without it. Grant + equip the rod before the pier leg so the
+	# claim runs under the same rules as a real player.
+	_player.receive_item("fishing_rod")
+	var rod_idx := -1
+	var inv: Array = _player.get("inventory")
+	for i in inv.size():
+		var it = (inv[i] as Dictionary).get("item")
+		if it != null and str(it.get("id")) == "fishing_rod":
+			rod_idx = i
+	if rod_idx >= 0:
+		_player.equip_stack(rod_idx)
+	_check(_player.has_rod_equipped(),
+		"fishing: rod equipped in TOOL slot (spot-claim gate)")
 	_check(absf(spot.water_point.y - _terrain.water_level) < 0.001,
 		"fishing water_point.y == terrain water level (%.2f)" % spot.water_point.y)
 	st = await _walk_to(spot.global_position, 1.4, 60.0)
 	_report_walk("merchant->fishing pier", st)
 	FishingSpot.debug_wait_override = 0.8
 	FishingSpot.debug_catch_roll = 0.9 # plain minnow
+	# Freeze the spot's clock (the suite's own seam): with real time,
+	# the 0.8s bite wait + 1.2s reel window can fully elapse inside
+	# this leg's frame-counted waits on a slow machine — the session
+	# then reads as claimed-but-idle (a miss keeps the claim), which
+	# is exactly how this leg used to fail downstream of the rod fix.
+	FishingSpot.debug_now_msec = 100000
 	await _press_e()
-	_check(spot.occupied_by == 1 and spot.is_session_active_for(1),
+	# The claim+cast round-trip settles over the following frames;
+	# poll for the session like the bite-cue wait below does, rather
+	# than sampling once (a fixed sample races the interact dispatch).
+	var session_up := false
+	for i in 120: # up to ~2s of process frames
+		await get_tree().process_frame
+		if spot.occupied_by == 1 and spot.is_session_active_for(1):
+			session_up = true
+			break
+	_check(session_up,
 		"fishing: E claims + casts (occupied_by=%d)" % spot.occupied_by)
-	_check(bool(_player.get("is_fishing")), "fishing: player is_fishing")
+	var fishing_set := false
+	for i in 120:
+		await get_tree().process_frame
+		if bool(_player.get("is_fishing")):
+			fishing_set = true
+			break
+	_check(fishing_set, "fishing: player is_fishing")
+	# Advance the frozen clock past the 0.8s bite wait (inside the
+	# 1.2s reel window): the next spot _process tick flips to BITING.
+	FishingSpot.debug_now_msec = 100000 + 900
 	var bite := false
 	for i in 360: # up to ~6s of process frames for the bite cue
 		await get_tree().process_frame
@@ -205,6 +244,7 @@ func _run_checks() -> void:
 		"fishing: catch landed (inv=%d stock=%d)" % [fish_held, fish_stock])
 	FishingSpot.debug_wait_override = -1.0
 	FishingSpot.debug_catch_roll = -1.0
+	FishingSpot.debug_now_msec = -1
 	# --- Walk: pier -> annex doorway -> hall, and back (no step) ---
 	# Route to a staging point on the door axis first (BFS), then run
 	# straight through the doorway gap; the no-step measurement only
