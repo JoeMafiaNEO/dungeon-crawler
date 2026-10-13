@@ -9089,6 +9089,14 @@ func _test_save_format_pf2() -> void:
 		"pf2: station producer is loaded-dict-first")
 	_assert(dsrc.contains("prev_by_sid") and stsrc.contains("prev_by_sid"),
 		"pf2: roster-entry unknown-key merge in both MP producers")
+	# F-1 (Eng 9, PF2 verification): the lobby dict is composed by BOTH
+	# MP producers as a merge over the LOADED lobby (only max_players /
+	# lobby_name / visibility are overwritten) — pin that form so a
+	# fresh-literal lobby regression fails here even before the rig.
+	_assert(dsrc.contains("(_save_base.get(\"lobby\", {}) as Dictionary).duplicate(true)"),
+		"pf2: dungeon lobby composed from the loaded lobby dict (F-1)")
+	_assert(stsrc.contains("(base.get(\"lobby\", {}) as Dictionary).duplicate(true)"),
+		"pf2: station lobby composed from the loaded lobby dict (F-1)")
 
 	# --- Player level: unknown keys survive apply_state -> get_state.
 	for n in get_nodes_in_group("players"):
@@ -9132,7 +9140,8 @@ func _test_save_format_pf2() -> void:
 	var fixture := {"theme_id": "dungeon", "level_number": 3, "seed": 31337,
 		"is_multiplayer": true, "at_station": false, "wave": 2,
 		"host_difficulty": 1.25, "host_loot_mult": 2.0,
-		"lobby": {"max_players": 6, "lobby_name": "PF2's Dungeon", "visibility": "public"},
+		"lobby": {"max_players": 6, "lobby_name": "PF2's Dungeon", "visibility": "public",
+			"pf2_future_lobby": {"region": "eu-west", "mods": ["x", "y"]}},
 		"roster": [
 			{"steam_id": 1, "player_name": "Host", "class_id": "rogue",
 				"player_state": pstate, "rts_faction": -1, "is_host": true,
@@ -9159,6 +9168,15 @@ func _test_save_format_pf2() -> void:
 	base["theme_id"] = "dungeon"
 	base["level_number"] = 3
 	base["seed"] = 31337
+	# F-1: compose the lobby exactly as production does (save_multiplayer_
+	# run): start from the LOADED lobby dict, overwrite only the three
+	# known keys. The shipped rig skipped this step entirely, so a
+	# fresh-literal lobby regression would have passed the suite.
+	var lobby: Dictionary = (base.get("lobby", {}) as Dictionary).duplicate(true)
+	lobby["max_players"] = 8
+	lobby["lobby_name"] = "PF2's Dungeon (continued)"
+	lobby["visibility"] = "public"
+	base["lobby"] = lobby
 	d.set("_save_base", base)
 	d.set("_save_roster", [{"steam_id": 1, "player_name": "Host",
 		"class_id": "rogue", "player_state": host.get_state(),
@@ -9186,6 +9204,18 @@ func _test_save_format_pf2() -> void:
 		"pf2: host mirror player_state keeps the unknown key")
 	_assert(int(resaved.get("level_number", 0)) == 3 and int(resaved.get("seed", 0)) == 31337,
 		"pf2: producer fields written as called (diff-clean otherwise)")
+	# F-1: the lobby-level unknown key survived the real producer
+	# composition (merge over the loaded lobby), while the known keys
+	# took the producer's fresh values.
+	var rlobby: Dictionary = resaved.get("lobby", {})
+	var rfuture: Dictionary = rlobby.get("pf2_future_lobby", {})
+	_assert(str(rfuture.get("region", "")) == "eu-west"
+		and (rfuture.get("mods", []) as Array) == ["x", "y"],
+		"pf2: unknown LOBBY key survives the producer lobby merge (F-1)")
+	_assert(int(rlobby.get("max_players", 0)) == 8
+		and str(rlobby.get("lobby_name", "")) == "PF2's Dungeon (continued)"
+		and str(rlobby.get("visibility", "")) == "public",
+		"pf2: lobby merge overwrote only the known keys (F-1)")
 	d.free()
 	host.queue_free()
 	p.queue_free()
