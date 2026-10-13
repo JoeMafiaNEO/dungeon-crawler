@@ -11,6 +11,7 @@ description = "The blade that ended a dynasty."
 icon = ExtResource("2")
 slot = 0
 rarity = 4
+allowed_classes = Array[String](["warrior"])
 damage_bonus = 30.00
 health_bonus = 0.00
 speed_bonus = 0.00

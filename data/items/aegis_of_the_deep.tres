@@ -11,6 +11,7 @@ description = "Forged in crushing dark. It remembers."
 icon = ExtResource("2")
 slot = 1
 rarity = 4
+allowed_classes = Array[String](["warrior"])
 damage_bonus = 0.00
 health_bonus = 100.00
 speed_bonus = 0.00

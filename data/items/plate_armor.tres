@@ -11,6 +11,7 @@ description = "Clanky but effective."
 icon = ExtResource("2")
 slot = 1
 rarity = 1
+allowed_classes = Array[String](["warrior"])
 damage_bonus = 0.0
 health_bonus = 60.0
 speed_bonus = 0.0

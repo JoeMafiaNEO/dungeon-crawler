@@ -11,6 +11,7 @@ description = "A blade forged from the void. Slayer achievement reward."
 icon = ExtResource("2")
 slot = 0
 rarity = 3
+allowed_classes = Array[String](["rogue"])
 damage_bonus = 25.0
 health_bonus = 0.0
 speed_bonus = 0.0

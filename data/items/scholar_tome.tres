@@ -11,6 +11,7 @@ description = "Learn faster, level faster."
 icon = ExtResource("2")
 slot = 2
 rarity = 1
+allowed_classes = Array[String](["mage"])
 damage_bonus = 0.0
 health_bonus = 0.0
 speed_bonus = 0.0

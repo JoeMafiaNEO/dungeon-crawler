@@ -11,6 +11,7 @@ description = "Scales of a wyrm. Nearly unbreakable."
 icon = ExtResource("2")
 slot = 1
 rarity = 3
+allowed_classes = Array[String](["warrior"])
 damage_bonus = 0.00
 health_bonus = 60.00
 speed_bonus = 0.00

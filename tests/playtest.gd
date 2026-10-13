@@ -150,6 +150,7 @@ func _run() -> void:
 	_test_mp_save_c1_fix()
 	_test_character_panel_phase2()
 	_test_fishing_rod_phase3()
+	_test_class_tagging_phase4()
 
 	_print_results()
 	quit()
@@ -8656,3 +8657,136 @@ func _test_fishing_rod_phase3() -> void:
 	pv.queue_free()
 	m.queue_free()
 	print("[Playtest] fishing rod phase 3 done")
+
+
+func _test_class_tagging_phase4() -> void:
+	print("[Playtest] Class tagging + full validation (issue #104 Phase 4)...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+
+	# --- The tagging matrix, read back from the shipped catalog data.
+	var expect := {
+		"apprentice_staff": ["mage"], "storm_caller": ["mage"],
+		"scholar_tome": ["mage"], "storm_talisman": ["mage"],
+		"worn_dagger": ["rogue"], "void_blade": ["rogue"],
+		"swift_boots": ["rogue"],
+		"kingsfall_blade": ["warrior"], "plate_armor": ["warrior"],
+		"dragonscale_armor": ["warrior"], "aegis_of_the_deep": ["warrior"],
+		"runeblade": ["warrior", "mage"],
+	}
+	for id in expect:
+		var it = ItemDBNode.get_item(id)
+		_assert(it != null, "tags: %s exists" % id)
+		var got: Array = []
+		for c in it.get("allowed_classes"):
+			got.append(str(c))
+		_assert(got == expect[id], "tags: %s restricted to %s (got %s)" % [id, str(expect[id]), str(got)])
+	# Universal by design: generic blades/armor, the rod (every class
+	# fishes), the feather (achievement reward), universal trinkets.
+	for id in ["rusty_sword", "iron_sword", "leather_armor", "lucky_charm",
+			"ember_amulet", "phoenix_feather", "fishing_rod"]:
+		var it = ItemDBNode.get_item(id)
+		_assert((it.get("allowed_classes") as Array).is_empty(),
+			"tags: %s stays universal" % id)
+	# Phoenix Feather icon: the feather shares charm.png with the Lucky
+	# Charm (data-level fact behind the Phase 2 art gap — the TOOL slot
+	# renders the medallion; a feather asset is the Art Director's).
+	var feather = ItemDBNode.get_item("phoenix_feather")
+	var charm = ItemDBNode.get_item("lucky_charm")
+	_assert(feather.get("icon") != null and feather.get("icon") == charm.get("icon"),
+		"feather icon: shares the Lucky Charm medallion texture (art gap, data-confirmed)")
+
+	# --- Enforcement against the tagged catalog (real items, real code).
+	var w = PlayerScene.instantiate()
+	w.class_id = "warrior"
+	root.add_child(w)
+	_grant_equipped(w, "plate_armor")
+	_assert(str(w.equipped_ids.get("ARMOR", "")) == "plate_armor",
+		"tags: warrior equips warrior-only plate")
+	var mg = PlayerScene.instantiate()
+	mg.class_id = "mage"
+	root.add_child(mg)
+	mg.receive_item("plate_armor")
+	for i in mg.inventory.size():
+		var it2 = mg.inventory[i].get("item")
+		if it2 != null and str(it2.get("id")) == "plate_armor":
+			_assert(not mg.equip_stack(i), "tags: mage refused warrior-only plate")
+	_grant_equipped(mg, "apprentice_staff")
+	_assert(str(mg.equipped_ids.get("WEAPON", "")) == "apprentice_staff",
+		"tags: mage equips mage-only staff")
+
+	# --- Solo class-switch auto-unequip against the tagged catalog.
+	_grant_equipped(w, "iron_sword") # universal: must survive the switch
+	_assert(str(w.equipped_ids.get("WEAPON", "")) == "iron_sword", "switch: setup weapon")
+	w.switch_class("mage")
+	_assert(str(w.equipped_ids.get("ARMOR", "")) == "",
+		"switch: warrior-only plate auto-unequipped on switch to mage")
+	_assert(w.equipped_entry("ARMOR").is_empty(),
+		"switch: ARMOR slot empty after switch")
+	_assert(str(w.equipped_ids.get("WEAPON", "")) == "iron_sword",
+		"switch: universal gear stays equipped")
+	_assert(_farm_inv_count(w, "plate_armor") == 1,
+		"switch: unequipped plate stays in the bag (not deleted)")
+
+	# --- Migration regression vs the tagged catalog: a marker-less save
+	# auto-equips only what the class may wear.
+	var donor = PlayerScene.instantiate()
+	donor.class_id = "warrior"
+	root.add_child(donor)
+	donor.inventory.clear()
+	donor.receive_item("plate_armor")
+	donor.receive_item("apprentice_staff")
+	var legacy: Dictionary = donor.get_state()
+	for e in legacy["inventory"]:
+		e.erase("slot") # strip markers -> legacy format
+	var mig_mage = PlayerScene.instantiate()
+	mig_mage.class_id = "mage"
+	root.add_child(mig_mage)
+	mig_mage.apply_state(legacy)
+	_assert(str(mig_mage.equipped_ids.get("WEAPON", "")) == "apprentice_staff",
+		"migration: mage auto-equips the mage staff from a legacy save")
+	_assert(str(mig_mage.equipped_ids.get("ARMOR", "")) == "",
+		"migration: warrior-only plate NOT auto-equipped for a mage")
+	var mig_war = PlayerScene.instantiate()
+	mig_war.class_id = "warrior"
+	root.add_child(mig_war)
+	mig_war.apply_state(legacy)
+	_assert(str(mig_war.equipped_ids.get("ARMOR", "")) == "plate_armor",
+		"migration: warrior auto-equips the plate from the same legacy save")
+
+	# --- Save/load roundtrip keeps tagged markers.
+	var rt = PlayerScene.instantiate()
+	rt.class_id = "warrior"
+	root.add_child(rt)
+	_grant_equipped(rt, "kingsfall_blade")
+	var saved: Dictionary = rt.get_state()
+	var rt2 = PlayerScene.instantiate()
+	rt2.class_id = "warrior"
+	root.add_child(rt2)
+	rt2.apply_state(saved)
+	_assert(str(rt2.equipped_ids.get("WEAPON", "")) == "kingsfall_blade",
+		"roundtrip: tagged weapon marker + equipped_ids survive save/load")
+
+	# --- MP visibility pass: tagged gear reaches the peer's held props.
+	var pv = PlayerScene.instantiate()
+	pv.class_id = "mage"
+	pv.set_multiplayer_authority(2)
+	root.add_child(pv)
+	pv.push_snapshot(pv.global_position, 100.0, 1, true, 0.0,
+		{"WEAPON": "kingsfall_blade", "TOOL": "phoenix_feather"})
+	var held = pv.get_node_or_null("HeldProp")
+	_assert(held != null and held.get_node_or_null("WeaponProp") != null,
+		"mp visibility: peer sees the tagged weapon's world_model prop")
+	_assert(held != null and held.get_node_or_null("RodProp") == null,
+		"mp visibility: feather in TOOL does not conjure a rod prop")
+	w.queue_free()
+	mg.queue_free()
+	donor.queue_free()
+	mig_mage.queue_free()
+	mig_war.queue_free()
+	rt.queue_free()
+	rt2.queue_free()
+	pv.queue_free()
+	print("[Playtest] class tagging phase 4 done")

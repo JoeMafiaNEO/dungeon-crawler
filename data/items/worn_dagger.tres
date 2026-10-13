@@ -11,6 +11,7 @@ description = "Quick and light."
 icon = ExtResource("2")
 slot = 0
 rarity = 0
+allowed_classes = Array[String](["rogue"])
 damage_bonus = 2.0
 health_bonus = 0.0
 speed_bonus = 0.4

@@ -11,6 +11,7 @@ description = "Crackles with captured lightning."
 icon = ExtResource("2")
 slot = 2
 rarity = 3
+allowed_classes = Array[String](["mage"])
 damage_bonus = 0.00
 health_bonus = 0.00
 speed_bonus = 0.00
