@@ -513,6 +513,29 @@ func _test_village_terrain_118() -> void:
 	# Docks does NOT set the tint anchor: NAN keeps the water anchor,
 	# so the docks palette is arithmetically untouched.
 	_assert(is_nan(float(docks.get("terrain_tint_anchor"))), "#118: docks tint anchor unset (NAN -> water anchor)")
+	# Supermarket profile (issue #119): polished concrete — terrain ON
+	# with near-zero relief by design, DRY, compressed grey tints.
+	var mart: Resource = load("res://data/levels/theme_supermarket.tres")
+	_assert(mart != null, "#119: supermarket theme loads")
+	if mart != null:
+		_assert(bool(mart.get("use_heightmap_terrain")), "#119: supermarket use_heightmap_terrain on")
+		_assert(absf(float(mart.get("terrain_amplitude")) - 0.15) < 0.0001, "#119: supermarket amp 0.15")
+		_assert(absf(float(mart.get("terrain_noise_frequency")) - 0.050) < 0.00001, "#119: supermarket freq 0.050")
+		_assert(absf(float(mart.get("terrain_height_offset")) - 0.08) < 0.0001, "#119: supermarket offset +0.08")
+		_assert(absf(float(mart.get("terrain_water_level")) - (-1.0)) < 0.0001, "#119: supermarket water parked -1.00 (dry)")
+		_assert(int(mart.get("terrain_smooth_passes")) == 2, "#119: supermarket smooth 2")
+		_assert(absf(float(mart.get("terrain_flatten_radius")) - 5.0) < 0.0001, "#119: supermarket flatten 5.0")
+		_assert(mart.get("terrain_tint_low") == Color(0.84, 0.83, 0.78), "#119: supermarket tint low = concrete grey")
+		_assert(mart.get("terrain_tint_mid") == Color(0.88, 0.87, 0.82), "#119: supermarket tint mid = ground color")
+		_assert(mart.get("terrain_tint_high") == Color(0.91, 0.9, 0.85), "#119: supermarket tint high = pale concrete")
+		# Tint anchor at the design floor: offset 0.08 - amp/2 0.075.
+		_assert(absf(float(mart.get("terrain_tint_anchor")) - 0.005) < 0.0001, "#119: supermarket tint anchor = design floor 0.005")
+		# No banding by construction: the whole dry ramp spans a small
+		# color distance (village's spans ~0.55 by comparison).
+		var lo_c: Color = mart.get("terrain_tint_low")
+		var hi_c: Color = mart.get("terrain_tint_high")
+		var span := Vector3(hi_c.r - lo_c.r, hi_c.g - lo_c.g, hi_c.b - lo_c.b).length()
+		_assert(span < 0.20, "#119: supermarket tint ramp compressed (span %.3f < 0.20)" % span)
 	# LevelTheme defaults: flag off, and the docks profile as the safe
 	# default (a theme that only flips the flag gets proven behavior).
 	var LT = load("res://scripts/procgen/level_theme.gd")
