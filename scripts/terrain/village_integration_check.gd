@@ -99,6 +99,11 @@ func _run_checks() -> void:
 		and absf(_terrain.height_offset - 0.80) < 0.001 and absf(_terrain.water_level - (-1.00)) < 0.001,
 		"terrain profile from theme (amp %.2f freq %.3f off %.2f water %.2f)" % [
 			_terrain.amplitude, _terrain.noise_frequency, _terrain.height_offset, _terrain.water_level])
+	# Tint ramp anchor carried from the theme (issue #118 follow-up):
+	# village anchors at its design floor 0.0 (= offset - amp * 0.5),
+	# NOT at the parked water level, so the palette bands express.
+	_check(not is_nan(_terrain.tint_anchor) and absf(_terrain.tint_anchor) < 0.001,
+		"tint anchor from theme (design floor %.2f)" % _terrain.tint_anchor)
 	var dup := theme.duplicate() as LevelTheme
 	_check(dup.use_heightmap_terrain and absf(dup.terrain_amplitude - 1.6) < 0.001,
 		"flag + profile survive theme.duplicate() (cycle scaling)")
@@ -237,8 +242,13 @@ func _on_obstacle(layout: LevelLayout, wp: Vector3) -> bool:
 	return false
 
 
-## Informational: which palette bands the village heightfield actually
-## lands in (vertex colors via the terrain's own _vertex_color).
+## Which palette bands the village heightfield actually lands in
+## (vertex colors via the terrain's own _vertex_color, classified by
+## nearest tint). Since the #118 follow-up anchored the ramp at the
+## design floor, all three dry bands (low/mid/high) must be
+## populated. No vertex is under water on this dry theme; a handful
+## of low/mid blend colors still classify as "bed" because village's
+## bed tint sits close to that blend path in color space.
 func _tint_census() -> void:
 	var mp := _terrain.map_points
 	var counts := {"bed": 0, "low": 0, "mid": 0, "high": 0}
@@ -263,6 +273,9 @@ func _tint_census() -> void:
 		100.0 * float(counts["low"]) / maxf(1.0, float(total)),
 		100.0 * float(counts["mid"]) / maxf(1.0, float(total)),
 		100.0 * float(counts["high"]) / maxf(1.0, float(total))])
+	_check(int(counts["low"]) > 0 and int(counts["mid"]) > 0 and int(counts["high"]) > 0,
+		"tint ramp expresses low/mid/high bands (low %d, mid %d, high %d of %d)" % [
+			int(counts["low"]), int(counts["mid"]), int(counts["high"]), total])
 
 
 func _check_door_flatness() -> void:
@@ -297,6 +310,7 @@ func _check_determinism() -> void:
 	t2.pond_depth = _terrain.pond_depth
 	t2.smooth_passes = _terrain.smooth_passes
 	t2.flatten_radius = _terrain.flatten_radius
+	t2.tint_anchor = _terrain.tint_anchor
 	t2.poi_points = _terrain.poi_points.duplicate()
 	t2.flatten_targets = _terrain.flatten_targets.duplicate()
 	t2.pond_specs = _terrain.pond_specs.duplicate()

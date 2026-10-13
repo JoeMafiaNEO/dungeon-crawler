@@ -88,3 +88,11 @@ extends Resource
 @export var terrain_tint_low: Color = Color(0.16, 0.23, 0.17)
 @export var terrain_tint_mid: Color = Color(0.26, 0.25, 0.19)
 @export var terrain_tint_high: Color = Color(0.32, 0.32, 0.33)
+## Height the vertex-tint ramp's t=0 sits at (issue #118 follow-up).
+## NAN (the default) = anchor at terrain_water_level, the original
+## shared behavior — wet themes (the docks) keep their proven palette
+## arithmetically untouched. Dry themes park their water far below
+## the terrain, which would pin every vertex at t=1 (single-band
+## render); they set this to their design floor (terrain_height_offset
+## - terrain_amplitude * 0.5) so the low/mid/high bands express.
+@export var terrain_tint_anchor: float = NAN

@@ -26,6 +26,11 @@ extends Node3D
 @export var tint_low: Color = Color(0.28, 0.52, 0.24)
 @export var tint_mid: Color = Color(0.50, 0.40, 0.28)
 @export var tint_high: Color = Color(0.45, 0.45, 0.48)
+## Vertex-tint ramp anchor: the height t=0 sits at. NAN (default) =
+## anchor at water_level, the original behavior. Dry profiles whose
+## water is parked below the terrain set this to their design floor so
+## the low/mid/high bands can express (issue #118 follow-up).
+@export var tint_anchor: float = NAN
 ## Water plane shader colors.
 @export var water_shallow: Color = Color(0.25, 0.55, 0.72, 0.88)
 @export var water_deep: Color = Color(0.10, 0.28, 0.48, 0.92)
@@ -197,7 +202,8 @@ func _slope_at(x: int, z: int) -> float:
 func _vertex_color(h: float, slope: float) -> Color:
 	if h < water_level:
 		return tint_bed # sand (or cave bed) under water
-	var t := clampf((h - water_level) / maxf(amplitude * 0.5, 0.01), 0.0, 1.0)
+	var anchor := tint_anchor if not is_nan(tint_anchor) else water_level
+	var t := clampf((h - anchor) / maxf(amplitude * 0.5, 0.01), 0.0, 1.0)
 	var c := tint_low.lerp(tint_mid, clampf(t * 2.0, 0.0, 1.0))
 	c = c.lerp(tint_high, clampf((t - 0.5) * 2.0, 0.0, 1.0))
 	if slope > 0.9:

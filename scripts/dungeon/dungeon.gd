@@ -2782,6 +2782,9 @@ func _build_terrain() -> void:
 	_terrain.tint_low = theme.terrain_tint_low
 	_terrain.tint_mid = theme.terrain_tint_mid
 	_terrain.tint_high = theme.terrain_tint_high
+	# Tint ramp anchor (issue #118 follow-up): NAN in the theme = the
+	# terrain anchors at its water level, as before.
+	_terrain.tint_anchor = theme.terrain_tint_anchor
 	# POI flattening: the spawn clearing, every farm plot, the merchant.
 	for s in _layout.player_spawns:
 		_terrain.poi_points.append(s)

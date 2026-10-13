@@ -490,6 +490,10 @@ func _test_village_terrain_118() -> void:
 	_assert(village.get("terrain_tint_low") == Color(0.3, 0.52, 0.22), "#118: village tint low = grass green")
 	_assert(village.get("terrain_tint_mid") == Color(0.52, 0.42, 0.26), "#118: village tint mid = field brown")
 	_assert(village.get("terrain_tint_high") == Color(0.76, 0.7, 0.45), "#118: village tint high = pale dry grass")
+	# Tint anchor (#118 follow-up): village anchors the ramp at its
+	# design floor 0.0 (= offset 0.8 - amp/2 0.8; the generator's floor)
+	# because its water is parked at -1.0, which would pin t=1.
+	_assert(absf(float(village.get("terrain_tint_anchor")) - 0.0) < 0.0001, "#118: village tint anchor = design floor 0.0")
 	# Docks profile: the formerly hardcoded constants, verbatim.
 	_assert(bool(docks.get("use_heightmap_terrain")), "#118: docks use_heightmap_terrain on")
 	_assert(absf(float(docks.get("terrain_amplitude")) - 1.0) < 0.0001, "#118: docks amp 1.0 verbatim")
@@ -503,6 +507,9 @@ func _test_village_terrain_118() -> void:
 	_assert(docks.get("terrain_tint_low") == Color(0.16, 0.23, 0.17), "#118: docks tint low verbatim")
 	_assert(docks.get("terrain_tint_mid") == Color(0.26, 0.25, 0.19), "#118: docks tint mid verbatim")
 	_assert(docks.get("terrain_tint_high") == Color(0.32, 0.32, 0.33), "#118: docks tint high verbatim")
+	# Docks does NOT set the tint anchor: NAN keeps the water anchor,
+	# so the docks palette is arithmetically untouched.
+	_assert(is_nan(float(docks.get("terrain_tint_anchor"))), "#118: docks tint anchor unset (NAN -> water anchor)")
 	# LevelTheme defaults: flag off, and the docks profile as the safe
 	# default (a theme that only flips the flag gets proven behavior).
 	var LT = load("res://scripts/procgen/level_theme.gd")
@@ -511,6 +518,7 @@ func _test_village_terrain_118() -> void:
 	_assert(absf(float(fresh.get("terrain_amplitude")) - 1.0) < 0.0001
 		and absf(float(fresh.get("terrain_water_level")) - (-0.10)) < 0.0001,
 		"#118: default terrain profile = docks profile")
+	_assert(is_nan(float(fresh.get("terrain_tint_anchor"))), "#118: default tint anchor = NAN sentinel (water anchor)")
 	# (fresh is a RefCounted Resource — no free(); it scopes out.)
 	# Parameterization wiring: _build_terrain reads every profile field
 	# from the active theme (source pins, the #116 pattern).
@@ -523,8 +531,15 @@ func _test_village_terrain_118() -> void:
 		for field in ["terrain_noise_frequency", "terrain_amplitude", "terrain_height_offset",
 				"terrain_water_level", "terrain_pond_depth", "terrain_smooth_passes",
 				"terrain_flatten_radius", "terrain_tint_bed", "terrain_tint_low",
-				"terrain_tint_mid", "terrain_tint_high"]:
+				"terrain_tint_mid", "terrain_tint_high", "terrain_tint_anchor"]:
 			_assert(body.contains("theme." + field), "#118: _build_terrain reads theme.%s" % field)
+	# Terrain-side plumbing: HeightmapTerrain carries the anchor and
+	# _vertex_color consumes it (NAN falls back to the water level).
+	var hsrc := FileAccess.get_file_as_string("res://scripts/terrain/heightmap_terrain.gd")
+	_assert(hsrc.contains("var tint_anchor"), "#118: HeightmapTerrain declares tint_anchor")
+	var vstart := hsrc.find("func _vertex_color(")
+	_assert(vstart >= 0 and hsrc.substr(vstart, 700).contains("tint_anchor"),
+		"#118: _vertex_color consumes tint_anchor")
 	# Layout fingerprints: deterministic for every theme x the gate
 	# seed set, and seed-sensitive for village. Terrain never feeds
 	# back into layout (ProcGen reads no terrain profile field).
@@ -575,6 +590,32 @@ func _test_village_terrain_118() -> void:
 		for gx in range(1, 64):
 			max_g = maxf(max_g, float(t.call("_slope_at", gx, gz)))
 	_assert(max_g <= 0.55, "#118: village bare-terrain max grade %.1f%% <= 55%%" % (max_g * 100.0))
+	# Tint ramp behavior (#118 follow-up): with the anchor at the
+	# design floor, the ramp hits pure low/mid/high at t = 0/0.5/1
+	# (h = 0.0/0.4/0.8 at village amp 1.6, normalization amp*0.5 = 0.8).
+	# With the anchor unset (NAN) the same heights fall back to the
+	# water anchor (-1.0), where h=0.4 already saturates to high.
+	t.set("tint_bed", village.get("terrain_tint_bed"))
+	t.set("tint_low", village.get("terrain_tint_low"))
+	t.set("tint_mid", village.get("terrain_tint_mid"))
+	t.set("tint_high", village.get("terrain_tint_high"))
+	t.set("tint_anchor", float(village.get("terrain_tint_anchor")))
+	var tl: Color = village.get("terrain_tint_low")
+	var tm: Color = village.get("terrain_tint_mid")
+	var th: Color = village.get("terrain_tint_high")
+	var c_lo: Color = t.call("_vertex_color", 0.0, 0.0)
+	var c_mid: Color = t.call("_vertex_color", 0.4, 0.0)
+	var c_hi: Color = t.call("_vertex_color", 0.8, 0.0)
+	_assert(Vector3(c_lo.r - tl.r, c_lo.g - tl.g, c_lo.b - tl.b).length() < 0.002,
+		"#118: anchored ramp t=0 -> tint_low")
+	_assert(Vector3(c_mid.r - tm.r, c_mid.g - tm.g, c_mid.b - tm.b).length() < 0.002,
+		"#118: anchored ramp t=0.5 -> tint_mid")
+	_assert(Vector3(c_hi.r - th.r, c_hi.g - th.g, c_hi.b - th.b).length() < 0.002,
+		"#118: anchored ramp t=1 -> tint_high")
+	t.set("tint_anchor", NAN)
+	var c_fb: Color = t.call("_vertex_color", 0.4, 0.0)
+	_assert(Vector3(c_fb.r - th.r, c_fb.g - th.g, c_fb.b - th.b).length() < 0.002,
+		"#118: NAN anchor falls back to water anchor (h=0.4 saturates high)")
 	root.remove_child(t)
 	t.free()
 
