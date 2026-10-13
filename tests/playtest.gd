@@ -171,6 +171,7 @@ func _run() -> void:
 	_test_village_terrain_118()
 	_test_terrain_skirt_124()
 	_test_dungeon_terrain_120()
+	_test_depths_terrain_121()
 
 	_print_results()
 	quit()
@@ -740,9 +741,9 @@ func _test_dungeon_terrain_120() -> void:
 	# ground FX that take a grounded position now honor its height
 	# (flat themes: pos.y == 0, identical placement).
 	var dungeon: Resource = load("res://data/levels/theme_dungeon.tres")
-	var depths: Resource = load("res://data/levels/theme_depths.tres")
-	_assert(dungeon != null and depths != null, "#120: dungeon + depths themes load")
-	if dungeon == null or depths == null:
+	var apex: Resource = load("res://data/levels/theme_apex.tres")
+	_assert(dungeon != null and apex != null, "#120: dungeon + apex themes load")
+	if dungeon == null or apex == null:
 		return
 	_assert(bool(dungeon.get("use_heightmap_terrain")), "#120: dungeon use_heightmap_terrain on")
 	_assert(absf(float(dungeon.get("terrain_amplitude")) - 0.35) < 0.0001, "#120: dungeon amp 0.35")
@@ -769,12 +770,13 @@ func _test_dungeon_terrain_120() -> void:
 		and int(dungeon.get("torch_count")) == 10
 		and str(dungeon.get("boss_id")) == "boss_warden",
 		"#120: dungeon identity (24x2m interior, 10 torches, warden)")
-	# Depths is the new flat exemplar (the docks check's off-pin moved
-	# here when the dungeon flipped).
-	_assert(not bool(depths.get("use_heightmap_terrain")), "#120: depths use_heightmap_terrain stays off")
+	# Apex is the new flat exemplar (the docks check's off-pin moved
+	# here when the dungeon flipped; it moved on to apex when the
+	# depths flipped in #121).
+	_assert(not bool(apex.get("use_heightmap_terrain")), "#120: apex use_heightmap_terrain stays off")
 	var dsrc := FileAccess.get_file_as_string("res://scripts/terrain/docks_integration_check.gd")
-	_assert(dsrc.contains("theme_depths.tres") and dsrc.contains("depths theme flag stays off"),
-		"#120: docks check off-pin points at depths")
+	_assert(dsrc.contains("theme_apex.tres") and dsrc.contains("apex theme flag stays off"),
+		"#120: docks check off-pin points at apex")
 	# FX grounding: the FX that receive a grounded position honor its
 	# height (source pins — the behavioral proof is the dungeon
 	# integration check's slam-disc leg).
@@ -839,6 +841,104 @@ func _test_dungeon_terrain_120() -> void:
 	root.remove_child(t)
 	t.free()
 	print("[Playtest] dungeon terrain 120 done")
+
+
+func _test_depths_terrain_121() -> void:
+	print("[Playtest] Depths terrain profile (#121)...")
+	# Issue #121 (S4 of the #103 full integration): the Depths opts
+	# into heightmap terrain with the roughest profile in the set —
+	# rugged cavern floor in the 24x2m maze. Data + validation only:
+	# the parameterization prerequisite landed with #118 (S1).
+	var depths: Resource = load("res://data/levels/theme_depths.tres")
+	_assert(depths != null, "#121: depths theme loads")
+	if depths == null:
+		return
+	# Depths profile per the issue spec.
+	_assert(bool(depths.get("use_heightmap_terrain")), "#121: depths use_heightmap_terrain on")
+	_assert(absf(float(depths.get("terrain_amplitude")) - 1.8) < 0.0001, "#121: depths amp 1.8")
+	# Frequency: the spec's primary 0.040 stands — the fallback to
+	# 0.035 triggers only if Phase 2 measures grade > 55%, and the
+	# measured max is ~19% (bare-terrain probe across the gate seeds
+	# 17.9-19.2%; the in-situ check measures the same). Measurement
+	# won over the spec's ~45% estimate; branch recorded here.
+	_assert(absf(float(depths.get("terrain_noise_frequency")) - 0.040) < 0.00001, "#121: depths freq 0.040 (measured grade ~19%, fallback not triggered)")
+	_assert(absf(float(depths.get("terrain_height_offset")) - 0.90) < 0.0001, "#121: depths offset +0.90")
+	_assert(absf(float(depths.get("terrain_water_level")) - (-1.0)) < 0.0001, "#121: depths water parked -1.00 (dry)")
+	_assert(absf(float(depths.get("terrain_pond_depth")) - 0.5) < 0.0001, "#121: depths pond depth 0.5")
+	_assert(int(depths.get("terrain_smooth_passes")) == 1, "#121: depths smooth 1")
+	_assert(absf(float(depths.get("terrain_flatten_radius")) - 5.0) < 0.0001, "#121: depths flatten 5.0")
+	_assert(depths.get("terrain_tint_bed") == Color(0.09, 0.08, 0.13), "#121: depths tint bed = deep violet-black")
+	_assert(depths.get("terrain_tint_low") == Color(0.13, 0.11, 0.18), "#121: depths tint low = near-black violet")
+	_assert(depths.get("terrain_tint_mid") == Color(0.23, 0.2, 0.29), "#121: depths tint mid = dark violet-grey")
+	_assert(depths.get("terrain_tint_high") == Color(0.62, 0.6, 0.55), "#121: depths tint high = pale bone-grey")
+	# Tint anchor: dry theme, so the ramp anchors at the design
+	# floor 0.0 (= offset 0.9 - amp/2 0.9), not the parked water.
+	_assert(absf(float(depths.get("terrain_tint_anchor")) - 0.0) < 0.0001, "#121: depths tint anchor = design floor 0.0")
+	var dup = depths.duplicate()
+	_assert(bool(dup.get("use_heightmap_terrain")) and absf(float(dup.get("terrain_amplitude")) - 1.8) < 0.0001,
+		"#121: flag + profile survive theme.duplicate() (cycle scaling)")
+	# Bare-terrain behavior with the depths profile (HeightmapTerrain
+	# names no autoloads, so it compiles in this suite): dry by
+	# construction, heights inside the design range, grade in budget.
+	# Extent 24 cells x 2.0m = 48m -> 49 sample points at 1.0m cells.
+	var HT = load("res://scripts/terrain/heightmap_terrain.gd")
+	var t = HT.new()
+	root.add_child(t)
+	t.set("map_points", 49)
+	t.set("cell_size", 1.0)
+	t.set("terrain_seed", 424242)
+	t.set("noise_frequency", float(depths.get("terrain_noise_frequency")))
+	t.set("amplitude", float(depths.get("terrain_amplitude")))
+	t.set("height_offset", float(depths.get("terrain_height_offset")))
+	t.set("water_level", float(depths.get("terrain_water_level")))
+	t.set("pond_depth", float(depths.get("terrain_pond_depth")))
+	t.set("smooth_passes", int(depths.get("terrain_smooth_passes")))
+	t.set("flatten_radius", float(depths.get("terrain_flatten_radius")))
+	t.generate()
+	var heights: PackedFloat32Array = t.heights_copy()
+	var mn := 1e9
+	var mx := -1e9
+	var wet := 0
+	for h in heights:
+		mn = minf(mn, h)
+		mx = maxf(mx, h)
+		if h < float(depths.get("terrain_water_level")):
+			wet += 1
+	_assert(mn >= -0.001 and mx <= 1.801,
+		"#121: depths heights in [0, 1.8] design range (%.3f..%.3f)" % [mn, mx])
+	_assert(wet == 0, "#121: depths terrain dry — zero sub-water heights (min %.3f)" % mn)
+	var max_g := 0.0
+	for gz in range(1, 48):
+		for gx in range(1, 48):
+			max_g = maxf(max_g, float(t.call("_slope_at", gx, gz)))
+	_assert(max_g <= 0.55, "#121: depths bare-terrain max grade %.1f%% <= 55%%" % (max_g * 100.0))
+	# Tint ramp behavior: anchored at the design floor, the ramp hits
+	# pure low/mid/high at t = 0/0.5/1 (h = 0.0/0.45/0.9 at amp 1.8,
+	# normalization amp*0.5 = 0.9). NAN falls back to the water
+	# anchor (-1.0), where h=0.45 already saturates to high.
+	t.set("tint_bed", depths.get("terrain_tint_bed"))
+	t.set("tint_low", depths.get("terrain_tint_low"))
+	t.set("tint_mid", depths.get("terrain_tint_mid"))
+	t.set("tint_high", depths.get("terrain_tint_high"))
+	t.set("tint_anchor", float(depths.get("terrain_tint_anchor")))
+	var tl: Color = depths.get("terrain_tint_low")
+	var tm: Color = depths.get("terrain_tint_mid")
+	var th: Color = depths.get("terrain_tint_high")
+	var c_lo: Color = t.call("_vertex_color", 0.0, 0.0)
+	var c_mid: Color = t.call("_vertex_color", 0.45, 0.0)
+	var c_hi: Color = t.call("_vertex_color", 0.9, 0.0)
+	_assert(Vector3(c_lo.r - tl.r, c_lo.g - tl.g, c_lo.b - tl.b).length() < 0.002,
+		"#121: anchored ramp t=0 -> tint_low")
+	_assert(Vector3(c_mid.r - tm.r, c_mid.g - tm.g, c_mid.b - tm.b).length() < 0.002,
+		"#121: anchored ramp t=0.5 -> tint_mid")
+	_assert(Vector3(c_hi.r - th.r, c_hi.g - th.g, c_hi.b - th.b).length() < 0.002,
+		"#121: anchored ramp t=1 -> tint_high")
+	t.set("tint_anchor", NAN)
+	var c_fb: Color = t.call("_vertex_color", 0.45, 0.0)
+	_assert(Vector3(c_fb.r - th.r, c_fb.g - th.g, c_fb.b - th.b).length() < 0.002,
+		"#121: NAN anchor falls back to water anchor (h=0.45 saturates high)")
+	root.remove_child(t)
+	t.free()
 
 
 func _test_save_roundtrip() -> void:
