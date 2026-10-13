@@ -82,6 +82,7 @@ func _run() -> void:
 	_test_save_format_pf1()
 	_test_save_format_pf2()
 	_test_warlord_rebind_m1()
+	_test_station_roster_carry_forward()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -5289,6 +5290,17 @@ class FakeLobbyPeer extends Node3D:
 	var alive := true
 
 
+## Stub player for station save tests: the station producer reads only
+## steam_id, class_id, and get_state() from each node in "players".
+class StationSavePeer extends Node:
+	var steam_id := 0
+	var class_id := "warrior"
+	var saved_state: Dictionary = {}
+
+	func get_state() -> Dictionary:
+		return saved_state.duplicate(true)
+
+
 ## Stub dungeon for Holy Light tests: carries a _layout for map-size math,
 ## plus the announce RPCs mobs may trigger (apex gates).
 class HolyDungeonStub extends Node3D:
@@ -9235,3 +9247,110 @@ func _test_warlord_rebind_m1() -> void:
 	guest.queue_free()
 	rig.free()
 	print("[Playtest] warlord rebind m1 done")
+
+
+func _test_station_roster_carry_forward() -> void:
+	print("[Playtest] Station roster carry-forward (issue #112)...")
+	var StationScript := load("res://scripts/station/station.gd")
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	_assert(stsrc.contains("Dungeon.carry_forward_roster(roster, base.get(\"roster\", []))"),
+		"station112: producer invokes the dungeon carry-forward merge")
+
+	# Scratch-pinned save state: the station producer must never touch a
+	# real run slot while this regression is driven.
+	var SM: Variant = root.get_node("SaveManager")
+	var NM: Variant = root.get_node("NetworkManager")
+	var scratch := "user://runs_station112_test"
+	if DirAccess.dir_exists_absolute(scratch):
+		for f in DirAccess.get_files_at(scratch):
+			DirAccess.remove_absolute(scratch.path_join(f))
+		DirAccess.remove_absolute(scratch)
+	SM.set("_test_runs_dir", scratch)
+	SM.set("_test_account_pin", "station112_scratch")
+	var old_slot := int(NM.get("active_run_slot"))
+	var old_mode := str(NM.get("active_run_mode"))
+	var old_transport := int(NM.get("transport"))
+	var old_difficulty := float(NM.get("host_difficulty"))
+	var old_loot := float(NM.get("host_loot_mult"))
+	var old_visibility := str(NM.get("lobby_visibility"))
+	NM.set("transport", 0) # STEAM (the LAN branch intentionally has no saves)
+	NM.set("active_run_mode", "mp")
+	NM.set("active_run_slot", 6)
+	NM.set("host_difficulty", 1.0)
+	NM.set("host_loot_mult", 1.0)
+	NM.set("lobby_visibility", "friends")
+
+	var host_sid := 76561198000000331
+	var absent_sid := 76561198000000447
+	var absent_state := {"level": 9, "xp": 777, "xp_next": 1000,
+		"inventory": [{"id": "void_blade", "count": 1}],
+		"station112_future_state": {"kept": [1, 2, 3]}}
+	var absent_entry := {"steam_id": absent_sid, "player_name": "Absent Rogue",
+		"class_id": "rogue", "player_state": absent_state, "rts_faction": 3,
+		"is_host": false, "station112_future_entry": {"kept": "verbatim"}}
+	var fixture := {"theme_id": "dungeon", "level_number": 3, "seed": 111,
+		"is_multiplayer": true, "at_station": true, "wave": 0,
+		"host_difficulty": 1.0, "host_loot_mult": 1.0,
+		"lobby": {"max_players": 4, "lobby_name": "Station 112", "visibility": "friends"},
+		"roster": [
+			{"steam_id": host_sid, "player_name": "Present Host", "class_id": "rogue",
+				"player_state": {"level": 7, "xp": 100}, "rts_faction": -1,
+				"is_host": true, "station112_host_entry": "keep-me"},
+			absent_entry],
+		"class_id": "rogue", "player_state": {"level": 7, "xp": 100}}
+	_assert(SM.save_run(fixture, "mp", 6), "station112: previous roster fixture saves")
+
+	# The station scene contains only the present host. The absent member
+	# has no local player node for the producer to collect.
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	var peer := StationSavePeer.new()
+	peer.steam_id = host_sid
+	peer.class_id = "rogue"
+	peer.saved_state = {"level": 8, "xp": 250, "xp_next": 400,
+		"inventory": [{"id": "iron_sword", "count": 1}]}
+	root.add_child(peer)
+	peer.add_to_group("players")
+	var station = StationScript.new()
+	root.add_child(station)
+	station.save_multiplayer_run("dungeon", 4, 424242)
+
+	var saved: Dictionary = SM.load_run("mp", 6)
+	var saved_roster: Array = saved.get("roster", [])
+	_assert(saved_roster.size() == 2, "station112: station save keeps both roster members")
+	var saved_host: Dictionary = {}
+	var saved_absent: Dictionary = {}
+	for e in saved_roster:
+		if int(e.get("steam_id", 0)) == host_sid:
+			saved_host = e
+		elif int(e.get("steam_id", 0)) == absent_sid:
+			saved_absent = e
+	_assert(not saved_host.is_empty(), "station112: present host remains in the roster")
+	_assert(int((saved_host.get("player_state", {}) as Dictionary).get("level", 0)) == 8,
+		"station112: present host's fresh state wins")
+	_assert(str(saved_host.get("station112_host_entry", "")) == "keep-me",
+		"station112: PF2 unknown-key merge still applies to the fresh entry")
+	_assert(not saved_absent.is_empty(), "station112: absent member is not dropped")
+	_assert(saved_absent.size() == absent_entry.size(),
+		"station112: absent entry keeps its exact key set")
+	_assert(saved_absent == absent_entry,
+		"station112: absent entry survives verbatim")
+	_assert(int(saved.get("level_number", 0)) == 4 and int(saved.get("seed", 0)) == 424242,
+		"station112: producer writes the station save fields")
+
+	station.free()
+	peer.free()
+	NM.set("active_run_slot", old_slot)
+	NM.set("active_run_mode", old_mode)
+	NM.set("transport", old_transport)
+	NM.set("host_difficulty", old_difficulty)
+	NM.set("host_loot_mult", old_loot)
+	NM.set("lobby_visibility", old_visibility)
+	for f in DirAccess.get_files_at(scratch):
+		DirAccess.remove_absolute(scratch.path_join(f))
+	DirAccess.remove_absolute(scratch)
+	if FileAccess.file_exists("user://profile_station112_scratch.cfg"):
+		DirAccess.remove_absolute("user://profile_station112_scratch.cfg")
+	SM.set("_test_runs_dir", "")
+	SM.set("_test_account_pin", "")
+	print("[Playtest] station roster carry-forward done")

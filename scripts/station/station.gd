@@ -905,11 +905,14 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	# Issue #111 PF Phase 2: loaded-dict-first (the _save_base pattern,
 	# mirroring Dungeon.save_multiplayer_run) — unknown top-level keys
 	# survive this write-back; roster entries gain the previous entry's
-	# unknown keys by steam_id (fresh fields win). NOTE: station saves
-	# REPLACE the roster with the locally present players (existing
-	# behavior, unchanged) — absent members are not carried here.
+	# unknown keys by steam_id (fresh fields win).
+	# Issue #112: carry absent roster members forward by Steam64 before
+	# the key merge, matching the dungeon path's post-M-4 behavior.
+	# Carried entries are already complete, so the merge is a no-op for
+	# them and their saved entries survive verbatim.
 	var base: Dictionary = SaveManager.load_run(SaveManager.MODE_MP,
 		NetworkManager.active_run_slot).duplicate(true)
+	roster = Dungeon.carry_forward_roster(roster, base.get("roster", []))
 	var prev_by_sid := {}
 	for e in base.get("roster", []):
 		prev_by_sid[int((e as Dictionary).get("steam_id", 0))] = e
