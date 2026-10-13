@@ -3018,6 +3018,10 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 		"lobby": {
 			"max_players": NetworkManager.MAX_PLAYERS,
 			"lobby_name": "%s's Dungeon" % SteamManager.persona_name if SteamManager.initialized else "Dungeon",
+			# Issue #110 (M-5): persist the lobby visibility so a
+			# continued run re-hosts with the same visibility it was
+			# started with (continue paths used to force friends-only).
+			"visibility": NetworkManager.lobby_visibility,
 		},
 	}
 	_save_roster.clear()

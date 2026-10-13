@@ -2995,6 +2995,19 @@ func _test_mp_save_bughunt() -> void:
 	var kept_a: Dictionary = DungeonScript.find_roster_entry(merged, 76561198000000111)
 	_assert(int((kept_a.get("player_state", {}) as Dictionary).get("level", 0)) == 6,
 		"bughunt: connected player's fresh state wins over carry-forward (M-4)")
+	# M-5 — FIXED (issue #110, Eng 4): the run save persists the lobby
+	# visibility and continue_multiplayer re-hosts with it, instead of
+	# hardcoding friends-only; legacy saves keep the friends-only default.
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(dsrc.contains("\"visibility\": NetworkManager.lobby_visibility"),
+		"bughunt: run saves persist the lobby visibility (M-5 fixed)")
+	var cont := _bughunt_body(nsrc, "continue_multiplayer")
+	_assert(cont.contains("lobby.get(\"visibility\", \"friends\")"),
+		"bughunt: continue reads stored visibility, friends-only legacy default (M-5 fixed)")
+	_assert(cont.contains("Steam.createLobby(lobby_type"),
+		"bughunt: continue creates the lobby with the stored visibility type (M-5 fixed)")
+	_assert(not cont.contains("Steam.createLobby(Steam.LOBBY_TYPE_FRIENDS_ONLY"),
+		"bughunt: continue no longer hardcodes friends-only (M-5 fixed)")
 	# M-1: warlord continued-run binding keys its map by peer authority
 	# but queries it by Steam64 — the host (authority 1) can never match.
 	_assert(dsrc.contains("connected[int(pl.get_multiplayer_authority())] = pl"),

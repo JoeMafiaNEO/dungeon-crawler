@@ -596,7 +596,17 @@ func continue_multiplayer(run: Dictionary) -> bool:
 	multiplayer.multiplayer_peer = peer
 	is_host = true
 	server_id = SteamManager.steam_id
-	Steam.createLobby(Steam.LOBBY_TYPE_FRIENDS_ONLY, int(lobby.get("max_players", MAX_PLAYERS)))
+	# Issue #110 (M-5): re-host with the visibility stored in the save —
+	# a run started public continues public. Legacy saves without the
+	# field default to friends-only (the old hardcoded behavior).
+	lobby_visibility = str(lobby.get("visibility", "friends"))
+	var lobby_type := Steam.LOBBY_TYPE_PUBLIC
+	match lobby_visibility:
+		"friends":
+			lobby_type = Steam.LOBBY_TYPE_FRIENDS_ONLY
+		"private":
+			lobby_type = Steam.LOBBY_TYPE_PRIVATE
+	Steam.createLobby(lobby_type, int(lobby.get("max_players", MAX_PLAYERS)))
 	return true
 
 
@@ -605,6 +615,7 @@ func _on_continue_lobby_created() -> void:
 	var run_id := "%s_%d" % [str(_continued_run.get("saved_at", "")), int(_continued_run.get("seed", 0))]
 	Steam.setLobbyData(lobby_id, "game", GAME_TAG)
 	Steam.setLobbyData(lobby_id, "name", str(_continued_run.get("lobby", {}).get("lobby_name", "Dungeon")))
+	Steam.setLobbyData(lobby_id, "visibility", lobby_visibility)
 	Steam.setLobbyData(lobby_id, "continued_run", "1")
 	Steam.setLobbyData(lobby_id, "run_id", run_id)
 	Steam.setLobbyData(lobby_id, "difficulty", str(host_difficulty))
