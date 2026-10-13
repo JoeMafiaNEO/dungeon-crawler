@@ -92,12 +92,12 @@ func _run_checks() -> void:
 	var theme := _dungeon.theme
 	_check(theme != null and theme.use_heightmap_terrain, "docks theme flag use_heightmap_terrain on")
 	# A non-opted theme stays flat (themes flip on one at a time in
-	# the #103 set: village #118, the dungeon #120 and the depths
-	# #121 have flipped; apex is the flat exemplar until its own
-	# issue lands — this pin moves to the next still-off theme
-	# when apex flips).
-	var apex_theme := load("res://data/levels/theme_apex.tres") as LevelTheme
-	_check(apex_theme != null and not apex_theme.use_heightmap_terrain, "apex theme flag stays off")
+	# the #103 set: village #118, the dungeon #120, the depths #121
+	# and apex #122 have flipped; warlord is the flat exemplar
+	# until its own issue lands (#123) — this pin moves to the next
+	# still-off theme when warlord flips).
+	var warlord_theme := load("res://data/levels/theme_warlord.tres") as LevelTheme
+	_check(warlord_theme != null and not warlord_theme.use_heightmap_terrain, "warlord theme flag stays off")
 	_check(_terrain != null, "heightmap terrain built instead of flat floor")
 	_check(_dungeon.get_node_or_null("Floor") == null, "no flat Floor node on terrain docks")
 	_check(_dungeon.get_node_or_null("TerrainDoorApron") != null, "doorway apron built")

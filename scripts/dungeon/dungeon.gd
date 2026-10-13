@@ -2861,6 +2861,15 @@ func _build_terrain() -> void:
 	_terrain.flatten_targets.append({
 		"pos": Vector3(ax, 0.0, -_layout.arena_half_size()),
 		"height": 0.0, "radius": 6.5})
+	# Arena-center disc (issue #122, Apex Arena): a theme that opts in
+	# gets a wide local-height flatten at the center — the boss-fight
+	# floor. NAN height = relax toward the local terrain height there
+	# (HeightmapTerrain resolves it), so the disc sits at the terrain's
+	# own level instead of a hardcoded one; rim relief is untouched.
+	if theme.terrain_center_flatten_radius > 0.0:
+		_terrain.flatten_targets.append({
+			"pos": Vector3.ZERO, "height": NAN,
+			"radius": theme.terrain_center_flatten_radius})
 	add_child(_terrain)
 	_terrain.generate()
 	_build_door_apron(ax)

@@ -48,7 +48,9 @@ const SKIRT_DEPTH := 2.0
 var poi_points: Array[Vector3] = []
 ## Explicit-height flatten targets: { "pos": Vector3, "height": float,
 ## "radius": float }. Terrain relaxes toward the GIVEN height (e.g. meet
-## a doorway floor at y=0) instead of the sampled center height.
+## a doorway floor at y=0) instead of the sampled center height. A NAN
+## height instead samples the local grid height at the target's center
+## (POI-style local flatten at an explicit radius — issue #122).
 var flatten_targets: Array[Dictionary] = []
 ## Carved basins (become real water where below water_level).
 var pond_centers: Array[Vector3] = []
@@ -145,10 +147,15 @@ func _flatten_pois() -> void:
 func _flatten_targets() -> void:
 	for spec in flatten_targets:
 		var pos: Vector3 = spec["pos"]
-		var target := float(spec["height"])
 		var radius := float(spec.get("radius", flatten_radius))
 		var cx := int(round((pos.x / cell_size) + float(map_points - 1) * 0.5))
 		var cz := int(round((pos.z / cell_size) + float(map_points - 1) * 0.5))
+		# A NAN height means "the local terrain height here" — the target
+		# relaxes toward the height sampled at its own center, exactly
+		# like POI flattening (issue #122: the apex arena's center disc).
+		var target := float(spec["height"])
+		if is_nan(target):
+			target = _sample_grid(cx, cz)
 		var r := int(ceil(radius / cell_size))
 		for dz in range(-r, r + 1):
 			for dx in range(-r, r + 1):

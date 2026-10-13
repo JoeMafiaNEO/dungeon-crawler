@@ -83,6 +83,13 @@ extends Resource
 @export var terrain_pond_depth: float = 0.5
 @export var terrain_smooth_passes: int = 2
 @export var terrain_flatten_radius: float = 5.0
+## Extra flatten disc at the arena center (0 = off): terrain relaxes
+## toward its LOCAL height at the center over this radius (issue #122,
+## Apex Arena: the boss-fight disc — charges/slams read clearly while
+## the rim relief outside the disc is untouched). Carried as a
+## flatten_target with a NAN height, which HeightmapTerrain resolves
+## by sampling the local grid height, exactly like a POI.
+@export var terrain_center_flatten_radius: float = 0.0
 ## Vertex-color palette: bed (under water), then low/mid/high bands.
 @export var terrain_tint_bed: Color = Color(0.23, 0.22, 0.16)
 @export var terrain_tint_low: Color = Color(0.16, 0.23, 0.17)

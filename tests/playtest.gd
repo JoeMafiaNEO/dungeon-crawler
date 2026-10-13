@@ -172,6 +172,7 @@ func _run() -> void:
 	_test_terrain_skirt_124()
 	_test_dungeon_terrain_120()
 	_test_depths_terrain_121()
+	_test_apex_terrain_122()
 
 	_print_results()
 	quit()
@@ -741,9 +742,9 @@ func _test_dungeon_terrain_120() -> void:
 	# ground FX that take a grounded position now honor its height
 	# (flat themes: pos.y == 0, identical placement).
 	var dungeon: Resource = load("res://data/levels/theme_dungeon.tres")
-	var apex: Resource = load("res://data/levels/theme_apex.tres")
-	_assert(dungeon != null and apex != null, "#120: dungeon + apex themes load")
-	if dungeon == null or apex == null:
+	var warlord: Resource = load("res://data/levels/theme_warlord.tres")
+	_assert(dungeon != null and warlord != null, "#120: dungeon + warlord themes load")
+	if dungeon == null or warlord == null:
 		return
 	_assert(bool(dungeon.get("use_heightmap_terrain")), "#120: dungeon use_heightmap_terrain on")
 	_assert(absf(float(dungeon.get("terrain_amplitude")) - 0.35) < 0.0001, "#120: dungeon amp 0.35")
@@ -770,13 +771,14 @@ func _test_dungeon_terrain_120() -> void:
 		and int(dungeon.get("torch_count")) == 10
 		and str(dungeon.get("boss_id")) == "boss_warden",
 		"#120: dungeon identity (24x2m interior, 10 torches, warden)")
-	# Apex is the new flat exemplar (the docks check's off-pin moved
-	# here when the dungeon flipped; it moved on to apex when the
-	# depths flipped in #121).
-	_assert(not bool(apex.get("use_heightmap_terrain")), "#120: apex use_heightmap_terrain stays off")
+	# Warlord is the flat exemplar (the docks check's off-pin moved
+	# here when the dungeon flipped, on to apex when the depths
+	# flipped in #121, and on to warlord when apex flipped in #122;
+	# warlord's own flip is #123).
+	_assert(not bool(warlord.get("use_heightmap_terrain")), "#120: warlord use_heightmap_terrain stays off")
 	var dsrc := FileAccess.get_file_as_string("res://scripts/terrain/docks_integration_check.gd")
-	_assert(dsrc.contains("theme_apex.tres") and dsrc.contains("apex theme flag stays off"),
-		"#120: docks check off-pin points at apex")
+	_assert(dsrc.contains("theme_warlord.tres") and dsrc.contains("warlord theme flag stays off"),
+		"#120: docks check off-pin points at warlord")
 	# FX grounding: the FX that receive a grounded position honor its
 	# height (source pins — the behavioral proof is the dungeon
 	# integration check's slam-disc leg).
@@ -939,6 +941,125 @@ func _test_depths_terrain_121() -> void:
 		"#121: NAN anchor falls back to water anchor (h=0.45 saturates high)")
 	root.remove_child(t)
 	t.free()
+
+
+## Issue #122: Apex Arena terrain profile + the center boss-fight disc.
+## Bare-terrain behavior (HeightmapTerrain names no autoloads, so it
+## compiles in this suite): the apex profile is dry by construction,
+## heights stay in the [0.0, 0.6] design range, and the r=8.0 NAN-height
+## flatten target relaxes the arena center toward its LOCAL height —
+## flat core, soft rim, and zero bleed past r=10 (measured).
+func _test_apex_terrain_122() -> void:
+	print("[Playtest] Apex Arena terrain (#122)...")
+	var apex: Resource = load("res://data/levels/theme_apex.tres")
+	_assert(bool(apex.get("use_heightmap_terrain")), "#122: apex terrain flag on")
+	_assert(absf(float(apex.get("terrain_amplitude")) - 0.6) < 0.001, "#122: apex amp 0.6")
+	_assert(absf(float(apex.get("terrain_noise_frequency")) - 0.04) < 0.0001, "#122: apex freq 0.040")
+	_assert(absf(float(apex.get("terrain_height_offset")) - 0.3) < 0.001, "#122: apex offset +0.30")
+	_assert(absf(float(apex.get("terrain_water_level")) + 1.0) < 0.001, "#122: apex water parked at -1.00 (dry)")
+	_assert(int(apex.get("terrain_smooth_passes")) == 2, "#122: apex smooth 2")
+	_assert(absf(float(apex.get("terrain_flatten_radius")) - 5.0) < 0.001, "#122: apex flatten 5.0")
+	_assert(absf(float(apex.get("terrain_center_flatten_radius")) - 8.0) < 0.001,
+		"#122: apex center disc r 8.0")
+	# Tint anchor at the design floor (offset - amp/2 = 0.0), the dry
+	# theme rule from the #118 follow-up.
+	_assert(absf(float(apex.get("terrain_tint_anchor"))) < 0.001, "#122: apex tint anchor at design floor 0.0")
+	var dup = apex.duplicate()
+	_assert(absf(float(dup.get("terrain_center_flatten_radius")) - 8.0) < 0.001,
+		"#122: center disc survives theme.duplicate() (cycle scaling)")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("theme.terrain_center_flatten_radius"),
+		"#122: _build_terrain wires the center disc from the theme")
+	# Bare terrains: identical apex profile, one with the center target
+	# exactly as _build_terrain appends it (NAN height = local).
+	var HT = load("res://scripts/terrain/heightmap_terrain.gd")
+	var mk = func(with_disc: bool):
+		var t = HT.new()
+		root.add_child(t)
+		t.set("map_points", 49)
+		t.set("cell_size", 1.0)
+		t.set("terrain_seed", 424242)
+		t.set("noise_frequency", 0.04)
+		t.set("amplitude", 0.6)
+		t.set("height_offset", 0.3)
+		t.set("water_level", -1.0)
+		t.set("pond_depth", 0.5)
+		t.set("smooth_passes", 2)
+		t.set("flatten_radius", 5.0)
+		t.set("tint_anchor", 0.0)
+		if with_disc:
+			# Append, not set(): the typed Array[Dictionary] property
+			# silently rejects an untyped literal through Object.set.
+			t.flatten_targets.append({"pos": Vector3.ZERO, "height": NAN, "radius": 8.0})
+		t.generate()
+		return t
+	var plain = mk.call(false)
+	var disc = mk.call(true)
+	var hp: PackedFloat32Array = plain.heights_copy()
+	var hd: PackedFloat32Array = disc.heights_copy()
+	var mp := 49
+	var mn := 1e9
+	var mx := -1e9
+	var wet := 0
+	for h in hd:
+		mn = minf(mn, h)
+		mx = maxf(mx, h)
+		if h < -1.0:
+			wet += 1
+	_assert(mn >= -0.001 and mx <= 0.601,
+		"#122: apex heights in [0.0, 0.6] design range (%.3f..%.3f)" % [mn, mx])
+	_assert(wet == 0, "#122: apex terrain dry — zero sub-water heights (min %.3f)" % mn)
+	var c_idx := 24 * mp + 24
+	_assert(absf(hd[c_idx] - hp[c_idx]) < 0.001,
+		"#122: center height is the local terrain height (plain %.4f, disc %.4f)" % [hp[c_idx], hd[c_idx]])
+	# Disc shape: flat core (r<2 within 0.02 of center), soft rim (the
+	# smoothstep profile — r<8 within 0.20), zero bleed at r>=10.
+	var dev_core := 0.0
+	var dev_disc := 0.0
+	var bleed := 0.0
+	for gz in mp:
+		for gx in mp:
+			var d := Vector2(float(gx) - 24.0, float(gz) - 24.0).length()
+			var i := gz * mp + gx
+			if d < 2.0:
+				dev_core = maxf(dev_core, absf(hd[i] - hd[c_idx]))
+			if d < 8.0:
+				dev_disc = maxf(dev_disc, absf(hd[i] - hd[c_idx]))
+			if d >= 10.0:
+				bleed = maxf(bleed, absf(hd[i] - hp[i]))
+	_assert(dev_core <= 0.02, "#122: disc core flat (max dev %.4f within r<2)" % dev_core)
+	_assert(dev_disc <= 0.20, "#122: disc rim soft (max dev %.4f within r<8)" % dev_disc)
+	_assert(bleed < 0.001, "#122: center flatten is local (bleed %.5f at r>=10)" % bleed)
+	# Grade outside the disc footprint (disc + 1m margin, the checks'
+	# convention) stays inside the 55% budget; measured ~6% max.
+	var max_g := 0.0
+	for gz in range(1, mp - 1):
+		for gx in range(1, mp - 1):
+			if Vector2(float(gx) - 24.0, float(gz) - 24.0).length() <= 9.0:
+				continue
+			max_g = maxf(max_g, float(disc.call("_slope_at", gx, gz)))
+	_assert(max_g <= 0.55, "#122: apex grade outside disc %.1f%% <= 55%%" % (max_g * 100.0))
+	# Tint ramp at the design-floor anchor (norm amp*0.5 = 0.3):
+	# h=0 -> low, h=0.15 -> mid, h=0.30 -> high.
+	disc.set("tint_bed", apex.get("terrain_tint_bed"))
+	disc.set("tint_low", apex.get("terrain_tint_low"))
+	disc.set("tint_mid", apex.get("terrain_tint_mid"))
+	disc.set("tint_high", apex.get("terrain_tint_high"))
+	var tl: Color = apex.get("terrain_tint_low")
+	var tm: Color = apex.get("terrain_tint_mid")
+	var th: Color = apex.get("terrain_tint_high")
+	var c_lo: Color = disc.call("_vertex_color", 0.0, 0.0)
+	var c_mid: Color = disc.call("_vertex_color", 0.15, 0.0)
+	var c_hi: Color = disc.call("_vertex_color", 0.30, 0.0)
+	_assert(Vector3(c_lo.r - tl.r, c_lo.g - tl.g, c_lo.b - tl.b).length() < 0.002,
+		"#122: anchored ramp t=0 -> tint_low (arena stone)")
+	_assert(Vector3(c_mid.r - tm.r, c_mid.g - tm.g, c_mid.b - tm.b).length() < 0.002,
+		"#122: anchored ramp t=0.5 -> tint_mid (bronze-brown)")
+	_assert(Vector3(c_hi.r - th.r, c_hi.g - th.g, c_hi.b - th.b).length() < 0.002,
+		"#122: anchored ramp t=1 -> tint_high (pale dust)")
+	for t in [plain, disc]:
+		root.remove_child(t)
+		t.free()
 
 
 func _test_save_roundtrip() -> void:
