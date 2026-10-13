@@ -551,6 +551,14 @@ func continue_run(mode: String, slot: int) -> bool:
 		return false
 	if int(run.get("save_version", 0)) != SaveManager.SAVE_VERSION:
 		return false
+	# Issue #111 minor 2: a pre-roster MP save would load but restore
+	# nobody — refuse it with an explicit message instead of silently
+	# starting everyone fresh. The save itself is left untouched;
+	# there is no converter by design (Jesse's ruling).
+	if SaveManager.is_legacy_mp_save(run):
+		push_warning("[Save] Refused legacy MP save in slot %d: predates roster saves" % slot)
+		connection_failed.emit(SaveManager.LEGACY_MP_SAVE_MESSAGE)
+		return false
 	active_run_mode = mode
 	active_run_slot = slot
 	if bool(run.get("is_multiplayer", false)):

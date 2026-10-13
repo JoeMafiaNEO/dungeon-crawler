@@ -58,6 +58,10 @@ const RUNS_DIR := "user://runs"
 const MAX_DYNAMIC_SLOTS := 999
 ## Save format version. Continue refuses saves with a mismatched version.
 const SAVE_VERSION := 1
+## Issue #111 minor 2: player-facing warning for pre-roster MP saves
+## (see is_legacy_mp_save). One shared string so every surface that
+## refuses such a save says exactly the same thing.
+const LEGACY_MP_SAVE_MESSAGE := "This save predates roster saves and can't restore characters."
 
 
 ## List all slot indices that have a save for the given mode, sorted.
@@ -911,6 +915,21 @@ func is_save_compatible(mode: String, slot: int) -> bool:
 	if run.is_empty():
 		return false
 	return int(run.get("save_version", 0)) == SAVE_VERSION
+
+
+## Issue #111 minor 2: a multiplayer save written before roster entries
+## existed carries no roster — it loads fine but restores NOBODY (the
+## continue flow matches joiners against the roster and the host looks
+## up their own entry in it). Current-format producers always write a
+## non-empty roster (the host's own entry at minimum), so an MP run
+## with a missing/empty roster is exactly the legacy shape. Detection
+## only — there is deliberately NO converter for these saves (Jesse's
+## ruling); callers warn with LEGACY_MP_SAVE_MESSAGE instead.
+func is_legacy_mp_save(run: Dictionary) -> bool:
+	if run.is_empty() or not bool(run.get("is_multiplayer", false)):
+		return false
+	var roster: Variant = run.get("roster", [])
+	return not (roster is Array) or (roster as Array).is_empty()
 
 
 ## Human-readable one-line summary for a run dict. Slot context ("Slot 2")

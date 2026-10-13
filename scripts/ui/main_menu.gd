@@ -1077,6 +1077,11 @@ func _on_host_create_pressed() -> void:
 			# Jesse 2026-10-11: LAN host from save — load the save data directly.
 			# (Steam's continue_run needs a lobby; LAN goes straight in.)
 			var run := SaveManager.load_run(SaveManager.MODE_MP, lan_slot)
+			if not run.is_empty() and SaveManager.is_legacy_mp_save(run):
+				# Issue #111 minor 2: a pre-roster save would restore
+				# nobody — say so instead of starting everyone fresh.
+				_on_connection_failed(SaveManager.LEGACY_MP_SAVE_MESSAGE)
+				return
 			if not run.is_empty():
 				NetworkManager.active_run_mode = SaveManager.MODE_MP
 				NetworkManager.active_run_slot = lan_slot

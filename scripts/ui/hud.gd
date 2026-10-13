@@ -1429,6 +1429,75 @@ func _on_quit_pressed() -> void:
 	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
 
 
+## Issue #111 minor 3: the run state a pause-save writes, sampled ONCE
+## from the same sources the save has always used. Returns {} when
+## there is nothing to save from here (neither station nor dungeon).
+## _on_save_quit_pressed writes exactly this dict's values and pushes
+## it into the HUD display via _apply_pause_save_snapshot — one source
+## of truth at save time, so the HUD's seed/level and the save card
+## can't disagree about what was saved.
+func _capture_pause_save_snapshot() -> Dictionary:
+	var snap := {"theme_id": "village", "level_number": 1, "seed": 0,
+		"at_station": false, "wave": 0}
+	var station := get_tree().get_first_node_in_group("station")
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	# Jesse 2026-10-11: use the current scene to decide, not just node
+	# existence — a stale station node can linger after scene changes.
+	var scene_path := str(get_tree().current_scene.scene_file_path) if get_tree().current_scene != null else ""
+	var in_station := scene_path.contains("station") or (station != null and dungeon == null)
+	if in_station and station != null:
+		snap["at_station"] = true
+		var nl := Station.next_level_number
+		# board_destinations() swaps warlord for the APEX ARENA on apex
+		# cycles (issue #5) so the saved next theme agrees with the board.
+		var dests := Dungeon.board_destinations(nl)
+		snap["theme_id"] = dests[(nl - 1) % dests.size()]
+		snap["level_number"] = nl
+		snap["seed"] = int(station.get("departure_seed"))
+	elif dungeon != null:
+		snap["theme_id"] = str(dungeon.get("theme").get("theme_id")) if dungeon.get("theme") != null else "village"
+		snap["level_number"] = int(dungeon.get("level_number"))
+		snap["seed"] = Dungeon.next_seed
+		# Jesse 2026-10-11: save the wave so continuing resumes where you were.
+		var w := int(dungeon.get("wave"))
+		# If mid-wave (active), step back one so the wave restarts fresh.
+		if str(dungeon.get("wave_state")) == "1":  # WaveState.ACTIVE
+			w = maxi(0, w - 1)
+		snap["wave"] = w
+	else:
+		return {}
+	return snap
+
+
+## The seed/level the HUD currently displays for the run. Refreshed
+## ONLY from the pause-save snapshot (issue #111 minor 3) so the
+## display always describes the state the last pause-save wrote.
+var displayed_theme_id := ""
+var displayed_level := 0
+var displayed_seed := 0
+
+
+## Issue #111 minor 3: push a pause-save snapshot into the HUD display.
+## The wave cluster (the visible level display in the dungeon) is
+## re-derived from the snapshot's level/theme, keeping the live wave
+## fields, so what the player sees matches what the save wrote.
+func _apply_pause_save_snapshot(snap: Dictionary) -> void:
+	displayed_theme_id = str(snap.get("theme_id", ""))
+	displayed_level = int(snap.get("level_number", 0))
+	displayed_seed = int(snap.get("seed", 0))
+	if bool(snap.get("at_station", false)):
+		return
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		return
+	var info: Variant = dungeon.get("wave_info")
+	if info is Dictionary and not (info as Dictionary).is_empty():
+		var merged: Dictionary = (info as Dictionary).duplicate()
+		merged["level"] = displayed_level
+		merged["theme_id"] = displayed_theme_id
+		set_wave(merged)
+
+
 ## Save the current run as a save point, then quit to the menu.
 ## Host in multiplayer: saves the full roster. Client: just disconnects.
 ## Station-aware: quitting from the pit-stop saves the NEXT level, exactly
@@ -1439,38 +1508,20 @@ func _on_save_quit_pressed() -> void:
 	if _player == null:
 		_on_quit_pressed()
 		return
-	var theme_id := "village"
-	var level_number := 1
-	var level_seed := 0
-	var at_station := false
-	var wave_number := 0
-	var station := get_tree().get_first_node_in_group("station")
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	# Jesse 2026-10-11: use the current scene to decide, not just node
-	# existence — a stale station node can linger after scene changes.
-	var scene_path := str(get_tree().current_scene.scene_file_path) if get_tree().current_scene != null else ""
-	var in_station := scene_path.contains("station") or (station != null and dungeon == null)
-	if in_station and station != null:
-		at_station = true
-		var nl := Station.next_level_number
-		# board_destinations() swaps warlord for the APEX ARENA on apex
-		# cycles (issue #5) so the saved next theme agrees with the board.
-		var dests := Dungeon.board_destinations(nl)
-		theme_id = dests[(nl - 1) % dests.size()]
-		level_number = nl
-		level_seed = int(station.get("departure_seed"))
-	elif dungeon != null:
-		theme_id = str(dungeon.get("theme").get("theme_id")) if dungeon.get("theme") != null else "village"
-		level_number = int(dungeon.get("level_number"))
-		level_seed = Dungeon.next_seed
-		# Jesse 2026-10-11: save the wave so continuing resumes where you were.
-		wave_number = int(dungeon.get("wave"))
-		# If mid-wave (active), step back one so the wave restarts fresh.
-		if str(dungeon.get("wave_state")) == "1":  # WaveState.ACTIVE
-			wave_number = max(0, wave_number - 1)
-	else:
+	# Issue #111 minor 3: sample the run state ONCE (see
+	# _capture_pause_save_snapshot) — the save below writes exactly
+	# the snapshot, and the HUD display is refreshed from that same
+	# snapshot, so the two can never describe different levels.
+	var snap := _capture_pause_save_snapshot()
+	if snap.is_empty():
 		_on_quit_pressed()
 		return
+	_apply_pause_save_snapshot(snap)
+	var theme_id := str(snap["theme_id"])
+	var level_number := int(snap["level_number"])
+	var level_seed := int(snap["seed"])
+	var at_station := bool(snap["at_station"])
+	var wave_number := int(snap["wave"])
 	if multiplayer.get_peers().size() > 0 and not multiplayer.is_server():
 		# Client: warn that only the host's save persists.
 		_show_quit_confirm("Disconnect? Only the host's save will persist.", _on_quit_pressed)
@@ -1479,7 +1530,9 @@ func _on_save_quit_pressed() -> void:
 		# Host: multiplayer save with roster collection (async, then quit).
 		# Issue #70: LAN has no saves — skip straight to quit.
 		if NetworkManager.transport != NetworkManager.Transport.LAN:
-			var saver = station if in_station and station != null else dungeon
+			var station := get_tree().get_first_node_in_group("station")
+			var dungeon := get_tree().get_first_node_in_group("dungeon")
+			var saver = station if at_station and station != null else dungeon
 			saver.save_multiplayer_run(theme_id, level_number, level_seed)
 			# save_multiplayer_run waits 3s for clients; quit after.
 			await get_tree().create_timer(3.5).timeout

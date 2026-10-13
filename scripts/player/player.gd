@@ -4595,6 +4595,12 @@ const STATE_KEYS: Array[String] = [
 var _state_extras: Dictionary = {}
 
 
+## Issue #111 minor 1: inventory entries the most recent apply_state
+## dropped because their item id no longer resolves in ItemDB
+## ([{"id": String, "count": int}]). Empty when the restore was clean.
+var last_restore_dropped: Array = []
+
+
 func _deep_dup(v: Variant) -> Variant:
 	if v is Dictionary:
 		return (v as Dictionary).duplicate(true)
@@ -4676,6 +4682,7 @@ func apply_state(s: Dictionary) -> void:
 	second_wind_used = bool(s.get("second_wind_used", false))
 	_apply_equipped_special()
 	inventory.clear()
+	last_restore_dropped.clear()
 	var raw_inv: Array = s.get("inventory", [])
 	# Issue #104 Phase 1: a state is NEW-format when its entries carry the
 	# "slot" key at all (even all-empty — a player who deliberately
@@ -4704,6 +4711,15 @@ func apply_state(s: Dictionary) -> void:
 					claimed[want] = true
 			inventory.append({"item": item, "count": maxi(1, int(e.get("count", 1))),
 				"equipped_slot": marker})
+		else:
+			# Issue #111 minor 1: the id no longer resolves (item removed
+			# or renamed between versions, DLC absent). The stack is
+			# still dropped — it can't be instantiated — but never
+			# silently: log it, collect it, and toast after the restore.
+			var drop_id := str(e.get("id", ""))
+			var drop_count := maxi(1, int(e.get("count", 1)))
+			last_restore_dropped.append({"id": drop_id, "count": drop_count})
+			push_warning("[Restore] Dropped unknown item '%s' x%d (not in ItemDB)" % [drop_id, drop_count])
 	if not has_markers and not raw_inv.is_empty():
 		_migrate_auto_equip()
 	alive = true
@@ -4718,6 +4734,10 @@ func apply_state(s: Dictionary) -> void:
 		hud.refresh_inventory(self)
 		hud.refresh_loadout(self)
 		hud.refresh_stats()
+	# Issue #111 minor 1: one-line player notice when the restore
+	# dropped stacks (see last_restore_dropped).
+	if not last_restore_dropped.is_empty() and hud != null:
+		hud.show_toast("Some items could not be restored")
 
 
 ## Forfeit restore (Station Annex Phase 4): roll progression back to the

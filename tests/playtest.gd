@@ -156,6 +156,9 @@ func _run() -> void:
 	_test_character_panel_phase2()
 	_test_fishing_rod_phase3()
 	_test_class_tagging_phase4()
+	_test_111_minor_restore_drops()
+	_test_111_minor_legacy_mp_save()
+	_test_111_minor_pause_save_snapshot()
 
 	_print_results()
 	quit()
@@ -2959,7 +2962,9 @@ func _test_mp_save_bughunt() -> void:
 	# documented the bug's presence (dead "disconnected" stamp + replica
 	# snapshot); they now assert the fixed behavior. M-1 evidence is
 	# likewise flipped (issue #106, Eng 3), as is M-2 (issue #107,
-	# Eng 4). M-3 evidence below is unchanged — still open at the time.
+	# Eng 4). (M-3 itself is FIXED — issue #108, see its block below;
+	# this header previously claimed all three were still open, which
+	# contradicted that block.)
 	_assert(not dsrc.contains("entry[\"disconnected\"] = true"),
 		"bughunt: timeout entries are NOT stamped disconnected (C-1 fixed)")
 	_assert(dsrc.count("\"disconnected\"") == 0,
@@ -9372,3 +9377,209 @@ func _test_station_roster_carry_forward() -> void:
 	SM.set("_test_runs_dir", "")
 	SM.set("_test_account_pin", "")
 	print("[Playtest] station roster carry-forward done")
+
+
+## Stub dungeon node for the issue #111 minor-3 snapshot test: carries
+## exactly the fields HUD._capture_pause_save_snapshot samples.
+class PauseSaveDungeonStub extends Node:
+	var theme: Variant = {"theme_id": "misty_docks"}
+	var level_number := 4
+	var wave := 3
+	var wave_state := 0
+	var wave_info := {"wave": 3, "total": 5, "level": 4, "theme_name": "Misty Docks",
+		"theme_id": "misty_docks", "state": 0, "time_left": 8.0, "mobs_left": 0,
+		"keys_found": 0, "keys_needed": 0}
+
+
+## Stub station node for the issue #111 minor-3 snapshot test.
+class PauseSaveStationStub extends Node:
+	var departure_seed := 987654
+
+
+func _test_111_minor_restore_drops() -> void:
+	print("[Playtest] Issue #111 minor 1: unknown-item restore drops...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	hud._player = p
+	p.hud = hud
+	_assert(ItemDBNode.get_item("health_potion") != null, "111-1: fixture item resolves")
+	# Mixed restore: one valid stack, two ids that no longer resolve.
+	p.apply_state({"inventory": [
+		{"id": "health_potion", "count": 4},
+		{"id": "gone_item_111", "count": 3},
+		{"id": "also_gone_111", "count": 7},
+	]})
+	_assert(p.inventory.size() == 1, "111-1: valid stack restores, unknown stacks dropped")
+	_assert(int(p.inventory[0]["count"]) == 4, "111-1: valid stack count intact")
+	var drops: Array = p.last_restore_dropped
+	_assert(drops.size() == 2, "111-1: both dropped entries collected (no silent loss)")
+	_assert(str(drops[0].get("id", "")) == "gone_item_111" and int(drops[0].get("count", 0)) == 3,
+		"111-1: first drop records id + count")
+	_assert(str(drops[1].get("id", "")) == "also_gone_111" and int(drops[1].get("count", 0)) == 7,
+		"111-1: second drop records id + count")
+	# The player-facing notice fires through the restore flow's toast.
+	var toast_label = hud.find_child("ToastLabel", true, false)
+	_assert(toast_label != null and str(toast_label.text) == "Some items could not be restored",
+		"111-1: restore notice toasted to the player")
+	# Clean restore: restores exactly as before, drop record cleared.
+	p.apply_state({"inventory": [{"id": "health_potion", "count": 2}]})
+	_assert(p.inventory.size() == 1 and int(p.inventory[0]["count"]) == 2,
+		"111-1: clean restore still exact")
+	_assert(p.last_restore_dropped.is_empty(), "111-1: clean restore leaves an empty drop record")
+	p.hud = null
+	root.remove_child(p)
+	p.free()
+	hud.queue_free()
+	print("[Playtest] 111 minor 1 done")
+
+
+func _test_111_minor_legacy_mp_save() -> void:
+	print("[Playtest] Issue #111 minor 2: legacy MP saves warn, restore nobody...")
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var scratch := "user://runs_111_minor_test"
+	if DirAccess.dir_exists_absolute(scratch):
+		for f in DirAccess.get_files_at(scratch):
+			DirAccess.remove_absolute(scratch.path_join(f))
+		DirAccess.remove_absolute(scratch)
+	# --- Detection (pure dict shape + slot round-trip on a fresh mgr).
+	var mgr = SaveScript.new()
+	mgr.set("_test_runs_dir", scratch)
+	mgr.set("_test_account_pin", "minor111_scratch")
+	var legacy := {"is_multiplayer": true, "theme_id": "village", "level_number": 3,
+		"seed": 777, "class_id": "mage", "player_state": {"level": 5, "inventory": []}}
+	_assert(mgr.is_legacy_mp_save(legacy), "111-2: pre-roster MP dict detected as legacy")
+	var current := {"is_multiplayer": true, "theme_id": "village", "level_number": 3,
+		"seed": 777, "class_id": "mage", "player_state": {"level": 5},
+		"roster": [{"steam_id": 76561198000000001, "class_id": "mage",
+			"player_state": {"level": 5}}]}
+	_assert(not mgr.is_legacy_mp_save(current), "111-2: roster MP dict is not legacy")
+	_assert(not mgr.is_legacy_mp_save({"is_multiplayer": false, "class_id": "mage",
+		"player_state": {"level": 5}}), "111-2: solo dict is not legacy")
+	_assert(not mgr.is_legacy_mp_save({}), "111-2: empty dict is not legacy")
+	mgr.save_run(legacy, SaveScript.MODE_MP, 0)
+	var loaded: Dictionary = mgr.load_run(SaveScript.MODE_MP, 0)
+	_assert(not loaded.is_empty(), "111-2: legacy MP save still loads from its slot")
+	_assert(mgr.is_legacy_mp_save(loaded), "111-2: loaded legacy MP save still detected")
+	mgr.free()
+	# --- Continue path: the real NetworkManager refuses with the
+	# explicit message and stashes NOTHING for restore (no partial
+	# restore, no silent fresh start).
+	var sm = root.get_node("SaveManager")
+	var nm = root.get_node("NetworkManager")
+	sm.set("_test_runs_dir", scratch)
+	sm.save_run(legacy, SaveScript.MODE_MP, 0)
+	var captured: Array = []
+	var cb := func(reason: String) -> void:
+		captured.append(reason)
+	nm.connection_failed.connect(cb)
+	var prev_roster: Array = DungeonScript.continued_roster
+	var prev_saved: Dictionary = DungeonScript.saved_player_state
+	DungeonScript.continued_roster = [{"sentinel": 1}]
+	DungeonScript.saved_player_state = {"sentinel": 2}
+	var ok: bool = nm.continue_run(SaveScript.MODE_MP, 0)
+	_assert(not ok, "111-2: continue_run refuses a legacy MP save")
+	_assert(captured.size() == 1 and str(captured[0]) == SaveScript.LEGACY_MP_SAVE_MESSAGE,
+		"111-2: explicit legacy message surfaced via connection_failed")
+	_assert((DungeonScript.continued_roster as Array).size() == 1
+		and int((DungeonScript.continued_roster[0] as Dictionary).get("sentinel", 0)) == 1,
+		"111-2: no roster stashed (no partial restore)")
+	_assert(int((DungeonScript.saved_player_state as Dictionary).get("sentinel", 0)) == 2,
+		"111-2: no player state stashed (no partial restore)")
+	nm.connection_failed.disconnect(cb)
+	DungeonScript.continued_roster = prev_roster
+	DungeonScript.saved_player_state = prev_saved
+	sm.set("_test_runs_dir", "")
+	for f in DirAccess.get_files_at(scratch):
+		DirAccess.remove_absolute(scratch.path_join(f))
+	DirAccess.remove_absolute(scratch)
+	print("[Playtest] 111 minor 2 done")
+
+
+func _test_111_minor_pause_save_snapshot() -> void:
+	print("[Playtest] Issue #111 minor 3: pause-save snapshot = HUD display...")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var StationScript = load("res://scripts/station/station.gd")
+	# Group hygiene: park any pre-existing dungeon/station nodes so the
+	# snapshot samples ONLY this rig; restored at the end.
+	var parked_dungeons: Array = get_nodes_in_group("dungeon")
+	for n in parked_dungeons:
+		n.remove_from_group("dungeon")
+	var parked_stations: Array = get_nodes_in_group("station")
+	for n in parked_stations:
+		n.remove_from_group("station")
+	current_scene = null
+	var prev_next_seed: int = DungeonScript.next_seed
+	var prev_station_level: int = StationScript.next_level_number
+	DungeonScript.next_seed = 424242
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	# --- Dungeon branch: one sample of the live dungeon + handoff seed.
+	var stub := PauseSaveDungeonStub.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+	var snap: Dictionary = hud._capture_pause_save_snapshot()
+	_assert(str(snap.get("theme_id", "")) == "misty_docks", "111-3: snapshot theme from the live dungeon")
+	_assert(int(snap.get("level_number", 0)) == 4, "111-3: snapshot level from the live dungeon")
+	_assert(int(snap.get("seed", 0)) == 424242, "111-3: snapshot seed = Dungeon.next_seed (what the save writes)")
+	_assert(not bool(snap.get("at_station", true)), "111-3: dungeon snapshot is not a station save")
+	_assert(int(snap.get("wave", -1)) == 3, "111-3: snapshot wave from the live dungeon")
+	# The mid-wave step-back rides along in the snapshot.
+	stub.wave_state = 1
+	var snap_active: Dictionary = hud._capture_pause_save_snapshot()
+	_assert(int(snap_active.get("wave", -1)) == 2, "111-3: mid-wave snapshot steps the wave back one")
+	stub.wave_state = 0
+	# --- Applying the snapshot makes the HUD display THOSE values.
+	hud._apply_pause_save_snapshot(snap)
+	_assert(hud.displayed_level == 4 and hud.displayed_seed == 424242
+		and hud.displayed_theme_id == "misty_docks",
+		"111-3: HUD displayed seed/level == snapshot after apply")
+	var wave_label = hud.find_child("WaveLabel", true, false)
+	_assert(wave_label != null and str(wave_label.text).begins_with("Lv 4 · Misty Docks"),
+		"111-3: wave label re-derived from the snapshot")
+	# --- Station branch: no dungeon node -> the station's next level.
+	root.remove_child(stub)
+	stub.free()
+	var sstub := PauseSaveStationStub.new()
+	root.add_child(sstub)
+	sstub.add_to_group("station")
+	StationScript.next_level_number = 6
+	var ssnap: Dictionary = hud._capture_pause_save_snapshot()
+	_assert(bool(ssnap.get("at_station", false)), "111-3: station snapshot flagged at_station")
+	_assert(int(ssnap.get("level_number", 0)) == 6, "111-3: station snapshot level = Station.next_level_number")
+	_assert(int(ssnap.get("seed", 0)) == 987654, "111-3: station snapshot seed = departure_seed")
+	var dests6: Array = DungeonScript.board_destinations(6)
+	_assert(str(ssnap.get("theme_id", "")) == str(dests6[(6 - 1) % dests6.size()]),
+		"111-3: station snapshot theme = board destination")
+	hud._apply_pause_save_snapshot(ssnap)
+	_assert(hud.displayed_level == 6 and hud.displayed_seed == 987654,
+		"111-3: HUD display follows the station snapshot")
+	root.remove_child(sstub)
+	sstub.free()
+	# --- Source pins: the save handler writes the snapshot itself
+	# (the async quit shell can't be driven headless; same pattern the
+	# PF2 tests use for save producers).
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("var snap := _capture_pause_save_snapshot()"),
+		"111-3: save & quit samples via the snapshot")
+	_assert(hsrc.contains("_apply_pause_save_snapshot(snap)"),
+		"111-3: save & quit refreshes the display from the snapshot")
+	_assert(hsrc.contains("var level_seed := int(snap[\"seed\"])")
+		and hsrc.contains("solo_base[\"seed\"] = level_seed"),
+		"111-3: the written seed comes from the snapshot")
+	# --- Cleanup: restore statics, groups, scene.
+	DungeonScript.next_seed = prev_next_seed
+	StationScript.next_level_number = prev_station_level
+	hud.queue_free()
+	for n in parked_dungeons:
+		n.add_to_group("dungeon")
+	for n in parked_stations:
+		n.add_to_group("station")
+	print("[Playtest] 111 minor 3 done")
