@@ -64,8 +64,27 @@ extends Resource
 @export var has_farm_plots: bool = false
 
 # --- Heightmap terrain (issue #103) ---
-## When true, the dungeon builds true heightmap terrain (gentle marsh
-## profile) instead of the flat floor. The terrain conforms to the
-## generated layout — ProcGen placement and RNG draw order are untouched,
-## and heights derive deterministically from the level seed on every peer.
+## When true, the dungeon builds true heightmap terrain instead of the
+## flat floor. The terrain conforms to the generated layout — ProcGen
+## placement and RNG draw order are untouched, and heights derive
+## deterministically from the level seed on every peer.
 @export var use_heightmap_terrain: bool = false
+## Terrain profile (issue #118: parameterized out of dungeon.gd's
+## _build_terrain, where the Misty Docks constants used to be hardcoded).
+## The defaults ARE the docks profile, so a theme that only flips
+## use_heightmap_terrain gets the proven marsh behavior; each opted-in
+## theme's .tres carries its own profile explicitly.
+@export var terrain_amplitude: float = 1.0
+@export var terrain_noise_frequency: float = 0.045
+@export var terrain_height_offset: float = 0.55
+## Parked below the terrain minimum on dry themes: no water anywhere
+## (ponds exist only where the layout carves them — see pond_depth).
+@export var terrain_water_level: float = -0.10
+@export var terrain_pond_depth: float = 0.5
+@export var terrain_smooth_passes: int = 2
+@export var terrain_flatten_radius: float = 5.0
+## Vertex-color palette: bed (under water), then low/mid/high bands.
+@export var terrain_tint_bed: Color = Color(0.23, 0.22, 0.16)
+@export var terrain_tint_low: Color = Color(0.16, 0.23, 0.17)
+@export var terrain_tint_mid: Color = Color(0.26, 0.25, 0.19)
+@export var terrain_tint_high: Color = Color(0.32, 0.32, 0.33)

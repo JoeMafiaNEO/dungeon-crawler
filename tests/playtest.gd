@@ -165,6 +165,7 @@ func _run() -> void:
 	_test_111_minor_restore_drops()
 	_test_111_minor_legacy_mp_save()
 	_test_111_minor_pause_save_snapshot()
+	_test_village_terrain_118()
 
 	_print_results()
 	quit()
@@ -464,6 +465,118 @@ func _test_rts_squad_reorder_no_leak() -> void:
 		n.free()
 	root.remove_child(mgr)
 	mgr.free()
+
+
+func _test_village_terrain_118() -> void:
+	print("[Playtest] Village terrain + parameterized profile (#118)...")
+	# Issue #118 (S1 of the #103 full integration): _build_terrain's
+	# hardcoded misty-docks profile moved into LevelTheme terrain
+	# exports; docks carries its constants verbatim (byte-identical —
+	# the builder's before/after heightfield-SHA probes pin that), and
+	# village opts in with a dry rolling-farmland profile.
+	var village: Resource = load("res://data/levels/theme_village.tres")
+	var docks: Resource = load("res://data/levels/theme_misty_docks.tres")
+	_assert(village != null and docks != null, "#118: village + docks themes load")
+	if village == null or docks == null:
+		return
+	# Village profile per the issue spec.
+	_assert(bool(village.get("use_heightmap_terrain")), "#118: village use_heightmap_terrain on")
+	_assert(absf(float(village.get("terrain_amplitude")) - 1.6) < 0.0001, "#118: village amp 1.6")
+	_assert(absf(float(village.get("terrain_noise_frequency")) - 0.030) < 0.00001, "#118: village freq 0.030")
+	_assert(absf(float(village.get("terrain_height_offset")) - 0.80) < 0.0001, "#118: village offset +0.80")
+	_assert(absf(float(village.get("terrain_water_level")) - (-1.0)) < 0.0001, "#118: village water parked -1.00 (dry)")
+	_assert(int(village.get("terrain_smooth_passes")) == 2, "#118: village smooth 2")
+	_assert(absf(float(village.get("terrain_flatten_radius")) - 5.0) < 0.0001, "#118: village flatten 5.0")
+	_assert(village.get("terrain_tint_low") == Color(0.3, 0.52, 0.22), "#118: village tint low = grass green")
+	_assert(village.get("terrain_tint_mid") == Color(0.52, 0.42, 0.26), "#118: village tint mid = field brown")
+	_assert(village.get("terrain_tint_high") == Color(0.76, 0.7, 0.45), "#118: village tint high = pale dry grass")
+	# Docks profile: the formerly hardcoded constants, verbatim.
+	_assert(bool(docks.get("use_heightmap_terrain")), "#118: docks use_heightmap_terrain on")
+	_assert(absf(float(docks.get("terrain_amplitude")) - 1.0) < 0.0001, "#118: docks amp 1.0 verbatim")
+	_assert(absf(float(docks.get("terrain_noise_frequency")) - 0.045) < 0.00001, "#118: docks freq 0.045 verbatim")
+	_assert(absf(float(docks.get("terrain_height_offset")) - 0.55) < 0.0001, "#118: docks offset +0.55 verbatim")
+	_assert(absf(float(docks.get("terrain_water_level")) - (-0.10)) < 0.0001, "#118: docks water -0.10 verbatim")
+	_assert(absf(float(docks.get("terrain_pond_depth")) - 0.5) < 0.0001, "#118: docks pond depth 0.5 verbatim")
+	_assert(int(docks.get("terrain_smooth_passes")) == 2, "#118: docks smooth 2 verbatim")
+	_assert(absf(float(docks.get("terrain_flatten_radius")) - 5.0) < 0.0001, "#118: docks flatten 5.0 verbatim")
+	_assert(docks.get("terrain_tint_bed") == Color(0.23, 0.22, 0.16), "#118: docks tint bed verbatim")
+	_assert(docks.get("terrain_tint_low") == Color(0.16, 0.23, 0.17), "#118: docks tint low verbatim")
+	_assert(docks.get("terrain_tint_mid") == Color(0.26, 0.25, 0.19), "#118: docks tint mid verbatim")
+	_assert(docks.get("terrain_tint_high") == Color(0.32, 0.32, 0.33), "#118: docks tint high verbatim")
+	# LevelTheme defaults: flag off, and the docks profile as the safe
+	# default (a theme that only flips the flag gets proven behavior).
+	var LT = load("res://scripts/procgen/level_theme.gd")
+	var fresh = LT.new()
+	_assert(not bool(fresh.get("use_heightmap_terrain")), "#118: default theme stays flat")
+	_assert(absf(float(fresh.get("terrain_amplitude")) - 1.0) < 0.0001
+		and absf(float(fresh.get("terrain_water_level")) - (-0.10)) < 0.0001,
+		"#118: default terrain profile = docks profile")
+	# (fresh is a RefCounted Resource — no free(); it scopes out.)
+	# Parameterization wiring: _build_terrain reads every profile field
+	# from the active theme (source pins, the #116 pattern).
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var bstart := dsrc.find("func _build_terrain(")
+	_assert(bstart >= 0, "#118: _build_terrain found in dungeon.gd")
+	if bstart >= 0:
+		var bend := dsrc.find("\nfunc ", bstart + 10)
+		var body := dsrc.substr(bstart, (bend - bstart) if bend > bstart else 6000)
+		for field in ["terrain_noise_frequency", "terrain_amplitude", "terrain_height_offset",
+				"terrain_water_level", "terrain_pond_depth", "terrain_smooth_passes",
+				"terrain_flatten_radius", "terrain_tint_bed", "terrain_tint_low",
+				"terrain_tint_mid", "terrain_tint_high"]:
+			_assert(body.contains("theme." + field), "#118: _build_terrain reads theme.%s" % field)
+	# Layout fingerprints: deterministic for every theme x the gate
+	# seed set, and seed-sensitive for village. Terrain never feeds
+	# back into layout (ProcGen reads no terrain profile field).
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var seed_set := [1, 777, 424242, 20261012]
+	var village_fps := {}
+	for tid in ["village", "supermarket", "dungeon", "depths", "apex", "warlord", "misty_docks"]:
+		var th: Resource = load("res://data/levels/theme_%s.tres" % tid)
+		for s in seed_set:
+			var l1 = ProcGenScript.generate(th, s)
+			var l2 = ProcGenScript.generate(th, s)
+			_assert(l1.fingerprint() == l2.fingerprint(),
+				"#118: %s layout deterministic (seed %d)" % [tid, s])
+			if tid == "village":
+				village_fps[l1.fingerprint()] = true
+	_assert(village_fps.size() == seed_set.size(), "#118: village layouts differ across seeds")
+	# Bare-terrain behavior with the village profile (HeightmapTerrain
+	# names no autoloads, so it compiles in this suite): dry by
+	# construction, heights inside the design range, grade in budget.
+	var HT = load("res://scripts/terrain/heightmap_terrain.gd")
+	var t = HT.new()
+	root.add_child(t)
+	t.set("map_points", 65)
+	t.set("cell_size", 1.0)
+	t.set("terrain_seed", 424242)
+	t.set("noise_frequency", float(village.get("terrain_noise_frequency")))
+	t.set("amplitude", float(village.get("terrain_amplitude")))
+	t.set("height_offset", float(village.get("terrain_height_offset")))
+	t.set("water_level", float(village.get("terrain_water_level")))
+	t.set("pond_depth", float(village.get("terrain_pond_depth")))
+	t.set("smooth_passes", int(village.get("terrain_smooth_passes")))
+	t.set("flatten_radius", float(village.get("terrain_flatten_radius")))
+	t.generate()
+	var heights: PackedFloat32Array = t.heights_copy()
+	var mn := 1e9
+	var mx := -1e9
+	var wet := 0
+	for h in heights:
+		mn = minf(mn, h)
+		mx = maxf(mx, h)
+		if h < float(village.get("terrain_water_level")):
+			wet += 1
+	_assert(mn >= -0.001 and mx <= 1.601,
+		"#118: village heights in [0, 1.6] design range (%.3f..%.3f)" % [mn, mx])
+	_assert(wet == 0, "#118: village terrain dry — zero sub-water heights (min %.3f)" % mn)
+	var max_g := 0.0
+	for gz in range(1, 64):
+		for gx in range(1, 64):
+			max_g = maxf(max_g, float(t.call("_slope_at", gx, gz)))
+	_assert(max_g <= 0.55, "#118: village bare-terrain max grade %.1f%% <= 55%%" % (max_g * 100.0))
+	root.remove_child(t)
+	t.free()
 
 
 func _test_save_roundtrip() -> void:

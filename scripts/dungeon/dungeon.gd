@@ -208,8 +208,8 @@ var wave_info := {"wave": 0, "total": TOTAL_WAVES, "level": 1, "theme_name": "",
 
 var _layout: LevelLayout
 ## Issue #103: heightmap terrain instance when the theme opts in via
-## LevelTheme.use_heightmap_terrain (misty docks only). Null on every
-## flat-floor theme, where ground_height_at() is the old constant 0.0.
+## LevelTheme.use_heightmap_terrain. Null on every flat-floor theme,
+## where ground_height_at() is the old constant 0.0.
 var _terrain: HeightmapTerrain = null
 var _mob_mix_sorted: Array[Dictionary] = []
 var _server_rng := RandomNumberGenerator.new()
@@ -2756,9 +2756,10 @@ func _min_ground_height(center: Vector3, half_size: float) -> float:
 	return m
 
 
-## Issue #103: true heightmap terrain for opt-in themes (misty docks).
-## Gentle marsh: low-amplitude noise lifted so its whole range sits
-## above the water plane — only the layout's carved ponds become water.
+## Issue #103: true heightmap terrain for opt-in themes. The profile
+## (amplitude, frequency, offset, water, palette) comes from the theme
+## (issue #118 — previously the misty docks constants were hardcoded
+## here; they now live in theme_misty_docks.tres, values unchanged).
 ## The terrain conforms to the generated layout (ProcGen placement and
 ## RNG untouched) and the noise seed derives from the level seed, so
 ## every peer builds identical heights locally; no new network state.
@@ -2769,18 +2770,18 @@ func _build_terrain() -> void:
 	_terrain.map_points = int(round(extent)) + 1 # 1.0m cells
 	_terrain.cell_size = 1.0
 	_terrain.terrain_seed = next_seed
-	_terrain.noise_frequency = 0.045
-	_terrain.amplitude = 1.0
-	_terrain.height_offset = 0.55
-	_terrain.water_level = -0.10
-	_terrain.pond_depth = 0.5
-	_terrain.smooth_passes = 2
-	_terrain.flatten_radius = 5.0
-	# Marsh palette in the spirit of the mock docks (dark, muted).
-	_terrain.tint_bed = Color(0.23, 0.22, 0.16)
-	_terrain.tint_low = Color(0.16, 0.23, 0.17)
-	_terrain.tint_mid = Color(0.26, 0.25, 0.19)
-	_terrain.tint_high = Color(0.32, 0.32, 0.33)
+	_terrain.noise_frequency = theme.terrain_noise_frequency
+	_terrain.amplitude = theme.terrain_amplitude
+	_terrain.height_offset = theme.terrain_height_offset
+	_terrain.water_level = theme.terrain_water_level
+	_terrain.pond_depth = theme.terrain_pond_depth
+	_terrain.smooth_passes = theme.terrain_smooth_passes
+	_terrain.flatten_radius = theme.terrain_flatten_radius
+	# Vertex palette from the theme profile.
+	_terrain.tint_bed = theme.terrain_tint_bed
+	_terrain.tint_low = theme.terrain_tint_low
+	_terrain.tint_mid = theme.terrain_tint_mid
+	_terrain.tint_high = theme.terrain_tint_high
 	# POI flattening: the spawn clearing, every farm plot, the merchant.
 	for s in _layout.player_spawns:
 		_terrain.poi_points.append(s)
