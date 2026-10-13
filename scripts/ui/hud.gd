@@ -981,8 +981,6 @@ func _refresh_bounty_tracker() -> void:
 	_bounty_tracker.text = txt
 	_bounty_tracker.visible = not txt.is_empty()
 
-	vault_open = true
-
 
 func _vault_card(sid: String) -> Control:
 	var data := SpecialData.get_special(sid)

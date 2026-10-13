@@ -148,6 +148,25 @@ func _process(delta: float) -> void:
 func rpc_order_move_squad(unit_ids: Array, target: Vector3) -> void:
 	if not multiplayer.is_server():
 		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0:
+		# Server-authority (bug sweep 2026-10-13): a remote peer may only
+		# move units of factions it owns — mirrors RTSUnit._owns_me().
+		# Previously any client could order ANY player's squad by id.
+		# Local calls (sender 0: server itself, AI) skip the filter.
+		var wanted := {}
+		for id in unit_ids:
+			wanted[int(id)] = true
+		var owned: Array = []
+		for n in get_tree().get_nodes_in_group("rts_units"):
+			var u := n as RTSUnit
+			if u != null and wanted.has(u.unit_id):
+				var owner := int(faction_peers.get(u.faction, -2))
+				if owner == sender or owner == -1:
+					owned.append(u.unit_id)
+		unit_ids = owned
+		if unit_ids.is_empty():
+			return
 	order_move_squad(unit_ids, target)
 
 
