@@ -7996,21 +7996,53 @@ func _test_dock_economy_phase4() -> void:
 	_assert(spot._bait_this_cast, "bait: armed for this cast's roll")
 	spot._end_session()
 	_assert(not spot._bait_this_cast, "bait: cleared on session end")
-	# Statistical shift: baited rolls beat baseline rolls toward rare.
-	spot._wait_duration = 5.5 # mid-range wait for both samples
-	var base_hit := 0
-	for i in 400:
-		spot._bait_this_cast = false
-		var rid: String = spot._roll_catch_item()
-		if rid != "fish_minnow":
-			base_hit += 1
-	var bait_hit := 0
-	for i in 400:
-		spot._bait_this_cast = true
-		var rid2: String = spot._roll_catch_item()
-		if rid2 != "fish_minnow":
-			bait_hit += 1
-	_assert(bait_hit > base_hit + 20, "bait: rare shift (base %d vs baited %d)" % [base_hit, bait_hit])
+	# Bait shift, pinned DETERMINISTICALLY (issue #115). The old pin
+	# sampled 400 rolls per side and asserted bait_hit > base_hit + 20:
+	# at wait 5.5 (t = 0.5) the not-minnow rates are 0.425 vs 0.575, so
+	# the expected gap is 60 with sigma ~14 — the +20 threshold sat only
+	# ~2.9 sigma below the mean gap, a ~0.2%-per-run flake by
+	# construction (it fired once at 3194/1). A wider threshold would
+	# still be a coin flip, just a slower one. Instead, force the roll
+	# (debug_catch_roll, the p5 pattern) at the band edges the shift
+	# moves: at t = 0.5 the unbaited not-minnow edge is 0.425, the
+	# baited edge is 0.425 + BAIT_RARE_SHIFT (0.15) = 0.575; the rare
+	# edges are 0.125 / 0.275 and the legendary edges 0.03 / 0.18.
+	spot._wait_duration = 5.5 # t = 0.5 for every probe below
+	var shift_consts: Dictionary = EconScript.get_script_constant_map()
+	_assert(is_equal_approx(float(shift_consts.get("BAIT_RARE_SHIFT", -1.0)), 0.15),
+		"bait: BAIT_RARE_SHIFT rate constant is 0.15 (wiring pin, #115)")
+	# Roll 0.50: inside the shifted band only — minnow unbaited,
+	# riverbass baited. The mechanism in one pair.
+	SpotScript.debug_catch_roll = 0.50
+	spot._bait_this_cast = false
+	_assert(spot._roll_catch_item() == "fish_minnow", "bait: roll 0.50 unbaited = minnow (#115)")
+	spot._bait_this_cast = true
+	_assert(spot._roll_catch_item() == "fish_riverbass", "bait: roll 0.50 baited = riverbass (shift flips the band, #115)")
+	# Roll 0.20: the rare band edge moves the same way.
+	SpotScript.debug_catch_roll = 0.20
+	spot._bait_this_cast = false
+	_assert(spot._roll_catch_item() == "fish_riverbass", "bait: roll 0.20 unbaited = riverbass (#115)")
+	spot._bait_this_cast = true
+	_assert(spot._roll_catch_item() == "fish_glimmerfin", "bait: roll 0.20 baited = glimmerfin (rare edge shifted, #115)")
+	# Roll 0.10: the legendary edge shifts too.
+	SpotScript.debug_catch_roll = 0.10
+	spot._bait_this_cast = false
+	_assert(spot._roll_catch_item() == "fish_glimmerfin", "bait: roll 0.10 unbaited = glimmerfin (#115)")
+	spot._bait_this_cast = true
+	_assert(spot._roll_catch_item() == "fish_starleaper", "bait: roll 0.10 baited = starleaper (legendary edge shifted, #115)")
+	# Roll 0.60: above even the baited edge — the shift is bounded.
+	SpotScript.debug_catch_roll = 0.60
+	spot._bait_this_cast = false
+	_assert(spot._roll_catch_item() == "fish_minnow", "bait: roll 0.60 unbaited = minnow (#115)")
+	spot._bait_this_cast = true
+	_assert(spot._roll_catch_item() == "fish_minnow", "bait: roll 0.60 baited = minnow (shift is bounded, #115)")
+	# Roll 0.02: below both legendary edges — anchor.
+	SpotScript.debug_catch_roll = 0.02
+	spot._bait_this_cast = false
+	_assert(spot._roll_catch_item() == "fish_starleaper", "bait: roll 0.02 unbaited = starleaper (#115)")
+	spot._bait_this_cast = true
+	_assert(spot._roll_catch_item() == "fish_starleaper", "bait: roll 0.02 baited = starleaper (#115)")
+	SpotScript.debug_catch_roll = -1.0
 	_assert(not spot._bait_this_cast, "bait: flag consumed by the roll")
 	# --- Wave buff: usable in "later levels", expires after N waves ---
 	var didx := -1
