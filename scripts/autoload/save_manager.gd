@@ -239,9 +239,64 @@ func _cloud_sync_down() -> void:
 	if not _cloud_available():
 		return
 	_cloud_fetch(_profile_path_for(_profile_account))
+	var fetched := {}
 	for mode in [MODE_SOLO, MODE_MP]:
 		for slot in list_slots(mode):
-			_cloud_fetch(_slot_path(mode, slot))
+			var path := _slot_path(mode, slot)
+			fetched[path] = true
+			_cloud_fetch(path)
+	# Issue #107 (M-2): also fetch slot files that exist ONLY in the
+	# cloud. list_slots() scans the LOCAL directory, so on a fresh
+	# device (new install, wiped profile) it returns nothing and no run
+	# was ever fetched — cross-device continue silently showed zero
+	# runs. Enumerate the cloud's own file list and fetch every remote
+	# slot file as well. _cloud_fetch's tombstone guard (size <= 0)
+	# still applies, so cleared saves are never resurrected.
+	for path in _remote_slot_paths(_cloud_file_names()):
+		if not fetched.has(path):
+			_cloud_fetch(path)
+
+
+## Names of every file stored in Steam Cloud (RemoteStorage
+## enumeration: getFileCount + getFileNameAndSize).
+func _cloud_file_names() -> Array:
+	var names: Array = []
+	var count := int(Steam.getFileCount())
+	for i in count:
+		var info: Dictionary = Steam.getFileNameAndSize(i)
+		var n := str(info.get("name", ""))
+		if n != "":
+			names.append(n)
+	return names
+
+
+## Map cloud file names to local slot paths. Cloud names are the
+## user://-relative names _cloud_write stored ("runs/<mode>_<slot>.cfg").
+## Anything that is not a well-formed slot file (profile, settings,
+## foreign files) is ignored, and local paths are rebuilt through
+## _slot_path so mode/slot validation and the test scratch dir behave
+## exactly like local enumeration.
+func _remote_slot_paths(remote_names: Array) -> Array:
+	var out: Array = []
+	var seen := {}
+	var prefix := _relative(RUNS_DIR) + "/"
+	for raw in remote_names:
+		var rel := str(raw)
+		if not rel.begins_with(prefix) or not rel.ends_with(".cfg"):
+			continue
+		var stem := rel.trim_prefix(prefix).trim_suffix(".cfg")
+		var cut := stem.rfind("_")
+		if cut <= 0:
+			continue
+		var mode := stem.substr(0, cut)
+		var slot_str := stem.substr(cut + 1)
+		if (mode != MODE_SOLO and mode != MODE_MP) or not slot_str.is_valid_int():
+			continue
+		var path := _slot_path(mode, int(slot_str))
+		if path != "" and not seen.has(path):
+			seen[path] = true
+			out.append(path)
+	return out
 
 
 func _cloud_fetch(local_path: String) -> void:
@@ -278,6 +333,9 @@ func _cloud_fetch(local_path: String) -> void:
 		if local_cfg.load(local_path) == OK:
 			local_at = _saved_at_of(local_cfg, local_path)
 	if local_at == "" or cloud_at > local_at:
+		# Issue #107 (M-2): on a fresh device the runs directory may not
+		# exist yet — create it or the fetched run silently fails to land.
+		DirAccess.make_dir_recursive_absolute(local_path.get_base_dir())
 		var out := FileAccess.open(local_path, FileAccess.WRITE)
 		if out != null:
 			out.store_buffer(bytes)

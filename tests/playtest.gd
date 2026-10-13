@@ -2905,7 +2905,7 @@ func _test_mp_save_bughunt() -> void:
 	var fresh = SaveScript.new()
 	fresh.set("_test_runs_dir", "user://runs_bughunt_empty")
 	_assert(fresh.list_slots("mp").is_empty(),
-		"bughunt: fresh-device slot list is empty (cloud fetch loop would fetch nothing)")
+		"bughunt: fresh-device slot list is empty (why sync-down also enumerates the cloud, M-2)")
 	fresh.free()
 
 	# --- Part 4: run_summary labels (level / wave / At Station checks).
@@ -3021,12 +3021,38 @@ func _test_mp_save_bughunt() -> void:
 	var sim_connected := {1: "host"}
 	_assert(not sim_connected.has(76561198000000001),
 		"bughunt: authority-keyed map can never contain a Steam64 (host never rebinds)")
-	# M-2: cloud sync-down enumerates LOCAL slots only.
+	# M-2 — FIXED (issue #107, Eng 4): sync-down still fetches the
+	# profile unconditionally and every locally-known slot, and now ALSO
+	# enumerates the cloud's own file list so slot files that exist only
+	# remotely (fresh device) are fetched. Tombstone guard preserved.
 	var csd := _bughunt_body(ssrc, "_cloud_sync_down")
 	_assert(csd.contains("for slot in list_slots(mode)"),
-		"bughunt: cloud sync-down only fetches locally-listed slots")
+		"bughunt: cloud sync-down fetches locally-listed slots")
 	_assert(csd.contains("_cloud_fetch(_profile_path_for(_profile_account))"),
-		"bughunt: profile fetch is unconditional (meta syncs cross-device, runs do not)")
+		"bughunt: profile fetch is unconditional (meta syncs cross-device)")
+	_assert(csd.contains("_remote_slot_paths(_cloud_file_names())"),
+		"bughunt: cloud sync-down enumerates remote slot files (M-2 fixed)")
+	var cfn := _bughunt_body(ssrc, "_cloud_file_names")
+	_assert(cfn.contains("Steam.getFileCount()") and cfn.contains("Steam.getFileNameAndSize(i)"),
+		"bughunt: remote enumeration uses the RemoteStorage file listing (M-2 fixed)")
+	var cf := _bughunt_body(ssrc, "_cloud_fetch")
+	_assert(cf.contains("size <= 0"),
+		"bughunt: tombstone guard intact — cleared saves never resurrect (M-2)")
+	# Behavioral: remote names map to local slot paths; profile/settings/
+	# malformed/foreign names are ignored; duplicates collapse.
+	var m2mgr = SaveScript.new()
+	var m2scratch := "user://runs_m2_test"
+	m2mgr.set("_test_runs_dir", m2scratch)
+	var remote := ["runs/solo_0.cfg", "runs/mp_12.cfg", "runs/solo_2.cfg",
+		"profile_local.cfg", "settings.cfg", "runs/solo_x.cfg",
+		"runs/bogus_1.cfg", "runs/mp_1.tmp", "runs/solo_0.cfg",
+		"runs/mp_9999.cfg", "other/solo_5.cfg"]
+	var paths: Array = m2mgr._remote_slot_paths(remote)
+	_assert(paths.size() == 3, "bughunt: remote enumeration yields exactly the 3 valid slot files (M-2)")
+	_assert(paths.has(m2scratch + "/solo_0.cfg") and paths.has(m2scratch + "/solo_2.cfg")
+		and paths.has(m2scratch + "/mp_12.cfg"),
+		"bughunt: remote slots map through _slot_path incl. scratch dir (M-2)")
+	m2mgr.free()
 
 
 func _pf1_gd_files(dir_path: String, out: Array) -> void:
