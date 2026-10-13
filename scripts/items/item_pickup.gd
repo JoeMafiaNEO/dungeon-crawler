@@ -107,6 +107,10 @@ func _build_visual() -> void:
 		var packed := load(item.world_model) as PackedScene
 		if packed != null:
 			inst = packed.instantiate() as Node3D
+	if inst == null and WeaponVisual.has_fallback(item.id):
+		# Issue #113 Phase 2: procedural fallback model — flows through
+		# the same measure/normalize/seat path as a real world model.
+		inst = WeaponVisual.build_fallback(item.id)
 	if inst != null:
 		_visual.add_child(inst)
 		var box := _measure(inst)

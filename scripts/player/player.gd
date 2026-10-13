@@ -664,7 +664,30 @@ func _refresh_viewmodel() -> void:
 	var wid := str(equipped_ids.get("WEAPON", ""))
 	var witem: ItemData = ItemDB.get_item(wid) if wid != "" else null
 	if witem != null and witem.world_model != "" and ResourceLoader.exists(witem.world_model):
-		_vm_model(witem.world_model, 0.55, 0.37, Vector3(0, -0.12, 0))
+		if wid == "storm_caller":
+			# Staff-formed (GLB measured 2.35m tall, bottom at y=-0.99):
+			# the staff frame keeps the crystal in view; the generic
+			# sword frame crops it out of the top of the screen.
+			_vm_model(witem.world_model, 0.45, 0.99, Vector3(0, -0.38, 0))
+		else:
+			_vm_model(witem.world_model, 0.55, 0.37, Vector3(0, -0.12, 0))
+	elif witem != null and WeaponVisual.has_fallback(wid):
+		# Issue #113 Phase 2: procedural fallback until the real asset
+		# lands. Framing mirrors the matching KayKit class weapon: the
+		# storm caller is staff-formed (long — the _build_staff frame
+		# keeps its orb in view); the void blade uses the sword frame.
+		var holder := Node3D.new()
+		var prop := WeaponVisual.build_fallback(wid)
+		if wid == "storm_caller":
+			holder.position = Vector3(0, -0.25, 0)
+			prop.scale = Vector3.ONE * 0.45
+			prop.position.y = 0.1
+		else:
+			holder.position = Vector3(0, -0.12, 0)
+			prop.scale = Vector3.ONE * 0.55
+			prop.position.y = 0.2
+		holder.add_child(prop)
+		_viewmodel.add_child(holder)
 	else:
 		match class_id:
 			"mage":
@@ -710,6 +733,14 @@ func _refresh_held_props() -> void:
 			inst.position = Vector3(0.05, -0.55, 0.05)
 			inst.rotation_degrees = Vector3(0, 0, -14)
 			_held_prop.add_child(inst)
+	elif witem != null and WeaponVisual.has_fallback(wid):
+		# Issue #113 Phase 2: procedural fallback (see _refresh_viewmodel).
+		var prop := WeaponVisual.build_fallback(wid)
+		prop.name = "WeaponProp"
+		prop.scale = Vector3.ONE * 0.6
+		prop.position = Vector3(0.05, -0.55, 0.05)
+		prop.rotation_degrees = Vector3(0, 0, -14)
+		_held_prop.add_child(prop)
 	if equipped_tool_id() == "fishing_rod":
 		var rod := FishingVisual.build_rod_prop()
 		rod.name = "RodProp"

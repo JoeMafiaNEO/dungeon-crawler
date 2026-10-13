@@ -90,6 +90,7 @@ func _run() -> void:
 	_test_station_roster_carry_forward()
 	_test_architect_tools_repair()
 	_test_hammer_smash()
+	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -10516,3 +10517,151 @@ func _test_hammer_smash() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] hammer smash done")
+func _test_weapon_model_coverage_113() -> void:
+	print("[Playtest] Weapon model coverage (issue #113 Phase 2)...")
+	# Every weapon resolves a 3D world model. storm_caller + void_blade
+	# carry the Art Director's GLBs as world_model AND retain a
+	# WeaponVisual procedural fallback: if the asset ever goes missing,
+	# the consumers drop to the fallback instead of the bare icon.
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var PickupScene: PackedScene = load("res://scenes/items/item_pickup.tscn")
+	var weapons := 0
+	var uncovered: Array = []
+	for id in ItemDBNode.items.keys():
+		var it = ItemDBNode.get_item(id)
+		if it == null or int(it.get("slot")) != 0: # Slot.WEAPON
+			continue
+		weapons += 1
+		var has_model: bool = str(it.get("world_model")) != "" \
+			and ResourceLoader.exists(str(it.get("world_model")))
+		if not has_model and not WeaponVisual.has_fallback(id):
+			uncovered.append(id)
+	_assert(weapons == 10,
+		"113: item catalog carries 10 weapons (8 + Phase 3 wrench/hammer)")
+	_assert(uncovered.is_empty(),
+		"113: every weapon has a world model or a procedural fallback")
+	var sc_item = ItemDBNode.get_item("storm_caller")
+	var vb_item = ItemDBNode.get_item("void_blade")
+	_assert(str(sc_item.get("world_model")) \
+			== "res://assets/models/kaykit/weapons/storm_caller.glb" \
+		and ResourceLoader.exists(str(sc_item.get("world_model"))) \
+		and str(vb_item.get("world_model")) \
+			== "res://assets/models/kaykit/weapons/void_blade.glb" \
+		and ResourceLoader.exists(str(vb_item.get("world_model"))),
+		"113: storm caller + void blade wired to the Art Director GLBs")
+	_assert(WeaponVisual.has_fallback("storm_caller") \
+		and WeaponVisual.has_fallback("void_blade"),
+		"113: both wired weapons retain their procedural fallbacks")
+	var sc_prop: Node3D = WeaponVisual.build_fallback("storm_caller")
+	_assert(sc_prop.find_child("StormOrb", true, false) != null,
+		"113: storm caller fallback builds with its orb")
+	sc_prop.free()
+	var vb_prop: Node3D = WeaponVisual.build_fallback("void_blade")
+	_assert(vb_prop.find_child("VoidBlade", true, false) != null \
+		and vb_prop.find_child("VoidCore", true, false) != null,
+		"113: void blade fallback builds blade + emissive core")
+	vb_prop.free()
+	# GLB live: the real models drive all three consumers.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var mage = PlayerScene.instantiate()
+	holder.add_child(mage)
+	mage.set_multiplayer_authority(1)
+	mage.class_id = "mage"
+	mage.receive_item("storm_caller")
+	for i in mage.inventory.size():
+		var eit = mage.inventory[i].get("item")
+		if eit != null and str(eit.get("id")) == "storm_caller":
+			mage.equip_stack(i)
+	var vm = mage.get("_viewmodel")
+	var vm_glb := false
+	if vm != null:
+		vm_glb = vm.find_child("StormCallerProp", true, false) == null
+		if vm_glb:
+			vm_glb = false
+			for n in vm.find_children("*", "MeshInstance3D", true, false):
+				vm_glb = true
+	_assert(vm_glb,
+		"113: mage viewmodel renders the storm caller GLB (no fallback prop)")
+	var peer = PlayerScene.instantiate()
+	holder.add_child(peer)
+	peer.set_multiplayer_authority(2)
+	peer.class_id = "rogue"
+	peer.push_snapshot({"position": Vector3.ZERO, "rotation_y": 0.0,
+		"class_id": "rogue", "anim": "idle", "weapon_id": "void_blade"})
+	var held = peer.get_node_or_null("HeldProp/WeaponProp")
+	var held_glb: bool = held != null \
+		and held.find_child("VoidCore", true, false) == null \
+		and not held.find_children("*", "MeshInstance3D", true, false).is_empty()
+	_assert(held_glb,
+		"113: peer held prop renders the void blade GLB (no fallback core)")
+	var pk = PickupScene.instantiate()
+	holder.add_child(pk)
+	pk.setup(vb_item, 1)
+	var pk_model = pk.get_node_or_null("Model")
+	var pk_glb := false
+	if pk_model != null:
+		for c in pk_model.get_children():
+			if c.name != "VoidBladeProp":
+				pk_glb = true
+	_assert(pk_glb and not (pk.get_node("Sprite3D") as Node3D).visible,
+		"113: void blade pickup renders the GLB, icon sprite hidden")
+	pk.free()
+	# Asset-missing simulation: point the shared ItemData resources at a
+	# bogus path; every consumer must drop to the procedural fallback.
+	# Booleans are captured first and the paths restored BEFORE the
+	# asserts, so the catalog can never be left poisoned.
+	var saved_sc = str(sc_item.get("world_model"))
+	var saved_vb = str(vb_item.get("world_model"))
+	sc_item.set("world_model", "res://assets/models/kaykit/weapons/__missing_113.glb")
+	vb_item.set("world_model", "res://assets/models/kaykit/weapons/__missing_113.glb")
+	var mage2 = PlayerScene.instantiate()
+	holder.add_child(mage2)
+	mage2.set_multiplayer_authority(1)
+	mage2.class_id = "mage"
+	mage2.receive_item("storm_caller")
+	for i in mage2.inventory.size():
+		var eit2 = mage2.inventory[i].get("item")
+		if eit2 != null and str(eit2.get("id")) == "storm_caller":
+			mage2.equip_stack(i)
+	var vm2 = mage2.get("_viewmodel")
+	var vm_sim: bool = vm2 != null \
+		and vm2.find_child("StormCallerProp", true, false) != null
+	var peer2 = PlayerScene.instantiate()
+	holder.add_child(peer2)
+	peer2.set_multiplayer_authority(3)
+	peer2.class_id = "rogue"
+	peer2.push_snapshot({"position": Vector3.ZERO, "rotation_y": 0.0,
+		"class_id": "rogue", "anim": "idle", "weapon_id": "void_blade"})
+	var held2 = peer2.get_node_or_null("HeldProp/WeaponProp")
+	var held_sim: bool = held2 != null \
+		and held2.find_child("VoidCore", true, false) != null
+	var dup_vb = vb_item.duplicate()
+	dup_vb.set("world_model", "res://assets/models/kaykit/weapons/__missing_113.glb")
+	var pk2 = PickupScene.instantiate()
+	holder.add_child(pk2)
+	pk2.setup(dup_vb, 1)
+	var pk2_model = pk2.get_node_or_null("Model")
+	var pk_sim := false
+	if pk2_model != null:
+		for c in pk2_model.get_children():
+			if c.name == "VoidBladeProp":
+				pk_sim = true
+	sc_item.set("world_model", saved_sc)
+	vb_item.set("world_model", saved_vb)
+	_assert(vm_sim,
+		"113: missing GLB -> viewmodel falls back to the procedural prop")
+	_assert(held_sim,
+		"113: missing GLB -> held prop falls back to the procedural prop")
+	_assert(pk_sim,
+		"113: missing GLB -> pickup falls back to the procedural model")
+	mage.free()
+	peer.free()
+	mage2.free()
+	peer2.free()
+	pk2.free()
+	current_scene = null
+	holder.free()
+	print("[Playtest] weapon model coverage 113 done")

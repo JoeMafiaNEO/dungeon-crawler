@@ -9,6 +9,7 @@ id = "void_blade"
 display_name = "Void Blade"
 description = "A blade forged from the void. Slayer achievement reward."
 icon = ExtResource("2")
+world_model = "res://assets/models/kaykit/weapons/void_blade.glb"
 slot = 0
 rarity = 3
 allowed_classes = Array[String](["rogue"])

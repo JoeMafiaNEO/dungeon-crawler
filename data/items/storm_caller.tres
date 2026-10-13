@@ -9,6 +9,7 @@ id = "storm_caller"
 display_name = "Storm Caller"
 description = "Crackles with market-floor static. Entrepreneur achievement reward."
 icon = ExtResource("2")
+world_model = "res://assets/models/kaykit/weapons/storm_caller.glb"
 slot = 0
 rarity = 3
 allowed_classes = Array[String](["mage"])
