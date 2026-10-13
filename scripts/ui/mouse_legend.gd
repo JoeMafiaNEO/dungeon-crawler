@@ -26,6 +26,22 @@ const REGISTRY := {
 	"hl_charging": {
 		"mage": {"left": "", "right": "Disarm (cancel)", "middle": "Ping"},
 	},
+	# Issue #104 Phase 3: near a fishing spot (player.legend_state picks
+	# the state from proximity + the TOOL slot). With the rod equipped
+	# the right slot carries the cast context; without it, the
+	# requirement line.
+	"fishing_ready": {
+		"warrior": {"left": "Attack", "right": "E at spot: cast / reel", "middle": "Ping"},
+		"mage": {"left": "Cast selected ability", "right": "E at spot: cast / reel", "middle": "Ping"},
+		"rogue": {"left": "Attack", "right": "E at spot: cast / reel", "middle": "Ping"},
+		"architect": {"left": "Cast selected ability", "right": "E at spot: cast / reel", "middle": "Ping"},
+	},
+	"fishing_blocked": {
+		"warrior": {"left": "Attack", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
+		"mage": {"left": "Cast selected ability", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
+		"rogue": {"left": "Attack", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
+		"architect": {"left": "Cast selected ability", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
+	},
 }
 
 ## Fallback row for unknown classes (and unknown states fall back to standard).

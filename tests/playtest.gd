@@ -149,6 +149,7 @@ func _run() -> void:
 	_test_equip_system_phase1()
 	_test_mp_save_c1_fix()
 	_test_character_panel_phase2()
+	_test_fishing_rod_phase3()
 
 	_print_results()
 	quit()
@@ -6694,9 +6695,10 @@ func _test_snapshot_yaw() -> void:
 	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	# push_snapshot has yaw_v param.
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
-	# Caller passes _yaw.
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw)'),
+	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids).
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids)'),
 		"caller passes _yaw")
+	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
 	# _remote_yaw stored and interpolated with lerp_angle.
 	_assert(src.contains("_remote_yaw"), "stores _remote_yaw")
 	_assert(src.contains("lerp_angle(_yaw, _remote_yaw"),
@@ -7253,6 +7255,7 @@ func _test_fishing_minigame_phase2() -> void:
 	spot.global_position = Vector3.ZERO
 	spot.water_point = Vector3(0, 0, 4)
 	spot.test_player = p
+	_grant_equipped(p, "fishing_rod") # #104 Phase 3: the claim gate needs it
 	SpotScript.debug_wait_override = 2.0
 	# --- Full cast -> catch cycle (one-E claim+cast) ---
 	SpotScript.debug_now_msec = 100000
@@ -7740,6 +7743,16 @@ func _test_dock_economy_phase4() -> void:
 ## (Untyped param: a Player type hint here would force player.gd to compile
 ## at suite startup, before autoloads register — caching a compile failure
 ## that leaves every player.tscn instantiation script-less for the run.)
+## Test helper (issue #104 Phase 3): grant an item and equip its stack.
+func _grant_equipped(p, item_id: String) -> void:
+	p.receive_item(item_id)
+	for i in p.inventory.size():
+		var it = p.inventory[i].get("item")
+		if it != null and str(it.get("id")) == item_id:
+			p.equip_stack(i)
+			return
+
+
 func _farm_inv_count(pl, item_id: String) -> int:
 	for e in pl.inventory:
 		var it = (e as Dictionary).get("item")
@@ -7836,6 +7849,7 @@ func _test_misty_docks_phase5() -> void:
 	root.add_child(merch)
 	merch.global_position = layout.farm_plots[0] + Vector3(2.0, 0, 0)
 	merch.test_player = p
+	_grant_equipped(p, "fishing_rod") # #104 Phase 3: the claim gate needs it
 	EconScript.debug_reset()
 	PlotScript._seed_ledger.clear()
 	var gold_before: int = p.get("supermarket_cash")
@@ -7906,6 +7920,7 @@ func _test_misty_docks_phase5() -> void:
 	spot2.global_position = layout.fishing_spots[0]
 	spot2.water_point = (layout.ponds[0] as Dictionary)["center"]
 	spot2.test_player = p2
+	_grant_equipped(p2, "fishing_rod") # #104 Phase 3: the claim gate needs it
 	SM.set("_test_account_pin", "test_dock5")
 	SM.load_game()
 	_assert(not SM.has_dock_trophy("legendary_fish"), "p5: fish trophy not recorded yet")
@@ -8494,3 +8509,150 @@ func _test_character_panel_phase2() -> void:
 	hud.queue_free()
 	p.queue_free()
 	print("[Playtest] character panel phase 2 done")
+
+
+func _test_fishing_rod_phase3() -> void:
+	print("[Playtest] Fishing rod + gate + held visuals (issue #104 Phase 3)...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var LegendScript: GDScript = load("res://scripts/ui/mouse_legend.gd")
+	# The spot's prompt reads the LOCAL player via the "players" group —
+	# purge leftovers from earlier tests so group order can't hand it a
+	# stale (possibly rod-equipped) player.
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+
+	# --- The rod item: TOOL gear, no stats, one shared id everywhere.
+	var rod = ItemDBNode.get_item("fishing_rod")
+	_assert(rod != null, "rod: fishing_rod exists in ItemDB")
+	_assert(int(rod.get("slot")) == 3, "rod: TOOL slot")
+	_assert(not bool(rod.get("consumable")), "rod: not consumable")
+	_assert(float(rod.get("damage_bonus")) == 0.0 and float(rod.get("health_bonus")) == 0.0 \
+		and float(rod.get("speed_bonus")) == 0.0 and float(rod.get("damage_mult")) == 1.0,
+		"rod: zero stats (pure gate key)")
+	_assert(str(EconScript.ROD_ITEM) == "fishing_rod" \
+		and str(SpotScript.ROD_ITEM_ID) == "fishing_rod",
+		"rod: one item id across economy / spot")
+
+	# --- Gate: prompt, interact (no claim sent), forged direct claim.
+	var g = PlayerScene.instantiate()
+	g.class_id = "warrior"
+	root.add_child(g)
+	g.global_position = Vector3.ZERO
+	var spot = SpotScript.new()
+	root.add_child(spot)
+	spot.global_position = Vector3.ZERO
+	spot.water_point = Vector3(0, 0, 4)
+	spot.test_player = g
+	_assert(not g.has_rod_equipped(), "gate: fresh player has no rod")
+	_assert(spot.prompt_text() == "Requires Fishing Rod (Tool slot)",
+		"gate: prompt shows the requirement without the rod")
+	spot.interact(g)
+	_assert(spot.occupied_by == 0, "gate: interact sends no claim without the rod")
+	spot.fish_action() # forged call bypassing interact: server gate refuses
+	_assert(spot.occupied_by == 0, "gate: server _claim refuses a rod-less claim")
+	# Mouse legend context near the spot.
+	g.set("_near_fishing_spot", true)
+	_assert(str(g.legend_state()) == "fishing_blocked", "legend: blocked state without rod")
+	_assert(str(LegendScript.actions_for("warrior", "fishing_blocked")["right"]) \
+		== "Requires Fishing Rod (Tool slot)", "legend: requirement line without rod")
+
+	# --- With the rod equipped: prompt clears, full #102 session runs.
+	_grant_equipped(g, "fishing_rod")
+	_assert(g.has_rod_equipped(), "gate: rod equipped in TOOL")
+	_assert(str(g.legend_state()) == "fishing_ready", "legend: cast context with rod")
+	_assert(str(LegendScript.actions_for("warrior", "fishing_ready")["right"]).contains("cast"),
+		"legend: cast line with rod")
+	_assert(spot.prompt_text() == "Fish here", "gate: prompt clears with the rod")
+	SpotScript.debug_wait_override = 2.0
+	SpotScript.debug_now_msec = 900000
+	SpotScript.debug_catch_roll = 0.9 # deterministic minnow
+	spot.interact(g)
+	_assert(spot.occupied_by == 1 and spot.is_session_active_for(1),
+		"session: claim+cast with the rod")
+	_assert(spot.prompt_text() == "Reel in! (E)", "session: reel prompt")
+	SpotScript.debug_now_msec = 900000 + 2100
+	spot._process(0.016)
+	_assert(spot._session_state == SpotScript.SessionState.BITING, "session: bite fired")
+	spot.reel_attempt()
+	_assert(_farm_inv_count(g, "fish_minnow") == 1, "session: catch landed with the rod")
+	spot.release_spot()
+	SpotScript.debug_wait_override = -1.0
+	SpotScript.debug_catch_roll = -1.0
+	SpotScript.debug_now_msec = -1
+
+	# --- Persistence: save roundtrip keeps the rod AND its TOOL marker.
+	var state: Dictionary = g.get_state()
+	var g2 = PlayerScene.instantiate()
+	g2.class_id = "warrior"
+	root.add_child(g2)
+	g2.apply_state(state)
+	_assert(_farm_inv_count(g2, "fishing_rod") == 1, "persist: rod survives save/load")
+	_assert(str(g2.equipped_ids.get("TOOL", "")) == "fishing_rod",
+		"persist: TOOL marker + equipped_ids survive save/load")
+	_assert(g2.has_rod_equipped(), "persist: restored player passes the gate")
+
+	# --- Held visuals: own viewmodel + peer prop via push_snapshot.
+	_assert(g.find_child("RodProp", true, false) != null,
+		"visuals: rod prop in the local viewmodel when equipped")
+	var pv = PlayerScene.instantiate()
+	pv.class_id = "mage"
+	pv.set_multiplayer_authority(2)
+	root.add_child(pv)
+	pv.push_snapshot(pv.global_position, 100.0, 1, true, 0.0,
+		{"TOOL": "fishing_rod", "WEAPON": "iron_sword"})
+	_assert(str(pv.equipped_ids.get("TOOL", "")) == "fishing_rod",
+		"visuals: snapshot carries equipped_ids to the peer replica")
+	var held = pv.get_node_or_null("HeldProp")
+	_assert(held != null and held.visible, "visuals: peer HeldProp visible")
+	_assert(held != null and held.get_node_or_null("RodProp") != null,
+		"visuals: peer sees the held rod")
+	_assert(held != null and held.get_node_or_null("WeaponProp") != null,
+		"visuals: peer sees the equipped weapon's world_model")
+
+	# --- Merchant: GEAR listing, buy / dispose / re-buy (permanent stock).
+	var cat: Array = MerchScript.catalog()
+	var rod_row: Dictionary = {}
+	for e in cat:
+		if str(e.get("id")) == "fishing_rod":
+			rod_row = e
+	_assert(not rod_row.is_empty(), "merchant: rod listed in the dock catalog")
+	_assert(bool(rod_row.get("gear", false)), "merchant: rod row flagged GEAR")
+	_assert(int(rod_row.get("price")) == EconScript.PRICE_ROD,
+		"merchant: rod priced at PRICE_ROD")
+	_assert(EconScript.sell_value_for("fishing_rod") == 0,
+		"merchant: rod is not a sellable dock good")
+	var m = PlayerScene.instantiate()
+	m.class_id = "warrior"
+	root.add_child(m)
+	var merch = MerchScript.new()
+	root.add_child(merch)
+	merch.test_player = m
+	EconScript.debug_reset()
+	EconScript.grant_cash(1, 25)
+	merch.request_buy("fishing_rod")
+	_assert(_farm_inv_count(m, "fishing_rod") == 1, "merchant: rod bought for farm cash")
+	_assert(EconScript.cash_balance(1) == 25 - EconScript.PRICE_ROD,
+		"merchant: PRICE_ROD deducted from the ledger")
+	_assert(EconScript.stock_count(1, "fishing_rod") == 0,
+		"merchant: rod NOT tracked as dock-good stock")
+	# Dispose (unequipped) and re-buy: permanent stock.
+	for i in m.inventory.size():
+		var it = m.inventory[i].get("item")
+		if it != null and str(it.get("id")) == "fishing_rod":
+			m.dispose_item(i)
+			break
+	_assert(_farm_inv_count(m, "fishing_rod") == 0, "merchant: rod disposed")
+	merch.request_buy("fishing_rod")
+	_assert(_farm_inv_count(m, "fishing_rod") == 1, "merchant: rod re-buyable after dispose")
+	EconScript.debug_reset()
+	spot.free()
+	merch.free()
+	g.queue_free()
+	g2.queue_free()
+	pv.queue_free()
+	m.queue_free()
+	print("[Playtest] fishing rod phase 3 done")

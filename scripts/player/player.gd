@@ -206,6 +206,14 @@ var _camera: Camera3D
 var _cam_base := Vector3(0, EYE_HEIGHT, 0)
 var _shake := 0.0
 var _viewmodel: Node3D
+## Issue #104 Phase 3: slot name -> equipped item id, derived from the
+## inventory markers by _sync_equipped_ids() and REPLICATED to peers via
+## push_snapshot (inventory itself never replicates — see issue #105).
+## Drives held props (own viewmodel + the third-person prop peers see)
+## and the server-side fishing gate (FishingSpot._claim).
+var equipped_ids: Dictionary = {}
+var _held_prop: Node3D = null
+var _near_fishing_spot := false
 var _vm_base := Vector3(0.32, -0.34, -0.55)
 var _vm_base_rot := Vector3(0.15, -0.25, 0.1)
 var _cast_seq := 0
@@ -345,6 +353,7 @@ func _recalc_stats() -> void:
 	damage *= ms
 	max_hp *= ms
 	hp = minf(hp, max_hp)
+	_sync_equipped_ids()
 
 
 # --- Equipment (issue #104 Phase 1) -------------------------------------
@@ -377,6 +386,32 @@ func equipped_item(slot_name_str: String) -> ItemData:
 	if e.is_empty():
 		return null
 	return e.get("item") as ItemData
+
+
+## Rebuild equipped_ids from the inventory markers; on change, refresh
+## the held props. Called from _recalc_stats, so every equip/unequip /
+## restore path stays in sync without its own bookkeeping.
+func _sync_equipped_ids() -> void:
+	var ids: Dictionary = {}
+	for entry in inventory:
+		var s := _entry_equipped_slot(entry)
+		if s != "":
+			var it := entry.get("item") as ItemData
+			if it != null:
+				ids[s] = str(it.id)
+	if ids != equipped_ids:
+		equipped_ids = ids
+		_refresh_held_props()
+
+
+## Item id equipped in the TOOL slot ("" = none).
+func equipped_tool_id() -> String:
+	return str(equipped_ids.get("TOOL", ""))
+
+
+## Issue #104 Phase 3: the fishing gate key.
+func has_rod_equipped() -> bool:
+	return equipped_tool_id() == "fishing_rod"
 
 
 ## True when the item may be equipped by this player's class. The class
@@ -511,13 +546,74 @@ func _build_viewmodel() -> void:
 	_viewmodel.position = _vm_base
 	_viewmodel.rotation = _vm_base_rot
 	_camera.add_child(_viewmodel)
-	match class_id:
-		"mage":
-			_build_staff()
-		"rogue":
-			_build_dagger()
-		_:
-			_build_sword()
+	_refresh_viewmodel()
+
+
+## Issue #104 Phase 3: the viewmodel shows the EQUIPPED weapon's
+## world_model when it has one, else the class default; the fishing rod
+## joins as a held prop whenever it is equipped in TOOL (at fishing
+## spots the #102 session visual takes over the cast itself).
+func _refresh_viewmodel() -> void:
+	if _viewmodel == null:
+		return
+	for c in _viewmodel.get_children():
+		_viewmodel.remove_child(c)
+		c.free()
+	var wid := str(equipped_ids.get("WEAPON", ""))
+	var witem: ItemData = ItemDB.get_item(wid) if wid != "" else null
+	if witem != null and witem.world_model != "" and ResourceLoader.exists(witem.world_model):
+		_vm_model(witem.world_model, 0.55, 0.37, Vector3(0, -0.12, 0))
+	else:
+		match class_id:
+			"mage":
+				_build_staff()
+			"rogue":
+				_build_dagger()
+			_:
+				_build_sword()
+	if equipped_tool_id() == "fishing_rod":
+		var rod := FishingVisual.build_rod_prop()
+		rod.name = "RodProp"
+		rod.position = Vector3(-0.3, -0.24, -0.1)
+		rod.rotation = Vector3(0.45, 0.0, 0.3)
+		_viewmodel.add_child(rod)
+
+
+## Own viewmodel + the third-person held prop peers see. The TP prop is
+## hidden for the authority player (their viewmodel covers first
+## person); replicas show the equipped weapon's world_model and the
+## rod, driven entirely by the synced equipped_ids.
+func _refresh_held_props() -> void:
+	_refresh_viewmodel()
+	if _held_prop == null:
+		_held_prop = Node3D.new()
+		_held_prop.name = "HeldProp"
+		_held_prop.position = Vector3(0.38, 1.32, 0.1)
+		add_child(_held_prop)
+	for c in _held_prop.get_children():
+		_held_prop.remove_child(c)
+		c.free()
+	_held_prop.visible = not is_multiplayer_authority()
+	var wid := str(equipped_ids.get("WEAPON", ""))
+	var witem: ItemData = ItemDB.get_item(wid) if wid != "" else null
+	if witem != null and witem.world_model != "" and ResourceLoader.exists(witem.world_model):
+		var packed := load(witem.world_model) as PackedScene
+		if packed != null:
+			var inst := packed.instantiate() as Node3D
+			inst.name = "WeaponProp"
+			# World models are pickup-scale (~1.8m for a sword): shrink
+			# and hang the prop at the carrier's side, handle at hand
+			# height, instead of towering at native size.
+			inst.scale = Vector3.ONE * 0.6
+			inst.position = Vector3(0.05, -0.55, 0.05)
+			inst.rotation_degrees = Vector3(0, 0, -14)
+			_held_prop.add_child(inst)
+	if equipped_tool_id() == "fishing_rod":
+		var rod := FishingVisual.build_rod_prop()
+		rod.name = "RodProp"
+		rod.position = Vector3(0.0, -0.15, 0.3)
+		rod.rotation = Vector3(0.9, 0.0, 0.15)
+		_held_prop.add_child(rod)
 
 
 func _vm_model(path: String, model_scale: float, y_off: float, holder_pos: Vector3) -> Node3D:
@@ -2189,7 +2285,9 @@ func _physics_process(delta: float) -> void:
 		if _snapshot <= 0.0:
 			_snapshot = SNAPSHOT_INTERVAL
 			# Issue #72 Phase 1: include look yaw in the snapshot.
-			rpc("push_snapshot", global_position, hp, level, alive, _yaw)
+			# Issue #104 Phase 3: equipped_ids ride the same push so peers
+			# (and the server, for the fishing gate) see held gear.
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids)
 	else:
 		if _has_remote:
 			global_position = global_position.lerp(_remote_pos, clampf(delta * 10.0, 0.0, 1.0))
@@ -2790,7 +2888,17 @@ func legend_state() -> String:
 		return "hl_charging"
 	if _hl_state == HLState.ARMED:
 		return "hl_armed"
+	# Issue #104 Phase 3: fishing context near a spot.
+	if _near_fishing_spot:
+		return "fishing_ready" if has_rod_equipped() else "fishing_blocked"
 	return "standard"
+
+
+func _set_near_fishing_spot(v: bool) -> void:
+	if v == _near_fishing_spot:
+		return
+	_near_fishing_spot = v
+	click_state_changed.emit()
 
 
 ## Enter the armed state: gold reticle follows the crosshair ground point.
@@ -3423,6 +3531,9 @@ func _nearest_pickup() -> ItemPickup:
 func _update_pickup_prompt() -> void:
 	if hud == null:
 		return
+	# Issue #104 Phase 3: fishing proximity drives the mouse legend's
+	# fishing states (rod context vs requirement line).
+	_set_near_fishing_spot(_nearest_interact_node() is FishingSpot)
 	# Reading mode owns the hint label.
 	if _reading_board != null:
 		hud.set_hint(READ_HINT)
@@ -4600,7 +4711,7 @@ func apply_forfeit_net(s: Dictionary) -> void:
 
 
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}) -> void:
 	if is_multiplayer_authority():
 		return
 	_remote_pos = pos
@@ -4609,6 +4720,9 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: fl
 	hp = hp_v
 	level = lvl
 	alive = alive_v
+	if eq_ids != equipped_ids:
+		equipped_ids = eq_ids.duplicate()
+		_refresh_held_props()
 	_update_health_bar()
 
 

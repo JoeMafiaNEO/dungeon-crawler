@@ -724,6 +724,8 @@ func show_dock_vendor() -> void:
 		row.add_theme_constant_override("separation", 10)
 		var nl := Label.new()
 		nl.text = item.display_name if item != null else item_id
+		if bool(entry.get("gear", false)):
+			nl.text += " [GEAR]"
 		nl.custom_minimum_size = Vector2(230, 0)
 		nl.add_theme_font_size_override("font_size", 14)
 		row.add_child(nl)

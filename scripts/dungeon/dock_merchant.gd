@@ -29,6 +29,10 @@ static func catalog() -> Array:
 		{"id": DockEconomy.DRAUGHT_ITEM, "price": DockEconomy.PRICE_DRAUGHT},
 		{"id": DockEconomy.CURRENT_ITEM, "price": DockEconomy.PRICE_CURRENT},
 		{"id": DockEconomy.BULWARK_ITEM, "price": DockEconomy.PRICE_BULWARK},
+		# Issue #104 Phase 3: GEAR listing — permanent stock, re-buyable
+		# if disposed, granted as a plain inventory item (NOT a tracked
+		# dock good: no stock ledger, never sellable back here).
+		{"id": DockEconomy.ROD_ITEM, "price": DockEconomy.PRICE_ROD, "gear": true},
 	]
 
 

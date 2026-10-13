@@ -8,6 +8,36 @@ extends Node3D
 
 const ARC_TIME := 0.75
 
+
+## Issue #104 Phase 3: the held rod prop (player viewmodel + the
+## third-person HeldProp peers see). Simple procedural pole + reel in
+## the same spirit as the session visual; the Art Director's real rod
+## model replaces it when it ships.
+static func build_rod_prop() -> Node3D:
+	var root3d := Node3D.new()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.45, 0.3, 0.16)
+	var pole := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.012
+	cm.bottom_radius = 0.02
+	cm.height = 1.5
+	pole.mesh = cm
+	pole.material_override = mat
+	pole.position = Vector3(0, 0.55, 0)
+	pole.rotation.z = -0.5
+	root3d.add_child(pole)
+	var reel := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.09, 0.09, 0.05)
+	reel.mesh = bm
+	var rmat := StandardMaterial3D.new()
+	rmat.albedo_color = Color(0.6, 0.6, 0.65)
+	reel.material_override = rmat
+	reel.position = Vector3(-0.18, 0.05, 0.03)
+	root3d.add_child(reel)
+	return root3d
+
 var _bobber: Bobber = null
 var _line: MeshInstance3D = null
 var _splash: MeshInstance3D = null

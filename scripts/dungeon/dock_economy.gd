@@ -25,6 +25,11 @@ const PRICE_SALVE := 5
 const PRICE_DRAUGHT := 8
 const PRICE_CURRENT := 8
 const PRICE_BULWARK := 8
+## Issue #104 Phase 3: the fishing rod is GEAR (permanent stock, bought
+## with farm cash, kept across levels like any equipment). Placeholder
+## price in line with the other dock prices — Jesse's numbers call.
+const PRICE_ROD := 10
+const ROD_ITEM := "fishing_rod"
 ## Bait odds shift: added to both rare thresholds in the Phase 2 catch roll.
 const BAIT_RARE_SHIFT := 0.15
 
