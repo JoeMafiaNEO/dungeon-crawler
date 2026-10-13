@@ -10592,8 +10592,8 @@ func _test_weapon_model_coverage_113() -> void:
 	holder.add_child(peer)
 	peer.set_multiplayer_authority(2)
 	peer.class_id = "rogue"
-	peer.push_snapshot({"position": Vector3.ZERO, "rotation_y": 0.0,
-		"class_id": "rogue", "anim": "idle", "weapon_id": "void_blade"})
+	peer.push_snapshot(Vector3.ZERO, 100.0, 1, true, 0.0,
+		{"WEAPON": "void_blade"})
 	var held = peer.get_node_or_null("HeldProp/WeaponProp")
 	var held_glb: bool = held != null \
 		and held.find_child("VoidCore", true, false) == null \
@@ -10601,8 +10601,8 @@ func _test_weapon_model_coverage_113() -> void:
 	_assert(held_glb,
 		"113: peer held prop renders the void blade GLB (no fallback core)")
 	var pk = PickupScene.instantiate()
+	pk.setup(vb_item)
 	holder.add_child(pk)
-	pk.setup(vb_item, 1)
 	var pk_model = pk.get_node_or_null("Model")
 	var pk_glb := false
 	if pk_model != null:
@@ -10636,16 +10636,16 @@ func _test_weapon_model_coverage_113() -> void:
 	holder.add_child(peer2)
 	peer2.set_multiplayer_authority(3)
 	peer2.class_id = "rogue"
-	peer2.push_snapshot({"position": Vector3.ZERO, "rotation_y": 0.0,
-		"class_id": "rogue", "anim": "idle", "weapon_id": "void_blade"})
+	peer2.push_snapshot(Vector3.ZERO, 100.0, 1, true, 0.0,
+		{"WEAPON": "void_blade"})
 	var held2 = peer2.get_node_or_null("HeldProp/WeaponProp")
 	var held_sim: bool = held2 != null \
 		and held2.find_child("VoidCore", true, false) != null
 	var dup_vb = vb_item.duplicate()
 	dup_vb.set("world_model", "res://assets/models/kaykit/weapons/__missing_113.glb")
 	var pk2 = PickupScene.instantiate()
+	pk2.setup(dup_vb)
 	holder.add_child(pk2)
-	pk2.setup(dup_vb, 1)
 	var pk2_model = pk2.get_node_or_null("Model")
 	var pk_sim := false
 	if pk2_model != null:
