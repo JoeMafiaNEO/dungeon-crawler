@@ -15,6 +15,7 @@ func _init() -> void:
 
 func _run() -> void:
 	_test_boot()
+	_test_class_census()
 	_test_rts_costs()
 	_test_rts_production()
 	_test_rts_spatial_hash()
@@ -187,6 +188,39 @@ func _test_boot() -> void:
 	_assert(load("res://scripts/rts/rts_hud.gd") != null, "RTSHUD loads")
 	_assert(load("res://scripts/rts/ai_warlord.gd") != null, "AIWarlord loads")
 	_assert(load("res://scripts/rts/civ_data.gd") != null, "CivData loads")
+
+
+## Startup-compile tripwire (#117): a class whose script references an
+## autoload by bare identifier fails to compile when the suite's startup
+## chain reaches it (autoloads aren't registered in that window), the
+## failure is cached for the run, and its sections silently exercise
+## script-less instances. load() != null CANNOT see this (a broken script
+## still loads) — can_instantiate() can. Census every gameplay class from
+## the editor's class cache and fail LOUDLY, naming the class, so the
+## next poison announces itself instead of hollowing a section.
+func _test_class_census() -> void:
+	print("[Playtest] Class census (startup-compile tripwire)...")
+	var cache := ConfigFile.new()
+	var err := cache.load("res://.godot/global_script_class_cache.cfg")
+	_assert(err == OK, "census: global class cache readable")
+	if err != OK:
+		return
+	var entries: Array = cache.get_value("", "list", [])
+	var checked := 0
+	var broken: Array = []
+	for entry in entries:
+		var path: String = str(entry.get("path", ""))
+		if not path.begins_with("res://scripts/"):
+			continue
+		if bool(entry.get("is_abstract", false)):
+			continue
+		checked += 1
+		var s: GDScript = load(path) as GDScript
+		if s == null or not s.can_instantiate():
+			broken.append(str(entry.get("class", path)))
+	_assert(checked > 50, "census: covered %d gameplay classes" % checked)
+	_assert(broken.is_empty(),
+		"census: all gameplay classes instantiate in -s mode (broken: %s)" % ", ".join(broken))
 
 
 func _test_rts_costs() -> void:

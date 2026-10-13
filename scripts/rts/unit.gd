@@ -64,6 +64,28 @@ var _hp_bar_w := 1.0
 
 
 @rpc("any_peer", "call_local")
+## Runtime AudioManager lookup (a bare autoload identifier doesn't resolve
+## at compile time in the -s suite's startup window, and the cached failure
+## silently hollows the RTS sections — #117). Resolves the same autoload
+## instance at call time, headless and in-game; same pattern as
+## SpecialData._save_manager. NOTE: Engine.get_singleton() does NOT cover
+## autoloads in this engine build (verified: returns null) — the SceneTree
+## root lookup is the working mechanism.
+func _audio_manager() -> Node:
+	var loop := Engine.get_main_loop() as SceneTree
+	if loop != null:
+		return loop.root.get_node_or_null("AudioManager")
+	return null
+
+
+## Runtime NetworkManager lookup (same compile-time autoload issue).
+func _network_manager() -> Node:
+	var loop := Engine.get_main_loop() as SceneTree
+	if loop != null:
+		return loop.root.get_node_or_null("NetworkManager")
+	return null
+
+
 func set_selected(on: bool) -> void:
 	if on:
 		if _select_ring == null or not is_instance_valid(_select_ring):
@@ -516,7 +538,9 @@ func _apply_convert(new_faction: int, new_civ_id: String) -> void:
 @rpc("any_peer", "call_local")
 func convert_fx() -> void:
 	Effects.burst(get_parent(), global_position + Vector3(0, 0.6, 0), Color(1.0, 0.85, 0.3), 24, 5.0)
-	AudioManager.sfx("revive", global_position)
+	var audio := _audio_manager()
+	if audio != null:
+		audio.call("sfx", "revive", global_position)
 
 
 ## Trade cart: shuttle between home market and target market, generating gold.
@@ -600,8 +624,13 @@ func _find_nearest_market(p_faction: int) -> Node3D:
 
 func take_damage(amount: float, attacker: Node3D = null) -> void:
 	if not multiplayer.is_server():
-		# Client: route to server.
-		rpc_id(NetworkManager.server_peer_id, "rpc_take_damage", amount,
+		# Client: route to server. (Runtime NetworkManager lookup — #117;
+		# falls back to peer 1, the server's id by project convention, if
+		# the autoload is somehow unreachable, where the bare-identifier
+		# version could not run at all.)
+		var nm := _network_manager()
+		var server_peer := int(nm.get("server_peer_id")) if nm != null else 1
+		rpc_id(server_peer, "rpc_take_damage", amount,
 			attacker.get_multiplayer_authority() if attacker != null else 0)
 		return
 	_apply_damage(amount)
