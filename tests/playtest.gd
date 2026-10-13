@@ -167,6 +167,7 @@ func _run() -> void:
 	_test_111_minor_legacy_mp_save()
 	_test_111_minor_pause_save_snapshot()
 	_test_village_terrain_118()
+	_test_terrain_skirt_124()
 
 	_print_results()
 	quit()
@@ -643,6 +644,89 @@ func _test_village_terrain_118() -> void:
 	var c_fb: Color = t.call("_vertex_color", 0.4, 0.0)
 	_assert(Vector3(c_fb.r - th.r, c_fb.g - th.g, c_fb.b - th.b).length() < 0.002,
 		"#118: NAN anchor falls back to water anchor (h=0.4 saturates high)")
+	root.remove_child(t)
+	t.free()
+
+
+func _test_terrain_skirt_124() -> void:
+	print("[Playtest] Heightmap perimeter skirt (#124)...")
+	# [QA] #124: the heightmap sheet is zero-thickness; at the station
+	# annex door span (the one perimeter opening not backed by a wall)
+	# the residual edge height above the y=0 apron left a see-through
+	# sky slit from inside the annex. _build_mesh now appends a skirt
+	# band around the perimeter — appended ONLY: the grid vertex arrays
+	# must stay bit-identical (the #118/#119 identity-hash regression
+	# net), which the prefix recomputation below pins.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/terrain/heightmap_terrain.gd")
+	_assert(hsrc.contains("func _append_skirt("), "#124: HeightmapTerrain builds a perimeter skirt")
+	_assert(hsrc.contains("_append_skirt(verts, normals, uvs, colors"),
+		"#124: _build_mesh appends the skirt after the grid arrays")
+	var HT = load("res://scripts/terrain/heightmap_terrain.gd")
+	var t = HT.new()
+	root.add_child(t)
+	var mp := 9
+	t.set("map_points", mp)
+	t.set("cell_size", 1.0)
+	t.set("terrain_seed", 424242)
+	t.set("noise_frequency", 0.030)
+	t.set("amplitude", 1.6)
+	t.set("height_offset", 0.80)
+	t.set("water_level", -1.0)
+	t.generate()
+	var heights: PackedFloat32Array = t.heights_copy()
+	var mesh = t.get_node("TerrainMesh").mesh
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+	var grid_count := (mp - 1) * (mp - 1) * 6
+	var skirt_count := 4 * (mp - 1) * 12
+	_assert(verts.size() == grid_count + skirt_count,
+		"#124: mesh = %d grid + %d skirt verts (got %d)" % [grid_count, skirt_count, verts.size()])
+	# Grid prefix identity: recompute every grid vertex position and
+	# color from the heights array in the builder's own quad order and
+	# require exact equality — the skirt must not perturb the grid.
+	var bad := 0
+	var vi := 0
+	for gz in range(mp - 1):
+		for gx in range(mp - 1):
+			var quad := [Vector2i(gx, gz), Vector2i(gx + 1, gz), Vector2i(gx, gz + 1), Vector2i(gx + 1, gz + 1)]
+			for tri in [[0, 1, 2], [1, 3, 2]]:
+				for k in tri:
+					var q: Vector2i = quad[k]
+					var h: float = heights[q.y * mp + q.x]
+					var expect := Vector3((float(q.x) - float(mp - 1) * 0.5) * 1.0, h,
+						(float(q.y) - float(mp - 1) * 0.5) * 1.0)
+					if verts[vi] != expect:
+						bad += 1
+					var ec: Color = t.call("_vertex_color", h, float(t.call("_slope_at", q.x, q.y)))
+					# surface_get_arrays returns colors quantized to
+					# 8 bits/channel, so colors compare within 1/255
+					# (positions above stay exact).
+					var ac: Color = colors[vi]
+					if absf(ac.r - ec.r) > 0.004 or absf(ac.g - ec.g) > 0.004 or absf(ac.b - ec.b) > 0.004:
+						bad += 1
+					vi += 1
+	_assert(bad == 0, "#124: grid prefix unchanged (positions exact, colors within 8-bit storage) — %d mismatches over %d verts" % [bad, grid_count])
+	# Skirt geometry: every appended vertex lies on the perimeter
+	# plane, and the band hangs exactly SKIRT_DEPTH (2.0) below the
+	# lowest edge height.
+	var half := float(mp - 1) * 0.5
+	var edge_min := 1e9
+	for i in mp:
+		edge_min = minf(edge_min, heights[i])
+		edge_min = minf(edge_min, heights[(mp - 1) * mp + i])
+		edge_min = minf(edge_min, heights[i * mp])
+		edge_min = minf(edge_min, heights[i * mp + mp - 1])
+	var skirt_min := 1e9
+	var off_plane := 0
+	for i in range(grid_count, verts.size()):
+		var v := verts[i]
+		skirt_min = minf(skirt_min, v.y)
+		if absf(absf(v.x) - half) > 0.001 and absf(absf(v.z) - half) > 0.001:
+			off_plane += 1
+	_assert(off_plane == 0, "#124: all skirt verts on the perimeter (%d off-plane)" % off_plane)
+	_assert(absf(skirt_min - (edge_min - 2.0)) < 0.001,
+		"#124: skirt hangs 2.0 below the lowest edge (min %.3f vs edge %.3f)" % [skirt_min, edge_min])
 	root.remove_child(t)
 	t.free()
 

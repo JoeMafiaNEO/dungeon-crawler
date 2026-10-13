@@ -35,6 +35,15 @@ extends Node3D
 @export var water_shallow: Color = Color(0.25, 0.55, 0.72, 0.88)
 @export var water_deep: Color = Color(0.10, 0.28, 0.48, 0.92)
 
+## [QA] #124: depth of the perimeter skirt band appended by _build_mesh.
+## The sheet is zero-thickness; where the perimeter is not backed by a
+## wall (the station-annex door span), the residual edge height above
+## the y=0 apron left a see-through slot under the sheet. The skirt
+## hangs this far below every edge vertex so no in-play sightline can
+## pass under the sheet. 2.0 matches dungeon.gd's wall-bottom drop,
+## which exists for the same anti-gap purpose.
+const SKIRT_DEPTH := 2.0
+
 ## Flatten targets: terrain relaxes toward the center height near these.
 var poi_points: Array[Vector3] = []
 ## Explicit-height flatten targets: { "pos": Vector3, "height": float,
@@ -231,6 +240,9 @@ func _build_mesh() -> void:
 					normals.append(_grid_normal(q.x, q.y))
 					uvs.append(Vector2(float(q.x) / float(map_points - 1), float(q.y) / float(map_points - 1)))
 					colors.append(Color(1, 0, 0) if debug_red else _vertex_color(_sample_grid(q.x, q.y), _slope_at(q.x, q.y)))
+	# [QA] #124: perimeter skirt — appended AFTER the grid arrays, so
+	# every grid vertex/normal/uv/color above stays bit-identical.
+	_append_skirt(verts, normals, uvs, colors, debug_red)
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
@@ -248,6 +260,67 @@ func _build_mesh() -> void:
 	_mesh_instance.mesh = mesh
 	_mesh_instance.name = "TerrainMesh"
 	add_child(_mesh_instance)
+
+
+## [QA] #124: append a vertical skirt band around the sheet perimeter.
+## For every boundary segment a quad hangs from the edge vertices down
+## SKIRT_DEPTH. Both windings are emitted: the sheet material culls
+## back faces, and the two in-play viewpoints see opposite sides of the
+## band (inside the annex looking out / inside the arena looking at the
+## door), so each side needs its own front face. Top-row colors are the
+## edge grid vertices' own colors (no seam at the sheet edge); the
+## bottom row darkens toward a soil/shadow tone. Appended only — the
+## grid arrays built above are never touched.
+func _append_skirt(verts: PackedVector3Array, normals: PackedVector3Array,
+		uvs: PackedVector2Array, colors: PackedColorArray, debug_red: bool) -> void:
+	var mp := map_points
+	var edges: Array = []
+	for x in range(mp - 1):
+		edges.append([Vector2i(x, 0), Vector2i(x + 1, 0)]) # north row
+		edges.append([Vector2i(x, mp - 1), Vector2i(x + 1, mp - 1)]) # south row
+	for z in range(mp - 1):
+		edges.append([Vector2i(0, z), Vector2i(0, z + 1)]) # west column
+		edges.append([Vector2i(mp - 1, z), Vector2i(mp - 1, z + 1)]) # east column
+	for seg in edges:
+		var a: Vector2i = seg[0]
+		var b: Vector2i = seg[1]
+		var top_a := _grid_vert(a.x, a.y)
+		var top_b := _grid_vert(b.x, b.y)
+		var bot_a := top_a - Vector3(0.0, SKIRT_DEPTH, 0.0)
+		var bot_b := top_b - Vector3(0.0, SKIRT_DEPTH, 0.0)
+		var col_a := Color(1, 0, 0) if debug_red else _vertex_color(_sample_grid(a.x, a.y), _slope_at(a.x, a.y))
+		var col_b := Color(1, 0, 0) if debug_red else _vertex_color(_sample_grid(b.x, b.y), _slope_at(b.x, b.y))
+		var col_a_bot := col_a if debug_red else col_a.darkened(0.5)
+		var col_b_bot := col_b if debug_red else col_b.darkened(0.5)
+		# Winding 1 and its exact reverse (diagonal top_b–bot_a).
+		_skirt_tri(verts, normals, uvs, colors, top_a, top_b, bot_a, col_a, col_b, col_a_bot)
+		_skirt_tri(verts, normals, uvs, colors, top_b, bot_b, bot_a, col_b, col_b_bot, col_a_bot)
+		_skirt_tri(verts, normals, uvs, colors, top_a, bot_a, top_b, col_a, col_a_bot, col_b)
+		_skirt_tri(verts, normals, uvs, colors, top_b, bot_a, bot_b, col_b, col_a_bot, col_b_bot)
+
+
+## Append one skirt triangle with a flat normal facing the side the
+## triangle is visible from (Godot front faces wind clockwise, so the
+## visible side is opposite the right-hand-rule normal — the same
+## convention the grid triangles above rely on).
+func _skirt_tri(verts: PackedVector3Array, normals: PackedVector3Array,
+		uvs: PackedVector2Array, colors: PackedColorArray,
+		p0: Vector3, p1: Vector3, p2: Vector3,
+		c0: Color, c1: Color, c2: Color) -> void:
+	var n := -(p1 - p0).cross(p2 - p0)
+	n = n.normalized() if n.length() > 0.000001 else Vector3.DOWN
+	verts.append(p0)
+	verts.append(p1)
+	verts.append(p2)
+	normals.append(n)
+	normals.append(n)
+	normals.append(n)
+	uvs.append(Vector2.ZERO)
+	uvs.append(Vector2.ZERO)
+	uvs.append(Vector2.ZERO)
+	colors.append(c0)
+	colors.append(c1)
+	colors.append(c2)
 
 
 func _grid_vert(x: int, z: int) -> Vector3:
