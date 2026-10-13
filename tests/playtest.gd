@@ -78,6 +78,7 @@ func _run() -> void:
 	_test_heal_pad_multiplayer()
 	_test_train_spots_12p()
 	_test_mp_save_steam_ids()
+	_test_mp_save_bughunt()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -2701,6 +2702,263 @@ func _test_mp_save_steam_ids() -> void:
 	var miss: Dictionary = dungeon_script.find_roster_entry(roster, 1)
 	_assert(miss.is_empty(),
 		"mpsave: peer ID 1 does not match a Steam ID roster")
+
+
+## Extract a function body (from "func name" to the next top-level func)
+## for source-structure assertions in the bug-hunt tests.
+func _bughunt_body(src: String, fname: String) -> String:
+	var i := src.find("func " + fname)
+	if i < 0:
+		return ""
+	var j := src.find("\nfunc ", i + 5)
+	if j < 0:
+		j = src.length()
+	return src.substr(i, j - i)
+
+
+func _test_mp_save_bughunt() -> void:
+	print("[Playtest] MP save bug hunt (adversarial)...")
+	# Eng 9 audit 2026-10-12: adversarial coverage for the MP save system —
+	# the replica-wipe mechanism (C-1), roster matching edge cases, the
+	# save-file attack surface, and summary labels. Runtime loads only
+	# (bare autoload identifiers don't compile in -s script mode).
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var SaveScript = load("res://scripts/autoload/save_manager.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/autoload/save_manager.gd")
+
+	# --- Part 1: full-state roundtrip + the replica-wipe mechanism (C-1).
+	var ids := ["health_potion", "iron_sword", "dragonscale_armor", "ember_amulet",
+		"apprentice_staff", "cereal_box", "frozen_pizza", "aegis_of_the_deep",
+		"soda_can", "milk_carton", "snack_cake", "void_blade"]
+	var p1 = PlayerScene.instantiate()
+	p1.class_id = "warrior"
+	root.add_child(p1)
+	p1.level = 7
+	p1.xp = 432
+	p1.xp_next = 600
+	p1.stat_points = 2
+	p1.bonus_damage = 3.5
+	p1.bonus_health = 10.0
+	p1.supermarket_cash = 777
+	p1.inventory.clear()
+	var want := {}
+	var n := 0
+	for id in ids:
+		var it = ItemDBNode.get_item(id)
+		if it == null:
+			continue
+		n += 1
+		var c := 999 if id == "health_potion" else 1 + n
+		p1.inventory.append({"item": it, "count": c})
+		want[id] = c
+	_assert(want.size() >= 8, "bughunt: item fixture has >= 8 distinct items")
+	var rich: Dictionary = p1.get_state()
+	var got := {}
+	for e in rich.get("inventory", []):
+		got[str(e.get("id", ""))] = int(e.get("count", 0))
+	_assert(got == want, "bughunt: get_state serializes the full inventory (ids + counts)")
+	var p2 = PlayerScene.instantiate()
+	p2.class_id = "rogue"
+	root.add_child(p2)
+	p2.apply_state(rich)
+	var got2 := {}
+	for e in p2.inventory:
+		got2[str((e["item"] as Object).get("id"))] = int(e["count"])
+	_assert(got2 == want, "bughunt: full inventory restores intact (12 stacks incl. x999)")
+	_assert(p2.level == 7 and p2.xp == 432 and p2.supermarket_cash == 777,
+		"bughunt: level/xp/cash restore intact")
+	# A fresh player is exactly what the host's server-side replica of a
+	# remote peer holds: inventory is per-peer authoritative and is never
+	# replicated (push_snapshot syncs pos/hp/level/alive/yaw only).
+	var p3 = PlayerScene.instantiate()
+	p3.class_id = "warrior"
+	root.add_child(p3)
+	var replica: Dictionary = p3.get_state()
+	_assert(int(replica.get("xp", -1)) == 0, "bughunt: replica state has xp 0")
+	var rep_ids := {}
+	for e in replica.get("inventory", []):
+		rep_ids[str(e.get("id", ""))] = int(e.get("count", 0))
+	_assert(not rep_ids.has("dragonscale_armor"),
+		"bughunt: replica state lacks the peer's earned gear")
+	# C-1 consequence: applying the replica capture (what the save-window
+	# timeout fill-in writes to disk) to the progressed character destroys
+	# the earned progression.
+	p2.apply_state(replica)
+	_assert(p2.xp == 0 and p2.level == 1, "bughunt: replica apply resets level/xp (C-1 wipe)")
+	var left := {}
+	for e in p2.inventory:
+		left[str((e["item"] as Object).get("id"))] = int(e["count"])
+	_assert(not left.has("dragonscale_armor") and not left.has("ember_amulet"),
+		"bughunt: replica apply deletes earned inventory (C-1 wipe)")
+	# Unknown item ids are silently dropped by apply_state.
+	p2.apply_state({"inventory": [{"id": "bughunt_no_such_item", "count": 5}]})
+	_assert(p2.inventory.is_empty(), "bughunt: unknown item ids silently dropped on restore")
+	root.remove_child(p1)
+	p1.free()
+	root.remove_child(p2)
+	p2.free()
+	root.remove_child(p3)
+	p3.free()
+
+	# --- Part 2: roster matching adversarial cases.
+	var dup := [
+		{"steam_id": 76561198000000042, "class_id": "mage", "player_state": {"level": 9}},
+		{"steam_id": 76561198000000042, "class_id": "rogue", "player_state": {"level": 1}},
+	]
+	var first: Dictionary = DungeonScript.find_roster_entry(dup, 76561198000000042)
+	_assert(str(first.get("class_id", "")) == "mage",
+		"bughunt: duplicate Steam64 entries — first match wins (no dedup)")
+	var zero_hit: Dictionary = DungeonScript.find_roster_entry([{"steam_id": 0, "class_id": "mage"}], 0)
+	_assert(not zero_hit.is_empty(), "bughunt: steam_id 0 matches a steam_id 0 entry (latent)")
+
+	# --- Part 3: save-file attack surface (scratch dir only, abort-safe).
+	var mgr = SaveScript.new()
+	var scratch := "user://runs_bughunt_test"
+	if DirAccess.dir_exists_absolute(scratch):
+		for f in DirAccess.get_files_at(scratch):
+			DirAccess.remove_absolute(scratch.path_join(f))
+		DirAccess.remove_absolute(scratch)
+	mgr.set("_test_runs_dir", scratch)
+	mgr.set("_test_account_pin", "bughunt_scratch")
+	var roster12: Array = []
+	for i in 12:
+		roster12.append({
+			"steam_id": 76561198000000000 + i,
+			"player_name": "P%d" % i,
+			"class_id": ["warrior", "rogue", "mage"][i % 3],
+			"player_state": {"level": 3 + i, "xp": i * 10,
+				"inventory": [{"id": "health_potion", "count": i + 1}]},
+			"rts_faction": -1,
+			"is_host": i == 0,
+		})
+	var run12 := {"theme_id": "dungeon", "level_number": 8, "seed": 424242,
+		"wave": 3, "is_multiplayer": true, "at_station": false, "roster": roster12}
+	_assert(mgr.save_run(run12, "mp", 3), "bughunt: 12-player run saves")
+	var back12: Dictionary = mgr.load_run("mp", 3)
+	_assert((back12.get("roster", []) as Array).size() == 12, "bughunt: 12 roster entries roundtrip")
+	var ids_ok := true
+	var broster: Array = back12.get("roster", [])
+	for i in 12:
+		if int((broster[i] as Dictionary).get("steam_id", 0)) != 76561198000000000 + i:
+			ids_ok = false
+	_assert(ids_ok, "bughunt: Steam64 ids survive ConfigFile exactly (no truncation)")
+	_assert(int(back12.get("level_number", 0)) == 8 and int(back12.get("wave", 0)) == 3,
+		"bughunt: cycle-2 level + wave roundtrip")
+	# Double save/restore integrity.
+	_assert(mgr.save_run(back12, "mp", 4), "bughunt: re-save of loaded run succeeds")
+	var back12b: Dictionary = mgr.load_run("mp", 4)
+	_assert((back12b.get("roster", []) as Array).size() == 12
+		and int(back12b.get("level_number", 0)) == 8,
+		"bughunt: double restore keeps roster + level")
+	# Duplicate Steam64 entries are NOT deduplicated by save/load.
+	var duprun := {"theme_id": "dungeon", "level_number": 2, "roster": dup}
+	mgr.save_run(duprun, "mp", 5)
+	_assert((mgr.load_run("mp", 5).get("roster", []) as Array).size() == 2,
+		"bughunt: duplicate Steam64 roster persists verbatim")
+	# Legacy-style MP run (migration output): no roster key at all.
+	mgr.save_run({"theme_id": "village", "level_number": 3, "class_id": "mage",
+		"player_state": {"level": 3}}, "mp", 6)
+	var legacy: Dictionary = mgr.load_run("mp", 6)
+	_assert((legacy.get("roster", []) as Array).is_empty(),
+		"bughunt: legacy MP save has no roster (continue restores nobody)")
+	# Version gate.
+	_assert(mgr.is_save_compatible("mp", 3), "bughunt: fresh save is version-compatible")
+	var vpath := scratch + "/mp_3.cfg"
+	var vcfg := ConfigFile.new()
+	vcfg.load(vpath)
+	var vdata: Dictionary = vcfg.get_value("run", "data", {})
+	vdata["save_version"] = 99
+	vcfg.set_value("run", "data", vdata)
+	vcfg.save(vpath)
+	_assert(not mgr.load_run("mp", 3).is_empty(), "bughunt: future-version save still parses")
+	_assert(not mgr.is_save_compatible("mp", 3),
+		"bughunt: future-version save is refused by the version gate")
+	# Truncated file (tail cut mid-dict) refuses cleanly.
+	var good_bytes := FileAccess.get_file_as_bytes(scratch + "/mp_4.cfg")
+	var tf := FileAccess.open(scratch + "/mp_8.cfg", FileAccess.WRITE)
+	tf.store_buffer(good_bytes.slice(0, maxi(0, good_bytes.size() - 40)))
+	tf.close()
+	_assert(mgr.load_run("mp", 8).is_empty(), "bughunt: truncated save loads as empty")
+	_assert(not mgr.has_run("mp", 8), "bughunt: truncated save reports no run")
+	# Garbage bytes refuse cleanly.
+	var gf := FileAccess.open(scratch + "/mp_9.cfg", FileAccess.WRITE)
+	gf.store_buffer("not a config file {{{".to_utf8_buffer())
+	gf.close()
+	_assert(mgr.load_run("mp", 9).is_empty(), "bughunt: corrupt save loads as empty")
+	# File with an empty data dict = no run.
+	var ecfg := ConfigFile.new()
+	ecfg.set_value("run", "data", {})
+	ecfg.save(scratch + "/mp_10.cfg")
+	_assert(not mgr.has_run("mp", 10), "bughunt: empty-data save reports no run")
+	# Cloud premise (M-2): on a fresh device the local slot list is empty,
+	# and sync-down only fetches slots that list locally (asserted below).
+	_assert(mgr.list_slots("mp").size() >= 5, "bughunt: scratch slots list (sanity)")
+	var fresh = SaveScript.new()
+	fresh.set("_test_runs_dir", "user://runs_bughunt_empty")
+	_assert(fresh.list_slots("mp").is_empty(),
+		"bughunt: fresh-device slot list is empty (cloud fetch loop would fetch nothing)")
+	fresh.free()
+
+	# --- Part 4: run_summary labels (level / wave / At Station checks).
+	var dsum: String = mgr.run_summary({"theme_id": "dungeon", "level_number": 3,
+		"wave": 2, "at_station": false, "is_multiplayer": false,
+		"class_id": "mage", "player_state": {"level": 3}})
+	_assert(dsum.contains("Level 3") and dsum.contains("Wave 2"),
+		"bughunt: dungeon summary shows level + wave")
+	_assert(not dsum.contains("At Station"),
+		"bughunt: dungeon save is NOT labeled At Station")
+	var ssum: String = mgr.run_summary({"theme_id": "village", "level_number": 4,
+		"at_station": true, "is_multiplayer": false,
+		"class_id": "mage", "player_state": {"level": 7}})
+	_assert(ssum.contains("Level 3 (At Station)"),
+		"bughunt: station summary shows the cleared level, labeled At Station")
+	var msum: String = mgr.run_summary({"theme_id": "dungeon", "level_number": 3,
+		"wave": 0, "at_station": false, "is_multiplayer": true,
+		"roster": [{"class_id": "mage", "player_state": {"level": 3}},
+			{"class_id": "rogue", "player_state": {"level": 5}}]})
+	_assert(msum.contains("2 players"), "bughunt: MP summary counts roster players")
+	# Scratch cleanup.
+	for f in DirAccess.get_files_at(scratch):
+		DirAccess.remove_absolute(scratch.path_join(f))
+	DirAccess.remove_absolute(scratch)
+	if FileAccess.file_exists("user://profile_bughunt_scratch.cfg"):
+		DirAccess.remove_absolute("user://profile_bughunt_scratch.cfg")
+	mgr.free()
+
+	# --- Part 5: source-structure evidence for the audit findings.
+	# C-1 chain: the timeout fill-in stamps a marker nothing ever reads.
+	_assert(dsrc.contains("entry[\"disconnected\"] = true"),
+		"bughunt: timeout entries are stamped disconnected")
+	_assert(dsrc.count("\"disconnected\"") == 1,
+		"bughunt: the disconnected stamp is never read (dead marker)")
+	var mm := _bughunt_body(dsrc, "_mark_missing_disconnected")
+	_assert(mm.contains("_roster_entry(sid, pid, node)"),
+		"bughunt: timeout fill-in snapshots the server-side replica node")
+	# M-3: save-state submissions are trusted verbatim — the claimed
+	# steam_id is never checked against the sender's known mapping.
+	var sub := _bughunt_body(dsrc, "rpc_submit_save_state")
+	_assert(sub.contains("_save_roster.append(state)"),
+		"bughunt: submitted state appended to the roster")
+	_assert(not sub.contains("peer_steam_ids"),
+		"bughunt: submission never cross-checks peer_steam_ids (claimed identity trusted)")
+	# M-1: warlord continued-run binding keys its map by peer authority
+	# but queries it by Steam64 — the host (authority 1) can never match.
+	_assert(dsrc.contains("connected[int(pl.get_multiplayer_authority())] = pl"),
+		"bughunt: warlord setup keys connected map by peer authority")
+	_assert(dsrc.contains("if connected.has(sid):"),
+		"bughunt: warlord setup queries that map by Steam64")
+	var sim_connected := {1: "host"}
+	_assert(not sim_connected.has(76561198000000001),
+		"bughunt: authority-keyed map can never contain a Steam64 (host never rebinds)")
+	# M-2: cloud sync-down enumerates LOCAL slots only.
+	var csd := _bughunt_body(ssrc, "_cloud_sync_down")
+	_assert(csd.contains("for slot in list_slots(mode)"),
+		"bughunt: cloud sync-down only fetches locally-listed slots")
+	_assert(csd.contains("_cloud_fetch(_profile_path_for(_profile_account))"),
+		"bughunt: profile fetch is unconditional (meta syncs cross-device, runs do not)")
 
 
 func _test_lobby_strip() -> void:
