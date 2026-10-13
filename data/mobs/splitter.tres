@@ -7,6 +7,7 @@
 [ext_resource type="Resource" path="res://data/items/leather_armor.tres" id="6"]
 
 [ext_resource type="Resource" path="res://data/items/health_potion.tres" id="7"]
+[ext_resource type="Resource" path="res://data/items/upgrade_kit.tres" id="8"]
 
 [sub_resource type="Resource" id="DropEntry_1"]
 script = ExtResource("1")
@@ -23,6 +24,11 @@ script = ExtResource("1")
 item = ExtResource("7")
 weight = 2.0
 
+[sub_resource type="Resource" id="DropEntry_4"]
+script = ExtResource("1")
+item = ExtResource("8")
+weight = 1.0
+
 [resource]
 script = ExtResource("2")
 id = "splitter"
@@ -34,7 +40,7 @@ attack_range = 1.6
 attack_cooldown = 1.4
 xp_reward = 10
 drop_chance = 0.35
-drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3")]
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4")]
 frames = [ExtResource("3")]
 loot_luck = 0.0
 bonus_drops = 0

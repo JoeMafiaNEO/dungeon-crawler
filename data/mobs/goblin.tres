@@ -11,6 +11,7 @@
 [ext_resource type="Resource" path="res://data/items/health_potion.tres" id="9"]
 
 [ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="10"]
+[ext_resource type="Resource" path="res://data/items/upgrade_kit.tres" id="11"]
 
 [sub_resource type="Resource" id="DropEntry_1"]
 script = ExtResource("1")
@@ -42,6 +43,11 @@ script = ExtResource("1")
 item = ExtResource("10")
 weight = 1.0
 
+[sub_resource type="Resource" id="DropEntry_7"]
+script = ExtResource("1")
+item = ExtResource("11")
+weight = 1.0
+
 [resource]
 script = ExtResource("2")
 id = "goblin"
@@ -53,7 +59,7 @@ attack_range = 1.8
 attack_cooldown = 1.1
 xp_reward = 18
 drop_chance = 0.4
-drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4"), SubResource("DropEntry_5"), SubResource("DropEntry_6")]
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4"), SubResource("DropEntry_5"), SubResource("DropEntry_6"), SubResource("DropEntry_7")]
 frames = [ExtResource("3")]
 loot_luck = 0.5
 bonus_drops = 0

@@ -82,6 +82,7 @@ func _run() -> void:
 	_test_mp_save_bughunt()
 	_test_save_format_pf1()
 	_test_save_format_pf2()
+	_test_weapon_upgrade_kits()
 	_test_warlord_rebind_m1()
 	_test_station_roster_carry_forward()
 	_test_architect_tools_repair()
@@ -9207,6 +9208,138 @@ func _test_save_format_pf2() -> void:
 	SM.set("_test_runs_dir", "")
 	SM.set("_test_account_pin", "")
 	print("[Playtest] save format pf2 done")
+
+
+func _test_weapon_upgrade_kits() -> void:
+	print("[Playtest] Weapon upgrade kits (issue #113 Phase 1)...")
+	# Two kit consumables: upgrade_kit (+1, UNCOMMON) and masterwork_kit
+	# (+2, RARE). Using one raises the EQUIPPED weapon stack's
+	# upgrade_level (persisted on the stack dict); each level adds flat
+	# damage in _recalc_stats; cap +5. Refused uses never consume.
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var kit = ItemDBNode.get_item("upgrade_kit")
+	var mwk = ItemDBNode.get_item("masterwork_kit")
+	_assert(kit != null and mwk != null, "kits: both kit items load from ItemDB")
+	_assert(kit.consumable and mwk.consumable, "kits: kits are consumables (never equipped)")
+	_assert(int(kit.upgrade_levels) == 1 and int(mwk.upgrade_levels) == 2,
+		"kits: upgrade_kit +1 level, masterwork_kit +2 levels")
+	_assert(int(kit.rarity) == 1 and int(mwk.rarity) == 2,
+		"kits: upgrade_kit is UNCOMMON, masterwork_kit is RARE")
+	_assert(not ItemData.is_gear(kit) and not ItemData.is_gear(mwk),
+		"kits: kits are not gear (bag-only)")
+
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(psrc.contains("Equip a weapon first"), "kits: no-weapon toast pinned")
+	_assert(psrc.contains("UPGRADE_DAMAGE_PER_LEVEL"), "kits: flat damage per level in player")
+	_assert(hsrc.contains("damage from upgrades"), "kits: panel detail line pinned")
+	_assert(hsrc.contains("will be lost"), "kits: dispose confirmation names the loss")
+	_assert(msrc.contains("_try_masterwork_drop") and msrc.contains("\"masterwork_kit\""),
+		"kits: masterwork drops wired for elites/bosses")
+
+	# --- Drop tables: upgrade_kit at uncommon weight (1.0) on the
+	# regular mobs of the dungeon/depths themes (the warlord board
+	# fields these same mob datas); village mobs stay kit-free.
+	for mid in ["goblin", "skeleton", "bat", "orc", "archer", "shieldbearer",
+			"splitter", "cultist", "gravewarden"]:
+		var md = load("res://data/mobs/%s.tres" % mid)
+		var found := false
+		for d in md.get("drops"):
+			if d.get("item") != null and str(d.get("item").get("id")) == "upgrade_kit":
+				found = is_equal_approx(float(d.get("weight")), 1.0)
+		_assert(found, "kits: upgrade_kit in %s drop table at weight 1.0" % mid)
+	var slime_md = load("res://data/mobs/slime.tres")
+	var slime_has := false
+	for d in slime_md.get("drops"):
+		if d.get("item") != null and str(d.get("item").get("id")) == "upgrade_kit":
+			slime_has = true
+	_assert(not slime_has, "kits: village mobs (slime) do not drop upgrade kits")
+
+	# --- Use flow on a live player. A warrior spawns with the rusty
+	# sword EQUIPPED (mult 1.0, so damage deltas are exact).
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	_assert(str((p.equipped_entry("WEAPON").get("item") as ItemData).id) == "rusty_sword",
+		"kits: warrior starts with the rusty sword equipped")
+	p._recalc_stats()
+	var dmg0: float = p.damage
+	# Apply one upgrade kit: +1 level, +2 damage, kit consumed.
+	p.receive_item("upgrade_kit")
+	_assert(_kit_index(p, "upgrade_kit") >= 0, "kits: kit received into the bag")
+	p.use_item(_kit_index(p, "upgrade_kit"))
+	var went = p.equipped_entry("WEAPON")
+	_assert(int(went.get("upgrade_level", 0)) == 1, "kits: weapon stack at +1 after one kit")
+	_assert(_kit_index(p, "upgrade_kit") < 0, "kits: kit consumed on a successful use")
+	_assert(is_equal_approx(p.damage - dmg0, 2.0), "kits: +1 level = +2 flat damage")
+	# Masterwork: +2 levels.
+	p.receive_item("masterwork_kit")
+	p.use_item(_kit_index(p, "masterwork_kit"))
+	went = p.equipped_entry("WEAPON")
+	_assert(int(went.get("upgrade_level", 0)) == 3, "kits: masterwork kit adds +2 levels (now +3)")
+	_assert(is_equal_approx(p.damage - dmg0, 6.0), "kits: +3 levels = +6 flat damage")
+	# Clamp at the cap: +2 from level 4 lands on +5.
+	went["upgrade_level"] = 4
+	p._recalc_stats()
+	p.receive_item("masterwork_kit")
+	p.use_item(_kit_index(p, "masterwork_kit"))
+	_assert(int(p.equipped_entry("WEAPON").get("upgrade_level", 0)) == 5,
+		"kits: upgrade clamps at the +5 cap")
+	# At cap: refused, not consumed.
+	p.receive_item("upgrade_kit")
+	p.use_item(_kit_index(p, "upgrade_kit"))
+	_assert(_kit_index(p, "upgrade_kit") >= 0, "kits: at cap -> kit NOT consumed")
+	# --- Persistence: upgrade_level rides the stack dict through
+	# get_state/apply_state; a state without the key reads as 0.
+	var st: Dictionary = p.get_state()
+	var saved_level := -1
+	for e in st["inventory"]:
+		if str(e.get("id", "")) == "rusty_sword":
+			saved_level = int(e.get("upgrade_level", -1))
+	_assert(saved_level == 5, "kits: get_state writes upgrade_level on the stack")
+	var p2 = PlayerScene.instantiate()
+	p2.class_id = "warrior"
+	root.add_child(p2)
+	p2.apply_state(st)
+	_assert(int(p2.equipped_entry("WEAPON").get("upgrade_level", 0)) == 5,
+		"kits: apply_state restores the upgrade level")
+	_assert(is_equal_approx(p2.damage, p.damage), "kits: restored weapon deals upgraded damage")
+	for e in st["inventory"]:
+		e.erase("upgrade_level")
+	var p3 = PlayerScene.instantiate()
+	p3.class_id = "warrior"
+	root.add_child(p3)
+	p3.apply_state(st)
+	_assert(int(p3.equipped_entry("WEAPON").get("upgrade_level", -1)) == 0,
+		"kits: old saves without upgrade_level read as 0")
+	# --- Refusal: with NO weapon equipped a kit is never consumed.
+	var p4 = PlayerScene.instantiate()
+	p4.class_id = "warrior"
+	root.add_child(p4)
+	p4.unequip_stack(_kit_index(p4, "rusty_sword"))
+	_assert(p4.equipped_entry("WEAPON").is_empty(), "kits: refusal rig has no weapon equipped")
+	p4.receive_item("upgrade_kit")
+	p4.use_item(_kit_index(p4, "upgrade_kit"))
+	_assert(_kit_index(p4, "upgrade_kit") >= 0
+		and int(p4.inventory[_kit_index(p4, "upgrade_kit")]["count"]) == 1,
+		"kits: no weapon equipped -> kit NOT consumed")
+	p.queue_free()
+	p2.queue_free()
+	p3.queue_free()
+	p4.queue_free()
+	print("[Playtest] weapon upgrade kits done")
+
+
+func _kit_index(p, item_id: String) -> int:
+	for i in range(p.inventory.size()):
+		var it = (p.inventory[i] as Dictionary).get("item")
+		if it != null and str(it.get("id")) == item_id:
+			return i
+	return -1
 
 
 func _test_warlord_rebind_m1() -> void:

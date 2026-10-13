@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "masterwork_kit"
+display_name = "Masterwork Kit"
+description = "Use: +2 upgrade levels on your equipped weapon (+2 damage per level, max +5)."
+slot = 2
+rarity = 2
+world_model = "res://assets/models/kaykit/pickups/bottle_A_brown.glb"
+consumable = true
+upgrade_levels = 2

@@ -4,6 +4,10 @@ extends CharacterBody3D
 ## The host simulates AI and health; snapshots keep remote peers in sync.
 
 const GRAVITY := 20.0
+## Issue #113 Phase 1: masterwork kit drop chances for _try_masterwork_drop.
+## PLACEHOLDERS (Jesse tunes balance).
+const MASTERWORK_DROP_CHANCE_BOSS := 0.25
+const MASTERWORK_DROP_CHANCE_ELITE := 0.10
 
 var mob_id := 0
 var data: MobData
@@ -1667,6 +1671,10 @@ func _drop_and_reward(attacker: int) -> void:
 				break
 	# Meta items from elites/bosses.
 	_try_meta_drop(dungeon)
+	# Issue #113 Phase 1: masterwork kits drop from elites and bosses
+	# (apex bosses included — they are bosses), mirroring the meta-drop
+	# pattern. Chances are PLACEHOLDERS (Jesse tunes balance).
+	_try_masterwork_drop(dungeon)
 	# Apex relic (issue #5 Phase 3): the apex boss ALWAYS drops its relic,
 	# outside the weighted pool — a 100% forced drop, not a table entry.
 	if data.apex_id != "":
@@ -1693,6 +1701,17 @@ func _try_meta_drop(dungeon) -> void:
 		return
 	var item_id: String = unlocked[randi() % unlocked.size()]
 	dungeon.rpc("spawn_pickup", item_id, global_position + Vector3(0, 0.8, 0), reward_scale)
+
+
+## Issue #113 Phase 1: masterwork kits (+2 upgrade levels) drop from
+## elites and bosses.
+func _try_masterwork_drop(dungeon) -> void:
+	if not (data.is_boss or is_elite):
+		return
+	var chance := MASTERWORK_DROP_CHANCE_BOSS if data.is_boss else MASTERWORK_DROP_CHANCE_ELITE
+	if randf() > chance:
+		return
+	dungeon.rpc("spawn_pickup", "masterwork_kit", global_position + Vector3(0, 0.8, 0), reward_scale)
 
 
 ## Higher luck multiplies the weight of rarer items (rarity 0..4).

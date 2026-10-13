@@ -20,6 +20,11 @@ const SNAPSHOT_INTERVAL := 0.1
 const MOUSE_SENS := 0.0025
 const EYE_HEIGHT := 1.6
 const INVENTORY_MAX := 12
+## Issue #113 Phase 1: weapon upgrade kits. PLACEHOLDER tuning (Jesse
+## owns balance): flat damage granted per upgrade level on the equipped
+## weapon stack, and the max upgrade level a weapon stack can reach.
+const UPGRADE_DAMAGE_PER_LEVEL := 2.0
+const UPGRADE_LEVEL_CAP := 5
 const PICKUP_RANGE := 4.5
 const FIREBALL_SPEED := 22.0
 
@@ -413,6 +418,11 @@ func _recalc_stats() -> void:
 		var count := int(entry["count"])
 		max_hp += item.health_bonus * count
 		damage += item.damage_bonus * count
+		# Issue #113 Phase 1: the equipped WEAPON stack's upgrade level
+		# adds flat damage — per stack, once (a stack of five +3 swords
+		# is one +3 weapon read, not five).
+		if _entry_equipped_slot(entry) == "WEAPON":
+			damage += UPGRADE_DAMAGE_PER_LEVEL * float(int(entry.get("upgrade_level", 0)))
 		move_speed += item.speed_bonus * count
 		dmg_m *= pow(item.damage_mult, count)
 		hp_m *= pow(item.health_mult, count)
@@ -4308,6 +4318,12 @@ func use_item(index: int) -> void:
 		if hud != null:
 			hud.toast("That item can't be used.")
 		return
+	# Issue #113 Phase 1: upgrade kits apply to the equipped weapon
+	# stack instead of granting an effect; they have their own
+	# consumption rules (never consumed on a refused use).
+	if item.upgrade_levels > 0:
+		_use_upgrade_kit(entry, index, item)
+		return
 	var now := Time.get_ticks_msec() / 1000.0
 	var effect := ""
 	if item.heal_fraction > 0.0:
@@ -4338,6 +4354,39 @@ func use_item(index: int) -> void:
 	AudioManager.sfx("drink")
 	if hud != null:
 		hud.toast("Used %s: %s" % [item.display_name, effect])
+		hud.refresh_inventory(self)
+		hud.refresh_loadout(self)
+
+
+## Issue #113 Phase 1: apply one upgrade kit to the EQUIPPED weapon
+## stack. Refused uses (no weapon equipped, weapon already at the cap)
+## show a toast and do NOT consume the kit. A successful use consumes
+## one kit and raises the weapon stack's upgrade_level, clamped at
+## UPGRADE_LEVEL_CAP (a +2 kit at level 4 lands on +5, not +6).
+func _use_upgrade_kit(entry: Dictionary, index: int, item: ItemData) -> void:
+	var weapon := equipped_entry("WEAPON")
+	if weapon.is_empty():
+		if hud != null:
+			hud.toast("Equip a weapon first")
+		return
+	var level := int(weapon.get("upgrade_level", 0))
+	if level >= UPGRADE_LEVEL_CAP:
+		if hud != null:
+			hud.toast("Weapon fully upgraded (+%d)" % UPGRADE_LEVEL_CAP)
+		return
+	var new_level := mini(UPGRADE_LEVEL_CAP, level + item.upgrade_levels)
+	weapon["upgrade_level"] = new_level
+	entry["count"] = int(entry["count"]) - 1
+	if int(entry["count"]) <= 0:
+		inventory.remove_at(index)
+	_recalc_stats()
+	health_changed.emit(hp, max_hp)
+	# Sound Engineer's dedicated cue for this (landed with the #113 cues).
+	AudioManager.sfx("upgrade_apply")
+	if hud != null:
+		var witem := weapon.get("item") as ItemData
+		hud.toast("%s upgraded to +%d" % [
+			witem.display_name if witem != null else "Weapon", new_level])
 		hud.refresh_inventory(self)
 		hud.refresh_loadout(self)
 
@@ -4918,8 +4967,11 @@ func get_state() -> Dictionary:
 		var item := entry["item"] as ItemData
 		if item != null:
 			# Issue #104 Phase 1: persist the equip marker as "slot".
+			# Issue #113 Phase 1: persist the stack's upgrade level
+			# (additive known key; old saves without it read as 0).
 			inv.append({"id": item.id, "count": int(entry["count"]),
-				"slot": _entry_equipped_slot(entry)})
+				"slot": _entry_equipped_slot(entry),
+				"upgrade_level": int(entry.get("upgrade_level", 0))})
 	var state := {
 		"level": level,
 		"xp": xp,
@@ -5013,7 +5065,9 @@ func apply_state(s: Dictionary) -> void:
 					marker = want
 					claimed[want] = true
 			inventory.append({"item": item, "count": maxi(1, int(e.get("count", 1))),
-				"equipped_slot": marker})
+				"equipped_slot": marker,
+				# Issue #113 Phase 1: upgrade level (absent in old saves = 0).
+				"upgrade_level": clampi(int(e.get("upgrade_level", 0)), 0, UPGRADE_LEVEL_CAP)})
 		else:
 			# Issue #111 minor 1: the id no longer resolves (item removed
 			# or renamed between versions, DLC absent). The stack is

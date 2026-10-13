@@ -105,6 +105,11 @@ static func rarity_color(r: int) -> Color:
 @export var world_model: String = ""
 ## Consumables are used from the inventory (not passive). One use = one count.
 @export var consumable: bool = false
+## Issue #113 Phase 1: weapon upgrade kit strength. When > 0, this
+## consumable is an upgrade kit: using it adds this many upgrade levels
+## to the EQUIPPED weapon stack (see Player._use_upgrade_kit). 0 = not
+## a kit.
+@export var upgrade_levels: int = 0
 ## Fraction of max HP restored on use (0 = none).
 @export var heal_fraction: float = 0.0
 ## Temporary buff on use: stat "speed"/"damage", mult, duration seconds.

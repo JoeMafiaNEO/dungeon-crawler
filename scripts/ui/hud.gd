@@ -2631,8 +2631,16 @@ func refresh_inventory(p: Player) -> void:
 		else:
 			var item := entry["item"] as ItemData
 			var label := item.display_name
+			# Issue #113 Phase 1: an upgraded stack reads "Iron Sword +3",
+			# and the weapon slot adds the detail line under the name.
+			var ulevel := int(entry.get("upgrade_level", 0))
+			if ulevel > 0:
+				label += " +%d" % ulevel
 			if int(entry["count"]) > 1:
 				label += " x%d" % int(entry["count"])
+			if slot_name == "WEAPON" and ulevel > 0:
+				label += "\n+%d damage from upgrades" % int(
+					Player.UPGRADE_DAMAGE_PER_LEVEL * float(ulevel))
 			icon.texture = item.icon
 			item_label.text = label
 			item_label.add_theme_color_override("font_color", ItemData.rarity_color(item.rarity))
@@ -2646,6 +2654,10 @@ func refresh_inventory(p: Player) -> void:
 		var entry: Dictionary = p.inventory[i]
 		var item := entry["item"] as ItemData
 		var label := item.display_name
+		# Issue #113 Phase 1: upgraded stacks read "Iron Sword +3" in
+		# the bag too (same read as the slot box).
+		if int(entry.get("upgrade_level", 0)) > 0:
+			label += " +%d" % int(entry.get("upgrade_level", 0))
 		if int(entry["count"]) > 1:
 			label += " x%d" % int(entry["count"])
 		if item.consumable:
@@ -2677,6 +2689,20 @@ func _on_dispose_pressed() -> void:
 	if sel < 0 or sel >= _player.inventory.size():
 		toast("Select a stack first.")
 		return
+	# Issue #113 Phase 1: disposing an UPGRADED stack asks first, and
+	# the confirmation names the loss (plain stacks keep the immediate
+	# dispose they have always had).
+	var entry: Dictionary = _player.inventory[sel]
+	var ulevel := int(entry.get("upgrade_level", 0))
+	if ulevel > 0:
+		var ditem := entry.get("item") as ItemData
+		var dname := ditem.display_name if ditem != null else "Item"
+		_show_quit_confirm(
+			"Dispose %s +%d? The +%d upgrade will be lost." % [dname, ulevel, ulevel],
+			func() -> void:
+				if _player != null and sel < _player.inventory.size():
+					_player.dispose_item(sel))
+		return
 	_player.dispose_item(sel)
 
 
@@ -2693,6 +2719,10 @@ func _on_use_pressed() -> void:
 func _item_summary(item: ItemData) -> String:
 	var parts: Array[String] = []
 	if item.consumable:
+		# Issue #113 Phase 1: upgrade kits name their strength.
+		if item.upgrade_levels > 0:
+			parts.append("weapon +%d level%s" % [item.upgrade_levels,
+				"s" if item.upgrade_levels > 1 else ""])
 		if item.heal_fraction > 0.0:
 			parts.append("heal %d%%" % int(item.heal_fraction * 100.0))
 		if item.buff_stat != "":
