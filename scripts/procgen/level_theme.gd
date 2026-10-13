@@ -62,3 +62,10 @@ extends Resource
 @export var has_fishing_water: bool = false
 ## When true, ProcGen places farm soil plots and records farm plot spots.
 @export var has_farm_plots: bool = false
+
+# --- Heightmap terrain (issue #103) ---
+## When true, the dungeon builds true heightmap terrain (gentle marsh
+## profile) instead of the flat floor. The terrain conforms to the
+## generated layout — ProcGen placement and RNG draw order are untouched,
+## and heights derive deterministically from the level seed on every peer.
+@export var use_heightmap_terrain: bool = false

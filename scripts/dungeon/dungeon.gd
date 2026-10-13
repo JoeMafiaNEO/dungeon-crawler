@@ -204,6 +204,10 @@ var _bounty: BountySys = null
 var wave_info := {"wave": 0, "total": TOTAL_WAVES, "level": 1, "theme_name": "", "state": 0, "time_left": 8.0, "mobs_left": 0, "keys_found": 0, "keys_needed": 0}
 
 var _layout: LevelLayout
+## Issue #103: heightmap terrain instance when the theme opts in via
+## LevelTheme.use_heightmap_terrain (misty docks only). Null on every
+## flat-floor theme, where ground_height_at() is the old constant 0.0.
+var _terrain: HeightmapTerrain = null
 var _mob_mix_sorted: Array[Dictionary] = []
 var _server_rng := RandomNumberGenerator.new()
 ## Station annex placement (issue #2 Phase 1): computed from the level seed
@@ -1700,7 +1704,7 @@ func _random_floor_pos() -> Vector3:
 		var cz := _server_rng.randi() % _layout.grid_size
 		if _layout.is_floor(cx, cz):
 			var pos := _layout.cell_to_world(cx, cz)
-			pos.y = 0.5
+			pos.y = ground_height_at(pos) + 0.5
 			return pos
 	return Vector3.INF
 
@@ -1845,7 +1849,7 @@ func _spawn_boss() -> void:
 		var d: float = (Vector3(s.x, 0, s.z) - Vector3.ZERO).length()
 		if d > best_d:
 			best_d = d
-			pos = Vector3(s.x, 0.5, s.z)
+			pos = Vector3(s.x, ground_height_at(s) + 0.5, s.z)
 	var scales: Array = boss_spawn_scales(is_apex, _danger_mult(), NetworkManager.host_difficulty)
 	rpc("spawn_mob", _mob_id, theme.boss_id, pos, scales[0], scales[1], false, _danger_mult())
 
@@ -1933,12 +1937,12 @@ func _key_spots() -> Array[Vector3]:
 		pool.shuffle()
 		for i in mini(_keys_needed, pool.size()):
 			var p: Vector3 = pool[i]
-			spots.append(Vector3(p.x, 1.0, p.z))
+			spots.append(Vector3(p.x, ground_height_at(p) + 1.0, p.z))
 	else:
 		var rng := RandomNumberGenerator.new()
 		rng.randomize()
 		for p in ProcGen.key_spots(_layout, _keys_needed, rng):
-			spots.append(Vector3(p.x, 1.0, p.z))
+			spots.append(Vector3(p.x, ground_height_at(p) + 1.0, p.z))
 	return spots
 
 
@@ -1953,6 +1957,7 @@ func _shower_loot() -> void:
 	for i in mini(4, ids.size()):
 		var item_id: String = ids[randi() % ids.size()]
 		var pos := Vector3(randf_range(-6.0, 6.0), 0.8, randf_range(-6.0, 6.0))
+		pos.y = ground_height_at(pos) + 0.8
 		rpc("spawn_pickup", item_id, pos)
 
 
@@ -2216,7 +2221,7 @@ func _random_mob_pos() -> Vector3:
 		return Vector3(0, 1.0, -10.0)
 	for attempt in 12:
 		var pos: Vector3 = _layout.mob_spawns[randi() % _layout.mob_spawns.size()]
-		pos.y = 1.0
+		pos.y = ground_height_at(pos) + 1.0
 		var clear := true
 		for n in get_tree().get_nodes_in_group("players"):
 			var p := n as Node3D
@@ -2226,7 +2231,7 @@ func _random_mob_pos() -> Vector3:
 		if clear:
 			return pos
 	var fallback: Vector3 = _layout.mob_spawns[0]
-	fallback.y = 1.0
+	fallback.y = ground_height_at(fallback) + 1.0
 	return fallback
 
 
@@ -2287,9 +2292,11 @@ func _cipher_plaque_pos() -> Vector3:
 	rng.seed = _server_rng.randi()
 	var spots := ProcGen.key_spots(_layout, 1, rng)
 	if spots.is_empty():
-		return Vector3(6, 0.6, 6)
+		var fb := Vector3(6, 0.6, 6)
+		fb.y = ground_height_at(fb) + 0.6
+		return fb
 	var p: Vector3 = spots[0]
-	return Vector3(p.x, 0.6, p.z)
+	return Vector3(p.x, ground_height_at(p) + 0.6, p.z)
 
 
 # --- Key objective ---
@@ -2335,7 +2342,10 @@ func _build_arena_from_layout() -> void:
 		add_child(holder)
 	_build_environment()
 	_annex_plan = StationAnnex.plan(next_seed, _layout)
-	_build_floor()
+	if theme != null and theme.use_heightmap_terrain:
+		_build_terrain()
+	else:
+		_build_floor()
 	_build_walls()
 	_build_obstacles()
 	_build_props()
@@ -2345,6 +2355,13 @@ func _build_arena_from_layout() -> void:
 	StationAnnex.build(self, _annex_plan, _layout)
 	_build_station_annex_content()
 	spawn_points = _layout.player_spawns
+	if _terrain != null:
+		# Ground the arena spawns on the terrain (the annex-disembark
+		# override below keeps its own flat y — the hall floor is y=0).
+		var grounded_spawns: Array[Vector3] = []
+		for s in _layout.player_spawns:
+			grounded_spawns.append(Vector3(s.x, ground_height_at(s), s.z))
+		spawn_points = grounded_spawns
 	_build_dock_merchant()
 	# Train disembark (issue #3 Phase 3): the party steps out of the car into
 	# the annex hall, so spawn there instead of the arena spawn points.
@@ -2622,6 +2639,101 @@ func _flat_mat(color: Color) -> StandardMaterial3D:
 	return mat
 
 
+## Ground height at a world position (issue #103). Terrain-backed when
+## the theme uses heightmap terrain; flat 0.0 on every other theme, so
+## all existing spawn/placement math keeps its exact old values there.
+func ground_height_at(pos: Vector3) -> float:
+	if _terrain != null:
+		return _terrain.get_ground_height(pos)
+	return 0.0
+
+
+## Lowest ground height under a square footprint centered at `center`
+## (obstacle / large-prop basing: sit on the low corner, sunk, so no
+## edge floats or gaps on a slope). 0.0 on flat themes.
+func _min_ground_height(center: Vector3, half_size: float) -> float:
+	if _terrain == null:
+		return 0.0
+	var m := ground_height_at(center)
+	for off in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1),
+			Vector2(0, -1), Vector2(0, 1), Vector2(-1, 0), Vector2(1, 0)]:
+		m = minf(m, ground_height_at(center + Vector3(off.x * half_size, 0.0, off.y * half_size)))
+	return m
+
+
+## Issue #103: true heightmap terrain for opt-in themes (misty docks).
+## Gentle marsh: low-amplitude noise lifted so its whole range sits
+## above the water plane — only the layout's carved ponds become water.
+## The terrain conforms to the generated layout (ProcGen placement and
+## RNG untouched) and the noise seed derives from the level seed, so
+## every peer builds identical heights locally; no new network state.
+func _build_terrain() -> void:
+	_terrain = HeightmapTerrain.new()
+	_terrain.name = "HeightmapTerrain"
+	var extent := float(_layout.grid_size) * _layout.cell_size
+	_terrain.map_points = int(round(extent)) + 1 # 1.0m cells
+	_terrain.cell_size = 1.0
+	_terrain.terrain_seed = next_seed
+	_terrain.noise_frequency = 0.045
+	_terrain.amplitude = 1.0
+	_terrain.height_offset = 0.55
+	_terrain.water_level = -0.10
+	_terrain.pond_depth = 0.5
+	_terrain.smooth_passes = 2
+	_terrain.flatten_radius = 5.0
+	# Marsh palette in the spirit of the mock docks (dark, muted).
+	_terrain.tint_bed = Color(0.23, 0.22, 0.16)
+	_terrain.tint_low = Color(0.16, 0.23, 0.17)
+	_terrain.tint_mid = Color(0.26, 0.25, 0.19)
+	_terrain.tint_high = Color(0.32, 0.32, 0.33)
+	# POI flattening: the spawn clearing, every farm plot, the merchant.
+	for s in _layout.player_spawns:
+		_terrain.poi_points.append(s)
+	for f in _layout.farm_plots:
+		_terrain.poi_points.append(f)
+	if not _layout.player_spawns.is_empty():
+		_terrain.poi_points.append(_layout.player_spawns[0] + Vector3(3.0, 0.0, 0.0))
+	# Ponds: the layout's own basins, each at its individual radius.
+	for pd in _layout.ponds:
+		var pond: Dictionary = pd
+		_terrain.pond_specs.append({"center": pond["center"], "radius": float(pond["radius"])})
+	# Annex doorway: meet the annex floor at y=0 — no step at the train
+	# door. Radius is wide because the smoothstep profile is soft at its
+	# rim: the whole door approach (not just the edge row) must sit low.
+	var ax := float(_annex_plan.get("attach_x", 0.0))
+	_terrain.flatten_targets.append({
+		"pos": Vector3(ax, 0.0, -_layout.arena_half_size()),
+		"height": 0.0, "radius": 6.5})
+	add_child(_terrain)
+	_terrain.generate()
+	_build_door_apron(ax)
+
+
+## The flat floor always reached 3m past the north wall to meet the
+## annex corridor floor (see station_annex.gd's floor contract). The
+## terrain ends at the arena edge, so the doorway strip gets this apron
+## instead: top at y=0, butt-jointed to the terrain edge (flattened to
+## y=0 at the door) and to the corridor floor.
+func _build_door_apron(ax: float) -> void:
+	var half := _layout.arena_half_size()
+	var body := StaticBody3D.new()
+	body.name = "TerrainDoorApron"
+	body.position = Vector3(ax, -0.5, -half - 1.5)
+	var size := Vector3(StationAnnex.CORRIDOR_W + 1.0, 1.0, 3.0)
+	var col := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = size
+	col.shape = box
+	body.add_child(col)
+	var mesh := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	bm.material = _flat_mat(theme.ground_color.darkened(0.35))
+	mesh.mesh = bm
+	body.add_child(mesh)
+	add_child(body)
+
+
 func _build_floor() -> void:
 	var size := float(_layout.grid_size) * _layout.cell_size + 6.0
 	var body := StaticBody3D.new()
@@ -2655,6 +2767,16 @@ func _build_walls() -> void:
 	for seg in StationAnnex.north_wall_segments(half, thick, wall_h,
 			float(_annex_plan.get("attach_x", 0.0)), StationAnnex.DOOR_W):
 		walls.append(seg)
+	# Issue #103: on heightmap terrain, drop every wall's bottom 2m so
+	# terrain variance can never open a gap underneath (tops unchanged).
+	if _terrain != null:
+		for data in walls:
+			var c: Vector3 = data[0]
+			var sz: Vector3 = data[1]
+			c.y -= 1.0
+			sz.y += 2.0
+			data[0] = c
+			data[1] = sz
 	for data in walls:
 		_wall_box(data[0], data[1], mat)
 
@@ -2691,7 +2813,12 @@ func _build_obstacles() -> void:
 			box.size = Vector3(_layout.cell_size, 3.0, _layout.cell_size)
 			col.shape = box
 			var wp := _layout.cell_to_world(cx, cz)
-			col.position = Vector3(wp.x, 1.5, wp.z)
+			var base_y := 1.5
+			if _terrain != null:
+				# Base the box at the lowest ground under the cell,
+				# sunk 0.3m, so no corner floats or gaps on a slope.
+				base_y = _min_ground_height(wp, _layout.cell_size * 0.5) + 1.5 - 0.3
+			col.position = Vector3(wp.x, base_y, wp.z)
 			body.add_child(col)
 			shape_count += 1
 	if shape_count > 0:
@@ -2704,6 +2831,12 @@ func _build_props() -> void:
 	for p in _layout.props:
 		var prop_type := str(p.get("type", "rock"))
 		var pos: Vector3 = p.get("pos", Vector3.ZERO)
+		if _terrain != null:
+			# The terrain's carved basins + water plane replace the flat
+			# pond discs; everything else seats on the ground height.
+			if prop_type == "pond":
+				continue
+			pos = Vector3(pos.x, _prop_ground_y(p, pos), pos.z)
 		var visual: Node3D
 		if bool(p.get("obstacle_visual", false)):
 			# Obstacle block visual, tinted by the theme, scaled to the block.
@@ -2730,19 +2863,31 @@ func _tint_prop(node: Node, color: Color) -> void:
 		_tint_prop(child, color)
 
 
+## Ground Y for a layout prop (issue #103): obstacle block visuals base
+## at the lowest ground under the whole block; decorative props sit at
+## the ground height of their own position.
+func _prop_ground_y(p: Dictionary, pos: Vector3) -> float:
+	if bool(p.get("obstacle_visual", false)):
+		return _min_ground_height(pos, float(p.get("scl", 1.0)) * _layout.cell_size * 0.5)
+	return ground_height_at(pos)
+
+
 func _build_torches() -> void:
 	for pos in _layout.torches:
 		var torch := PropBuilder.build("torch", 1.0, {
 			"light_color": theme.torch_light_color,
 			"light_energy": theme.torch_light_energy,
 		})
-		torch.position = pos - Vector3(0, 1.6, 0) # layout stores flame height; prop is ground-based
+		# Layout stores flame height (y=1.6); the prop is ground-based.
+		# ground_height_at is 0.0 on flat themes — identical placement.
+		var base := Vector3(pos.x, ground_height_at(pos), pos.z)
+		torch.position = base
 		add_child(torch)
 		for child in torch.get_children():
 			if child is OmniLight3D:
 				_torch_lights.append(child)
 		var sparks := Effects.make_flame()
-		sparks.position = pos + Vector3(0, 0.35, 0)
+		sparks.position = base + Vector3(0, 1.95, 0)
 		add_child(sparks)
 
 
@@ -2758,11 +2903,16 @@ func _build_fishing_spots() -> void:
 		var spot := FishingSpot.new()
 		spot.name = "FishingSpot_%d" % idx
 		spot.spot_index = idx
-		spot.position = pos
+		spot.position = Vector3(pos.x, ground_height_at(pos), pos.z)
 		# Bobber target: the pond this spot was placed for (1:1 with the
 		# ponds array, appended in the same procgen loop).
 		if idx < _layout.ponds.size():
 			spot.water_point = (_layout.ponds[idx] as Dictionary)["center"]
+			if _terrain != null:
+				# Bobber floats on the terrain's water plane (issue #103).
+				var wp: Vector3 = spot.water_point
+				wp.y = _terrain.water_level
+				spot.water_point = wp
 		add_child(spot)
 		idx += 1
 
@@ -2776,7 +2926,7 @@ func _build_farm_plots() -> void:
 		var plot := FarmPlot.new()
 		plot.name = "FarmPlot_%d" % idx
 		plot.plot_index = idx
-		plot.position = pos
+		plot.position = Vector3(pos.x, ground_height_at(pos), pos.z)
 		add_child(plot)
 		idx += 1
 
@@ -2792,6 +2942,7 @@ func _build_dock_merchant() -> void:
 	var merch := DockMerchant.new()
 	merch.name = "DockMerchant"
 	merch.position = spawn_points[0] + Vector3(3.0, 0.0, 0.0)
+	merch.position.y = ground_height_at(merch.position)
 	add_child(merch)
 
 

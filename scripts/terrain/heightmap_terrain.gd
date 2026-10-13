@@ -11,6 +11,10 @@ extends Node3D
 @export var terrain_seed: int = 1234
 @export var noise_frequency: float = 0.035
 @export var amplitude: float = 3.5
+## Constant lift applied to every generated height (default 0 = the
+## original test-scene behavior). Lets a profile sit its whole noise
+## range above the water plane so only carved ponds become water.
+@export var height_offset: float = 0.0
 @export var water_level: float = 0.6
 @export var smooth_passes: int = 2
 @export var flatten_radius: float = 8.0 ## POI flatten radius (spec: layout-constrained gen)
@@ -28,8 +32,15 @@ extends Node3D
 
 ## Flatten targets: terrain relaxes toward the center height near these.
 var poi_points: Array[Vector3] = []
+## Explicit-height flatten targets: { "pos": Vector3, "height": float,
+## "radius": float }. Terrain relaxes toward the GIVEN height (e.g. meet
+## a doorway floor at y=0) instead of the sampled center height.
+var flatten_targets: Array[Dictionary] = []
 ## Carved basins (become real water where below water_level).
 var pond_centers: Array[Vector3] = []
+## Per-pond carve specs: { "center": Vector3, "radius": float } — each
+## basin carved at its own radius instead of the global pond_radius.
+var pond_specs: Array[Dictionary] = []
 
 var _heights := PackedFloat32Array()
 var _min_height := 0.0
@@ -53,8 +64,9 @@ func generate() -> void:
 			var wx := (float(x) - float(map_points - 1) * 0.5) * cell_size
 			var wz := (float(z) - float(map_points - 1) * 0.5) * cell_size
 			var n := _noise.get_noise_2d(wx, wz) * 0.5 + 0.5
-			_heights[z * map_points + x] = n * amplitude - amplitude * 0.5
+			_heights[z * map_points + x] = n * amplitude - amplitude * 0.5 + height_offset
 	_flatten_pois()
+	_flatten_targets()
 	_carve_ponds()
 	for i in smooth_passes:
 		_relax()
@@ -116,23 +128,51 @@ func _flatten_pois() -> void:
 				_heights[i] = lerpf(_heights[i], target, t)
 
 
-func _carve_ponds() -> void:
-	for pond in pond_centers:
-		var cx := int(round((pond.x / cell_size) + float(map_points - 1) * 0.5))
-		var cz := int(round((pond.z / cell_size) + float(map_points - 1) * 0.5))
-		var r := int(ceil(pond_radius / cell_size))
+func _flatten_targets() -> void:
+	for spec in flatten_targets:
+		var pos: Vector3 = spec["pos"]
+		var target := float(spec["height"])
+		var radius := float(spec.get("radius", flatten_radius))
+		var cx := int(round((pos.x / cell_size) + float(map_points - 1) * 0.5))
+		var cz := int(round((pos.z / cell_size) + float(map_points - 1) * 0.5))
+		var r := int(ceil(radius / cell_size))
 		for dz in range(-r, r + 1):
 			for dx in range(-r, r + 1):
 				var dist := sqrt(float(dx * dx + dz * dz)) * cell_size
-				if dist > pond_radius:
+				if dist > radius:
 					continue
-				var t := 1.0 - smoothstep(0.0, pond_radius, dist)
+				var t := 1.0 - smoothstep(0.0, radius, dist)
 				var gx := cx + dx
 				var gz := cz + dz
 				if gx < 0 or gz < 0 or gx >= map_points or gz >= map_points:
 					continue
 				var i := gz * map_points + gx
-				_heights[i] = minf(_heights[i], water_level - pond_depth * t)
+				_heights[i] = lerpf(_heights[i], target, t)
+
+
+func _carve_ponds() -> void:
+	for pond in pond_centers:
+		_carve_pond_at(pond, pond_radius)
+	for spec in pond_specs:
+		_carve_pond_at(spec["center"], float(spec["radius"]))
+
+
+func _carve_pond_at(pond: Vector3, radius: float) -> void:
+	var cx := int(round((pond.x / cell_size) + float(map_points - 1) * 0.5))
+	var cz := int(round((pond.z / cell_size) + float(map_points - 1) * 0.5))
+	var r := int(ceil(radius / cell_size))
+	for dz in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			var dist := sqrt(float(dx * dx + dz * dz)) * cell_size
+			if dist > radius:
+				continue
+			var t := 1.0 - smoothstep(0.0, radius, dist)
+			var gx := cx + dx
+			var gz := cz + dz
+			if gx < 0 or gz < 0 or gx >= map_points or gz >= map_points:
+				continue
+			var i := gz * map_points + gx
+			_heights[i] = minf(_heights[i], water_level - pond_depth * t)
 
 
 func _relax() -> void:
