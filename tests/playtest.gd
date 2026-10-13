@@ -84,6 +84,7 @@ func _run() -> void:
 	_test_save_format_pf1()
 	_test_save_format_pf2()
 	_test_weapon_upgrade_kits()
+	_test_masterwork_drop_hook()
 	_test_warlord_rebind_m1()
 	_test_station_roster_carry_forward()
 	_test_architect_tools_repair()
@@ -9419,6 +9420,79 @@ func _kit_index(p, item_id: String) -> int:
 		if it != null and str(it.get("id")) == item_id:
 			return i
 	return -1
+
+
+func _test_masterwork_drop_hook() -> void:
+	print("[Playtest] Masterwork drop hook (issue #113 F-2)...")
+	# F-2 (Eng 9, Phase 1 verification): _try_masterwork_drop was pinned
+	# at source level only. This drives the hook BEHAVIORALLY across the
+	# kill classes with deterministic rolls: seeds are searched at
+	# runtime for one roll in each band — below the elite chance, in the
+	# elite..boss gap (the branch discriminator), and above the boss
+	# chance — then re-seeded immediately before each hook call, so the
+	# hook's own randf() reproduces the banded value exactly. No
+	# statistical asserts (issue #115 is the standing warning).
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	# The chance consts come from the script's constant map, never a
+	# static Mob reference: naming the class here would force mob.gd
+	# (which names autoloads) into the suite's compile-time dependency
+	# chain — the 2026-10-12 hollow-suite trap.
+	var mob_consts: Dictionary = (load("res://scripts/mobs/mob.gd") as GDScript).get_script_constant_map()
+	var e_chance := float(mob_consts.get("MASTERWORK_DROP_CHANCE_ELITE", -1.0))
+	var b_chance := float(mob_consts.get("MASTERWORK_DROP_CHANCE_BOSS", -1.0))
+	_assert(is_equal_approx(b_chance, 0.25),
+		"mw hook: boss chance const is 0.25 (placeholder)")
+	_assert(is_equal_approx(e_chance, 0.10),
+		"mw hook: elite chance const is 0.10 (placeholder)")
+	var seed_low := -1
+	var seed_mid := -1
+	var seed_high := -1
+	for s in range(1, 20000):
+		seed(s)
+		var v := randf()
+		if v < e_chance and seed_low < 0:
+			seed_low = s
+		elif v >= e_chance and v < b_chance and seed_mid < 0:
+			seed_mid = s
+		elif v >= b_chance and seed_high < 0:
+			seed_high = s
+		if seed_low > 0 and seed_mid > 0 and seed_high > 0:
+			break
+	_assert(seed_low > 0 and seed_mid > 0 and seed_high > 0,
+		"mw hook: deterministic seeds found for all three roll bands")
+	var stub := RelicDungeonStub.new()
+	root.add_child(stub)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var cases: Array = [
+		# [mob data id, elite flag, seed, expect drop, label]
+		["goblin", false, seed_low, false, "regular mob never drops (gate)"],
+		["goblin", true, seed_low, true, "elite + low roll drops"],
+		["goblin", true, seed_mid, false, "elite + mid roll: elite branch refuses"],
+		["goblin", true, seed_high, false, "elite + high roll refuses"],
+		["boss_boar", false, seed_low, true, "boss + low roll drops"],
+		["boss_boar", false, seed_mid, true, "boss + mid roll drops (boss branch, same roll that refused the elite)"],
+		["boss_boar", false, seed_high, false, "boss + high roll refuses"],
+		["apex_boar", false, seed_mid, true, "apex (is_boss + apex_id) rides the boss branch"],
+		["apex_boar", false, seed_high, false, "apex + high roll refuses"],
+	]
+	for c in cases:
+		var data: Resource = load("res://data/mobs/%s.tres" % str(c[0]))
+		var mob = MobScene.instantiate()
+		mob.setup(77, data, 1.0, 1.0, bool(c[1]), 1.0)
+		holder.add_child(mob)
+		stub.pickups.clear()
+		seed(int(c[2]))
+		mob._try_masterwork_drop(stub)
+		var dropped := false
+		for pk in stub.pickups:
+			if str(pk[0]) == "masterwork_kit":
+				dropped = true
+		_assert(dropped == bool(c[3]), "mw hook: %s" % str(c[4]))
+		mob.queue_free()
+	stub.queue_free()
+	holder.queue_free()
+	print("[Playtest] masterwork drop hook done")
 
 
 func _test_warlord_rebind_m1() -> void:
