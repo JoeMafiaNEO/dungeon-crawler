@@ -4696,6 +4696,14 @@ class ApexDungeonStub extends Node:
 	func get_player_node(_peer_id: int) -> Node:
 		return null
 
+	## F-5: the drop tail rpc's spawn_pickup on successful rolls; record
+	## them (same shape as RelicDungeonStub) instead of erroring.
+	var pickups: Array = []
+
+	@rpc("any_peer", "call_local")
+	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
+		pickups.append([item_id, pos, value_mult])
+
 	var placed: Array = []
 
 	@rpc("any_peer", "call_local")
@@ -5604,6 +5612,14 @@ class HolyDungeonStub extends Node3D:
 	## RelicDungeonStub) — kills under this stub grant no XP/bounty.
 	func get_player_node(_peer_id: int) -> Node:
 		return null
+
+	## F-5: the drop tail rpc's spawn_pickup on successful rolls; record
+	## them (same shape as RelicDungeonStub) instead of erroring.
+	var pickups: Array = []
+
+	@rpc("any_peer", "call_local")
+	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
+		pickups.append([item_id, pos, value_mult])
 
 
 func _test_apex_relics() -> void:
