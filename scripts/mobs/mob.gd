@@ -56,6 +56,10 @@ var is_champion := false
 ## Slow debuff (frost): _slow_t seconds remaining at _slow_mult speed.
 var _slow_t := 0.0
 var _slow_mult := 1.0
+## Stun (issue #113 Phase 4, Hammer Smash): while _stun_t > 0 the mob
+## cannot move or attack. Server-side state, mirroring the slow pattern;
+## boss special-think is NOT paused (movement/basic attacks only).
+var _stun_t := 0.0
 ## Smoke Bombard (combo finisher): blinded mobs miss 50% of attacks.
 var _blind_t := 0.0
 ## Shatter: slowed enemies take +25% damage (mage opens windows for team).
@@ -229,6 +233,9 @@ func _physics_process(delta: float) -> void:
 		if _slow_t <= 0.0:
 			_slow_mult = 1.0
 			_sprite.modulate = Color.WHITE
+	# Stun ticks down (server-side).
+	if _stun_t > 0.0:
+		_stun_t -= delta
 	# Blind debuff ticks down (server-side).
 	if _blind_t > 0.0:
 		_blind_t -= delta
@@ -278,7 +285,9 @@ func _physics_process(delta: float) -> void:
 	var boss_busy := false
 	if data.is_boss:
 		boss_busy = _boss_think(delta)
-	if not boss_busy and _target != null and is_instance_valid(_target):
+	# Stunned mobs skip the move/attack block entirely (the elif below
+	# zeroes their velocity); boss specials above still cadence.
+	if not boss_busy and _stun_t <= 0.0 and _target != null and is_instance_valid(_target):
 		var to: Vector3 = _target.global_position - global_position
 		to.y = 0.0
 		var dist := to.length()
@@ -454,6 +463,21 @@ func _fire_arrow(dir: Vector3) -> void:
 
 
 ## Applies a slow debuff (frost). Server-side; visual tint included.
+## Issue #113 Phase 4: stun (Hammer Smash). Server-side only — the
+## timer lives beside the slow timer and gates movement/attacks in
+## _physics_process. Re-stunning refreshes to the longer duration.
+func apply_stun(duration: float) -> void:
+	if not multiplayer.is_server():
+		return
+	if not alive:
+		return
+	_stun_t = maxf(_stun_t, duration)
+
+
+func is_stunned() -> bool:
+	return _stun_t > 0.0
+
+
 func apply_slow(duration: float, mult: float) -> void:
 	if not alive:
 		return

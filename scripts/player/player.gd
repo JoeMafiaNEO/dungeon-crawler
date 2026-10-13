@@ -108,6 +108,17 @@ const REVIVE_RANGE := 3.5
 ## never permanent. Neither grants a basic attack.
 const ARCHITECT_TOOL_IDS: Array[String] = ["field_wrench", "forge_hammer"]
 const WRENCH_ITEM_ID := "field_wrench"
+const HAMMER_ITEM_ID := "forge_hammer"
+## Issue #113 Phase 4: Hammer Smash — the forge_hammer's AOE ability
+## (placeholders — Jesse's tuning). No melee swing: the hammer's only
+## offense is this ability, cast through the ordinary ability system.
+const SMASH_RADIUS := 3.5
+const SMASH_DAMAGE_MULT := 1.5
+const SMASH_STUN_TIME := 1.0
+const SMASH_COOLDOWN := 10.0
+## Server-side Smash cooldown on this node (the client's ability_cds
+## entry is a HUD mirror; this is the validated truth).
+var _srv_smash_cd := 0.0
 ## Wrench repair channel (placeholders — Jesse's tuning): free, limited
 ## only by the channel itself. Server ticks on its own timer; clients
 ## send start/stop intents only.
@@ -394,6 +405,12 @@ func ensure_architect_tools(equip_wrench: bool = false) -> void:
 ## for remote peers (inventory itself never replicates — issue #105).
 func has_wrench_equipped() -> bool:
 	return str(equipped_ids.get("WEAPON", "")) == WRENCH_ITEM_ID
+
+
+## True when the Forge Hammer is the equipped WEAPON (same replicated
+## source as has_wrench_equipped — the Smash gate reads this).
+func has_hammer_equipped() -> bool:
+	return str(equipped_ids.get("WEAPON", "")) == HAMMER_ITEM_ID
 
 
 func _recalc_stats() -> void:
@@ -1340,6 +1357,7 @@ static func class_abilities(cid: String) -> Array:
 				{"id": "keystone", "name": "Keystone", "unlock": 15, "key": "4", "desc": "Buffs nearby structures"},
 				{"id": "reinforce", "name": "Reinforce", "unlock": 20, "key": "5", "desc": "Ally takes -50% damage 6s"},
 				{"id": "demolish", "name": "Demolish", "unlock": 30, "key": "6", "desc": "Detonate all your structures"},
+				{"id": "hammer_smash", "name": "Hammer Smash", "unlock": 1, "key": "7", "desc": "Forge Hammer only: slam the ground — AoE damage + stun (10s cd)"},
 			]
 	return []
 
@@ -2452,8 +2470,11 @@ func family_signature(fid: String) -> Dictionary:
 func _physics_process(delta: float) -> void:
 	# Issue #113 Phase 3: the server ticks repair channels on its own
 	# copies of player nodes (validity includes alive/not-downed).
+	# Issue #113 Phase 4: the server Smash cooldown ticks here too.
 	if multiplayer.is_server():
 		_server_repair_tick(delta)
+		if _srv_smash_cd > 0.0:
+			_srv_smash_cd = maxf(0.0, _srv_smash_cd - delta)
 	if downed:
 		if is_multiplayer_authority():
 			_tick_downed(delta)
@@ -2846,6 +2867,8 @@ func _cast_architect_ability() -> void:
 			_cast_reinforce()
 		"demolish":
 			_cast_demolish()
+		"hammer_smash":
+			_cast_hammer_smash()
 
 
 ## Cursor raycast onto the ground (blizzard pattern).
@@ -2951,6 +2974,71 @@ func _cast_demolish() -> void:
 		dungeon.rpc("demolish_structures", me)
 	if hud != null:
 		hud.refresh_abilities(self)
+
+
+## Hammer Smash (issue #113 Phase 4): the Forge Hammer's AOE ability —
+## the hammer grants NO melee swing; this ability is its only offense.
+## Client side: gate on the hammer being equipped (fishing-gate
+## pattern), mirror the cooldown for the HUD, and send a cast INTENT.
+## The damage value rides the intent, computed from the caster's local
+## stats exactly like Fan of Knives / the mage spells (the snapshot
+## does not replicate damage/buffs, so the server cannot recompute
+## it); the server validates everything else and applies the hit.
+func _cast_hammer_smash() -> void:
+	if not has_hammer_equipped():
+		if hud != null:
+			hud.toast("Requires Forge Hammer — equip it to Smash!")
+		AudioManager.sfx("ui_error")
+		return
+	if float(ability_cds.get("hammer_smash", 0.0)) > 0.0:
+		if hud != null:
+			hud.toast("Hammer Smash on cooldown!")
+		AudioManager.sfx("ui_error")
+		return
+	ability_cds["hammer_smash"] = SMASH_COOLDOWN * cooldown_mult()
+	var dmg := damage * _buff_mult("damage") * rank_mult() * SMASH_DAMAGE_MULT
+	if multiplayer.is_server():
+		request_hammer_smash(dmg)
+	else:
+		rpc_id(NetworkManager.server_peer_id, "request_hammer_smash", dmg)
+	if hud != null:
+		hud.refresh_abilities(self)
+
+
+## Server Smash endpoint: validates the intent (sender is this node's
+## authority, architect, Forge Hammer in the WEAPON slot via the
+## replicated equipped_ids, alive, server cooldown ready), picks the
+## target set from the server copy's position, and applies damage +
+## stun server-side. FX broadcast only on a validated cast.
+@rpc("any_peer", "call_local")
+func request_hammer_smash(claimed_damage: float) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	if not alive or downed or class_id != "architect" or not has_hammer_equipped():
+		return
+	if _srv_smash_cd > 0.0 or claimed_damage <= 0.0:
+		return
+	_srv_smash_cd = SMASH_COOLDOWN
+	var attacker := int(get_multiplayer_authority())
+	for n in get_tree().get_nodes_in_group("mobs"):
+		var m := n as Mob
+		if m == null or not m.alive:
+			continue
+		if m.global_position.distance_to(global_position) <= SMASH_RADIUS:
+			m.take_damage(claimed_damage, attacker, global_position)
+			if m.alive:
+				m.apply_stun(SMASH_STUN_TIME)
+	rpc("hammer_smash_fx", global_position)
+
+
+@rpc("any_peer", "call_local")
+func hammer_smash_fx(pos: Vector3) -> void:
+	Effects.burst(get_parent(), pos + Vector3(0, 0.4, 0), Color(0.85, 0.6, 0.3), 26, 5.5)
+	Effects.burst(get_parent(), pos + Vector3(0, 0.15, 0), Color(0.55, 0.45, 0.35), 18, 4.0)
+	AudioManager.sfx("hammer_smash", pos)
 
 
 ## Holy Light: bathes the map in radiant light for 10s and gently heals the

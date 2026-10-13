@@ -86,6 +86,7 @@ func _run() -> void:
 	_test_warlord_rebind_m1()
 	_test_station_roster_carry_forward()
 	_test_architect_tools_repair()
+	_test_hammer_smash()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
 	_test_holy_light_linger()
@@ -3783,12 +3784,14 @@ func _test_architect() -> void:
 	print("[Playtest] Architect class...")
 	var PlayerScript = load("res://scripts/player/player.gd")
 	var StructureScript = load("res://scripts/combat/structure.gd")
-	# Kit: 6 abilities, turret first (wall-first would leave 1-3 with no damage).
+	# Kit: 7 abilities, turret first (wall-first would leave 1-3 with no damage).
+	# Issue #113 Phase 4 appended Hammer Smash (unlock 1, key 7).
 	var abs: Array = PlayerScript.class_abilities("architect")
-	_assert(abs.size() == 6, "Architect has 6 abilities")
+	_assert(abs.size() == 7, "Architect has 7 abilities")
 	var expect := [
 		["sentry_turret", 1, "1"], ["bulwark_wall", 4, "2"], ["spike_trap", 8, "3"],
 		["keystone", 15, "4"], ["reinforce", 20, "5"], ["demolish", 30, "6"],
+		["hammer_smash", 1, "7"],
 	]
 	for i in expect.size():
 		var a: Dictionary = abs[i]
@@ -9995,3 +9998,123 @@ func _test_architect_tools_repair() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] architect tools + repair done")
+
+
+func _test_hammer_smash() -> void:
+	print("[Playtest] Hammer Smash (issue #113 P4)...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var slime_data: Resource = load("res://data/mobs/slime.tres")
+
+	# Holder as current_scene: positional sfx in the smash FX need one.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+
+	# Architect with the hammer equipped (wrench is the spawn default).
+	var arch = PlayerScene.instantiate()
+	arch.class_id = "architect"
+	root.add_child(arch)
+	var unlocked_ids: Array = []
+	for a in arch.unlocked_abilities:
+		unlocked_ids.append(str(a.get("id", "")))
+	_assert(unlocked_ids.has("hammer_smash"),
+		"smash113: Hammer Smash is unlocked from level 1 (starting tool)")
+	_assert(arch.has_wrench_equipped() and not arch.has_hammer_equipped(),
+		"smash113: fresh architect holds the wrench, not the hammer")
+
+	# Mobs: one in radius (2m), one out (10m). Deep HP pools — no deaths
+	# in this test (the death path needs a full dungeon).
+	var m1 = MobScene.instantiate()
+	m1.setup(1, slime_data)
+	holder.add_child(m1)
+	m1.position = Vector3(2, 0, 0)
+	m1.set("max_hp", 10000.0)
+	m1.set("hp", 10000.0)
+	var m2 = MobScene.instantiate()
+	m2.setup(2, slime_data)
+	holder.add_child(m2)
+	m2.position = Vector3(10, 0, 0)
+	m2.set("max_hp", 10000.0)
+	m2.set("hp", 10000.0)
+
+	# Gate: wrench equipped -> the server refuses, no cooldown spent.
+	arch.request_hammer_smash(40.0)
+	_assert(absf(float(m1.get("hp")) - 10000.0) < 0.01,
+		"smash113: no damage while the wrench is equipped")
+	_assert(float(arch.get("_srv_smash_cd")) == 0.0,
+		"smash113: refused cast spends no server cooldown")
+	# Client cast path refuses too (and consumes no local cooldown).
+	arch._cast_hammer_smash()
+	_assert(float(arch.ability_cds.get("hammer_smash", 0.0)) == 0.0,
+		"smash113: gated client cast consumes no local cooldown")
+
+	# Equip the hammer and cast end-to-end through the ability path.
+	var hammer_idx := -1
+	for i in arch.inventory.size():
+		if str((arch.inventory[i]["item"] as Object).get("id")) == "forge_hammer":
+			hammer_idx = i
+	_assert(arch.equip_stack(hammer_idx), "smash113: hammer equips for the Smash")
+	arch._cast_hammer_smash()
+	var want_dmg: float = float(arch.get("damage")) * 1.5
+	_assert(absf(float(m1.get("hp")) - (10000.0 - want_dmg)) < 0.5,
+		"smash113: in-radius mob takes 150% of the caster's damage")
+	_assert(m1.is_stunned() and absf(float(m1.get("_stun_t")) - 1.0) < 0.01,
+		"smash113: in-radius mob is stunned for 1.0s")
+	_assert(absf(float(m2.get("hp")) - 10000.0) < 0.01 and not m2.is_stunned(),
+		"smash113: out-of-radius mob is untouched")
+	_assert(float(arch.get("_srv_smash_cd")) > 9.0,
+		"smash113: validated cast starts the 10s server cooldown")
+	_assert(float(arch.ability_cds.get("hammer_smash", 0.0)) > 9.0,
+		"smash113: client cooldown mirror set for the HUD")
+
+	# Server cooldown blocks an immediate recast even via direct intent.
+	arch.request_hammer_smash(40.0)
+	_assert(absf(float(m1.get("hp")) - (10000.0 - want_dmg)) < 0.5,
+		"smash113: recast inside the server cooldown is refused")
+
+	# Stun gates movement: a physics tick leaves the mob stationary
+	# and burns the timer down. (Knockback from the hit is cleared
+	# first — it decays into velocity independently of the gate.)
+	m1.set("_knockback", Vector3.ZERO)
+	m1._physics_process(0.6)
+	_assert(absf(float(m1.get("_stun_t")) - 0.4) < 0.05,
+		"smash113: stun timer ticks down server-side")
+	_assert(absf(m1.velocity.x) < 0.01 and absf(m1.velocity.z) < 0.01,
+		"smash113: stunned mob does not move")
+
+	# Stun refresh takes the longer duration; the dead are not stunned.
+	m1.apply_stun(0.2)
+	_assert(absf(float(m1.get("_stun_t")) - 0.4) < 0.05,
+		"smash113: a shorter re-stun does not shorten the stun")
+	m1.apply_stun(2.0)
+	_assert(absf(float(m1.get("_stun_t")) - 2.0) < 0.01,
+		"smash113: a longer re-stun extends the stun")
+	m1.set("_stun_t", 0.0)
+	m2.set("alive", false)
+	m2.apply_stun(1.0)
+	_assert(not m2.is_stunned(), "smash113: dead mobs are not stunned")
+
+	# Forged replica: a non-architect claiming the hammer is refused.
+	var war = PlayerScene.instantiate()
+	war.class_id = "warrior"
+	root.add_child(war)
+	war.set("equipped_ids", {"WEAPON": "forge_hammer"})
+	war.request_hammer_smash(40.0)
+	_assert(absf(float(m1.get("hp")) - (10000.0 - want_dmg)) < 0.5,
+		"smash113: non-architect refused even with forged equipped_ids")
+
+	# A zero/negative damage claim is refused (cooldown untouched).
+	arch.set("_srv_smash_cd", 0.0)
+	arch.request_hammer_smash(0.0)
+	_assert(float(arch.get("_srv_smash_cd")) == 0.0,
+		"smash113: empty damage claim refused, cooldown untouched")
+
+	# Cleanup.
+	m1.free()
+	m2.free()
+	arch.free()
+	war.free()
+	current_scene = null
+	holder.free()
+	print("[Playtest] hammer smash done")
