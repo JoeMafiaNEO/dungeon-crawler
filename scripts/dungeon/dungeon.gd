@@ -457,6 +457,20 @@ static func find_roster_entry(roster: Array, steam_id: int) -> Dictionary:
 	return {}
 
 
+## Issue #108 (M-3): bind a client's submitted save state to the SENDER's
+## Steam64 from the server's own register-time mapping (peer_steam_ids).
+## The client-supplied steam_id is never trusted: a public-lobby peer
+## could otherwise claim another player's Steam64 and poison/steal their
+## roster seat (roster lookup is first-match-wins). Returns {} when the
+## sender has no server-assigned identity (reject the submission).
+static func bind_submitted_state(state: Dictionary, sender: int, mapping: Dictionary) -> Dictionary:
+	if not mapping.has(sender):
+		return {}
+	var bound := state.duplicate()
+	bound["steam_id"] = int(mapping[sender])
+	return bound
+
+
 ## Pick one peer's boarding state from the host-collected map. Pure so tests
 ## can verify the fallback without a live dungeon. Returns the host state
 ## when it's non-empty; returns {} when the entry is missing or empty so the
@@ -3092,9 +3106,22 @@ func rpc_submit_save_state(state: Dictionary, slot_index: int) -> void:
 	if slot_index != _save_slot:
 		return  # stale response from an earlier save; ignore
 	var sender := multiplayer.get_remote_sender_id()
-	if _save_pending.has(sender):
-		_save_pending.erase(sender)
-		_save_roster.append(state)
+	if not _save_pending.has(sender):
+		return
+	# Issue #108 (M-3): the claimed steam_id is never trusted — bind the
+	# submission to the sender's Steam64 from the server's own mapping
+	# and reject senders with no server-assigned identity.
+	var bound := bind_submitted_state(state, sender, peer_steam_ids)
+	if bound.is_empty():
+		return
+	_save_pending.erase(sender)
+	var sid := int(bound["steam_id"])
+	# One sender = one roster entry: a resubmission replaces only the
+	# sender's own entry, never another player's.
+	for i in range(_save_roster.size() - 1, -1, -1):
+		if int(_save_roster[i].get("steam_id", 0)) == sid:
+			_save_roster.remove_at(i)
+	_save_roster.append(bound)
 
 
 ## A player died; the server checks if the whole party wiped.

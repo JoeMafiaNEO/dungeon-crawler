@@ -2944,13 +2944,33 @@ func _test_mp_save_bughunt() -> void:
 		"bughunt: timeout fill-in never snapshots the replica node (C-1 fixed)")
 	_assert(mm.contains("find_roster_entry"),
 		"bughunt: timeout fill-in carries the previous roster entry forward (C-1 fixed)")
-	# M-3: save-state submissions are trusted verbatim — the claimed
-	# steam_id is never checked against the sender's known mapping.
+	# M-3 — FIXED (issue #108, Eng 4): submissions are bound to the
+	# SENDER's Steam64 via the server's own peer_steam_ids mapping; the
+	# claimed identity is never trusted.
 	var sub := _bughunt_body(dsrc, "rpc_submit_save_state")
-	_assert(sub.contains("_save_roster.append(state)"),
-		"bughunt: submitted state appended to the roster")
-	_assert(not sub.contains("peer_steam_ids"),
-		"bughunt: submission never cross-checks peer_steam_ids (claimed identity trusted)")
+	_assert(sub.contains("bind_submitted_state(state, sender, peer_steam_ids)"),
+		"bughunt: submission is bound to the sender via peer_steam_ids (M-3 fixed)")
+	_assert(sub.contains("_save_roster.append(bound)"),
+		"bughunt: only the sender-bound state reaches the roster (M-3 fixed)")
+	# Two-sender forgery: the attacker (peer 7) submits a wiped character
+	# claiming the victim's Steam64; binding rewrites the identity to the
+	# attacker's own, so the victim's roster entry survives intact.
+	var mapping := {7: 76561198000000777, 9: 76561198000000999}
+	var forged := {"steam_id": 76561198000000999, "class_id": "warrior",
+		"player_state": {"level": 1, "xp": 0}}
+	var bound: Dictionary = DungeonScript.bind_submitted_state(forged, 7, mapping)
+	_assert(int(bound.get("steam_id", 0)) == 76561198000000777,
+		"bughunt: forged claim is rewritten to the sender's own Steam64 (M-3)")
+	var victim_roster := [
+		{"steam_id": 76561198000000999, "class_id": "mage", "player_state": {"level": 9}},
+		bound,
+	]
+	var victim: Dictionary = DungeonScript.find_roster_entry(victim_roster, 76561198000000999)
+	_assert(str(victim.get("class_id", "")) == "mage"
+		and int((victim.get("player_state", {}) as Dictionary).get("level", 0)) == 9,
+		"bughunt: victim's entry survives a forged submission intact (M-3)")
+	_assert(DungeonScript.bind_submitted_state(forged, 42, mapping).is_empty(),
+		"bughunt: sender with no server-assigned identity is rejected (M-3)")
 	# M-1: warlord continued-run binding keys its map by peer authority
 	# but queries it by Steam64 — the host (authority 1) can never match.
 	_assert(dsrc.contains("connected[int(pl.get_multiplayer_authority())] = pl"),
