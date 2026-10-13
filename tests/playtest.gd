@@ -144,6 +144,7 @@ func _run() -> void:
 	_test_farming_loop_phase3()
 	_test_dock_economy_phase4()
 	_test_misty_docks_phase5()
+	_test_popup_open_flags()
 
 	_print_results()
 	quit()
@@ -7639,3 +7640,99 @@ func _test_misty_docks_phase5() -> void:
 	p.queue_free()
 	p2.queue_free()
 	print("[Playtest] issue #102 Phase 5 done")
+
+
+## Count SELL buttons in the HUD's currently open cipher popup.
+func _sell_button_count(hud) -> int:
+	var popup = hud.get("_cipher_popup")
+	if popup == null:
+		return 0
+	var n := 0
+	var stack: Array = [popup]
+	while not stack.is_empty():
+		var node = stack.pop_back()
+		if node is Button and (node as Button).text == "SELL":
+			n += 1
+		for c in node.get_children():
+			stack.append(c)
+	return n
+
+
+## True when `flag_line` appears after the `_open_cipher_popup(` call
+## inside the hud.gd function whose signature line is `sig`.
+func _flag_set_after_open(src: String, sig: String, flag_line: String) -> bool:
+	var start := src.find(sig)
+	if start < 0:
+		return false
+	var end := src.find("\nfunc ", start + sig.length())
+	if end < 0:
+		end = src.length()
+	var body := src.substr(start, end - start)
+	var open_idx := body.find("_open_cipher_popup(")
+	var flag_idx := body.find(flag_line)
+	return open_idx >= 0 and flag_idx > open_idx
+
+
+func _test_popup_open_flags() -> void:
+	print("[Playtest] Popup open-flags vs cipher cleanup regression...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var merch = MerchScript.new()
+	root.add_child(merch)
+	merch.test_player = p
+	EconScript.debug_reset()
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	hud._player = p
+	# --- Dock vendor: the open flag must survive show_dock_vendor().
+	# Regression: show set dock_vendor_open = true BEFORE building the
+	# panel, then _open_cipher_popup's pre-open cleanup
+	# (close_cipher_popup) reset it — so the flag never read true and
+	# refresh_dock_vendor() never re-rendered during a vendor session.
+	hud.show_dock_vendor()
+	_assert(hud.dock_vendor_open, "dock vendor: flag true after show")
+	_assert(hud.cipher_popup_open, "dock vendor: cipher shell open after show")
+	_assert(_sell_button_count(hud) == 0, "dock vendor: no SELL rows with empty inventory")
+	# Refresh while open must take the open branch and re-render: a
+	# sellable fish granted after opening appears as a SELL row.
+	EconScript.grant_stock(1, "fish_minnow", 1)
+	p.receive_item("fish_minnow")
+	hud.refresh_dock_vendor()
+	_assert(hud.dock_vendor_open, "dock vendor: flag still true after refresh")
+	_assert(_sell_button_count(hud) == 1, "dock vendor: refresh re-rendered SELL row")
+	# Real close path (E/Esc -> close_cipher_popup) clears the flag.
+	hud.close_cipher_popup()
+	_assert(not hud.dock_vendor_open, "dock vendor: flag false after close")
+	_assert(not hud.cipher_popup_open, "dock vendor: cipher shell closed after close")
+	# --- Cipher popup coexistence: a plain cipher popup must not set
+	# the vendor flag, and opening one replaces (closes) the vendor —
+	# the cleanup's flag reset is correct for real closes/replacement.
+	hud.show_dock_vendor()
+	_assert(hud.dock_vendor_open, "dock vendor: flag true after re-show")
+	hud.show_poem_popup(0)
+	_assert(hud.cipher_popup_open, "cipher poem: shell open")
+	_assert(not hud.dock_vendor_open, "cipher poem: replacing vendor cleared its flag")
+	hud.close_cipher_popup()
+	_assert(not hud.cipher_popup_open, "cipher poem: shell closed")
+	_assert(not hud.dock_vendor_open, "cipher poem: vendor flag stays false after close")
+	# --- Sibling popups had the identical cleanup-clobber bug (flag
+	# set before _open_cipher_popup, reset by its cleanup) and got the
+	# same reorder fix. Asserted structurally: their runtime rigs need
+	# scene nodes (station / bounty board) the suite drives elsewhere.
+	# player.gd on_bought reads hud.vendor_open, so this one mattered.
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(_flag_set_after_open(hsrc, "func show_vendor() -> void:", "vendor_open = true"),
+		"station vendor: flag set after popup open in source")
+	_assert(_flag_set_after_open(hsrc, "func show_bounty() -> void:", "bounty_open = true"),
+		"bounty board: flag set after popup open in source")
+	_assert(_flag_set_after_open(hsrc, "func show_dock_vendor() -> void:", "dock_vendor_open = true"),
+		"dock vendor: flag set after popup open in source")
+	hud.queue_free()
+	merch.free()
+	p.queue_free()
+	print("[Playtest] popup open-flags done")

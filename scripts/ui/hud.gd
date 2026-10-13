@@ -616,7 +616,6 @@ func show_vendor() -> void:
 	if st == null or _player == null:
 		return
 	var stock: Array = st.get("vendor_stock")
-	vendor_open = true
 	var vb := _cipher_panel()
 	var title := Label.new()
 	title.text = "Vendor"
@@ -659,6 +658,9 @@ func show_vendor() -> void:
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 	vb.add_child(close_hint)
 	_open_cipher_popup(vb.get_parent() as Control)
+	# Set AFTER the open: _open_cipher_popup's pre-open cleanup
+	# (close_cipher_popup) resets every popup flag, including this one.
+	vendor_open = true
 
 
 func refresh_vendor_cash() -> void:
@@ -688,7 +690,6 @@ func show_dock_vendor() -> void:
 	var merch := get_tree().get_first_node_in_group("dock_merchant")
 	if merch == null or _player == null:
 		return
-	dock_vendor_open = true
 	var vb := _cipher_panel()
 	var title := Label.new()
 	title.text = "Dock Merchant"
@@ -783,6 +784,9 @@ func show_dock_vendor() -> void:
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 	vb.add_child(close_hint)
 	_open_cipher_popup(vb.get_parent() as Control)
+	# Set AFTER the open: _open_cipher_popup's pre-open cleanup
+	# (close_cipher_popup) resets every popup flag, including this one.
+	dock_vendor_open = true
 
 
 ## Server-authoritative balance lands here (merchant.dock_balance RPC).
@@ -858,7 +862,6 @@ func show_bounty() -> void:
 	if bounties.size() != 3:
 		return
 	var progress: Dictionary = _player.get("bounty_progress")
-	bounty_open = true
 	AudioManager.sfx("bounty_accept")
 	var vb := _cipher_panel()
 	var title := Label.new()
@@ -877,6 +880,9 @@ func show_bounty() -> void:
 	vb.add_child(expiry)
 	# Issue #34: the panel was built but never opened — actually render it.
 	_open_cipher_popup(vb.get_parent() as Control)
+	# Set AFTER the open: _open_cipher_popup's pre-open cleanup
+	# (close_cipher_popup) resets every popup flag, including this one.
+	bounty_open = true
 
 # --- Relic Vault (issue #6 Phase 2) ---
 
