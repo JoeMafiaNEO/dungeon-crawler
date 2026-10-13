@@ -4649,6 +4649,12 @@ class ApexDungeonStub extends Node:
 	func random_arena_pos() -> Vector3:
 		return Vector3(10, 0.5, 10)
 
+	## F-3: Mob._drop_and_reward probes this on every kill. Null is the
+	## production-shaped "no player to reward" answer (same contract as
+	## RelicDungeonStub) — kills under this stub grant no XP/bounty.
+	func get_player_node(_peer_id: int) -> Node:
+		return null
+
 	var placed: Array = []
 
 	@rpc("any_peer", "call_local")
@@ -5551,6 +5557,12 @@ class HolyDungeonStub extends Node3D:
 	@rpc("any_peer", "call_local")
 	func announce_text(text: String, sfx: String = "") -> void:
 		announces.append(text)
+
+	## F-3: Mob._drop_and_reward probes this on every kill. Null is the
+	## production-shaped "no player to reward" answer (same contract as
+	## RelicDungeonStub) — kills under this stub grant no XP/bounty.
+	func get_player_node(_peer_id: int) -> Node:
+		return null
 
 
 func _test_apex_relics() -> void:
