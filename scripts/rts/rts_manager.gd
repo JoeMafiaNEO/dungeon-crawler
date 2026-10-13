@@ -183,6 +183,13 @@ func order_move_squad(unit_ids: Array, target: Vector3) -> void:
 		var u := n as RTSUnit
 		if u != null and id_set.has(u.unit_id):
 			units.append(u)
+	# Issue #116: dissolve-before-repartition. Any squad already covering
+	# these units must retire before new squads form, or every repeated
+	# move order appends fresh squads while the stale ones stay registered
+	# for the rest of the session (probe: 5 re-issues grew 3 -> 18).
+	# Lossless: dissolve() leaves members' current orders intact, and the
+	# partition below (or the individual-order path) re-issues from here.
+	dissolve_squads_for(units)
 	var new_squads: Array = RTSSquad.partition(units)
 	if new_squads.is_empty():
 		# Under threshold: individual orders.

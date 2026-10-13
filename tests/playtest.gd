@@ -22,6 +22,7 @@ func _run() -> void:
 	_test_rts_batched_sync()
 	_test_rts_multimesh()
 	_test_rts_squads()
+	_test_rts_squad_reorder_no_leak()
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
@@ -353,6 +354,81 @@ func _test_rts_squads() -> void:
 	_assert(mgr.has_method("rpc_order_move_squad"), "Manager has rpc_order_move_squad")
 	_assert(mgr.has_method("dissolve_squads_for"), "Manager has dissolve_squads_for")
 	mgr.queue_free()
+
+
+func _test_rts_squad_reorder_no_leak() -> void:
+	print("[Playtest] RTS squad reorder leak (#116)...")
+	# Regression for issue #116: order_move_squad formed brand-new squads
+	# on every call without dissolving the squads already covering those
+	# units — 5 re-issues of one order grew the registry 3 -> 18, and the
+	# stale squads stayed registered for the rest of the session.
+	# NOTE: unit.gd cannot compile in this -s suite (its AudioManager
+	# identifier is unresolved at suite-startup compile and the failure is
+	# cached — the same poison that hollows _test_rts_dormancy), so real
+	# RTSUnit instances here are script-less Node3Ds and order_move_squad
+	# (which resolves units via `as RTSUnit`) cannot be driven in-suite.
+	# This test therefore pins (a) the fix's wiring inside order_move_squad
+	# and (b) the registry mechanism using the real manager + RTSSquad
+	# code with mock units (the _test_rts_squads pattern). The full
+	# behavioral proof with real units lives in the scene driver
+	# scenes/terrain/squad_reorder_check.tscn (real stack, real frames).
+	var src := FileAccess.get_file_as_string("res://scripts/rts/rts_manager.gd")
+	var fstart := src.find("func order_move_squad(")
+	_assert(fstart >= 0, "#116: order_move_squad found in rts_manager.gd")
+	if fstart < 0:
+		return
+	var fend := src.find("\nfunc ", fstart + 10)
+	var body := src.substr(fstart, (fend - fstart) if fend > fstart else 4000)
+	var dpos := body.find("dissolve_squads_for(units)")
+	var ppos := body.find("RTSSquad.partition(units)")
+	_assert(dpos >= 0, "#116: order_move_squad dissolves before repartitioning")
+	_assert(dpos >= 0 and ppos > dpos,
+		"#116: dissolve call precedes partition in order_move_squad")
+	# Mechanism: real RTSSquad.partition + real dissolve_squads_for over
+	# the real registry array, mock units (36 -> 3 squads of 12).
+	var mgr_script = load("res://scripts/rts/rts_manager.gd")
+	var squad_script = load("res://scripts/rts/rts_squad.gd")
+	_assert(mgr_script != null and squad_script != null, "#116: manager/squad scripts load")
+	if mgr_script == null or squad_script == null:
+		return
+	var mgr = mgr_script.new()
+	root.add_child(mgr)
+	var mocks: Array = []
+	for i in 36:
+		var n := Node3D.new()
+		root.add_child(n)
+		mocks.append(n)
+	for s in squad_script.partition(mocks):
+		mgr.squads.append(s)
+	_assert(mgr.squads.size() == 3,
+		"#116: 36 mock units partition into 3 registered squads (got %d)" % mgr.squads.size())
+	# The helper the fix calls retires every squad covering the ordered
+	# units — a full re-order leaves no stale squads behind.
+	mgr.dissolve_squads_for(mocks)
+	_assert(mgr.squads.is_empty(),
+		"#116: dissolve_squads_for retires all squads covering the ordered units")
+	# Re-form, then a subset dissolve (one squad's 12) retires exactly
+	# that squad; the other 24 stay covered exactly once.
+	for s in squad_script.partition(mocks):
+		mgr.squads.append(s)
+	var first_squad_units: Array = (mgr.squads[0] as RefCounted).get("units")
+	mgr.dissolve_squads_for(first_squad_units)
+	_assert(mgr.squads.size() == 2,
+		"#116: subset dissolve retires exactly its squad (registry %d, want 2)" % mgr.squads.size())
+	var coverage := {}
+	for s in mgr.squads:
+		for u in s.get("units"):
+			coverage[u] = int(coverage.get(u, 0)) + 1
+	var rest_ok := coverage.size() == 24
+	for u in coverage:
+		if int(coverage[u]) != 1:
+			rest_ok = false
+	_assert(rest_ok, "#116: remaining 24 mock units covered exactly once")
+	for n in mocks:
+		root.remove_child(n)
+		n.free()
+	root.remove_child(mgr)
+	mgr.free()
 
 
 func _test_save_roundtrip() -> void:
