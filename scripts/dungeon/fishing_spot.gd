@@ -21,13 +21,10 @@ extends Node3D
 
 enum SessionState { NONE, WAITING, BITING }
 
-## Issue #104 Phase 3: fishing requires the rod item equipped in the
-## TOOL slot (Jesse's design: the rod is real gear from the dock
-## merchant). Client-side gates (prompt + interact) keep claims from
-## ever being sent; _claim re-checks server-side against the claiming
-## replica's synced equipped_ids (inventory itself never replicates).
-const ROD_ITEM_ID := "fishing_rod"
-const ROD_PROMPT := "Requires Fishing Rod (Tool slot)"
+## Issue #126 Phase 1: spots are UNGATED — no world object checks the
+## rod anymore (the #104 Phase 3 prompt/interact/claim gates and the
+## ROD_PROMPT refusal are deleted). The rod's only gate is rod-out
+## mode itself, on the player (Player._toggle_rod_out).
 
 const WAIT_MIN := 3.0 ## seconds, server-rolled wait before a bite
 const WAIT_MAX := 8.0
@@ -80,11 +77,6 @@ func prompt_text() -> String:
 		return "Spot in use"
 	if occupied_by == me and _session_state != SessionState.NONE:
 		return "Reel in! (E)"
-	# Actionable for me (free, or mine and idle): the rod gate applies.
-	# No local player (test seams) -> ungated legacy text.
-	var local := _local_player()
-	if local != null and not local.has_rod_equipped():
-		return ROD_PROMPT
 	if occupied_by == me:
 		return "Cast again"
 	return "Fish here"
@@ -95,13 +87,6 @@ func interact(player: Player) -> void:
 	if occupied_by != 0 and occupied_by != me:
 		if player.hud != null:
 			player.hud.toast("Someone is already using this spot.")
-		return
-	# Issue #104 Phase 3: starting a claim/cast without the rod in TOOL
-	# is refused HERE — no claim RPC is ever sent. An active session
-	# (reel presses) is never gated.
-	if _session_state == SessionState.NONE and not player.has_rod_equipped():
-		if player.hud != null:
-			player.hud.toast(ROD_PROMPT)
 		return
 	if multiplayer.is_server():
 		fish_action()
@@ -207,12 +192,6 @@ func _process(_delta: float) -> void:
 
 func _claim(peer: int) -> void:
 	if occupied_by != 0:
-		return
-	# Issue #104 Phase 3 server gate: the claiming replica's synced
-	# equipped_ids must show the rod in TOOL. No player node (test
-	# seams / teardown edges) -> claim proceeds as before.
-	var claimer := _player_for_peer(peer)
-	if claimer != null and str(claimer.equipped_ids.get("TOOL", "")) != ROD_ITEM_ID:
 		return
 	occupied_by = peer
 	rpc("sync_occupant", occupied_by)

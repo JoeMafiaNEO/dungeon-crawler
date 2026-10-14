@@ -175,6 +175,12 @@ var _caged_t := 0.0
 ## Issue #102 Phase 2: true while a fishing session is active. Movement
 ## input is suppressed; the server sets/clears it via set_fishing().
 var is_fishing := false
+## Issue #126 Phase 1: rod-out mode. Toggled by the rod key (V) and
+## only enterable with the rod EQUIPPED in the TOOL slot (Choice B).
+## While out: the FP viewmodel is the rod alone, peers' HeldProp drops
+## the weapon, and LMB attacks are disabled (LMB belongs to the cast
+## from Phase 2). Replicated via push_snapshot so peers render it.
+var rod_out := false
 ## Unseen trait: next attack after veil/blink crits (2x). Set on veil expiry / blink land.
 var unseen_crit_ready := false
 ## Co-op ping: MMB / G drops a "!" marker visible to the whole party.
@@ -503,6 +509,11 @@ func _sync_equipped_ids() -> void:
 				ids[s] = str(it.id)
 	if ids != equipped_ids:
 		equipped_ids = ids
+		# Issue #126 Phase 1: rod-out cannot outlive the equipped rod —
+		# any equip change that takes the rod out of TOOL ends the mode
+		# before the held props refresh into it.
+		if rod_out and str(ids.get("TOOL", "")) != "fishing_rod":
+			rod_out = false
 		_refresh_held_props()
 
 
@@ -511,9 +522,36 @@ func equipped_tool_id() -> String:
 	return str(equipped_ids.get("TOOL", ""))
 
 
-## Issue #104 Phase 3: the fishing gate key.
+## Issue #104 Phase 3: the fishing gate key. Issue #126 Phase 1: the
+## spots no longer gate on it — it is now the rod-out mode key.
 func has_rod_equipped() -> bool:
 	return equipped_tool_id() == "fishing_rod"
+
+
+## Issue #126 Phase 1: owns a fishing rod anywhere in the inventory
+## (equipped or bagged). Drives the rod-key toast choice.
+func _owns_fishing_rod() -> bool:
+	for entry in inventory:
+		var it := entry.get("item") as ItemData
+		if it != null and it.id == "fishing_rod":
+			return true
+	return false
+
+
+## Issue #126 Phase 1: the rod key. With the rod equipped, toggles
+## rod-out mode. Without it, the ONLY rod messaging in the game: a
+## toast on the player's own key press (never a world refusal) —
+## equip hint when owned, merchant hint when not.
+func _toggle_rod_out() -> void:
+	if has_rod_equipped():
+		rod_out = not rod_out
+		_refresh_held_props()
+	elif _owns_fishing_rod():
+		if hud != null:
+			hud.toast("Equip your Fishing Rod (Tool slot) to cast")
+	else:
+		if hud != null:
+			hud.toast("The dock merchant sells a Fishing Rod")
 
 
 ## True when the item may be equipped by this player's class. The class
@@ -661,6 +699,16 @@ func _refresh_viewmodel() -> void:
 	for c in _viewmodel.get_children():
 		_viewmodel.remove_child(c)
 		c.free()
+	# Issue #126 Phase 1: in rod-out mode the rod alone fills the
+	# viewmodel, reusing the #104 Phase 3 side framing (the weapon
+	# stays sheathed).
+	if rod_out and equipped_tool_id() == "fishing_rod":
+		var rod_out_prop := FishingVisual.build_rod_prop()
+		rod_out_prop.name = "RodProp"
+		rod_out_prop.position = Vector3(-0.3, -0.24, -0.1)
+		rod_out_prop.rotation = Vector3(0.45, 0.0, 0.3)
+		_viewmodel.add_child(rod_out_prop)
+		return
 	var wid := str(equipped_ids.get("WEAPON", ""))
 	var witem: ItemData = ItemDB.get_item(wid) if wid != "" else null
 	if witem != null and witem.world_model != "" and ResourceLoader.exists(witem.world_model):
@@ -721,7 +769,9 @@ func _refresh_held_props() -> void:
 	_held_prop.visible = not is_multiplayer_authority()
 	var wid := str(equipped_ids.get("WEAPON", ""))
 	var witem: ItemData = ItemDB.get_item(wid) if wid != "" else null
-	if witem != null and witem.world_model != "" and ResourceLoader.exists(witem.world_model):
+	# Issue #126 Phase 1: in rod-out mode peers see the rod alone —
+	# the weapon prop is suppressed until the mode ends.
+	if not rod_out and witem != null and witem.world_model != "" and ResourceLoader.exists(witem.world_model):
 		var packed := load(witem.world_model) as PackedScene
 		if packed != null:
 			var inst := packed.instantiate() as Node3D
@@ -733,7 +783,7 @@ func _refresh_held_props() -> void:
 			inst.position = Vector3(0.05, -0.55, 0.05)
 			inst.rotation_degrees = Vector3(0, 0, -14)
 			_held_prop.add_child(inst)
-	elif witem != null and WeaponVisual.has_fallback(wid):
+	elif not rod_out and witem != null and WeaponVisual.has_fallback(wid):
 		# Issue #113 Phase 2: procedural fallback (see _refresh_viewmodel).
 		var prop := WeaponVisual.build_fallback(wid)
 		prop.name = "WeaponProp"
@@ -998,6 +1048,11 @@ func _input(event: InputEvent) -> void:
 				if _try_fishing_reel():
 					get_viewport().set_input_as_handled()
 				return
+			# Issue #126 Phase 1: rod-out mode — LMB belongs to the
+			# cast (Phase 2); attacks are disabled while the rod is out.
+			if rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+				get_viewport().set_input_as_handled()
+				return
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 				# Issue #65: don't steal the mouse back while the destination
 				# popup is open — clicks on popup rows must stay in UI mode.
@@ -1090,6 +1145,12 @@ func _input(event: InputEvent) -> void:
 		elif k.physical_keycode == KEY_F:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_use_class_ability()
+		elif k.physical_keycode == KEY_V:
+			# Issue #126 Phase 1: the rod key. (The spec proposed F,
+			# but F already fires the class ability — V is the free
+			# dedicated key; an implementation fix, per the spec.)
+			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
+				_toggle_rod_out()
 		elif k.physical_keycode == KEY_G:
 			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_try_ping()
@@ -2636,7 +2697,9 @@ func _physics_process(delta: float) -> void:
 			# Issue #72 Phase 1: include look yaw in the snapshot.
 			# Issue #104 Phase 3: equipped_ids ride the same push so peers
 			# (and the server, for the fishing gate) see held gear.
-			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids)
+			# Issue #126 Phase 1: rod_out rides along so peers render
+			# the rod-out held prop.
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out)
 	else:
 		if _has_remote:
 			global_position = global_position.lerp(_remote_pos, clampf(delta * 10.0, 0.0, 1.0))
@@ -3308,9 +3371,10 @@ func legend_state() -> String:
 	# friendly repairable in reach).
 	if _near_repairable and has_wrench_equipped():
 		return "repair_ready"
-	# Issue #104 Phase 3: fishing context near a spot.
+	# Issue #126 Phase 1: spots are ungated — near a spot the fishing
+	# context is always "ready" (rod-out legend contexts are Phase 3).
 	if _near_fishing_spot:
-		return "fishing_ready" if has_rod_equipped() else "fishing_blocked"
+		return "fishing_ready"
 	return "standard"
 
 
@@ -5269,7 +5333,7 @@ func apply_forfeit_net(s: Dictionary) -> void:
 
 
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false) -> void:
 	if is_multiplayer_authority():
 		return
 	_remote_pos = pos
@@ -5280,6 +5344,9 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: fl
 	alive = alive_v
 	if eq_ids != equipped_ids:
 		equipped_ids = eq_ids.duplicate()
+		_refresh_held_props()
+	if rod_out_v != rod_out:
+		rod_out = rod_out_v
 		_refresh_held_props()
 	_update_health_bar()
 

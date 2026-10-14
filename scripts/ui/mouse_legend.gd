@@ -43,12 +43,6 @@ const REGISTRY := {
 	"repair_ready": {
 		"architect": {"left": "Cast selected ability", "right": "Hold E — Repair", "middle": "Ping"},
 	},
-	"fishing_blocked": {
-		"warrior": {"left": "Attack", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
-		"mage": {"left": "Cast selected ability", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
-		"rogue": {"left": "Attack", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
-		"architect": {"left": "Cast selected ability", "right": "Requires Fishing Rod (Tool slot)", "middle": "Ping"},
-	},
 }
 
 ## Fallback row for unknown classes (and unknown states fall back to standard).
