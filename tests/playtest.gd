@@ -108,6 +108,7 @@ func _run() -> void:
 	_test_warlord_spawn_avoids_river()
 	_test_e_interact_not_dead_code()
 	_test_watchdog_resets_on_progress()
+	_test_watchdog_progress_not_kills()
 	_test_r_wave_start_chain()
 	_test_destination_popup_replaces_3d()
 	_test_destination_popup_manual_only()
@@ -6954,6 +6955,21 @@ func _test_watchdog_resets_on_progress() -> void:
 	d.free()
 	print("[Playtest] watchdog resets on mob death done")
 
+
+
+func _test_watchdog_progress_not_kills() -> void:
+	print("[Playtest] watchdog progress not kills (issue #125)...")
+	# Issue #125: the watchdog's count-only trigger fired mid-fight on
+	# any 5s kill gap and "cleared" waves under fully engaged fields.
+	# Progress (engagement band or real displacement) must reset it.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func _wave_progress_made"), "#125: progress sampler exists")
+	_assert(dsrc.contains("or progressed"), "#125: progress resets the stall timer")
+	_assert(dsrc.contains("mob.data.attack_range + 1.5"), "#125: melee engagement band")
+	_assert(dsrc.contains("mob.data.preferred_range * 1.6 + 1.0"), "#125: ranged fire band")
+	_assert(dsrc.contains("_stall_history"), "#125: position history tracked")
+	_assert(dsrc.contains("pos.distance_to(hist[0]) > 2.0"), "#125: displacement leg of the progress test")
+	print("[Playtest] watchdog progress not kills done")
 
 
 func _test_r_wave_start_chain() -> void:

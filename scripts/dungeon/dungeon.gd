@@ -230,6 +230,14 @@ const WAVE_STALL_TIMEOUT := 5.0
 ## is UNCHANGED for the full timeout (a true stall). Any decrease (a mob
 ## died = progress) resets the timer.
 var _wave_last_alive := -1
+## Issue #125: progress sampling for the watchdog. The count-only trigger
+## fired mid-fight whenever the player went 5s without a kill (kiting,
+## tanking, mobs still walking in from spread spawns) — the wave then
+## "cleared" under a fully engaged field. _stall_history keeps a ~4s
+## position history per alive mob (instance id -> Array[Vector3],
+## oldest first), sampled twice a second by _wave_progress_made().
+var _stall_sample_t := 0.0
+var _stall_history := {}
 var _local_hud: CanvasLayer
 var _boss: Mob = null
 # --- Key objective ---
@@ -1859,7 +1867,11 @@ func _process_waves(delta: float) -> void:
 				else:
 					# Issue #31: only force-clear on a TRUE stall (count unchanged
 					# for the full timeout). Any decrease = progress, reset timer.
-					if alive_now < _wave_last_alive or _wave_last_alive < 0:
+					# Issue #125: a kill gap is not a stall — mobs that are
+					# engaged with a player or still covering ground are
+					# progress too, and reset the timer the same way.
+					var progressed := _wave_progress_made(delta)
+					if alive_now < _wave_last_alive or _wave_last_alive < 0 or progressed:
 						_wave_stall_t = 0.0
 					_wave_last_alive = alive_now
 					_wave_stall_t += delta
@@ -1884,6 +1896,8 @@ func _start_wave() -> void:
 	_spawn_tick = 0.5
 	_wave_stall_t = 0.0  # Issue #27: reset the stall watchdog.
 	_wave_last_alive = -1  # Issue #31: reset the stall-progress tracker.
+	_stall_sample_t = 0.0  # Issue #125: reset the progress sampler.
+	_stall_history.clear()
 	if wave >= TOTAL_WAVES and theme.boss_id != "":
 		# Boss wave: the theme boss plus a small honor guard.
 		mobs_to_spawn = 4
@@ -2052,6 +2066,50 @@ func _mobs_alive() -> int:
 		if mob != null and mob.alive:
 			count += 1
 	return count
+
+
+## Issue #125: has the wave made progress since the last sample?
+## Sampled twice a second; a sample finds progress when ANY alive mob
+## is inside its engagement band of a player (melee: attack range +
+## margin; ranged: the fire band around its preferred range; boss: a
+## flat generous band, since boss specials reach well past melee) or
+## has displaced > 2m across its ~4s position history (still walking
+## in). A newly tracked mob counts as progressing until its history
+## fills. A truly wedged mob — pressed on an obstacle, out of band,
+## oscillating in place — shows neither, so the watchdog still catches
+## it on the usual timeout.
+func _wave_progress_made(delta: float) -> bool:
+	if not is_inside_tree():
+		return false
+	_stall_sample_t -= delta
+	if _stall_sample_t > 0.0:
+		return false
+	_stall_sample_t = 0.5
+	var players := get_tree().get_nodes_in_group("players")
+	var progressed := false
+	var fresh := {}
+	for m in $Mobs.get_children():
+		var mob := m as Mob
+		if mob == null or not mob.alive:
+			continue
+		var pos := mob.global_position
+		var band := mob.data.attack_range + 1.5
+		if mob.data.is_boss:
+			band = 16.0
+		elif mob.data.ranged:
+			band = mob.data.preferred_range * 1.6 + 1.0
+		for p in players:
+			if pos.distance_to((p as Node3D).global_position) <= band:
+				progressed = true
+		var hist: Array = _stall_history.get(mob.get_instance_id(), [])
+		hist.append(pos)
+		while hist.size() > 8:
+			hist.pop_front()
+		fresh[mob.get_instance_id()] = hist
+		if hist.size() < 8 or pos.distance_to(hist[0]) > 2.0:
+			progressed = true
+	_stall_history = fresh
+	return progressed
 
 
 func _push_wave_info() -> void:
