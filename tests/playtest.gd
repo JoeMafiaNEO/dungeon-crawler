@@ -7440,6 +7440,63 @@ func _test_watchdog_progress_not_kills() -> void:
 	_assert(dsrc.contains("mob.data.preferred_range * 1.6 + 1.0"), "#125: ranged fire band")
 	_assert(dsrc.contains("_stall_history"), "#125: position history tracked")
 	_assert(dsrc.contains("pos.distance_to(hist[0]) > 2.0"), "#125: displacement leg of the progress test")
+	# Behavioral (the #116 rigor pattern): drive the REAL sampler on
+	# a real dungeon scene. The sampler is sampled twice a second;
+	# each case settles the mob's 8-sample history first so the leg
+	# under test is the ONLY thing that can flip the result.
+	# Detach (never free) leftover players: an earlier section's
+	# player can carry a still-queued deferred (the mage aura
+	# push), and freeing it leaves that call to land on a freed
+	# instance at suite exit. Detached fixtures leave the group
+	# but stay alive, so the exit flush lands harmlessly.
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	var players_now := get_nodes_in_group("players")
+	_assert(players_now.size() == 1, "#125: dungeon spawned its host player for the band tests")
+	if players_now.size() == 1:
+		var pp := (players_now[0] as Node3D).global_position
+		var sample := func() -> bool: return bool(dgn.call("_wave_progress_made", 0.6))
+		var settle := func() -> bool:
+			var r := false
+			for i in 8:
+				r = sample.call()
+			return r
+		# Melee goblin (band = 1.8 + 1.5 = 3.3), parked 30m out.
+		dgn.spawn_mob(12501, "goblin", pp + Vector3(30, 0, 0))
+		var gob = dgn.get_node("Mobs/Mob_12501") as Node3D
+		_assert(sample.call(), "#125: a newly tracked mob counts as progressing (history filling)")
+		_assert(not settle.call(), "#125: wedged mob — settled history, out of band, no progress")
+		_assert(not bool(dgn.call("_wave_progress_made", 0.1)),
+			"#125: sub-sample-interval calls do not sample (throttle)")
+		gob.global_position = pp + Vector3(2, 0, 0)
+		_assert(sample.call(), "#125: mob moving into its engagement band samples progress")
+		_assert(settle.call(), "#125: settled IN the melee band still reads progress (band leg)")
+		gob.global_position = pp + Vector3(30, 0, 0)
+		_assert(not settle.call(), "#125: settled back out of band reads no progress again")
+		gob.global_position = pp + Vector3(33, 0, 0)
+		_assert(sample.call(), "#125: a >2m displacement reads progress even out of band")
+		_assert(not settle.call(), "#125: and settles back to no progress at the new spot")
+		# Ranged archer (band = 10.0 * 1.6 + 1.0 = 17.0).
+		dgn.spawn_mob(12502, "archer", pp + Vector3(16, 0, 0))
+		var arc = dgn.get_node("Mobs/Mob_12502") as Node3D
+		_assert(settle.call(), "#125: settled at 16m reads progress inside the ranged fire band")
+		arc.global_position = pp + Vector3(20, 0, 0)
+		_assert(not settle.call(), "#125: settled at 20m is outside the ranged band — no progress")
+		# Boss (flat band 16.0 regardless of its 2.2 attack range).
+		dgn.spawn_mob(12503, "boss_boar", pp + Vector3(10, 0, 0))
+		var bos = dgn.get_node("Mobs/Mob_12503") as Node3D
+		_assert(settle.call(), "#125: settled at 10m reads progress inside the flat boss band")
+		bos.global_position = pp + Vector3(20, 0, 0)
+		_assert(not settle.call(), "#125: settled at 20m is outside the boss band — no progress")
+	# Cleanup: DETACH, don't free. The dungeon/player ready paths
+	# queue deferred calls that only flush at suite exit; freeing
+	# leaves them firing on freed instances (an intermittent
+	# teardown SCRIPT ERROR pair). A detached fixture leaves every
+	# group (no pollution of later sections) but stays alive, so
+	# the exit flush lands on a live object.
+	root.remove_child(dgn)
 	print("[Playtest] watchdog progress not kills done")
 
 
