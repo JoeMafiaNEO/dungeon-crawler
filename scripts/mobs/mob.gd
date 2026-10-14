@@ -112,6 +112,9 @@ var _rifts: Array = []
 var _rift_batch := 0
 ## Client-side rift visuals: batch id -> Array[Node3D]. Built from rift_spawn RPC.
 var _rift_nodes := {}
+## Issue #127: pulse-claim timestamps per rift disc (instance id ->
+## msec) — see rift_pulse_fx's round-claim discipline.
+var _rift_disc_claimed := {}
 # --- Apex mechanics (issue #5 Phase 2; only active when data.apex_id != "") ---
 ## Phaseshift untargetability: take_damage ignores all hits while true.
 var untargetable := false
@@ -953,6 +956,20 @@ func _process_judgments(delta: float) -> void:
 		_pending_judgments.erase(j)
 
 
+## Issue #127: void-rift grounding (the #120 flat-y FX family).
+## Samples the dungeon's ground height at a position; with no
+## dungeon (bare test trees) or no sampler on it, returns the
+## fallback — the pre-fix value at each call site. (The lookup
+## takes the first dungeon-group node WITH the sampler: the one
+## real dungeon always has it; bare stand-ins without it must not
+## shadow it.)
+func _rift_ground_y(pos: Vector3, fallback: float) -> float:
+	for n in get_tree().get_nodes_in_group("dungeon"):
+		if n.has_method("ground_height_at"):
+			return float(n.call("ground_height_at", pos))
+	return fallback
+
+
 ## Horror: void rifts — 3 zones spawn near random players, drift toward the
 ## nearest living player at 1.2 m/s, and pulse every second for 15s
 ## (2.5m radius, 0.5x special damage per pulse).
@@ -967,7 +984,11 @@ func _do_void_rift() -> void:
 	var positions: Array = []
 	for i in 3:
 		var p: Node3D = players[randi() % players.size()]
-		positions.append(p.global_position + Vector3(randf_range(-3.0, 3.0), 0, randf_range(-3.0, 3.0)))
+		var pos: Vector3 = p.global_position + Vector3(randf_range(-3.0, 3.0), 0, randf_range(-3.0, 3.0))
+		# Issue #127: ground the spawn anchor (the ±3m offset can
+		# cross relief even though the player anchor is grounded).
+		pos.y = _rift_ground_y(pos, pos.y)
+		positions.append(pos)
 	_rift_batch += 1
 	rpc("rift_spawn", _rift_batch, positions)
 	for pos in positions:
@@ -1106,12 +1127,20 @@ func _process_rifts(delta: float) -> void:
 			var dir: Vector3 = best.global_position - (r["pos"] as Vector3)
 			dir.y = 0.0
 			r["pos"] = (r["pos"] as Vector3) + dir.normalized() * 1.2 * delta
+		# Issue #127: the anchor tracks the ground as the rift drifts
+		# (a spawn-only fix would re-bury or float it crossing
+		# relief). Flat themes sample 0.0 — the pre-fix anchor was
+		# the player's spawn y, i.e. the same surface within its
+		# sub-mm physics settle.
+		var rp: Vector3 = r["pos"]
+		rp.y = _rift_ground_y(rp, rp.y)
+		r["pos"] = rp
 		r["tick_t"] = float(r["tick_t"]) + delta
 		if float(r["tick_t"]) >= 1.0:
 			r["tick_t"] = 0.0
 			r["ticks"] = int(r["ticks"]) - 1
 			var pos: Vector3 = r["pos"]
-			rpc("rift_pulse_fx", pos)
+			rpc("rift_pulse_fx", int(r["batch"]), pos)
 			if not _misses():
 				for n in get_tree().get_nodes_in_group("players"):
 					var p := n as Node3D
@@ -1396,7 +1425,11 @@ func rift_spawn(batch: int, positions: Array) -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = disc
 		parent.add_child(mi)
-		mi.global_position = Vector3(pos.x, 0.12, pos.z)
+		# Issue #127: the disc sits on the ground at its position
+		# (pre-fix it was pinned to flat y=0.12 and buried whole on
+		# heightmap themes). No sampler -> ground 0 -> the exact
+		# pre-fix 0.12.
+		mi.global_position = Vector3(pos.x, _rift_ground_y(pos, 0.0) + 0.12, pos.z)
 		# Slow spin while the rift lives; freed on rift_despawn.
 		var tw := mi.create_tween()
 		tw.set_loops()
@@ -1407,8 +1440,46 @@ func rift_spawn(batch: int, positions: Array) -> void:
 
 ## Horror void rift: pulse flash each server damage tick.
 @rpc("any_peer", "call_local")
-func rift_pulse_fx(pos: Vector3) -> void:
+func rift_pulse_fx(batch: int, pos: Vector3) -> void:
 	Effects.burst(get_parent(), pos + Vector3(0, 0.5, 0), Color(0.6, 0.2, 0.9), 12, 4.0)
+	# Issue #127: the marker tracks its rift. Each pulse carries the
+	# server's (grounded) rift position; a disc OF THE PULSE'S OWN
+	# BATCH follows it, re-grounded off the carried y. Two
+	# disciplines, both measured live on the Depths: (1) batch —
+	# with two casts alive, one batch's pulses must not steal the
+	# other's discs; (2) round claims — when a batch's rifts
+	# converge on one point, a plain nearest-disc rule lets one
+	# disc win every pulse and strands its siblings, so a pulse
+	# prefers the nearest disc not claimed within the last 0.5s
+	# (a batch's pulses land in the same tick, ~a frame apart).
+	var now := Time.get_ticks_msec()
+	var best: Node3D = null
+	var best_d := 1e18
+	var best_any: Node3D = null
+	var best_any_d := 1e18
+	for n in _rift_nodes.get(batch, []):
+		if is_instance_valid(n):
+			var np := (n as Node3D).global_position
+			var dd := Vector2(np.x - pos.x, np.z - pos.z).length()
+			if dd < best_any_d:
+				best_any_d = dd
+				best_any = n
+			var claimed_at := int(_rift_disc_claimed.get(n.get_instance_id(), -100000))
+			if now - claimed_at > 500 and dd < best_d:
+				best_d = dd
+				best = n
+	if best == null:
+		best = best_any
+	if best != null:
+		best.global_position = Vector3(pos.x, pos.y + 0.12, pos.z)
+		_rift_disc_claimed[best.get_instance_id()] = now
+		if _rift_disc_claimed.size() > 64: # prune freed discs' entries
+			var live: Dictionary = {}
+			for b2 in _rift_nodes:
+				for n2 in _rift_nodes[b2]:
+					if is_instance_valid(n2) and _rift_disc_claimed.has(n2.get_instance_id()):
+						live[n2.get_instance_id()] = _rift_disc_claimed[n2.get_instance_id()]
+			_rift_disc_claimed = live
 
 
 @rpc("any_peer", "call_local")

@@ -5187,6 +5187,17 @@ class ApexPlayerStub extends Node3D:
 		damage_taken += amount
 
 
+class RiftGroundStub extends Node:
+	## Issue #127: a dungeon stand-in whose ground height depends on
+	## x (base + slope * x), so rift grounding is observable in
+	## numbers. Zeroed, it is the flat-theme sampler.
+	var base := 1.2
+	var slope := 0.1
+
+	func ground_height_at(pos: Vector3) -> float:
+		return base + slope * pos.x
+
+
 func _test_apex_mechanics() -> void:
 	print("[Playtest] Apex phase 2 mechanics (enrage/adds/phaseshift)...")
 	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
@@ -5560,6 +5571,102 @@ func _test_boss_second_specials() -> void:
 	for i in 20:
 		horror._boss_think(1.0)
 	_assert((horror.get("_rifts") as Array).is_empty(), "boss2: rifts expire after 15 ticks")
+	# --- Issue #127: rift grounding over relief (spawn, drift, discs,
+	# pulse tracking) + the flat A/B (sampler at 0 = pre-fix values).
+	var ground_stub := RiftGroundStub.new()
+	holder.add_child(ground_stub)
+	ground_stub.add_to_group("dungeon")
+	pspec3.global_position = Vector3(40, 0, 0)
+	var horror2 = MobScene.instantiate()
+	horror2.setup(14, hdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(horror2)
+	horror2.set("_special_cd", 999.0)
+	horror2.set("_special2_cd", 999.0)
+	horror2._do_void_rift()
+	var rifts2: Array = horror2.get("_rifts")
+	_assert(rifts2.size() == 3, "127: cast spawns 3 rifts over the stub ground")
+	var spawn_ok := true
+	for r in rifts2:
+		var sp: Vector3 = r["pos"]
+		if absf(sp.y - (1.2 + sp.x * 0.1)) > 0.001:
+			spawn_ok = false
+	_assert(spawn_ok, "127: spawn anchors grounded at their own xz")
+	var nodes2: Dictionary = horror2.get("_rift_nodes")
+	var discs_ok := nodes2.size() == 1
+	for b in nodes2:
+		for n in nodes2[b]:
+			var np := (n as Node3D).global_position
+			if absf(np.y - (1.2 + np.x * 0.1 + 0.12)) > 0.001:
+				discs_ok = false
+	_assert(discs_ok, "127: discs sit at ground + 0.12")
+	var spawn_x: Array = []
+	for r in rifts2:
+		spawn_x.append((r["pos"] as Vector3).x)
+	for i in 5:
+		horror2._boss_think(1.0)
+	var rifts2b: Array = horror2.get("_rifts")
+	var drifted := false
+	var reground_ok := rifts2b.size() == 3
+	for i2 in rifts2b.size():
+		var dp: Vector3 = rifts2b[i2]["pos"]
+		if absf(dp.x - float(spawn_x[i2])) > 0.5:
+			drifted = true
+		if absf(dp.y - (1.2 + dp.x * 0.1)) > 0.001:
+			reground_ok = false
+	_assert(drifted, "127: rifts drift toward the player")
+	_assert(reground_ok, "127: anchors re-ground through the drift (y follows the sampler)")
+	var lead: Vector3 = rifts2b[0]["pos"]
+	horror2.rift_pulse_fx(1, lead) # deterministic: drive one pulse directly (batch 1 = horror2's first cast)
+	var tracked := false
+	for b in nodes2:
+		for n in nodes2[b]:
+			var np2 := (n as Node3D).global_position
+			if Vector2(np2.x - lead.x, np2.z - lead.z).length() < 0.01 \
+					and absf(np2.y - (lead.y + 0.12)) < 0.001:
+				tracked = true
+	_assert(tracked, "127: a pulse moves its disc onto the (grounded) rift position")
+	ground_stub.base = 0.0
+	ground_stub.slope = 0.0
+	var horror3 = MobScene.instantiate()
+	horror3.setup(15, hdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(horror3)
+	horror3.set("_special_cd", 999.0)
+	horror3.set("_special2_cd", 999.0)
+	horror3._do_void_rift()
+	var flat_ok := true
+	for r in horror3.get("_rifts"):
+		if absf((r["pos"] as Vector3).y) > 0.0001:
+			flat_ok = false
+	for b in horror3.get("_rift_nodes"):
+		for n in horror3.get("_rift_nodes")[b]:
+			if absf((n as Node3D).global_position.y - 0.12) > 0.0001:
+				flat_ok = false
+	_assert(flat_ok, "127: flat A/B — sampler at 0 gives the exact pre-fix placement (anchor 0, disc 0.12)")
+	# Round claims: two pulses at the SAME point inside the claim
+	# window must claim two DIFFERENT discs (convergence collapse).
+	# A fresh cast (never pulsed) keeps the claim table empty —
+	# horror2's discs were all claimed by its think-loop pulses
+	# milliseconds ago in harness time.
+	var horror4 = MobScene.instantiate()
+	horror4.setup(16, hdata, 1.0, 1.0, false, 1.0)
+	holder.add_child(horror4)
+	horror4.set("_special_cd", 999.0)
+	horror4.set("_special2_cd", 999.0)
+	horror4._do_void_rift()
+	var claim_pos: Vector3 = (horror4.get("_rifts") as Array)[0]["pos"] + Vector3(30, 0, 0)
+	horror4.rift_pulse_fx(1, claim_pos)
+	horror4.rift_pulse_fx(1, claim_pos)
+	var claimed := 0
+	for b in horror4.get("_rift_nodes"):
+		for n in horror4.get("_rift_nodes")[b]:
+			var cp := (n as Node3D).global_position
+			if Vector2(cp.x - claim_pos.x, cp.z - claim_pos.z).length() < 0.01:
+				claimed += 1
+	_assert(claimed == 2, "127: round claims — two pulses at one point claim two discs")
+	horror4.queue_free()
+	horror2.queue_free()
+	horror3.queue_free()
+	ground_stub.queue_free()
 
 	boar.queue_free()
 	warden.queue_free()

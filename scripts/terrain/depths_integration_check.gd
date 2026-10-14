@@ -510,6 +510,60 @@ func _check_horror() -> void:
 		if adds > 0:
 			_check(adds_dev <= 1.25, "summoned adds grounded on terrain (%d adds, max dev %.2f)" % [adds, adds_dev])
 		print("[DEPTHS] horror engagement: %d frames watched, %d adds present" % [frames, adds])
+	# --- Issue #127: void-rift grounding on the real heightmap.
+	# Drive a cast directly (the fight above proves the AI casts on
+	# its own; this leg measures placement): server anchors and
+	# client discs must sit on the sampled ground, at spawn and
+	# after the rifts have drifted + pulsed for a few seconds.
+	if is_instance_valid(horror):
+		horror.call("_do_void_rift")
+		for i in 10:
+			await get_tree().physics_frame
+		# Measure the DRIVEN cast specifically: its anchors are the
+		# tail of _rifts (appends are last; only older rifts expire),
+		# its discs are the new batch in _rift_nodes. (The AI may
+		# have rifts of its own live from the fight above.)
+		var batch_after := int(horror.get("_rift_batch"))
+		var anchors: Array = horror.get("_rifts")
+		var mine: Array = anchors.slice(maxi(0, anchors.size() - 3))
+		_check(mine.size() == 3, "127: rift cast spawns 3 zones on the Depths")
+		var worst_anchor := 0.0
+		for r in mine:
+			var ap: Vector3 = r["pos"]
+			worst_anchor = maxf(worst_anchor, absf(ap.y - _terrain.get_ground_height(ap)))
+		_check(worst_anchor <= 0.02, "127: rift anchors grounded at spawn (worst dev %.3f)" % worst_anchor)
+		var disc_nodes: Dictionary = horror.get("_rift_nodes")
+		var my_discs: Array = disc_nodes.get(batch_after, [])
+		var worst_disc := 0.0
+		for n in my_discs:
+			var np := (n as Node3D).global_position
+			worst_disc = maxf(worst_disc, absf(np.y - (_terrain.get_ground_height(np) + 0.12)))
+		_check(my_discs.size() == 3 and worst_disc <= 0.02,
+			"127: rift discs seated at ground + 0.12 (%d discs, worst dev %.3f)" % [my_discs.size(), worst_disc])
+		# Let them drift + pulse (~3.5s), then re-measure: the
+		# grounding must hold at the NEW positions.
+		for i in 210:
+			await get_tree().physics_frame
+		var worst_anchor2 := 0.0
+		for r in horror.get("_rifts"):
+			var ap2: Vector3 = r["pos"]
+			worst_anchor2 = maxf(worst_anchor2, absf(ap2.y - _terrain.get_ground_height(ap2)))
+		_check(worst_anchor2 <= 0.02, "127: anchors stay grounded through the drift (worst dev %.3f)" % worst_anchor2)
+		var worst_disc2 := 0.0
+		var worst_track := 0.0
+		var anchors2: Array = horror.get("_rifts")
+		for b in disc_nodes:
+			for n in disc_nodes[b]:
+				if is_instance_valid(n):
+					var np2 := (n as Node3D).global_position
+					worst_disc2 = maxf(worst_disc2, absf(np2.y - (_terrain.get_ground_height(np2) + 0.12)))
+					var near := 1e9
+					for r in anchors2:
+						var ap3: Vector3 = r["pos"]
+						near = minf(near, Vector2(np2.x - ap3.x, np2.z - ap3.z).length())
+					worst_track = maxf(worst_track, near)
+		_check(worst_disc2 <= 0.02, "127: discs stay seated on the ground (worst dev %.3f)" % worst_disc2)
+		_check(worst_track <= 2.0, "127: discs track their rifts (worst gap %.2f; batch-disciplined pulse nudges, 1 Hz x 1.2 m/s drift bound plus load slack)" % worst_track)
 
 
 ## [found, spawn_pos, player_pos]: scan each mob spawn (nearest to
