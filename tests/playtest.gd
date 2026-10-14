@@ -9957,6 +9957,15 @@ func _test_fishing_rod_phase3() -> void:
 	var player_src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(not player_src.contains("\"fishing_spots\""),
 		"cleanup P3: no fishing_spots group entry left in player.gd")
+	# Issue #131: a REAL HUD on the fisher before the session drive,
+	# so the bite toast has somewhere to land (and the pin below can
+	# watch it land — the old pin asserted only the _bite_ready
+	# mirror and stayed green over a dead p.toast call site).
+	var HudScene131: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud131 = HudScene131.instantiate()
+	root.add_child(hud131)
+	hud131.setup(g)
+	_assert(g.hud == hud131, "131: HUD attached to the fisher")
 	DirectorScript.debug_wait_override = 2.0
 	DirectorScript.debug_now_msec = 900000
 	DirectorScript.debug_catch_roll = 0.9 # deterministic minnow
@@ -9968,6 +9977,9 @@ func _test_fishing_rod_phase3() -> void:
 	director._process(0.016)
 	_assert(director.session_state_for(1) == DirectorScript.SessionState.BITING, "session: bite fired")
 	_assert(bool(g.get("_bite_ready")), "session: bite mirror set")
+	var toast_label = hud131.get_node("%ToastLabel") as Label
+	_assert(toast_label != null and toast_label.text == "Bite! LMB / E to hook",
+		"131: the bite toast actually reaches the fisher's HUD")
 	director.request_hook()
 	_assert(_farm_inv_count(g, "fish_minnow") == 1, "session: catch landed with the rod")
 	_assert(not director.has_bobber(1), "session: catch ends the session")
