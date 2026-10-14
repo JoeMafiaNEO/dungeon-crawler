@@ -163,7 +163,17 @@ static func scorch(parent: Node, pos: Vector3, radius: float) -> void:
 	disc.material = mat
 	mi.mesh = disc
 	parent.add_child(mi)
-	mi.global_position = Vector3(pos.x, 0.06, pos.z)
+	# Issue #130: seat the decal on the terrain where a heightmap is
+	# active — the first dungeon-group node WITH a ground sampler
+	# (the #127 lookup discipline: method-less stubs can't shadow
+	# it). Flat themes sample exactly 0.0, so the seat there is the
+	# legacy absolute 0.06, unchanged.
+	var ground_y := 0.0
+	for n in parent.get_tree().get_nodes_in_group("dungeon"):
+		if n.has_method("ground_height_at"):
+			ground_y = float(n.call("ground_height_at", pos))
+			break
+	mi.global_position = Vector3(pos.x, ground_y + 0.06, pos.z)
 	var tw := mi.create_tween()
 	tw.tween_interval(4.0)
 	tw.tween_property(mat, "albedo_color:a", 0.0, 2.0)

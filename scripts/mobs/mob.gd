@@ -1287,7 +1287,9 @@ func charge_fx(pos: Vector3) -> void:
 ## Apex Bristleback enrage: drops a scorch decal while charging (4s fire trail).
 @rpc("any_peer", "call_local")
 func trail_scorch(pos: Vector3) -> void:
-	Effects.scorch(get_parent(), Vector3(pos.x, 0.06, pos.z), 1.4)
+	# Issue #130: pass the position through — Effects.scorch seats
+	# the decal on the ground itself (was: pre-flattened to y=0.06).
+	Effects.scorch(get_parent(), pos, 1.4)
 
 
 ## Apex Bristleback enrage announcement burst.

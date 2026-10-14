@@ -5151,6 +5151,11 @@ func _copy_file(src: String, dst: String) -> void:
 class ApexDungeonStub extends Node:
 	var announces: Array = []
 	var spawns: Array = []
+	# Issue #130: settable ground sampler for the scorch-seat pin.
+	var stub_ground := 0.0
+
+	func ground_height_at(_p: Vector3) -> float:
+		return stub_ground
 
 	@rpc("any_peer", "call_local")
 	func announce(msg: String) -> void:
@@ -5266,6 +5271,22 @@ func _test_apex_mechanics() -> void:
 		if c is MeshInstance3D and (c as MeshInstance3D).mesh is CylinderMesh:
 			decals_after += 1
 	_assert(decals_after - decals_before >= 2, "apex2: charge leaves fire-trail scorch decals")
+	# Issue #130: the decal seats on the ground sampler where a
+	# heightmap is active; flat (sampler 0.0) keeps the legacy seat.
+	stub.stub_ground = 2.5
+	Effects.scorch(holder, Vector3(3, 0, 4), 1.0)
+	var decal_h := holder.get_child(holder.get_child_count() - 1) as MeshInstance3D
+	_assert(decal_h != null and absf(decal_h.global_position.y - 2.56) < 0.001
+		and decal_h.global_position.x == 3.0 and decal_h.global_position.z == 4.0,
+		"130: scorch decal seats at ground + 0.06 on heightmap ground")
+	stub.stub_ground = 0.0
+	Effects.scorch(holder, Vector3(5, 0, 6), 1.0)
+	var decal_f := holder.get_child(holder.get_child_count() - 1) as MeshInstance3D
+	_assert(decal_f != null and absf(decal_f.global_position.y - 0.06) < 0.001,
+		"130: scorch decal seat is the legacy 0.06 on flat ground")
+	var fx_src := FileAccess.get_file_as_string("res://scripts/effects/effects.gd")
+	_assert(fx_src.contains("ground_height_at") and not fx_src.contains("Vector3(pos.x, 0.06, pos.z)"),
+		"130: scorch grounds itself via the sampler (absolute seat gone)")
 
 	# --- Adds (Apex Warden): 2 elite skeletons at 66% and 33%.
 	var wdata: Resource = load("res://data/mobs/apex_warden.tres")
