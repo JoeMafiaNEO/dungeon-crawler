@@ -456,6 +456,36 @@ static func hammer_shockwave() -> AudioStreamWAV:
 	]))
 
 
+# --- fishing (issue #126) ---
+
+static func cast_whoosh() -> AudioStreamWAV:
+	# Bobber leaving the rod on release (issue #126): a quick airy sweep
+	# up as the line pays out — softer and shorter than a weapon throw.
+	return _wav(_mix([
+		_noise(0.24, 11.0, 0.55, 0.0, 0.35),
+		_tone(500.0, 1500.0, 0.20, "sine", 11.0, 0.22),
+	]))
+
+
+static func splashdown() -> AudioStreamWAV:
+	# Bobber landing in water (issue #126): bright splash attack with a
+	# bubbly decay and a low plip as it breaks the surface.
+	return _wav(_mix([
+		_noise(0.30, 9.0, 0.65, 0.0, 0.55),
+		_noise(0.10, 30.0, 0.40),
+		_tone(700.0, 240.0, 0.12, "sine", 18.0, 0.35),
+	]))
+
+
+static func dirt_flop() -> AudioStreamWAV:
+	# Bobber flopping on dirt (issue #126): a dead, dry thud — the failed
+	# cast. Deliberately no ring or splash: earth swallows it.
+	return _wav(_mix([
+		_tone(160.0, 70.0, 0.14, "sine", 22.0, 0.70),
+		_noise(0.09, 35.0, 0.40, 0.0, 0.60),
+	]))
+
+
 # --- loot / progression ---
 
 static func pickup() -> AudioStreamWAV:

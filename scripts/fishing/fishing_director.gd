@@ -351,6 +351,9 @@ func predict_cast(peer: int, from: Vector3, landing: Vector3) -> void:
 func fx_cast(peer: int, from: Vector3, to: Vector3, in_water: bool) -> void:
 	var was_predicted := _predicted.has(peer)
 	_predicted.erase(peer)
+	# Issue #126 sounds: the bobber leaves the rod (landing cues play in
+	# FishingVisual at arc arrival, synced to the splash/flop).
+	AudioManager.sfx("cast_whoosh", from)
 	if was_predicted and in_water and _visuals.has(peer):
 		pass # prediction confirmed; keep the running visual
 	elif in_water:

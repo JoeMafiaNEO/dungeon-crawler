@@ -60,6 +60,7 @@ func _run() -> void:
 	_test_train_ambient()
 	_test_audio_combat_cues()
 	_test_audio_113_cues()
+	_test_audio_126_cues()
 	_test_station_annex()
 	_test_lobby_room()
 	_test_lobby_doors()
@@ -2184,6 +2185,27 @@ func _test_audio_113_cues() -> void:
 		var w: AudioStreamWAV = SoundScript.call(sfx)
 		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
 		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
+
+
+func _test_audio_126_cues() -> void:
+	print("[Playtest] Audio: fishing cast cues (issue #126)...")
+	# Sound commission for #126 (FP casting redesign): cast whoosh,
+	# splashdown, and the dirt-flop thud are new; bite/reel/catch carry
+	# over from the spot era. Every cue must synth and be registered.
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	for sfx in ["cast_whoosh", "splashdown", "dirt_flop"]:
+		var w: AudioStreamWAV = SoundScript.call(sfx)
+		_assert(w != null and w.data.size() > 0, "synth builds %s" % sfx)
+		_assert(amsrc.contains('"%s"' % sfx), "%s registered in builder list" % sfx)
+	# Wiring: the whoosh plays on the director's fx_cast broadcast at the
+	# rod; the landing cues play in FishingVisual at arc arrival, synced
+	# to the visible splash (water) / flop (dirt).
+	var dsrc := FileAccess.get_file_as_string("res://scripts/fishing/fishing_director.gd")
+	_assert(dsrc.contains('sfx("cast_whoosh", from)'), "cast whoosh wired to fx_cast")
+	var vsrc := FileAccess.get_file_as_string("res://scripts/fishing/fishing_visual.gd")
+	_assert(vsrc.contains('sfx("splashdown", _to)'), "splashdown wired to water arrival")
+	_assert(vsrc.contains('sfx("dirt_flop", _to)'), "dirt flop wired to dirt arrival")
 
 
 func _test_lobby_room() -> void:

@@ -155,9 +155,11 @@ func _process(delta: float) -> void:
 					_phase = 2
 					_resolve_t = 0.0
 					_resolve_mode = "flop"
+					AudioManager.sfx("dirt_flop", _to)
 				else:
 					_phase = 1
 					_splash_at(_to)
+					AudioManager.sfx("splashdown", _to)
 		1:
 			_bob_phase += delta * 2.2
 			_bobber.global_position = Vector3(
