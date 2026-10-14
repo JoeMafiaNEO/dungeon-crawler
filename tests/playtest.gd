@@ -4565,6 +4565,18 @@ func _test_architect() -> void:
 	_assert(dsrc.contains("func place_structure"), "place_structure RPC exists")
 	_assert(dsrc.contains("func break_structure"), "break_structure RPC exists")
 	_assert(dsrc.contains("func demolish_structures"), "demolish_structures RPC exists")
+	# Issue #128: placement RPCs seat on the sampled ground, never an
+	# absolute y (structures sank by the local ground height on
+	# heightmap themes). Flat themes sample exactly 0.0, so the seat
+	# stays the pre-fix 0.05 there.
+	_assert(dsrc.count("ground_height_at(pos) + 0.05") == 3,
+		"128: totem + structure + decoy all seat at ground_height_at(pos) + 0.05")
+	_assert(not dsrc.contains("Vector3(pos.x, 0.05, pos.z)"),
+		"128: no absolute-y placement remains in dungeon.gd")
+	var dgd = load("res://scripts/dungeon/dungeon.gd").new()
+	_assert(dgd.ground_height_at(Vector3(7, 0, -3)) == 0.0,
+		"128: flat A/B — no terrain, ground is exactly 0.0 (seat = pre-fix 0.05)")
+	dgd.free()
 	# Mobs target structures and collide with walls.
 	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
 	_assert(msrc.contains("take_structure_damage"), "Mobs damage structures")

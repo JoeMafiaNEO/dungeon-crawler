@@ -2230,7 +2230,7 @@ func place_totem(totem_id: String, pos: Vector3, owner: int, rank: int = 1) -> v
 	var totem := Totem.new()
 	totem.setup(totem_id, owner, rank)
 	add_child(totem)
-	totem.global_position = Vector3(pos.x, 0.05, pos.z)
+	totem.global_position = Vector3(pos.x, ground_height_at(pos) + 0.05, pos.z)
 
 
 ## Places an architect structure on all peers. Caps are enforced
@@ -2272,7 +2272,7 @@ func place_structure(structure_id: String, pos: Vector3, owner: int, rank: int, 
 	var st := Structure.new()
 	st.setup(structure_id, owner, rank, hp_mult, uid)
 	add_child(st)
-	st.global_position = Vector3(pos.x, 0.05, pos.z)
+	st.global_position = Vector3(pos.x, ground_height_at(pos) + 0.05, pos.z)
 
 
 ## Server: a structure was destroyed. Every peer plays rubble FX and frees
@@ -2334,7 +2334,7 @@ func spawn_decoy(pos: Vector3, owner: int) -> void:
 	var decoy: Node3D = DecoyScript.new()
 	decoy.setup(owner)
 	add_child(decoy)
-	decoy.global_position = Vector3(pos.x, 0.05, pos.z)
+	decoy.global_position = Vector3(pos.x, ground_height_at(pos) + 0.05, pos.z)
 
 
 ## Server-side helper for boss summons. force_elite guarantees elite adds

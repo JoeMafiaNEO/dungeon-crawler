@@ -485,6 +485,54 @@ func _check_apex_fight() -> void:
 		if mounds >= 3:
 			break
 	_check(mounds == 3, "apex boss raised its mud wall on terrain (mounds %d)" % mounds)
+	# --- Issue #128: placements seat on the sampled ground. The
+	# boss's own mounds first (disc ground), then driven placements
+	# of all three placement RPCs at a high-ground rim probe.
+	var mound_worst := 0.0
+	for n in get_tree().get_nodes_in_group("structures"):
+		if str(n.get("structure_id")) == "mud_mound":
+			var mp := (n as Node3D).global_position
+			mound_worst = maxf(mound_worst, absf(mp.y - (_dungeon.ground_height_at(mp) + 0.05)))
+	_check(mound_worst <= 0.02, "128: the boss's mud mounds seat at ground + 0.05 (worst dev %.3f)" % mound_worst)
+	var probe := Vector3.ZERO
+	var probe_found := false
+	for r in [10.0, 12.0, 14.0, 16.0]:
+		for a in 16:
+			var cand := Vector3(cos(TAU * float(a) / 16.0) * r, 0, sin(TAU * float(a) / 16.0) * r)
+			if _dungeon.ground_height_at(cand) >= 0.25:
+				probe = cand
+				probe_found = true
+				break
+		if probe_found:
+			break
+	_check(probe_found, "128: high-ground probe found on the rim (ground %.3f)" % _dungeon.ground_height_at(probe))
+	if probe_found:
+		_dungeon.place_structure("mud_mound", probe, 1, 1, "probe128")
+		var seat_s: Node3D = null
+		for n in get_tree().get_nodes_in_group("structures"):
+			if str(n.get("uid")) == "probe128":
+				seat_s = n as Node3D
+		_check(seat_s != null and absf(seat_s.global_position.y - (_dungeon.ground_height_at(probe) + 0.05)) <= 0.02,
+			"128: driven structure seats at ground + 0.05 (y %.3f vs %.3f)" % [
+				seat_s.global_position.y if seat_s != null else -1.0, _dungeon.ground_height_at(probe) + 0.05])
+		var tpos := probe + Vector3(1.5, 0, 0)
+		_dungeon.place_totem("sanctuary_totem", tpos, 1, 1)
+		var seat_t: Node3D = null
+		for n in get_tree().get_nodes_in_group("totems"):
+			if str(n.get("totem_id")) == "sanctuary_totem":
+				seat_t = n as Node3D
+		_check(seat_t != null and absf(seat_t.global_position.y - (_dungeon.ground_height_at(tpos) + 0.05)) <= 0.02,
+			"128: driven totem seats at ground + 0.05 (y %.3f vs %.3f)" % [
+				seat_t.global_position.y if seat_t != null else -1.0, _dungeon.ground_height_at(tpos) + 0.05])
+		var dpos := probe + Vector3(-1.5, 0, 0)
+		_dungeon.spawn_decoy(dpos, 1)
+		var seat_d: Node3D = null
+		for n in _dungeon.get_children():
+			if n.get_script() == Decoy:
+				seat_d = n as Node3D
+		_check(seat_d != null and absf(seat_d.global_position.y - (_dungeon.ground_height_at(dpos) + 0.05)) <= 0.02,
+			"128: driven decoy seats at ground + 0.05 (y %.3f vs %.3f)" % [
+				seat_d.global_position.y if seat_d != null else -1.0, _dungeon.ground_height_at(dpos) + 0.05])
 	print("[APEX] fight done: boss at ", boss.global_position, " ground ",
 		_terrain.get_ground_height(boss.global_position))
 
