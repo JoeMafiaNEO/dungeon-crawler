@@ -170,6 +170,7 @@ func _run() -> void:
 	_test_111_minor_pause_save_snapshot()
 	_test_village_terrain_118()
 	_test_terrain_skirt_124()
+	_test_dungeon_terrain_120()
 
 	_print_results()
 	quit()
@@ -731,6 +732,113 @@ func _test_terrain_skirt_124() -> void:
 		"#124: skirt hangs 2.0 below the lowest edge (min %.3f vs edge %.3f)" % [skirt_min, edge_min])
 	root.remove_child(t)
 	t.free()
+func _test_dungeon_terrain_120() -> void:
+	print("[Playtest] Dungeon terrain (#120)...")
+	# Issue #120 (S3 of the #103 full integration): the Dungeon opts
+	# into heightmap terrain with a near-flat worn-stone interior
+	# profile (relief never fights walls/doors/slam reads), and the
+	# ground FX that take a grounded position now honor its height
+	# (flat themes: pos.y == 0, identical placement).
+	var dungeon: Resource = load("res://data/levels/theme_dungeon.tres")
+	var depths: Resource = load("res://data/levels/theme_depths.tres")
+	_assert(dungeon != null and depths != null, "#120: dungeon + depths themes load")
+	if dungeon == null or depths == null:
+		return
+	_assert(bool(dungeon.get("use_heightmap_terrain")), "#120: dungeon use_heightmap_terrain on")
+	_assert(absf(float(dungeon.get("terrain_amplitude")) - 0.35) < 0.0001, "#120: dungeon amp 0.35")
+	_assert(absf(float(dungeon.get("terrain_noise_frequency")) - 0.060) < 0.00001, "#120: dungeon freq 0.060")
+	_assert(absf(float(dungeon.get("terrain_height_offset")) - 0.18) < 0.0001, "#120: dungeon offset +0.18")
+	_assert(absf(float(dungeon.get("terrain_water_level")) - (-1.0)) < 0.0001, "#120: dungeon water parked -1.00 (dry)")
+	_assert(int(dungeon.get("terrain_smooth_passes")) == 3, "#120: dungeon smooth 3")
+	_assert(absf(float(dungeon.get("terrain_flatten_radius")) - 5.0) < 0.0001, "#120: dungeon flatten 5.0")
+	_assert(absf(float(dungeon.get("terrain_pond_depth")) - 0.5) < 0.0001, "#120: dungeon pond depth 0.5 (unused, dry)")
+	_assert(dungeon.get("terrain_tint_bed") == Color(0.13, 0.13, 0.16), "#120: dungeon tint bed = damp stone")
+	_assert(dungeon.get("terrain_tint_low") == Color(0.27, 0.27, 0.31), "#120: dungeon tint low = cold stone")
+	_assert(dungeon.get("terrain_tint_mid") == Color(0.36, 0.36, 0.41), "#120: dungeon tint mid = worn stone")
+	_assert(dungeon.get("terrain_tint_high") == Color(0.48, 0.48, 0.54), "#120: dungeon tint high = pale stone")
+	# Tint anchor: the dry-theme form — the design floor
+	# (offset - amp/2 = 0.18 - 0.175 = 0.005), not the parked water.
+	_assert(absf(float(dungeon.get("terrain_tint_anchor")) - 0.005) < 0.0001
+		and absf(float(dungeon.get("terrain_tint_anchor"))
+			- (float(dungeon.get("terrain_height_offset"))
+				- float(dungeon.get("terrain_amplitude")) * 0.5)) < 0.0001,
+		"#120: dungeon tint anchor = design floor (offset - amp/2)")
+	# Theme identity untouched by the flip.
+	_assert(int(dungeon.get("grid_size")) == 24
+		and absf(float(dungeon.get("cell_size")) - 2.0) < 0.0001
+		and int(dungeon.get("torch_count")) == 10
+		and str(dungeon.get("boss_id")) == "boss_warden",
+		"#120: dungeon identity (24x2m interior, 10 torches, warden)")
+	# Depths is the new flat exemplar (the docks check's off-pin moved
+	# here when the dungeon flipped).
+	_assert(not bool(depths.get("use_heightmap_terrain")), "#120: depths use_heightmap_terrain stays off")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/terrain/docks_integration_check.gd")
+	_assert(dsrc.contains("theme_depths.tres") and dsrc.contains("depths theme flag stays off"),
+		"#120: docks check off-pin points at depths")
+	# FX grounding: the FX that receive a grounded position honor its
+	# height (source pins — the behavioral proof is the dungeon
+	# integration check's slam-disc leg).
+	var esrc := FileAccess.get_file_as_string("res://scripts/effects/effects.gd")
+	_assert(esrc.contains("pos.y + 0.15"), "#120: telegraph ring grounds at pos.y + 0.15")
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("pos.y + 3.5"), "#120: judgment pillar grounds at pos.y + 3.5")
+	_assert(msrc.count("pos.y + 0.35") == 2, "#120: both slam rings ground at pos.y + 0.35")
+	# Bare-terrain behavior with the dungeon profile: dry by
+	# construction, heights inside the design range, grade in budget.
+	var HT = load("res://scripts/terrain/heightmap_terrain.gd")
+	var t = HT.new()
+	root.add_child(t)
+	t.set("map_points", 65)
+	t.set("cell_size", 1.0)
+	t.set("terrain_seed", 424242)
+	t.set("noise_frequency", float(dungeon.get("terrain_noise_frequency")))
+	t.set("amplitude", float(dungeon.get("terrain_amplitude")))
+	t.set("height_offset", float(dungeon.get("terrain_height_offset")))
+	t.set("water_level", float(dungeon.get("terrain_water_level")))
+	t.set("pond_depth", float(dungeon.get("terrain_pond_depth")))
+	t.set("smooth_passes", int(dungeon.get("terrain_smooth_passes")))
+	t.set("flatten_radius", float(dungeon.get("terrain_flatten_radius")))
+	t.generate()
+	var heights: PackedFloat32Array = t.heights_copy()
+	var mn := 1e9
+	var mx := -1e9
+	var wet := 0
+	for h in heights:
+		mn = minf(mn, h)
+		mx = maxf(mx, h)
+		if h < float(dungeon.get("terrain_water_level")):
+			wet += 1
+	_assert(mn >= -0.001 and mx <= 0.361,
+		"#120: dungeon heights in [0, 0.36] design range (%.3f..%.3f)" % [mn, mx])
+	_assert(wet == 0, "#120: dungeon terrain dry — zero sub-water heights (min %.3f)" % mn)
+	var max_g := 0.0
+	for gz in range(1, 64):
+		for gx in range(1, 64):
+			max_g = maxf(max_g, float(t.call("_slope_at", gx, gz)))
+	_assert(max_g <= 0.55, "#120: dungeon bare-terrain max grade %.1f%% <= 55%%" % (max_g * 100.0))
+	# Anchored ramp with the design-floor anchor (normalization
+	# amp*0.5 = 0.175): h <= anchor is pure low, anchor + 0.0875 is
+	# pure mid, anchor + 0.175 is pure high.
+	t.set("tint_bed", dungeon.get("terrain_tint_bed"))
+	t.set("tint_low", dungeon.get("terrain_tint_low"))
+	t.set("tint_mid", dungeon.get("terrain_tint_mid"))
+	t.set("tint_high", dungeon.get("terrain_tint_high"))
+	t.set("tint_anchor", float(dungeon.get("terrain_tint_anchor")))
+	var tl: Color = dungeon.get("terrain_tint_low")
+	var tm: Color = dungeon.get("terrain_tint_mid")
+	var th: Color = dungeon.get("terrain_tint_high")
+	var c_lo: Color = t.call("_vertex_color", 0.0, 0.0)
+	var c_mid: Color = t.call("_vertex_color", 0.0925, 0.0)
+	var c_hi: Color = t.call("_vertex_color", 0.18, 0.0)
+	_assert(Vector3(c_lo.r - tl.r, c_lo.g - tl.g, c_lo.b - tl.b).length() < 0.002,
+		"#120: anchored ramp t=0 -> tint_low")
+	_assert(Vector3(c_mid.r - tm.r, c_mid.g - tm.g, c_mid.b - tm.b).length() < 0.002,
+		"#120: anchored ramp t=0.5 -> tint_mid")
+	_assert(Vector3(c_hi.r - th.r, c_hi.g - th.g, c_hi.b - th.b).length() < 0.002,
+		"#120: anchored ramp t=1 -> tint_high")
+	root.remove_child(t)
+	t.free()
+	print("[Playtest] dungeon terrain 120 done")
 
 
 func _test_save_roundtrip() -> void:

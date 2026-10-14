@@ -87,7 +87,10 @@ static func telegraph_ring(parent: Node, pos: Vector3, radius: float, color: Col
 	torus.material = mat
 	mi.mesh = torus
 	parent.add_child(mi)
-	mi.global_position = Vector3(pos.x, 0.15, pos.z)
+	# Ground the ring on the marked spot: pos carries the target's
+	# grounded height (0.0 on flat themes — identical placement there;
+	# terrain height on heightmap themes, #120).
+	mi.global_position = Vector3(pos.x, pos.y + 0.15, pos.z)
 	# Pulse while the meteor is incoming.
 	var tw := mi.create_tween()
 	tw.set_loops(2)

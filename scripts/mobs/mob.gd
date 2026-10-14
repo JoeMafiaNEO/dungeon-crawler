@@ -1290,7 +1290,7 @@ func shockwave_fx(pos: Vector3) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = torus
 	parent.add_child(mi)
-	mi.global_position = Vector3(pos.x, 0.35, pos.z)
+	mi.global_position = Vector3(pos.x, pos.y + 0.35, pos.z)
 	var tw := mi.create_tween()
 	tw.set_parallel(true)
 	tw.tween_property(mi, "scale", Vector3(9, 1, 9), 1.1).set_trans(Tween.TRANS_LINEAR)
@@ -1321,7 +1321,7 @@ func seismic_fx(pos: Vector3) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = torus
 	parent.add_child(mi)
-	mi.global_position = Vector3(pos.x, 0.35, pos.z)
+	mi.global_position = Vector3(pos.x, pos.y + 0.35, pos.z)
 	var tw := mi.create_tween()
 	tw.set_parallel(true)
 	tw.tween_property(mi, "scale", Vector3(12, 1, 12), 2.0).set_trans(Tween.TRANS_LINEAR)
@@ -1363,7 +1363,7 @@ func judgment_fx(positions: Array) -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = cyl
 		parent.add_child(mi)
-		mi.global_position = Vector3(pos.x, 3.5, pos.z)
+		mi.global_position = Vector3(pos.x, pos.y + 3.5, pos.z)
 		var tw := mi.create_tween()
 		tw.set_parallel(true)
 		tw.tween_property(mi, "scale", Vector3(0.2, 1.4, 0.2), 0.45).set_trans(Tween.TRANS_LINEAR)
