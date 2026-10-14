@@ -368,8 +368,8 @@ func fx_cast(peer: int, from: Vector3, to: Vector3, in_water: bool) -> void:
 
 @rpc("authority", "call_local")
 func fx_bite(peer: int) -> void:
-	var v := _visuals.get(peer) as FishingVisual
-	if v != null and is_instance_valid(v):
+	var v := _visual_for(peer)
+	if v != null:
 		v.bite()
 		AudioManager.sfx("ping", v.bobber_position(), 1.0, 1.0)
 	if peer == int(multiplayer.get_unique_id()):
@@ -385,8 +385,8 @@ func fx_bite(peer: int) -> void:
 
 @rpc("authority", "call_local")
 func fx_catch(peer: int, _item_id: String) -> void:
-	var v := _visuals.get(peer) as FishingVisual
-	if v != null and is_instance_valid(v):
+	var v := _visual_for(peer)
+	if v != null:
 		v.caught()
 	_visuals.erase(peer)
 	if peer == int(multiplayer.get_unique_id()):
@@ -398,8 +398,8 @@ func fx_catch(peer: int, _item_id: String) -> void:
 
 @rpc("authority", "call_local")
 func fx_escape(peer: int) -> void:
-	var v := _visuals.get(peer) as FishingVisual
-	if v != null and is_instance_valid(v):
+	var v := _visual_for(peer)
+	if v != null:
 		v.escape()
 	if peer == int(multiplayer.get_unique_id()):
 		var p := _local_player()
@@ -411,8 +411,8 @@ func fx_escape(peer: int) -> void:
 
 @rpc("authority", "call_local")
 func fx_reel_in(peer: int) -> void:
-	var v := _visuals.get(peer) as FishingVisual
-	if v != null and is_instance_valid(v):
+	var v := _visual_for(peer)
+	if v != null:
 		v.reel_in()
 	_visuals.erase(peer)
 	if peer == int(multiplayer.get_unique_id()):
@@ -452,10 +452,33 @@ func _spawn_visual(peer: int, from: Vector3, to: Vector3, flop: bool) -> void:
 	add_child(v)
 	v.begin_cast(from, to, flop)
 	_visuals[peer] = v
+	# Issue #129: the visual self-frees when its resolve animation
+	# ends; erase its entry as it exits so the map never holds a
+	# stale reference (a flop has no fx resolution call to erase it).
+	v.tree_exiting.connect(_on_visual_exiting.bind(peer, v))
+
+
+func _on_visual_exiting(peer: int, v: FishingVisual) -> void:
+	if _visuals.get(peer) == v:
+		_visuals.erase(peer)
+
+
+## Issue #129: validity-safe visual fetch. The typed cast must come
+## AFTER the validity check — casting a freed instance logs "Trying
+## to cast a freed object" before any guard can run. Stale entries
+## (a visual that freed without an fx resolution) prune here.
+func _visual_for(peer: int) -> FishingVisual:
+	var raw = _visuals.get(peer)
+	if raw == null:
+		return null
+	if not is_instance_valid(raw):
+		_visuals.erase(peer)
+		return null
+	return raw as FishingVisual
 
 
 func _clear_visual(peer: int) -> void:
-	var v := _visuals.get(peer) as FishingVisual
-	if v != null and is_instance_valid(v):
+	var v := _visual_for(peer)
+	if v != null:
 		v.queue_free()
 	_visuals.erase(peer)

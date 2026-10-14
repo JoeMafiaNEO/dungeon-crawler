@@ -9920,6 +9920,34 @@ func _test_fishing_rod_phase3() -> void:
 	DirectorScript.debug_force_water = -1
 	director.free()
 
+	# --- Issue #129: a flop visual self-frees with no fx resolution;
+	# its _visuals entry must not go stale (the recast's clear path
+	# used to cast the freed instance and log a SCRIPT ERROR).
+	var dsrc129 := FileAccess.get_file_as_string("res://scripts/fishing/fishing_director.gd")
+	_assert(dsrc129.contains("func _visual_for"), "129: validity-safe visual fetch exists")
+	_assert(not dsrc129.contains("_visuals.get(peer) as FishingVisual"),
+		"129: no cast-before-check fetch remains in the fx getters")
+	var director2 = DirectorScript.new()
+	root.add_child(director2)
+	director2.fx_cast(7, Vector3(0, 1, 0), Vector3(3, 0, 3), false) # dirt: flop
+	var vis129: Dictionary = director2.get("_visuals")
+	_assert(vis129.has(7), "129: flop cast stores a visual")
+	var flop_v = vis129[7]
+	var steps := 0
+	while not flop_v.is_queued_for_deletion() and steps < 400:
+		flop_v._process(0.05)
+		steps += 1
+	_assert(flop_v.is_queued_for_deletion(), "129: flop visual resolves and self-frees")
+	flop_v.free() # the frame-end flush, driven synchronously
+	_assert(not vis129.has(7), "129: entry erased when the flop visual exits")
+	director2.fx_cast(7, Vector3(0, 1, 0), Vector3(3, 0.5, 3), true) # recast, water
+	_assert(vis129.has(7) and is_instance_valid(vis129[7]),
+		"129: recast after a flop stores a live visual (clear path error-free)")
+	director2.fx_bite(7)
+	director2.fx_reel_in(7)
+	_assert(not vis129.has(7), "129: reel-in erases the entry")
+	director2.free()
+
 	# --- Persistence: save roundtrip keeps the rod AND its TOOL marker.
 	var state: Dictionary = g.get_state()
 	var g2 = PlayerScene.instantiate()
