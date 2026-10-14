@@ -8,6 +8,12 @@ const BountyUI := preload("res://scripts/ui/bounty_ui.gd")
 
 var is_paused := false
 
+## Inventory (character panel) open. The inventory is an alternative
+## pause screen (Jesse 2026-10-13): while it is up the mouse is free
+## and the local player takes no damage — Player.take_damage reads
+## this on the player's authority peer, whose HUD is this one.
+var inventory_open := false
+
 ## The local player. Untyped (Variant) so UI harnesses can drive the bounty
 ## panel/tracker with a lightweight test double (a Dictionary with
 ## bounty_progress) without needing the full Player script, which does not
@@ -2119,6 +2125,7 @@ func show_ride_status(title: String, sec: float) -> void:
 # --- Downed / revive (co-op) ---
 
 func show_downed(seconds: float) -> void:
+	force_close_inventory()
 	%DownedLabel.visible = true
 	update_downed(seconds)
 
@@ -2144,6 +2151,7 @@ func hide_revive_progress() -> void:
 
 func show_death_screen(stats: Dictionary) -> void:
 	hide_pause()
+	force_close_inventory()
 	var cause := str(stats.get("cause", ""))
 	if cause.is_empty():
 		%DeathCauseLabel.text = "The dungeon claimed you."
@@ -2383,10 +2391,56 @@ func set_pickup_prompt(visible: bool, item_name: String) -> void:
 
 
 func toggle_inventory() -> void:
-	%InventoryPanel.visible = not %InventoryPanel.visible
-	if %InventoryPanel.visible and _player != null:
+	if inventory_open:
+		close_inventory()
+	else:
+		open_inventory()
+
+
+## Open the character panel as an alternative pause screen: the
+## mouse is freed for the panel and the local player is damage-
+## immune while it is up (Player.take_damage gates on
+## inventory_open, the same seam as the pause menu's is_paused
+## breather). The world is NOT paused — solo and multiplayer behave
+## identically here.
+func open_inventory() -> void:
+	inventory_open = true
+	%InventoryPanel.visible = true
+	if _player != null:
 		refresh_inventory(_player)
 	_layout_pause()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+## Close the panel and hand the mouse back — but only when no other
+## menu or popup owns it (mirrors close_destination_popup's rule, so
+## a close never recaptures over the pause menu or a popup).
+func close_inventory() -> void:
+	if not inventory_open:
+		return
+	inventory_open = false
+	%InventoryPanel.visible = false
+	_layout_pause()
+	if not is_paused and not cipher_popup_open and not dest_popup_open:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## Esc while the inventory is open swaps to the pause UI (Jesse
+## 2026-10-13): the pause menu opens FIRST so close_inventory's
+## recapture check sees is_paused and leaves the mouse free for it,
+## and close_inventory's layout pass re-centers the pause panel.
+## Exactly one of the two panels is visible afterwards.
+func swap_inventory_to_pause() -> void:
+	show_pause()
+	close_inventory()
+
+
+## Silent close for full-screen takeovers (death / downed): clears
+## the panel state without touching the mouse — the takeover
+## screen owns the cursor.
+func force_close_inventory() -> void:
+	inventory_open = false
+	%InventoryPanel.visible = false
 
 
 ## Shift the pause panel left when the inventory is open so the two don't overlap.

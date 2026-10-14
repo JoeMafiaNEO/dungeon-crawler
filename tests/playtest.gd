@@ -162,6 +162,7 @@ func _run() -> void:
 	_test_equip_system_phase1()
 	_test_mp_save_c1_fix()
 	_test_character_panel_phase2()
+	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
 	_test_class_tagging_phase4()
 	_test_111_minor_restore_drops()
@@ -9221,6 +9222,72 @@ func _test_character_panel_phase2() -> void:
 	hud.queue_free()
 	p.queue_free()
 	print("[Playtest] character panel phase 2 done")
+
+
+func _test_inventory_pause_screen() -> void:
+	print("[Playtest] Inventory as alternative pause screen (Jesse 2026-10-13)...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+
+	# --- Source pins: gate + swap live at the proven seams, and the
+	# feature adds NO tree pausing anywhere (solo behaves like MP).
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("hud.inventory_open"),
+		"invpause: take_damage/input read hud.inventory_open")
+	_assert(psrc.contains("hud.swap_inventory_to_pause()"),
+		"invpause: Esc branch swaps inventory -> pause")
+	_assert(psrc.contains("not hud.inventory_open"),
+		"invpause: click-recapture guard knows the inventory")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("func open_inventory") and hsrc.contains("func close_inventory")
+		and hsrc.contains("func swap_inventory_to_pause"),
+		"invpause: hud owns open/close/swap")
+	_assert(not hsrc.contains("get_tree().paused") and not psrc.contains("get_tree().paused"),
+		"invpause: no tree pausing added by the feature")
+
+	# --- Centered panel (scene data): anchors at 0.5, symmetric offsets.
+	var tsrc := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
+	var inv_block := ""
+	var inv_start := tsrc.find("[node name=\"InventoryPanel\"")
+	if inv_start >= 0:
+		var inv_end := tsrc.find("[node name=", inv_start + 10)
+		inv_block = tsrc.substr(inv_start, (inv_end - inv_start) if inv_end > inv_start else 600)
+	_assert(inv_block.contains("anchor_left = 0.5") and inv_block.contains("anchor_right = 0.5")
+		and inv_block.contains("offset_left = -330.0") and inv_block.contains("offset_right = 330.0"),
+		"invpause: InventoryPanel centered in hud.tscn")
+
+	# --- Behavioral: real player + real HUD through the real gate.
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	hud._player = p
+	p.hud = hud
+	var panel = hud.find_child("InventoryPanel", true, false)
+	var pause_panel = hud.find_child("PausePanel", true, false)
+	p.hp = p.max_hp
+	p.take_damage(10.0, "test")
+	_assert(p.hp == p.max_hp - 10.0, "invpause: damage lands while closed")
+	hud.toggle_inventory()
+	_assert(hud.inventory_open and panel.visible, "invpause: toggle opens panel + state")
+	p.take_damage(40.0, "test")
+	_assert(p.hp == p.max_hp - 10.0, "invpause: NO damage while inventory open")
+	hud.swap_inventory_to_pause()
+	_assert(not hud.inventory_open and not panel.visible, "invpause: swap closes inventory")
+	_assert(hud.is_paused and pause_panel.visible, "invpause: swap opens pause UI (one panel up)")
+	p.take_damage(40.0, "test")
+	_assert(p.hp == p.max_hp - 10.0, "invpause: pause breather still gates after swap")
+	hud.hide_pause()
+	hud.toggle_inventory()
+	_assert(hud.inventory_open and panel.visible, "invpause: reopen after pause")
+	hud.toggle_inventory()
+	_assert(not hud.inventory_open and not panel.visible, "invpause: toggle-close is clean")
+	p.take_damage(40.0, "test")
+	_assert(p.hp == p.max_hp - 50.0, "invpause: damage lands after toggle-close")
+	hud.queue_free()
+	p.queue_free()
+	print("[Playtest] inventory pause screen done")
 
 
 func _test_fishing_rod_phase3() -> void:

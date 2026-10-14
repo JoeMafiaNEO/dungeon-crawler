@@ -1001,7 +1001,7 @@ func _input(event: InputEvent) -> void:
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 				# Issue #65: don't steal the mouse back while the destination
 				# popup is open — clicks on popup rows must stay in UI mode.
-				if hud == null or (not hud.is_paused and not hud.cipher_popup_open and not hud.dest_popup_open and _reading_board == null):
+				if hud == null or (not hud.is_paused and not hud.inventory_open and not hud.cipher_popup_open and not hud.dest_popup_open and _reading_board == null):
 					# Don't steal the mouse back while in RTS command view.
 					var rts_cam := get_tree().get_first_node_in_group("rts_camera")
 					if rts_cam == null or not bool(rts_cam.get("active")):
@@ -1044,6 +1044,11 @@ func _input(event: InputEvent) -> void:
 			# Issue #91 Phase 1: Esc disarms Holy Light / cancels charge (free).
 			if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
 				_hl_disarm()
+				get_viewport().set_input_as_handled()
+				return
+			# Inventory open: Esc swaps to the pause UI (no stacking).
+			if hud != null and hud.inventory_open:
+				hud.swap_inventory_to_pause()
 				get_viewport().set_input_as_handled()
 				return
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -1106,11 +1111,19 @@ func _input(event: InputEvent) -> void:
 			if class_id == "mage" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
 				_activate_mage_signature()
 		elif k.physical_keycode == KEY_I or k.physical_keycode == KEY_TAB:
-			if hud != null and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				# In Warlord's Domain, Tab toggles the RTS command view.
-				if k.physical_keycode == KEY_TAB and get_tree().get_first_node_in_group("rts_camera") != null:
-					return
-				hud.toggle_inventory()
+			if hud != null:
+				# Closing is always allowed: the mouse is free while the
+				# panel is open, so requiring CAPTURED here would trap
+				# it open. Opening keeps requiring the captured mouse,
+				# so the panel can never stack over the pause menu or a
+				# popup (both hold the mouse visible).
+				if hud.inventory_open:
+					hud.toggle_inventory()
+				elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+					# In Warlord's Domain, Tab toggles the RTS command view.
+					if k.physical_keycode == KEY_TAB and get_tree().get_first_node_in_group("rts_camera") != null:
+						return
+					hud.toggle_inventory()
 
 
 ## Downed bleed-out (runs on the downed player's authority).
@@ -4638,6 +4651,13 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	# Pause menu = breather: mobs keep acting, but a paused player's
 	# health doesn't budge. Per-peer, so multiplayer keeps working.
 	if hud != null and hud.is_paused:
+		return
+	# Inventory open = alternative pause screen (Jesse 2026-10-13):
+	# the same breather rule at the same seam. Every damage source
+	# delivers here via rpc_id to this player's authority peer, and
+	# hud on that peer is the local HUD — so this gate holds in solo
+	# and multiplayer alike, with no state sync needed.
+	if hud != null and hud.inventory_open:
 		return
 	# Dash i-frames.
 	if _dash_t > 0.0:
