@@ -172,15 +172,20 @@ var stealthed := false
 var _stealth_t := 0.0
 ## Gilded Cage (Warden): rooted inside the dome while > 0.
 var _caged_t := 0.0
-## Issue #102 Phase 2: true while a fishing session is active. Movement
-## input is suppressed; the server sets/clears it via set_fishing().
-var is_fishing := false
 ## Issue #126 Phase 1: rod-out mode. Toggled by the rod key (V) and
 ## only enterable with the rod EQUIPPED in the TOOL slot (Choice B).
 ## While out: the FP viewmodel is the rod alone, peers' HeldProp drops
-## the weapon, and LMB attacks are disabled (LMB belongs to the cast
-## from Phase 2). Replicated via push_snapshot so peers render it.
+## the weapon, and LMB belongs to the cast (Phase 2). Replicated via
+## push_snapshot so peers render it.
 var rod_out := false
+## Issue #126 Phase 2: client mirrors of the server-owned fishing
+## session (set by FishingDirector's fx broadcasts on this peer only).
+## _bobber_out: a cast is in the water (waiting / biting / idle after
+## an escape). _bite_ready: the hook window is open.
+var _bobber_out := false
+var _bite_ready := false
+## Cast charge state: -1 = not charging; 0..1 while LMB is held.
+var _cast_charge := -1.0
 ## Unseen trait: next attack after veil/blink crits (2x). Set on veil expiry / blink land.
 var unseen_crit_ready := false
 ## Co-op ping: MMB / G drops a "!" marker visible to the whole party.
@@ -257,10 +262,9 @@ var _viewmodel: Node3D
 ## inventory markers by _sync_equipped_ids() and REPLICATED to peers via
 ## push_snapshot (inventory itself never replicates — see issue #105).
 ## Drives held props (own viewmodel + the third-person prop peers see)
-## and the server-side fishing gate (FishingSpot._claim).
+## and the server-side rod validation (FishingDirector cast gate).
 var equipped_ids: Dictionary = {}
 var _held_prop: Node3D = null
-var _near_fishing_spot := false
 var _vm_base := Vector3(0.32, -0.34, -0.55)
 var _vm_base_rot := Vector3(0.15, -0.25, 0.1)
 var _cast_seq := 0
@@ -511,9 +515,13 @@ func _sync_equipped_ids() -> void:
 		equipped_ids = ids
 		# Issue #126 Phase 1: rod-out cannot outlive the equipped rod —
 		# any equip change that takes the rod out of TOOL ends the mode
-		# before the held props refresh into it.
+		# before the held props refresh into it. Phase 2: a bobber in
+		# the water is reeled in with it (the fisher's own peer only —
+		# replicas have no session to end).
 		if rod_out and str(ids.get("TOOL", "")) != "fishing_rod":
 			rod_out = false
+			if is_multiplayer_authority() and _bobber_out:
+				_director_request("request_reel_in")
 		_refresh_held_props()
 
 
@@ -542,9 +550,15 @@ func _owns_fishing_rod() -> bool:
 ## rod-out mode. Without it, the ONLY rod messaging in the game: a
 ## toast on the player's own key press (never a world refusal) —
 ## equip hint when owned, merchant hint when not.
+## Phase 2: leaving rod-out with a bobber in the water reels it in
+## (the session ends free on the server).
 func _toggle_rod_out() -> void:
 	if has_rod_equipped():
 		rod_out = not rod_out
+		if not rod_out:
+			_cancel_cast_charge()
+			if _bobber_out:
+				_director_request("request_reel_in")
 		_refresh_held_props()
 	elif _owns_fishing_rod():
 		if hud != null:
@@ -552,6 +566,79 @@ func _toggle_rod_out() -> void:
 	else:
 		if hud != null:
 			hud.toast("The dock merchant sells a Fishing Rod")
+
+
+## Issue #126 Phase 2: the dungeon's FishingDirector (session owner).
+func _fishing_director() -> Node:
+	var ds := get_tree().get_nodes_in_group("fishing_director")
+	if ds.is_empty():
+		return null
+	return ds[0]
+
+
+## Route a fishing request to the server's director (direct call when
+## hosting — the spot flow's pattern).
+func _director_request(method: String, arg: Variant = null) -> void:
+	var d := _fishing_director()
+	if d == null:
+		return
+	if multiplayer.is_server():
+		if arg == null:
+			d.call(method)
+		else:
+			d.call(method, arg)
+	else:
+		if arg == null:
+			d.rpc_id(NetworkManager.server_peer_id, method)
+		else:
+			d.rpc_id(NetworkManager.server_peer_id, method, arg)
+
+
+## Director fx mirror setters (called locally on the fisher's peer).
+func set_bobber_out(v: bool) -> void:
+	_bobber_out = v
+	if not v:
+		_bite_ready = false
+
+
+func set_bite_ready(v: bool) -> void:
+	_bite_ready = v
+
+
+## The cast landing point: flat camera aim at the charged distance
+## (the FishingController prototype's model, productionized).
+func _cast_landing(charge: float) -> Vector3:
+	var fwd := Vector3(-sin(_yaw), 0, -cos(_yaw))
+	var dist := lerpf(4.0, 15.0, charge)
+	return global_position + fwd * dist
+
+
+func _begin_cast_charge() -> void:
+	_cast_charge = 0.0
+	if hud != null and hud.has_method("set_charge_meter"):
+		hud.set_charge_meter(0.0, true)
+
+
+func _release_cast() -> void:
+	var charge := _cast_charge
+	_cast_charge = -1.0
+	if hud != null and hud.has_method("set_charge_meter"):
+		hud.set_charge_meter(0.0, false)
+	var landing := _cast_landing(charge)
+	# Client splash prediction with the shared validation; the
+	# director's fx_cast broadcast reconciles it.
+	var d := _fishing_director()
+	if d != null and d.has_method("predict_cast"):
+		var from := global_position + Vector3(0, 1.4, 0) \
+			+ (-global_transform.basis.z) * 0.4
+		d.predict_cast(int(multiplayer.get_unique_id()), from, landing)
+	_director_request("request_cast", landing)
+
+
+func _cancel_cast_charge() -> void:
+	_cast_charge = -1.0
+	if hud != null and hud.has_method("set_charge_meter"):
+		hud.set_charge_meter(0.0, false)
 
 
 ## True when the item may be equipped by this player's class. The class
@@ -1042,15 +1129,14 @@ func _input(event: InputEvent) -> void:
 				_command_order()
 				return
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			# Issue #102 Phase 2: click reels while a fishing session is
-			# active (same as E) instead of attacking.
-			if is_fishing:
-				if _try_fishing_reel():
-					get_viewport().set_input_as_handled()
-				return
-			# Issue #126 Phase 1: rod-out mode — LMB belongs to the
-			# cast (Phase 2); attacks are disabled while the rod is out.
+			# Issue #126 Phase 2: rod-out owns LMB — hook when the bite
+			# window is open, begin the cast charge otherwise (a bobber
+			# already out swallows the click). Attacks stay disabled.
 			if rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+				if _bite_ready:
+					_director_request("request_hook")
+				elif not _bobber_out and _cast_charge < 0.0:
+					_begin_cast_charge()
 				get_viewport().set_input_as_handled()
 				return
 			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
@@ -1071,7 +1157,20 @@ func _input(event: InputEvent) -> void:
 					_throw_dagger()
 				else:
 					_do_attack()
+		elif mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
+			# Issue #126 Phase 2: releasing LMB fires the charged cast.
+			if rod_out and _cast_charge >= 0.0:
+				_release_cast()
+				get_viewport().set_input_as_handled()
+			return
 		elif mb.button_index == MOUSE_BUTTON_RIGHT:
+			# Issue #126 Phase 2: rod-out owns RMB — reel the bobber in
+			# (never during the bite window; LMB/E hooks there).
+			if rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+				if mb.pressed and _bobber_out and not _bite_ready:
+					_director_request("request_reel_in")
+				get_viewport().set_input_as_handled()
+				return
 			# Issue #91 Phase 1: RMB disarms Holy Light / cancels charge (free).
 			if mb.pressed and (_hl_state == HLState.ARMED or _hl_state == HLState.CHARGING):
 				_hl_disarm()
@@ -1117,6 +1216,14 @@ func _input(event: InputEvent) -> void:
 		elif k.physical_keycode == KEY_E:
 			# Cipher/destination popups handle their own E/Esc; reading mode intercepts earlier.
 			if hud != null and (hud.cipher_popup_open or _reading_board != null or hud.get("dest_popup_open") == true):
+				return
+			# Issue #126 Phase 2: E hooks while the bite window is open
+			# (rod-out) — ahead of the world interact dispatch.
+			if rod_out and _bite_ready and alive \
+					and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+					and (hud == null or not hud.is_paused):
+				_director_request("request_hook")
+				get_viewport().set_input_as_handled()
 				return
 			# Jesse 2026-10-11: E in command mode interacts with RTS buildings.
 			if _command_mode and (hud == null or not hud.is_paused):
@@ -2604,11 +2711,19 @@ func _physics_process(delta: float) -> void:
 			_caged_t -= delta
 			ix = 0.0
 			iz = 0.0
-		# Issue #102 Phase 2: stationary while fishing (vulnerable —
-		# mobs aggro normally; displacement cancels the session).
-		if is_fishing:
-			ix = 0.0
-			iz = 0.0
+		# Issue #126 Phase 2: no more movement lock — WASD input while
+		# the bobber is in the water CANCELS the session (the fisher
+		# stays free and vulnerable, per the redesign). The mirror flag
+		# is cleared locally at once; the server's fx_clear reconciles.
+		if rod_out and _bobber_out and (ix != 0.0 or iz != 0.0):
+			_bobber_out = false
+			_bite_ready = false
+			_director_request("request_cancel")
+		# Cast charge accumulates while LMB is held in rod-out.
+		if _cast_charge >= 0.0:
+			_cast_charge = minf(1.0, _cast_charge + delta / 1.5)
+			if hud != null and hud.has_method("set_charge_meter"):
+				hud.set_charge_meter(_cast_charge, true)
 		var wish := Vector3(ix, 0, iz)
 		if wish.length() > 1.0:
 			wish = wish.normalized()
@@ -3371,18 +3486,10 @@ func legend_state() -> String:
 	# friendly repairable in reach).
 	if _near_repairable and has_wrench_equipped():
 		return "repair_ready"
-	# Issue #126 Phase 1: spots are ungated — near a spot the fishing
-	# context is always "ready" (rod-out legend contexts are Phase 3).
-	if _near_fishing_spot:
-		return "fishing_ready"
+	# Issue #126 Phase 2: spots are deleted — the spot-proximity
+	# fishing context is gone with them (rod-out legend contexts are
+	# Phase 3's scope).
 	return "standard"
-
-
-func _set_near_fishing_spot(v: bool) -> void:
-	if v == _near_fishing_spot:
-		return
-	_near_fishing_spot = v
-	click_state_changed.emit()
 
 
 func _set_near_repairable(v: bool) -> void:
@@ -4022,9 +4129,6 @@ func _nearest_pickup() -> ItemPickup:
 func _update_pickup_prompt() -> void:
 	if hud == null:
 		return
-	# Issue #104 Phase 3: fishing proximity drives the mouse legend's
-	# fishing states (rod context vs requirement line).
-	_set_near_fishing_spot(_nearest_interact_node() is FishingSpot)
 	# Issue #113 Phase 3: repair context for the prompt + mouse legend.
 	var repair := repair_target_at(global_position) if has_wrench_equipped() else {}
 	_set_near_repairable(not repair.is_empty())
@@ -4330,21 +4434,6 @@ func _command_confirm_placement() -> void:
 	get_viewport().set_input_as_handled()
 
 
-## Issue #102 Phase 2: click reels during an active fishing session (same
-## path as E). Returns true when a reel attempt was sent.
-func _try_fishing_reel() -> bool:
-	var me := int(multiplayer.get_unique_id())
-	for n in get_tree().get_nodes_in_group("fishing_spots"):
-		var spot := n as FishingSpot
-		if spot != null and spot.is_session_active_for(me):
-			if multiplayer.is_server():
-				spot.reel_attempt()
-			else:
-				spot.rpc_id(NetworkManager.server_peer_id, "reel_attempt")
-			return true
-	return false
-
-
 func _try_pickup() -> void:
 	# Cipher/board interactions take priority over loot.
 	var interact := _nearest_interact_node()
@@ -4383,18 +4472,6 @@ func on_sold(amount: int) -> void:
 	if hud != null:
 		hud.toast("Sold loot for $%d!" % amount)
 		AudioManager.sfx("cash_register")
-
-
-## Issue #102 Phase 2: server toggles fishing state (movement suppressed
-## while a session is active). call_local so the rpc_id to the fishing peer
-## also executes locally when the fisher IS the server (host/solo) —
-## rpc-to-self with call_remote errors. Server-only caller in production; a
-## client flipping its own flag just gets its session cancelled by the
-## server's displacement check, so no guard is needed (light anti-cheat,
-## co-op).
-@rpc("any_peer", "call_local")
-func set_fishing(fishing: bool) -> void:
-	is_fishing = fishing
 
 
 @rpc("any_peer", "call_local")

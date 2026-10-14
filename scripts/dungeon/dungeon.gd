@@ -2497,7 +2497,7 @@ func _build_arena_from_layout() -> void:
 	_build_obstacles()
 	_build_props()
 	_build_torches()
-	_build_fishing_spots()
+	_build_fishing_director()
 	_build_farm_plots()
 	StationAnnex.build(self, _annex_plan, _layout)
 	_build_station_annex_content()
@@ -3057,30 +3057,19 @@ func _build_torches() -> void:
 		add_child(sparks)
 
 
-# --- Issue #102: fishing spots + farm plots ---
+# --- Issue #102: fishing + farm plots ---
 
-## E-interact fishing spot nodes from the layout (misty docks only).
-## Deterministic names keep every peer's node paths identical.
-func _build_fishing_spots() -> void:
-	if theme == null or not theme.has_fishing_water:
-		return
-	var idx := 0
-	for pos in _layout.fishing_spots:
-		var spot := FishingSpot.new()
-		spot.name = "FishingSpot_%d" % idx
-		spot.spot_index = idx
-		spot.position = Vector3(pos.x, ground_height_at(pos), pos.z)
-		# Bobber target: the pond this spot was placed for (1:1 with the
-		# ponds array, appended in the same procgen loop).
-		if idx < _layout.ponds.size():
-			spot.water_point = (_layout.ponds[idx] as Dictionary)["center"]
-			if _terrain != null:
-				# Bobber floats on the terrain's water plane (issue #103).
-				var wp: Vector3 = spot.water_point
-				wp.y = _terrain.water_level
-				spot.water_point = wp
-		add_child(spot)
-		idx += 1
+## Issue #126 Phase 2: the FishingDirector owns all fishing now —
+## per-peer sessions on the dungeon, no spot nodes (FishingSpot is
+## deleted; layout.fishing_spots remains as pier placement data).
+## Built on every theme: validation reads the layout ponds / terrain
+## water, which simply never match on dry themes.
+const FishingDirectorScript := preload("res://scripts/fishing/fishing_director.gd")
+
+func _build_fishing_director() -> void:
+	var director := FishingDirectorScript.new()
+	director.name = "FishingDirector"
+	add_child(director)
 
 
 ## E-interact farm plot nodes from the layout (misty docks only).

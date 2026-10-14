@@ -179,13 +179,15 @@ func _run_checks() -> void:
 	_check(vendor_shown, "merchant: E opens dock vendor popup")
 	if hud != null and hud.has_method("close_cipher_popup"):
 		hud.close_cipher_popup()
-	# --- Walk: merchant -> fishing pier, claim + cast + reel ---
-	var spot := _dungeon.get_node_or_null("FishingSpot_0") as FishingSpot
-	_check(spot != null, "fishing spot 0 exists")
-	# Test scaffolding (issue #104 Phase 3): claiming a spot requires
-	# the fishing rod EQUIPPED in the TOOL slot — the claim is refused
-	# without it. Grant + equip the rod before the pier leg so the
-	# claim runs under the same rules as a real player.
+	# --- Walk: merchant -> fishing pier, rod-out cast + bite + hook ---
+	# Issue #126 Phase 2: spots are DELETED — fishing is a rod-out
+	# cast anywhere, session owned by the dungeon's FishingDirector.
+	var director := _dungeon.get_node_or_null("FishingDirector")
+	_check(director != null, "fishing director exists")
+	_check(_dungeon.get_node_or_null("FishingSpot_0") == null,
+		"fishing: spot nodes are gone (#126 Phase 2)")
+	# Rod grant + equip: rod-out requires the rod EQUIPPED in the TOOL
+	# slot (Phase 1, Choice B) — enter the mode under the real rule.
 	_player.receive_item("fishing_rod")
 	var rod_idx := -1
 	var inv: Array = _player.get("inventory")
@@ -196,58 +198,72 @@ func _run_checks() -> void:
 	if rod_idx >= 0:
 		_player.equip_stack(rod_idx)
 	_check(_player.has_rod_equipped(),
-		"fishing: rod equipped in TOOL slot (spot-claim gate)")
-	_check(absf(spot.water_point.y - _terrain.water_level) < 0.001,
-		"fishing water_point.y == terrain water level (%.2f)" % spot.water_point.y)
-	st = await _walk_to(spot.global_position, 1.4, 60.0)
+		"fishing: rod equipped in TOOL slot")
+	_player.call("_toggle_rod_out")
+	_check(bool(_player.get("rod_out")), "fishing: rod-out entered (V)")
+	var dlayout := _dungeon.get("_layout") as LevelLayout
+	var pond: Dictionary = dlayout.ponds[0]
+	var pond_center: Vector3 = pond["center"]
+	_check(bool(director.call("is_water_at", pond_center)),
+		"fishing: pond center validates as water")
+	_check(absf(float(director.call("water_y_at", pond_center)) - _terrain.water_level) < 0.001,
+		"fishing: water_y == terrain water level (%.2f)" % float(director.call("water_y_at", pond_center)))
+	# The layout's spot positions survive as pier scenery data.
+	st = await _walk_to(dlayout.fishing_spots[0], 1.4, 60.0)
 	_report_walk("merchant->fishing pier", st)
-	FishingSpot.debug_wait_override = 0.8
-	FishingSpot.debug_catch_roll = 0.9 # plain minnow
-	# Freeze the spot's clock (the suite's own seam): with real time,
-	# the 0.8s bite wait + 1.2s reel window can fully elapse inside
-	# this leg's frame-counted waits on a slow machine — the session
-	# then reads as claimed-but-idle (a miss keeps the claim), which
-	# is exactly how this leg used to fail downstream of the rod fix.
-	FishingSpot.debug_now_msec = 100000
-	await _press_e()
-	# The claim+cast round-trip settles over the following frames;
-	# poll for the session like the bite-cue wait below does, rather
-	# than sampling once (a fixed sample races the interact dispatch).
+	# Aim at the pond center; charge to land exactly on it (the cast
+	# band is 4-15m; the pier sits at the pond edge, radius 4-6m).
+	var to_pond := pond_center - _player.global_position
+	to_pond.y = 0.0
+	var cast_dist := clampf(to_pond.length(), 4.0, 15.0)
+	var aim := to_pond.normalized()
+	var yaw := atan2(-aim.x, -aim.z)
+	_player.rotation.y = yaw
+	_player.set("_yaw", yaw)
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
+	DirectorScript.debug_wait_override = 0.8
+	DirectorScript.debug_catch_roll = 0.9 # plain minnow
+	# Freeze the director's clock (the suite's own seam): with real
+	# time, the 0.8s bite wait + 1.2s hook window can fully elapse
+	# inside this leg's frame-counted waits on a slow machine.
+	DirectorScript.debug_now_msec = 100000
+	# Cast through the production input path: LMB press begins the
+	# charge, holding accumulates it (physics-ticked), release fires.
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_mouse_btn(MOUSE_BUTTON_LEFT, true)
+	var hold_frames := int(ceil((cast_dist - 4.0) / 11.0 * 1.5 * 60.0)) + 2
+	for i in hold_frames:
+		await get_tree().physics_frame
+	_mouse_btn(MOUSE_BUTTON_LEFT, false)
 	var session_up := false
 	for i in 120: # up to ~2s of process frames
 		await get_tree().process_frame
-		if spot.occupied_by == 1 and spot.is_session_active_for(1):
+		if bool(director.call("has_bobber", 1)):
 			session_up = true
 			break
-	_check(session_up,
-		"fishing: E claims + casts (occupied_by=%d)" % spot.occupied_by)
-	var fishing_set := false
-	for i in 120:
-		await get_tree().process_frame
-		if bool(_player.get("is_fishing")):
-			fishing_set = true
-			break
-	_check(fishing_set, "fishing: player is_fishing")
+	_check(session_up, "fishing: cast opens a session (rod-out LMB)")
+	_check(bool(_player.get("_bobber_out")), "fishing: player bobber mirror set")
 	# Advance the frozen clock past the 0.8s bite wait (inside the
-	# 1.2s reel window): the next spot _process tick flips to BITING.
-	FishingSpot.debug_now_msec = 100000 + 900
+	# 1.2s hook window): the next director tick flips to BITING.
+	DirectorScript.debug_now_msec = 100000 + 900
 	var bite := false
 	for i in 360: # up to ~6s of process frames for the bite cue
 		await get_tree().process_frame
-		if int(spot.get("_session_state")) == FishingSpot.SessionState.BITING:
+		if bool(_player.get("_bite_ready")):
 			bite = true
 			break
 	_check(bite, "fishing: bite cue fired")
-	await _press_e() # reel
+	await _press_e() # E hooks inside the window (rod-out)
 	for i in 10:
 		await get_tree().physics_frame
 	var fish_held := _inv_count("fish_minnow")
 	var fish_stock: int = DockEconomy.stock_count(1, "fish_minnow")
 	_check(fish_held >= 1 or fish_stock >= 1,
 		"fishing: catch landed (inv=%d stock=%d)" % [fish_held, fish_stock])
-	FishingSpot.debug_wait_override = -1.0
-	FishingSpot.debug_catch_roll = -1.0
-	FishingSpot.debug_now_msec = -1
+	DirectorScript.debug_wait_override = -1.0
+	DirectorScript.debug_catch_roll = -1.0
+	DirectorScript.debug_now_msec = -1
+	_player.call("_toggle_rod_out")
 	# --- Walk: pier -> annex doorway -> hall, and back (no step) ---
 	# Route to a staging point on the door axis first (BFS), then run
 	# straight through the doorway gap; the no-step measurement only
@@ -464,6 +480,13 @@ func _key(code: int, pressed: bool) -> void:
 	Input.parse_input_event(ev)
 
 
+func _mouse_btn(button: int, pressed: bool) -> void:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = button
+	ev.pressed = pressed
+	Input.parse_input_event(ev)
+
+
 func _press_e() -> void:
 	# The interact path requires a captured mouse (player._input gate).
 	# NOTE: only works under a real display server (Xvfb) — the headless
@@ -547,20 +570,20 @@ func _take_shots() -> void:
 	cam.look_at(Vector3(0, 0, -6), Vector3.UP)
 	await _snap("docks_terrain_overview.png")
 	# Ground level: hover over the first pond looking back at its
-	# pier, the fishing spot, and the shore props behind them.
-	var spot := _dungeon.get_node_or_null("FishingSpot_0") as Node3D
+	# pier end (the layout's spot position — pier scenery data that
+	# survives the spot nodes' deletion, #126 Phase 2).
 	var layout := _dungeon.get("_layout") as LevelLayout
-	if spot != null and not layout.ponds.is_empty():
+	if not layout.fishing_spots.is_empty() and not layout.ponds.is_empty():
+		var pier := layout.fishing_spots[0]
 		var center: Vector3 = (layout.ponds[0] as Dictionary)["center"]
-		var to_spot := spot.global_position - center
+		var to_spot := pier - center
 		to_spot.y = 0.0
 		var dist := to_spot.length()
 		to_spot = to_spot.normalized()
 		cam.position = center - to_spot * dist * 0.55 + Vector3(0, 2.6, 0)
 		var clearance := _terrain.get_ground_height(cam.position) + 1.2
 		cam.position.y = maxf(cam.position.y, clearance)
-		cam.look_at(Vector3(spot.global_position.x,
-				spot.global_position.y + 0.6, spot.global_position.z), Vector3.UP)
+		cam.look_at(Vector3(pier.x, pier.y + 0.6, pier.z), Vector3.UP)
 		await _snap("docks_terrain_ground.png")
 	print("[DOCKS] shots saved to ", _out_dir)
 

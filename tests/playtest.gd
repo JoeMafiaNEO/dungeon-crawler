@@ -8208,27 +8208,17 @@ func _test_fishing_farming_phase1() -> void:
 	# THEME_ORDER still has exactly the base five (cycle math untouched).
 	_assert((DungeonScript.THEME_ORDER as Array).size() == 5, "THEME_ORDER still 5")
 	_assert(not (DungeonScript.THEME_ORDER as Array).has("misty_docks"), "docks not in THEME_ORDER")
-	# Locking: server-authoritative claim, first claim wins, owner-only release.
-	# Phase 2: claim/release take no peer id — the server attributes the
-	# caller via get_remote_sender_id() (unique_id fallback for local calls).
-	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
-	var spot = SpotScript.new()
-	root.add_child(spot)
-	_assert(spot.is_in_group("fishing_spots"), "spot joins fishing_spots group")
-	_assert(spot.prompt_text() == "Fish here", "free spot prompt")
-	spot.claim_spot()
-	_assert(spot.occupied_by == 1, "claim attributes to true sender (no spoof arg)")
-	_assert(spot.prompt_text() == "Cast again", "owner prompt")
-	spot.claim_spot()
-	_assert(spot.occupied_by == 1, "second claim rejected")
-	spot.occupied_by = 2 # simulate another peer holding the spot
-	spot.release_spot()
-	_assert(spot.occupied_by == 2, "stranger cannot release")
-	spot.occupied_by = 1
-	spot.release_spot()
-	_assert(spot.occupied_by == 0, "owner release frees spot")
-	_assert(spot.prompt_text() == "Fish here", "prompt resets after release")
-	spot.free()
+	# Issue #126 Phase 2: fishing spots and their locking are DELETED —
+	# sessions live on the dungeon's FishingDirector (per-peer, no
+	# locks anywhere). The farm plot locking below is untouched.
+	_assert(not ResourceLoader.exists("res://scripts/dungeon/fishing_spot.gd"),
+		"#126 P2: fishing_spot.gd deleted")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
+	var director = DirectorScript.new()
+	root.add_child(director)
+	_assert(director.is_in_group("fishing_director"), "director joins fishing_director group")
+	_assert(not director.has_method("claim_spot"), "director has no claim/lock API")
+	director.free()
 	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
 	var plot = PlotScript.new()
 	root.add_child(plot)
@@ -8249,108 +8239,148 @@ func _test_fishing_farming_phase1() -> void:
 
 
 func _test_fishing_minigame_phase2() -> void:
-	print("[Playtest] issue #102 Phase 2: fishing minigame...")
-	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	print("[Playtest] issue #102 Phase 2: fishing minigame (director, #126 P2)...")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
 	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
 	var ItemDBNode: Variant = root.get_node("ItemDB")
 	# Fish items exist in the ItemDB.
 	for fid in ["fish_minnow", "fish_riverbass", "fish_glimmerfin"]:
 		_assert(ItemDBNode.get_item(fid) != null, "ItemDB has " + fid)
-	# Sim rig: real player + spot in the tree; this instance is the server (peer 1).
+	# Sim rig: real player + director in the tree; this instance is the
+	# server (peer 1). Water validation is seamed on (no dungeon here).
 	var p = PlayerScene.instantiate()
 	p.class_id = "warrior"
 	root.add_child(p)
 	p.global_position = Vector3.ZERO
-	var spot = SpotScript.new()
-	root.add_child(spot)
-	spot.global_position = Vector3.ZERO
-	spot.water_point = Vector3(0, 0, 4)
-	spot.test_player = p
-	_grant_equipped(p, "fishing_rod") # rod equipped (sessions are ungated since #126; equip is realistic kit)
-	SpotScript.debug_wait_override = 2.0
-	# --- Full cast -> catch cycle (one-E claim+cast) ---
-	SpotScript.debug_now_msec = 100000
-	spot.fish_action()
-	_assert(spot.occupied_by == 1, "claim+cast: spot claimed")
-	_assert(spot.is_session_active_for(1), "claim+cast: session active")
-	_assert(p.is_fishing, "fishing: movement-suppress flag set")
-	_assert(spot.prompt_text() == "Reel in! (E)", "active session prompt")
-	spot.reel_attempt() # early press, before the bite: ignored
-	_assert(spot.is_session_active_for(1), "early reel press ignored")
-	spot._reel_attempt(999) # forged peer: rejected
-	_assert(spot.is_session_active_for(1), "forged peer reel rejected")
-	SpotScript.debug_now_msec = 100000 + 2100 # past the rolled 2s wait
-	spot._process(0.016) # server tick: bite fires
-	_assert(spot._session_state == SpotScript.SessionState.BITING, "bite fired")
-	spot.reel_attempt() # inside the 1.2s window: catch
-	_assert(not spot.is_session_active_for(1), "catch: session resolved")
-	_assert(spot.occupied_by == 1, "catch: spot retained")
-	_assert(not p.is_fishing, "catch: fishing flag cleared")
-	_assert(spot.prompt_text() == "Cast again", "recast prompt after catch")
+	var director = DirectorScript.new()
+	root.add_child(director)
+	director.test_players = {1: p}
+	DirectorScript.debug_force_water = 1
+	_grant_equipped(p, "fishing_rod") # the server cast gate needs it EQUIPPED
+	DirectorScript.debug_wait_override = 2.0
+	# --- Full cast -> catch cycle (server-validated cast) ---
+	DirectorScript.debug_now_msec = 100000
+	director.request_cast(Vector3(0, 0, 4))
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING,
+		"cast: session waiting")
+	_assert(bool(p.get("_bobber_out")), "cast: bobber mirror set")
+	director.request_hook() # early press, before the bite: ignored
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING,
+		"early hook press ignored")
+	director._handle_hook(999) # forged peer: no session, rejected
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING,
+		"forged peer hook rejected")
+	DirectorScript.debug_now_msec = 100000 + 2100 # past the rolled 2s wait
+	director._process(0.016) # server tick: bite fires
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.BITING, "bite fired")
+	_assert(bool(p.get("_bite_ready")), "bite: hook window mirror set")
+	director.request_hook() # inside the 1.2s window: catch
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.NONE,
+		"catch: session resolved")
+	_assert(not bool(p.get("_bobber_out")), "catch: bobber mirror cleared")
 	var got_fish := false
 	for e in p.inventory:
 		var it: Variant = (e as Dictionary).get("item")
 		if it != null and str(it.id).begins_with("fish_"):
 			got_fish = true
 	_assert(got_fish, "catch granted a fish item to the inventory")
-	# --- Miss path: window expires with no press ---
+	# --- Miss path: window expires with no press; the bobber STAYS ---
 	var inv_before: int = p.inventory.size()
-	SpotScript.debug_now_msec = 200000
-	spot.fish_action() # recast is free, spot retained
-	_assert(spot.is_session_active_for(1), "recast starts a new session")
-	SpotScript.debug_now_msec = 200000 + 2100
-	spot._process(0.016) # bite
-	_assert(spot._session_state == SpotScript.SessionState.BITING, "recast bite fired")
-	SpotScript.debug_now_msec = 200000 + 2100 + 1300 # past the 1.2s window
-	spot._process(0.016) # server tick: miss
-	_assert(not spot.is_session_active_for(1), "miss: session ended")
-	_assert(spot.occupied_by == 1, "miss: spot retained")
-	_assert(not p.is_fishing, "miss: fishing flag cleared")
+	DirectorScript.debug_now_msec = 200000
+	director.request_cast(Vector3(0, 0, 4)) # recast is free
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING,
+		"recast starts a new session")
+	DirectorScript.debug_now_msec = 200000 + 2100
+	director._process(0.016) # bite
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.BITING, "recast bite fired")
+	DirectorScript.debug_now_msec = 200000 + 2100 + 1300 # past the 1.2s window
+	director._process(0.016) # server tick: escape
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.IDLE,
+		"miss: fish escaped, bobber stays out")
+	_assert(director.has_bobber(1), "miss: bobber still out (reel in to recast)")
 	_assert(p.inventory.size() == inv_before, "miss: no fish granted")
-	spot.reel_attempt() # late press: ignored
-	_assert(not spot.is_session_active_for(1), "late reel press ignored")
-	# --- Cancel-on-leave: displacement cancels and releases ---
-	SpotScript.debug_now_msec = 300000
-	spot.fish_action()
-	_assert(spot.is_session_active_for(1), "session for cancel test")
-	p.global_position = Vector3(5, 0, 0) # beyond LEAVE_RADIUS
-	spot._process(0.016)
-	_assert(not spot.is_session_active_for(1), "displacement cancels session")
-	_assert(spot.occupied_by == 0, "displacement releases claim")
-	_assert(not p.is_fishing, "cancel: fishing flag cleared")
-	_assert(spot.prompt_text() == "Fish here", "prompt resets after cancel")
-	# --- Disconnect auto-release (server hook) ---
+	director.request_hook() # late press: ignored
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.IDLE,
+		"late hook press ignored")
+	director.request_reel_in() # RMB path: free end
+	_assert(not director.has_bobber(1), "reel-in clears the bobber")
+	# --- Cancel-on-drift: displacement from the cast stance cancels ---
+	DirectorScript.debug_now_msec = 300000
+	director.request_cast(Vector3(0, 0, 4))
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING,
+		"session for drift test")
+	p.global_position = Vector3(5, 0, 0) # beyond LEAVE_RADIUS from the stance
+	director._process(0.016)
+	_assert(not director.has_bobber(1), "drift cancels the session")
+	_assert(not bool(p.get("_bobber_out")), "drift: bobber mirror cleared")
+	# --- Two peers fish concurrently (no locking anywhere) ---
 	p.global_position = Vector3.ZERO
-	spot.test_player = null
-	spot.occupied_by = 7 # simulate a remote peer's claim + session
-	spot._session_peer = 7
-	spot._session_state = SpotScript.SessionState.WAITING
+	var p2 = PlayerScene.instantiate()
+	p2.class_id = "mage"
+	root.add_child(p2)
+	p2.global_position = Vector3(1, 0, 0)
+	_grant_equipped(p2, "fishing_rod")
+	director.test_players = {1: p, 2: p2}
+	DirectorScript.debug_now_msec = 400000
+	director._handle_cast(1, Vector3(0, 0, 4))
+	director._handle_cast(2, Vector3(1, 0, 5))
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING
+		and director.session_state_for(2) == DirectorScript.SessionState.WAITING,
+		"two peers: concurrent sessions in one pond")
+	DirectorScript.debug_now_msec = 400000 + 2100
+	director._process(0.016)
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.BITING
+		and director.session_state_for(2) == DirectorScript.SessionState.BITING,
+		"two peers: both bites fire")
+	director._handle_hook(2)
+	_assert(director.session_state_for(2) == DirectorScript.SessionState.NONE
+		and director.session_state_for(1) == DirectorScript.SessionState.BITING,
+		"two peers: peer 2's catch leaves peer 1 fishing")
+	director._handle_hook(1)
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.NONE,
+		"two peers: peer 1 catches too")
+	# --- Disconnect ends the session (server hook via NetworkManager) ---
+	director._handle_cast(2, Vector3(1, 0, 5))
+	_assert(director.session_state_for(2) == DirectorScript.SessionState.WAITING,
+		"disconnect setup: session active")
 	var NM: Variant = root.get_node("NetworkManager")
-	NM._on_peer_disconnected(7)
-	_assert(spot.occupied_by == 0, "disconnect releases the spot lock")
-	_assert(spot._session_state == SpotScript.SessionState.NONE, "disconnect cancels the session")
-	spot.occupied_by = 0
+	NM._on_peer_disconnected(2)
+	_assert(not director.has_bobber(2), "disconnect ends the session")
 	NM._on_peer_disconnected(8) # peer holding nothing: no-op
-	_assert(spot.occupied_by == 0, "disconnect of idle peer is a no-op")
+	_assert(not director.has_bobber(8), "disconnect of idle peer is a no-op")
+	# --- Forged casts rejected: dry landing, over-range, no rod ---
+	DirectorScript.debug_force_water = 0 # everything dry
+	director._handle_cast(1, Vector3(0, 0, 4))
+	_assert(not director.has_bobber(1), "forged: dry landing opens no session")
+	DirectorScript.debug_force_water = 1
+	director._handle_cast(1, Vector3(0, 0, 40)) # 40m: beyond MAX + margin
+	_assert(not director.has_bobber(1), "forged: over-range landing rejected")
+	var p3 = PlayerScene.instantiate()
+	p3.class_id = "rogue"
+	root.add_child(p3)
+	director.test_players = {1: p, 2: p2, 3: p3}
+	director._handle_cast(3, Vector3(0, 0, 4)) # no rod equipped at all
+	_assert(not director.has_bobber(3), "forged: cast with no rod equipped rejected")
+	p3.queue_free()
 	# --- Rarity weighting: longer wait -> better odds (defaults, Jesse's call) ---
-	spot._wait_duration = 3.0
 	var seen_short := {}
 	for i in 60:
-		seen_short[spot._roll_catch_item()] = true
+		seen_short[director.roll_catch_item(3.0, false)] = true
 	_assert(seen_short.has("fish_minnow"), "short wait: common catch possible")
-	spot._wait_duration = 8.0
 	var seen_long := {}
 	for i in 200:
-		seen_long[spot._roll_catch_item()] = true
+		seen_long[director.roll_catch_item(8.0, false)] = true
 	_assert(seen_long.has("fish_glimmerfin"), "long wait: rare catch possible")
 	for rid in seen_long:
 		_assert(ItemDBNode.get_item(str(rid)) != null, "rolled fish is a real item: " + str(rid))
 	# Cleanup: reset the test seams so later tests see production behavior.
-	SpotScript.debug_wait_override = -1.0
-	SpotScript.debug_now_msec = -1
-	spot.free()
+	DirectorScript.debug_wait_override = -1.0
+	DirectorScript.debug_now_msec = -1
+	DirectorScript.debug_force_water = -1
+	director.free()
 	p.queue_free()
+	p2.queue_free()
 	print("[Playtest] issue #102 Phase 2 done")
 
 
@@ -8535,7 +8565,7 @@ func _test_dock_economy_phase4() -> void:
 	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
 	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
 	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
-	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
 	# --- Vendor items exist; sell values filled (the Phase 2/3 seam) ---
 	for iid in ["farm_cash", "bait_lure", "fertilizer", "dock_salve",
 			"harbor_draught", "swift_current", "barnacle_bulwark"]:
@@ -8662,15 +8692,19 @@ func _test_dock_economy_phase4() -> void:
 	_assert(plot3.plot_state == "growing" and plot3.growth_ticks == 1, "no fertilizer: state untouched")
 	_assert(plot3.prompt_text() == "Growing (2 waves left)", "no fertilizer: prompt unchanged")
 	# --- Bait: auto-consumes on cast, shifts the roll ---
-	var spot = SpotScript.new()
-	root.add_child(spot)
-	spot.test_player = p
-	spot._start_session(1) # server-side cast with bait in stock
+	# Issue #126 Phase 2: the cast is a director cast now (validated,
+	# water seamed on); the bait mechanics are the spot's, carried.
+	var director = DirectorScript.new()
+	root.add_child(director)
+	director.test_players = {1: p}
+	DirectorScript.debug_force_water = 1
+	_grant_equipped(p, "fishing_rod") # the server cast gate needs it EQUIPPED
+	director._handle_cast(1, Vector3(0, 0, 4)) # server-side cast with bait in stock
 	_assert(EconScript.stock_count(1, "bait_lure") == 0, "bait: consumed on cast (server)")
 	_assert(_farm_inv_count(p, "bait_lure") == 0, "bait: consumed on cast (inventory)")
-	_assert(spot._bait_this_cast, "bait: armed for this cast's roll")
-	spot._end_session()
-	_assert(not spot._bait_this_cast, "bait: cleared on session end")
+	_assert(bool((director._sessions[1] as Dictionary).get("baited", false)), "bait: armed for this cast's roll")
+	director._end_peer_session(1, "")
+	_assert(not director.has_bobber(1), "bait: session end clears the cast (bait never leaks)")
 	# Bait shift, pinned DETERMINISTICALLY (issue #115). The old pin
 	# sampled 400 rolls per side and asserted bait_hit > base_hit + 20:
 	# at wait 5.5 (t = 0.5) the not-minnow rates are 0.425 vs 0.575, so
@@ -8682,43 +8716,33 @@ func _test_dock_economy_phase4() -> void:
 	# moves: at t = 0.5 the unbaited not-minnow edge is 0.425, the
 	# baited edge is 0.425 + BAIT_RARE_SHIFT (0.15) = 0.575; the rare
 	# edges are 0.125 / 0.275 and the legendary edges 0.03 / 0.18.
-	spot._wait_duration = 5.5 # t = 0.5 for every probe below
 	var shift_consts: Dictionary = EconScript.get_script_constant_map()
 	_assert(is_equal_approx(float(shift_consts.get("BAIT_RARE_SHIFT", -1.0)), 0.15),
 		"bait: BAIT_RARE_SHIFT rate constant is 0.15 (wiring pin, #115)")
 	# Roll 0.50: inside the shifted band only — minnow unbaited,
 	# riverbass baited. The mechanism in one pair.
-	SpotScript.debug_catch_roll = 0.50
-	spot._bait_this_cast = false
-	_assert(spot._roll_catch_item() == "fish_minnow", "bait: roll 0.50 unbaited = minnow (#115)")
-	spot._bait_this_cast = true
-	_assert(spot._roll_catch_item() == "fish_riverbass", "bait: roll 0.50 baited = riverbass (shift flips the band, #115)")
+	DirectorScript.debug_catch_roll = 0.50
+	_assert(director.roll_catch_item(5.5, false) == "fish_minnow", "bait: roll 0.50 unbaited = minnow (#115)")
+	_assert(director.roll_catch_item(5.5, true) == "fish_riverbass", "bait: roll 0.50 baited = riverbass (shift flips the band, #115)")
 	# Roll 0.20: the rare band edge moves the same way.
-	SpotScript.debug_catch_roll = 0.20
-	spot._bait_this_cast = false
-	_assert(spot._roll_catch_item() == "fish_riverbass", "bait: roll 0.20 unbaited = riverbass (#115)")
-	spot._bait_this_cast = true
-	_assert(spot._roll_catch_item() == "fish_glimmerfin", "bait: roll 0.20 baited = glimmerfin (rare edge shifted, #115)")
+	DirectorScript.debug_catch_roll = 0.20
+	_assert(director.roll_catch_item(5.5, false) == "fish_riverbass", "bait: roll 0.20 unbaited = riverbass (#115)")
+	_assert(director.roll_catch_item(5.5, true) == "fish_glimmerfin", "bait: roll 0.20 baited = glimmerfin (rare edge shifted, #115)")
 	# Roll 0.10: the legendary edge shifts too.
-	SpotScript.debug_catch_roll = 0.10
-	spot._bait_this_cast = false
-	_assert(spot._roll_catch_item() == "fish_glimmerfin", "bait: roll 0.10 unbaited = glimmerfin (#115)")
-	spot._bait_this_cast = true
-	_assert(spot._roll_catch_item() == "fish_starleaper", "bait: roll 0.10 baited = starleaper (legendary edge shifted, #115)")
+	DirectorScript.debug_catch_roll = 0.10
+	_assert(director.roll_catch_item(5.5, false) == "fish_glimmerfin", "bait: roll 0.10 unbaited = glimmerfin (#115)")
+	_assert(director.roll_catch_item(5.5, true) == "fish_starleaper", "bait: roll 0.10 baited = starleaper (legendary edge shifted, #115)")
 	# Roll 0.60: above even the baited edge — the shift is bounded.
-	SpotScript.debug_catch_roll = 0.60
-	spot._bait_this_cast = false
-	_assert(spot._roll_catch_item() == "fish_minnow", "bait: roll 0.60 unbaited = minnow (#115)")
-	spot._bait_this_cast = true
-	_assert(spot._roll_catch_item() == "fish_minnow", "bait: roll 0.60 baited = minnow (shift is bounded, #115)")
+	DirectorScript.debug_catch_roll = 0.60
+	_assert(director.roll_catch_item(5.5, false) == "fish_minnow", "bait: roll 0.60 unbaited = minnow (#115)")
+	_assert(director.roll_catch_item(5.5, true) == "fish_minnow", "bait: roll 0.60 baited = minnow (shift is bounded, #115)")
 	# Roll 0.02: below both legendary edges — anchor.
-	SpotScript.debug_catch_roll = 0.02
-	spot._bait_this_cast = false
-	_assert(spot._roll_catch_item() == "fish_starleaper", "bait: roll 0.02 unbaited = starleaper (#115)")
-	spot._bait_this_cast = true
-	_assert(spot._roll_catch_item() == "fish_starleaper", "bait: roll 0.02 baited = starleaper (#115)")
-	SpotScript.debug_catch_roll = -1.0
-	_assert(not spot._bait_this_cast, "bait: flag consumed by the roll")
+	DirectorScript.debug_catch_roll = 0.02
+	_assert(director.roll_catch_item(5.5, false) == "fish_starleaper", "bait: roll 0.02 unbaited = starleaper (#115)")
+	_assert(director.roll_catch_item(5.5, true) == "fish_starleaper", "bait: roll 0.02 baited = starleaper (#115)")
+	DirectorScript.debug_catch_roll = -1.0
+	DirectorScript.debug_force_water = -1
+	director.free()
 	# --- Wave buff: usable in "later levels", expires after N waves ---
 	var didx := -1
 	for i in range(p.inventory.size()):
@@ -8777,7 +8801,6 @@ func _test_dock_economy_phase4() -> void:
 	PlotScript._seed_ledger.clear()
 	plot.free()
 	plot3.free()
-	spot.free()
 	merch.free()
 	p.queue_free()
 	print("[Playtest] issue #102 Phase 4 done")
@@ -8810,7 +8833,7 @@ func _test_misty_docks_phase5() -> void:
 	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
 	var StationScript := load("res://scripts/station/station.gd")
 	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
-	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
 	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
 	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
 	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
@@ -8851,29 +8874,27 @@ func _test_misty_docks_phase5() -> void:
 	_assert(bool(star.get("dock_good")), "p5: starleaper is a dock good")
 	_assert(not bool(star.get("supermarket_loot")), "p5: starleaper not supermarket loot")
 	_assert(EconScript.sell_value_for("fish_starleaper") == 0, "p5: merchant pays 0 for starleaper")
-	var spot = SpotScript.new()
-	root.add_child(spot)
-	spot._wait_duration = 8.0 # t = 1 (longest wait, best odds)
-	SpotScript.debug_catch_roll = 0.04
-	_assert(spot._roll_catch_item() == "fish_starleaper", "p5: roll 0.04 @max wait: legendary")
-	SpotScript.debug_catch_roll = 0.10
-	_assert(spot._roll_catch_item() == "fish_glimmerfin", "p5: roll 0.10 @max wait: rare")
-	SpotScript.debug_catch_roll = 0.50
-	_assert(spot._roll_catch_item() == "fish_riverbass", "p5: roll 0.50 @max wait: uncommon")
-	SpotScript.debug_catch_roll = 0.90
-	_assert(spot._roll_catch_item() == "fish_minnow", "p5: roll 0.90 @max wait: common")
-	spot._wait_duration = 3.0 # t = 0 (shortest wait)
-	SpotScript.debug_catch_roll = 0.005
-	_assert(spot._roll_catch_item() == "fish_starleaper", "p5: roll 0.005 @min wait: legendary")
-	SpotScript.debug_catch_roll = -1.0
-	spot._wait_duration = 8.0
+	var director = DirectorScript.new()
+	root.add_child(director)
+	DirectorScript.debug_catch_roll = 0.04
+	_assert(director.roll_catch_item(8.0, false) == "fish_starleaper", "p5: roll 0.04 @max wait: legendary")
+	DirectorScript.debug_catch_roll = 0.10
+	_assert(director.roll_catch_item(8.0, false) == "fish_glimmerfin", "p5: roll 0.10 @max wait: rare")
+	DirectorScript.debug_catch_roll = 0.50
+	_assert(director.roll_catch_item(8.0, false) == "fish_riverbass", "p5: roll 0.50 @max wait: uncommon")
+	DirectorScript.debug_catch_roll = 0.90
+	_assert(director.roll_catch_item(8.0, false) == "fish_minnow", "p5: roll 0.90 @max wait: common")
+	DirectorScript.debug_catch_roll = 0.005
+	_assert(director.roll_catch_item(3.0, false) == "fish_starleaper", "p5: roll 0.005 @min wait: legendary")
+	DirectorScript.debug_catch_roll = -1.0
 	var seen := {}
 	for i in 400:
-		seen[spot._roll_catch_item()] = true
+		seen[director.roll_catch_item(8.0, false)] = true
 	_assert(seen.size() == 4 and seen.has("fish_starleaper"), "p5: all 4 fish tiers roll @max wait")
 	# --- FULL THEME RUN SIM: one continuous misty-docks visit ---
-	# Real generated layout; spot/plot placed at the layout's own
-	# positions, exactly as dungeon._build_fishing_spots/_build_farm_plots.
+	# Real generated layout; the plot sits at the layout's own position
+	# (as dungeon._build_farm_plots places it) and fishing runs through
+	# a FishingDirector, as the dungeon builds one (#126 Phase 2).
 	var layout = ProcGenScript.generate(docks, 424242)
 	_assert(layout.ponds.size() >= 2 and layout.fishing_spots.size() == layout.ponds.size(),
 		"sim: ponds + one spot each")
@@ -8882,9 +8903,8 @@ func _test_misty_docks_phase5() -> void:
 	p.class_id = "warrior"
 	root.add_child(p)
 	p.global_position = layout.fishing_spots[0]
-	spot.global_position = layout.fishing_spots[0]
-	spot.water_point = (layout.ponds[0] as Dictionary)["center"]
-	spot.test_player = p
+	director.test_players = {1: p}
+	DirectorScript.debug_force_water = 1 # no live dungeon/terrain here
 	var plot = PlotScript.new()
 	root.add_child(plot)
 	plot.global_position = layout.farm_plots[0]
@@ -8903,21 +8923,23 @@ func _test_misty_docks_phase5() -> void:
 		p.receive_item(PlotScript.SEED_ITEM)
 	_assert(_farm_inv_count(p, "seed_packet") == PlotScript.STARTER_SEED_COUNT,
 		"sim: starter seeds in hand")
-	# 1) FISH: full cast -> bite -> reel cycle (forced plain catch so the
-	# sell math below is deterministic; the legendary has its own section).
-	SpotScript.debug_wait_override = 2.0
-	SpotScript.debug_now_msec = 400000
-	SpotScript.debug_catch_roll = 0.9
-	spot.fish_action()
-	_assert(spot.is_session_active_for(1) and p.is_fishing, "sim: cast out, fishing")
-	SpotScript.debug_now_msec = 400000 + 2100
-	spot._process(0.016)
-	_assert(spot._session_state == SpotScript.SessionState.BITING, "sim: bite fired")
-	spot.reel_attempt()
+	# 1) FISH: full cast -> bite -> hook cycle (forced plain catch so
+	# the sell math below is deterministic; the legendary has its own
+	# section below). Cast target: pond 0's center, from the pier end.
+	DirectorScript.debug_wait_override = 2.0
+	DirectorScript.debug_now_msec = 400000
+	DirectorScript.debug_catch_roll = 0.9
+	director.request_cast((layout.ponds[0] as Dictionary)["center"])
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING
+		and bool(p.get("_bobber_out")), "sim: cast out, bobber in the water")
+	DirectorScript.debug_now_msec = 400000 + 2100
+	director._process(0.016)
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.BITING, "sim: bite fired")
+	director.request_hook()
 	_assert(_farm_inv_count(p, "fish_minnow") == 1, "sim: catch landed a minnow")
 	_assert(EconScript.stock_count(1, "fish_minnow") == 1,
 		"sim: catch granted sellable stock (Phase 5 fix)")
-	SpotScript.debug_catch_roll = -1.0
+	DirectorScript.debug_catch_roll = -1.0
 	# 2) SELL the catch at the vendor — the real flow, no manual grants.
 	merch.request_sell("fish_minnow")
 	_assert(EconScript.cash_balance(1) == 2, "sim: minnow sold for 2 fc")
@@ -8959,27 +8981,23 @@ func _test_misty_docks_phase5() -> void:
 	p2.class_id = "warrior"
 	root.add_child(p2)
 	p2.global_position = layout.fishing_spots[0]
-	var spot2 = SpotScript.new()
-	root.add_child(spot2)
-	spot2.global_position = layout.fishing_spots[0]
-	spot2.water_point = (layout.ponds[0] as Dictionary)["center"]
-	spot2.test_player = p2
-	_grant_equipped(p2, "fishing_rod") # rod equipped (sessions are ungated since #126; equip is realistic kit)
+	director.test_players = {1: p2}
+	_grant_equipped(p2, "fishing_rod") # rod equipped (the server cast gate, #126 P2)
 	SM.set("_test_account_pin", "test_dock5")
 	SM.load_game()
 	_assert(not SM.has_dock_trophy("legendary_fish"), "p5: fish trophy not recorded yet")
-	SpotScript.debug_wait_override = 2.0
-	SpotScript.debug_now_msec = 500000
-	SpotScript.debug_catch_roll = 0.001 # force the legendary slice
-	spot2.fish_action()
-	SpotScript.debug_now_msec = 500000 + 2100
-	spot2._process(0.016)
-	_assert(spot2._session_state == SpotScript.SessionState.BITING, "p5: legendary bite fired")
-	spot2.reel_attempt()
+	DirectorScript.debug_wait_override = 2.0
+	DirectorScript.debug_now_msec = 500000
+	DirectorScript.debug_catch_roll = 0.001 # force the legendary slice
+	director.request_cast((layout.ponds[0] as Dictionary)["center"])
+	DirectorScript.debug_now_msec = 500000 + 2100
+	director._process(0.016)
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.BITING, "p5: legendary bite fired")
+	director.request_hook()
 	_assert(_farm_inv_count(p2, "fish_starleaper") == 1, "p5: starleaper granted")
 	_assert(SM.has_dock_trophy("legendary_fish"), "p5: legendary fish trophy recorded")
 	_assert(not SM.call("record_dock_trophy", "legendary_fish"), "p5: trophy: no dupes")
-	SpotScript.debug_catch_roll = -1.0
+	DirectorScript.debug_catch_roll = -1.0
 	# Collection tab: BOTH dock trophies earned -> no ??? rows remain.
 	SM.call("record_dock_trophy", "golden_crop")
 	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
@@ -9010,13 +9028,13 @@ func _test_misty_docks_phase5() -> void:
 	if FileAccess.file_exists(scratch):
 		DirAccess.remove_absolute(scratch)
 	# Cleanup: reset the test seams so later tests see production behavior.
-	SpotScript.debug_wait_override = -1.0
-	SpotScript.debug_now_msec = -1
-	SpotScript.debug_catch_roll = -1.0
+	DirectorScript.debug_wait_override = -1.0
+	DirectorScript.debug_now_msec = -1
+	DirectorScript.debug_catch_roll = -1.0
+	DirectorScript.debug_force_water = -1
 	EconScript.debug_reset()
 	PlotScript._seed_ledger.clear()
-	spot.free()
-	spot2.free()
+	director.free()
 	plot.free()
 	merch.free()
 	p.queue_free()
@@ -9622,16 +9640,15 @@ func _test_inventory_pause_screen() -> void:
 
 
 func _test_fishing_rod_phase3() -> void:
-	print("[Playtest] Fishing rod + ungated spots + rod-out + held visuals (issues #104 P3 / #126 P1)...")
+	print("[Playtest] Fishing rod + rod-out + director casting (issues #104 P3 / #126 P1+P2)...")
 	var ItemDBNode: Variant = root.get_node("ItemDB")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
-	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
 	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
 	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
 	var LegendScript: GDScript = load("res://scripts/ui/mouse_legend.gd")
-	# The spot's prompt reads the LOCAL player via the "players" group —
-	# purge leftovers from earlier tests so group order can't hand it a
-	# stale (possibly rod-equipped) player.
+	# Purge leftover players from earlier tests so group lookups can't
+	# hand the director a stale (possibly rod-equipped) player.
 	for n in get_nodes_in_group("players"):
 		(n as Node).free()
 
@@ -9644,12 +9661,14 @@ func _test_fishing_rod_phase3() -> void:
 		and float(rod.get("speed_bonus")) == 0.0 and float(rod.get("damage_mult")) == 1.0,
 		"rod: zero stats (pure gate key)")
 	_assert(str(EconScript.ROD_ITEM) == "fishing_rod", "rod: economy item id")
-	# Issue #126 Phase 1: the spot carries no rod gate anymore.
-	var spot_consts: Dictionary = SpotScript.get_script_constant_map()
-	_assert(not spot_consts.has("ROD_ITEM_ID") and not spot_consts.has("ROD_PROMPT"),
-		"#126: spot rod-gate constants deleted")
-	var spot_src := FileAccess.get_file_as_string("res://scripts/dungeon/fishing_spot.gd")
-	_assert(not spot_src.contains("Requires " + "Fishing Rod"), "#126: no rod refusal in the spot source")
+	# Issue #126: the rod refusal is deleted everywhere; Phase 2
+	# deleted the spot itself — sessions live on the FishingDirector.
+	_assert(not ResourceLoader.exists("res://scripts/dungeon/fishing_spot.gd"),
+		"#126 P2: fishing_spot.gd deleted")
+	_assert(ResourceLoader.exists("res://scripts/fishing/fishing_director.gd"),
+		"#126 P2: fishing_director.gd exists")
+	var dconsts: Dictionary = DirectorScript.get_script_constant_map()
+	_assert(not dconsts.has("ROD_PROMPT"), "#126: no refusal constant on the director")
 	var legend_src := FileAccess.get_file_as_string("res://scripts/ui/mouse_legend.gd")
 	_assert(not legend_src.contains("Requires " + "Fishing Rod") and not legend_src.contains("fishing_blocked"),
 		"#126: legend blocked state + refusal deleted")
@@ -9661,28 +9680,23 @@ func _test_fishing_rod_phase3() -> void:
 	_assert(psrc.contains("rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED"),
 		"#126: LMB attacks disabled while rod-out")
 
-	# --- Gate: prompt, interact (no claim sent), forged direct claim.
+	# --- Server cast gate (Phase 2): the one rod check that survives
+	# lives on the director — a forged cast with no rod EQUIPPED is
+	# rejected server-side; spots/prompts no longer exist at all.
 	var g = PlayerScene.instantiate()
 	g.class_id = "warrior"
 	root.add_child(g)
 	g.global_position = Vector3.ZERO
-	var spot = SpotScript.new()
-	root.add_child(spot)
-	spot.global_position = Vector3.ZERO
-	spot.water_point = Vector3(0, 0, 4)
-	spot.test_player = g
-	_assert(not g.has_rod_equipped(), "ungated: fresh player has no rod")
-	_assert(spot.prompt_text() == "Fish here",
-		"ungated: prompt is Fish here without the rod (#126)")
-	# Mouse legend context near the spot: ungated, always ready.
-	g.set("_near_fishing_spot", true)
-	_assert(str(g.legend_state()) == "fishing_ready", "legend: ready near a spot without the rod (#126)")
-	spot.fish_action() # forged call bypassing interact: no server rod check anymore
-	_assert(spot.occupied_by == 1, "ungated: direct fish_action claims without the rod (#126)")
-	spot.release_spot()
-	spot.interact(g)
-	_assert(spot.occupied_by == 1, "ungated: interact claims without the rod (#126)")
-	spot.release_spot()
+	var director = DirectorScript.new()
+	root.add_child(director)
+	director.test_players = {1: g}
+	DirectorScript.debug_force_water = 1
+	_assert(not g.has_rod_equipped(), "cast gate: fresh player has no rod")
+	director.request_cast(Vector3(0, 0, 4))
+	_assert(not director.has_bobber(1),
+		"cast gate: forged cast without the rod rejected (#126 P2)")
+	_assert(str(g.legend_state()) == "standard",
+		"legend: no spot-proximity fishing context anymore (#126 P2)")
 
 	# --- Rod-out mode gates (issue #126 gates c/d; Choice B: the rod
 	# must be EQUIPPED — ownership alone never enters the mode).
@@ -9718,26 +9732,27 @@ func _test_fishing_rod_phase3() -> void:
 			g.equip_stack(i)
 			break
 	_assert(g.has_rod_equipped(), "rod-out: rod re-equipped for the session block")
-	_assert(str(g.legend_state()) == "fishing_ready", "legend: cast context with rod")
 	_assert(str(LegendScript.actions_for("warrior", "fishing_ready")["right"]).contains("cast"),
-		"legend: cast line with rod")
-	_assert(spot.prompt_text() == "Fish here", "ungated: prompt is Fish here with the rod too")
-	SpotScript.debug_wait_override = 2.0
-	SpotScript.debug_now_msec = 900000
-	SpotScript.debug_catch_roll = 0.9 # deterministic minnow
-	spot.interact(g)
-	_assert(spot.occupied_by == 1 and spot.is_session_active_for(1),
-		"session: claim+cast with the rod")
-	_assert(spot.prompt_text() == "Reel in! (E)", "session: reel prompt")
-	SpotScript.debug_now_msec = 900000 + 2100
-	spot._process(0.016)
-	_assert(spot._session_state == SpotScript.SessionState.BITING, "session: bite fired")
-	spot.reel_attempt()
+		"legend: fishing_ready rows remain in the registry (rod-out contexts are Phase 3)")
+	DirectorScript.debug_wait_override = 2.0
+	DirectorScript.debug_now_msec = 900000
+	DirectorScript.debug_catch_roll = 0.9 # deterministic minnow
+	director.request_cast(Vector3(0, 0, 4))
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.WAITING,
+		"session: validated cast with the rod equipped")
+	_assert(bool(g.get("_bobber_out")), "session: bobber mirror set")
+	DirectorScript.debug_now_msec = 900000 + 2100
+	director._process(0.016)
+	_assert(director.session_state_for(1) == DirectorScript.SessionState.BITING, "session: bite fired")
+	_assert(bool(g.get("_bite_ready")), "session: bite mirror set")
+	director.request_hook()
 	_assert(_farm_inv_count(g, "fish_minnow") == 1, "session: catch landed with the rod")
-	spot.release_spot()
-	SpotScript.debug_wait_override = -1.0
-	SpotScript.debug_catch_roll = -1.0
-	SpotScript.debug_now_msec = -1
+	_assert(not director.has_bobber(1), "session: catch ends the session")
+	DirectorScript.debug_wait_override = -1.0
+	DirectorScript.debug_catch_roll = -1.0
+	DirectorScript.debug_now_msec = -1
+	DirectorScript.debug_force_water = -1
+	director.free()
 
 	# --- Persistence: save roundtrip keeps the rod AND its TOOL marker.
 	var state: Dictionary = g.get_state()
@@ -9813,7 +9828,6 @@ func _test_fishing_rod_phase3() -> void:
 	merch.request_buy("fishing_rod")
 	_assert(_farm_inv_count(m, "fishing_rod") == 1, "merchant: rod re-buyable after dispose")
 	EconScript.debug_reset()
-	spot.free()
 	merch.free()
 	g.queue_free()
 	g2.queue_free()

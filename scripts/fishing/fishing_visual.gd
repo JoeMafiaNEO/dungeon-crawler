@@ -47,14 +47,18 @@ var _phase: int = 0 ## 0 = arcing, 1 = bobbing, 2 = resolving
 var _arc_t: float = 0.0
 var _from: Vector3 = Vector3.ZERO
 var _to: Vector3 = Vector3.ZERO
+var _flop := false ## Issue #126 Phase 2: dirt landing — sink on arrival.
 var _bob_phase: float = 0.0
 var _resolve_t: float = -1.0
 var _resolve_mode: String = ""
 
 
-func begin_cast(from: Vector3, to: Vector3) -> void:
+## Issue #126 Phase 2: `to` carries the real surface height (water
+## level or dirt) — the caller validates; flop = dirt landing.
+func begin_cast(from: Vector3, to: Vector3, flop: bool = false) -> void:
 	_from = from
-	_to = Vector3(to.x, 0.12, to.z)
+	_to = to
+	_flop = flop
 	_bobber = Bobber.new()
 	add_child(_bobber)
 	_bobber.global_position = _from
@@ -112,6 +116,22 @@ func caught() -> void:
 		_bang.visible = false
 
 
+## Issue #126 Phase 2: the fish escaped — the bobber STAYS in the
+## water (the session idles until the fisher reels in).
+func escape() -> void:
+	if _bang != null:
+		_bang.visible = false
+
+
+## Issue #126 Phase 2: reel-in — the bobber slides back to the caster.
+func reel_in() -> void:
+	_phase = 2
+	_resolve_t = 0.0
+	_resolve_mode = "reel"
+	if _bang != null:
+		_bang.visible = false
+
+
 func missed() -> void:
 	_phase = 2
 	_resolve_t = 0.0
@@ -131,12 +151,17 @@ func _process(delta: float) -> void:
 			pos.y += sin(t * PI) * 2.2
 			_bobber.global_position = pos
 			if t >= 1.0:
-				_phase = 1
-				_splash_at(_to)
+				if _flop:
+					_phase = 2
+					_resolve_t = 0.0
+					_resolve_mode = "flop"
+				else:
+					_phase = 1
+					_splash_at(_to)
 		1:
 			_bob_phase += delta * 2.2
 			_bobber.global_position = Vector3(
-				_to.x, 0.12 + sin(_bob_phase) * 0.05, _to.z)
+				_to.x, _to.y + sin(_bob_phase) * 0.05, _to.z)
 			if _bang != null and _bang.visible:
 				_bang.global_position = _bobber.global_position + Vector3(0, 1.1, 0)
 		2:
@@ -145,6 +170,18 @@ func _process(delta: float) -> void:
 				var bp := _bobber.global_position
 				_bobber.global_position = bp + Vector3(0, 3.0 * delta, 0)
 				if _resolve_t > 0.45:
+					queue_free()
+					return
+			elif _resolve_mode == "reel":
+				var rp := _bobber.global_position.lerp(_from, clampf(delta * 6.0, 0.0, 1.0))
+				_bobber.global_position = rp
+				if _resolve_t > 0.45:
+					queue_free()
+					return
+			elif _resolve_mode == "flop":
+				var fp := _bobber.global_position
+				_bobber.global_position = fp + Vector3(0, -0.8 * delta, 0)
+				if _resolve_t > 0.4:
 					queue_free()
 					return
 			else:
@@ -171,7 +208,7 @@ func _process(delta: float) -> void:
 func _splash_at(pos: Vector3) -> void:
 	if _splash == null:
 		return
-	_splash.global_position = Vector3(pos.x, 0.06, pos.z)
+	_splash.global_position = Vector3(pos.x, pos.y - 0.06, pos.z)
 	_splash.visible = true
 	_splash_t = 0.0
 
