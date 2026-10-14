@@ -178,11 +178,17 @@ func _run_checks() -> void:
 	st = await _walk_to(back, 2.0, 90.0)
 	_report_walk("staging->spawn (return)", st)
 	var agg := float(_floor_frames_total) / maxf(1.0, float(_frames_total))
-	# Aggregate bound calibrated to this profile: at amp 1.8 with a
-	# single smoothing pass the micro-relief flickers is_on_floor on
-	# bump crests (per-leg ratios 0.93-0.99) while the walker's
-	# y-deviation from the terrain stays <= 0.02 — the deviation and
-	# min-y asserts on every leg are the binding grounding proof.
+	# What is enforced, and what is only measured (calibration note,
+	# corrected): the aggregate is asserted at 0.90 because at amp
+	# 1.8 with a single smoothing pass the micro-relief flickers
+	# is_on_floor on bump crests (per-leg ratios 0.93-0.99); it
+	# measures 0.950-0.953 across the gate seeds. Grounding itself
+	# is enforced per leg in _report_walk: max y-deviation from the
+	# terrain <= 0.5 and min y > -1.0 on every leg. The deviation
+	# measures 0.00-0.02 on open-field legs and up to 0.09 on the
+	# door-seam legs across the gate seeds — the 0.5 bound keeps
+	# >5x headroom over the worst measured leg while actually
+	# binding (the previous 1.25 could not fail a hovering walker).
 	_check(agg >= 0.90, "floor contact aggregate %.3f >= 0.90 (%d/%d frames)" % [
 		agg, _floor_frames_total, _frames_total])
 
@@ -602,7 +608,7 @@ func _farthest_mob_spawn() -> Vector3:
 
 func _report_walk(label: String, st: Dictionary) -> void:
 	_check(bool(st["arrived"]), "walk %s: arrived" % label)
-	_check(float(st["max_dev"]) <= 1.25,
+	_check(float(st["max_dev"]) <= 0.5,
 		"walk %s: stayed on ground (max dev %.2f)" % [label, float(st["max_dev"])])
 	_check(float(st["min_y"]) > -1.0,
 		"walk %s: never fell through (min y %.2f)" % [label, float(st["min_y"])])
