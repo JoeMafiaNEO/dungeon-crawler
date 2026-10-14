@@ -7484,10 +7484,12 @@ func _test_snapshot_yaw() -> void:
 	var src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	# push_snapshot has yaw_v param.
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
-	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids).
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids)'),
+	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids;
+	# since issue #126 Phase 1, rod_out too).
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out)'),
 		"caller passes _yaw")
 	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
+	_assert(src.contains("rod_out_v: bool = false"), "push_snapshot takes rod_out_v (#126 P1)")
 	# _remote_yaw stored and interpolated with lerp_angle.
 	_assert(src.contains("_remote_yaw"), "stores _remote_yaw")
 	_assert(src.contains("lerp_angle(_yaw, _remote_yaw"),
@@ -8044,7 +8046,7 @@ func _test_fishing_minigame_phase2() -> void:
 	spot.global_position = Vector3.ZERO
 	spot.water_point = Vector3(0, 0, 4)
 	spot.test_player = p
-	_grant_equipped(p, "fishing_rod") # #104 Phase 3: the claim gate needs it
+	_grant_equipped(p, "fishing_rod") # rod equipped (sessions are ungated since #126; equip is realistic kit)
 	SpotScript.debug_wait_override = 2.0
 	# --- Full cast -> catch cycle (one-E claim+cast) ---
 	SpotScript.debug_now_msec = 100000
@@ -8670,7 +8672,7 @@ func _test_misty_docks_phase5() -> void:
 	root.add_child(merch)
 	merch.global_position = layout.farm_plots[0] + Vector3(2.0, 0, 0)
 	merch.test_player = p
-	_grant_equipped(p, "fishing_rod") # #104 Phase 3: the claim gate needs it
+	_grant_equipped(p, "fishing_rod") # rod equipped (sessions are ungated since #126; equip is realistic kit)
 	EconScript.debug_reset()
 	PlotScript._seed_ledger.clear()
 	var gold_before: int = p.get("supermarket_cash")
@@ -8741,7 +8743,7 @@ func _test_misty_docks_phase5() -> void:
 	spot2.global_position = layout.fishing_spots[0]
 	spot2.water_point = (layout.ponds[0] as Dictionary)["center"]
 	spot2.test_player = p2
-	_grant_equipped(p2, "fishing_rod") # #104 Phase 3: the claim gate needs it
+	_grant_equipped(p2, "fishing_rod") # rod equipped (sessions are ungated since #126; equip is realistic kit)
 	SM.set("_test_account_pin", "test_dock5")
 	SM.load_game()
 	_assert(not SM.has_dock_trophy("legendary_fish"), "p5: fish trophy not recorded yet")
@@ -9399,7 +9401,7 @@ func _test_inventory_pause_screen() -> void:
 
 
 func _test_fishing_rod_phase3() -> void:
-	print("[Playtest] Fishing rod + gate + held visuals (issue #104 Phase 3)...")
+	print("[Playtest] Fishing rod + ungated spots + rod-out + held visuals (issues #104 P3 / #126 P1)...")
 	var ItemDBNode: Variant = root.get_node("ItemDB")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
 	var SpotScript: GDScript = load("res://scripts/dungeon/fishing_spot.gd")
@@ -9420,9 +9422,23 @@ func _test_fishing_rod_phase3() -> void:
 	_assert(float(rod.get("damage_bonus")) == 0.0 and float(rod.get("health_bonus")) == 0.0 \
 		and float(rod.get("speed_bonus")) == 0.0 and float(rod.get("damage_mult")) == 1.0,
 		"rod: zero stats (pure gate key)")
-	_assert(str(EconScript.ROD_ITEM) == "fishing_rod" \
-		and str(SpotScript.ROD_ITEM_ID) == "fishing_rod",
-		"rod: one item id across economy / spot")
+	_assert(str(EconScript.ROD_ITEM) == "fishing_rod", "rod: economy item id")
+	# Issue #126 Phase 1: the spot carries no rod gate anymore.
+	var spot_consts: Dictionary = SpotScript.get_script_constant_map()
+	_assert(not spot_consts.has("ROD_ITEM_ID") and not spot_consts.has("ROD_PROMPT"),
+		"#126: spot rod-gate constants deleted")
+	var spot_src := FileAccess.get_file_as_string("res://scripts/dungeon/fishing_spot.gd")
+	_assert(not spot_src.contains("Requires " + "Fishing Rod"), "#126: no rod refusal in the spot source")
+	var legend_src := FileAccess.get_file_as_string("res://scripts/ui/mouse_legend.gd")
+	_assert(not legend_src.contains("Requires " + "Fishing Rod") and not legend_src.contains("fishing_blocked"),
+		"#126: legend blocked state + refusal deleted")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(not psrc.contains("Requires " + "Fishing Rod"), "#126: no rod refusal in the player source")
+	_assert(psrc.contains("KEY_V"), "#126: rod key branch exists (V; F is the class ability)")
+	_assert(psrc.contains("Equip your Fishing Rod (Tool slot) to cast"), "#126: equip toast text")
+	_assert(psrc.contains("The dock merchant sells a Fishing Rod"), "#126: merchant toast text")
+	_assert(psrc.contains("rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED"),
+		"#126: LMB attacks disabled while rod-out")
 
 	# --- Gate: prompt, interact (no claim sent), forged direct claim.
 	var g = PlayerScene.instantiate()
@@ -9434,26 +9450,57 @@ func _test_fishing_rod_phase3() -> void:
 	spot.global_position = Vector3.ZERO
 	spot.water_point = Vector3(0, 0, 4)
 	spot.test_player = g
-	_assert(not g.has_rod_equipped(), "gate: fresh player has no rod")
-	_assert(spot.prompt_text() == "Requires Fishing Rod (Tool slot)",
-		"gate: prompt shows the requirement without the rod")
-	spot.interact(g)
-	_assert(spot.occupied_by == 0, "gate: interact sends no claim without the rod")
-	spot.fish_action() # forged call bypassing interact: server gate refuses
-	_assert(spot.occupied_by == 0, "gate: server _claim refuses a rod-less claim")
-	# Mouse legend context near the spot.
+	_assert(not g.has_rod_equipped(), "ungated: fresh player has no rod")
+	_assert(spot.prompt_text() == "Fish here",
+		"ungated: prompt is Fish here without the rod (#126)")
+	# Mouse legend context near the spot: ungated, always ready.
 	g.set("_near_fishing_spot", true)
-	_assert(str(g.legend_state()) == "fishing_blocked", "legend: blocked state without rod")
-	_assert(str(LegendScript.actions_for("warrior", "fishing_blocked")["right"]) \
-		== "Requires Fishing Rod (Tool slot)", "legend: requirement line without rod")
+	_assert(str(g.legend_state()) == "fishing_ready", "legend: ready near a spot without the rod (#126)")
+	spot.fish_action() # forged call bypassing interact: no server rod check anymore
+	_assert(spot.occupied_by == 1, "ungated: direct fish_action claims without the rod (#126)")
+	spot.release_spot()
+	spot.interact(g)
+	_assert(spot.occupied_by == 1, "ungated: interact claims without the rod (#126)")
+	spot.release_spot()
 
-	# --- With the rod equipped: prompt clears, full #102 session runs.
-	_grant_equipped(g, "fishing_rod")
-	_assert(g.has_rod_equipped(), "gate: rod equipped in TOOL")
+	# --- Rod-out mode gates (issue #126 gates c/d; Choice B: the rod
+	# must be EQUIPPED — ownership alone never enters the mode).
+	g.call("_toggle_rod_out")
+	_assert(not bool(g.get("rod_out")), "rod-out: no rod -> cannot enter (gate c)")
+	g.call("receive_item", "fishing_rod")
+	_assert(bool(g.call("_owns_fishing_rod")) and not g.has_rod_equipped(),
+		"rod-out: rod owned but unequipped")
+	g.call("_toggle_rod_out")
+	_assert(not bool(g.get("rod_out")), "rod-out: owned-but-unequipped cannot enter (Choice B)")
+	for i in g.inventory.size():
+		var it = g.inventory[i].get("item")
+		if it != null and str(it.get("id")) == "fishing_rod":
+			g.equip_stack(i)
+			break
+	_assert(g.has_rod_equipped(), "rod-out: rod equipped in TOOL")
+	g.call("_toggle_rod_out")
+	_assert(bool(g.get("rod_out")), "rod-out: equipped rod enters the mode (gate d)")
+	g.call("_toggle_rod_out")
+	_assert(not bool(g.get("rod_out")), "rod-out: key toggles back off")
+	g.call("_toggle_rod_out")
+	for i in g.inventory.size():
+		var it2 = g.inventory[i].get("item")
+		if it2 != null and str(it2.get("id")) == "fishing_rod":
+			g.unequip_stack(i)
+			break
+	_assert(not g.has_rod_equipped() and not bool(g.get("rod_out")),
+		"rod-out: losing the equipped rod ends the mode")
+	# Re-equip the same stack for the session block below.
+	for i in g.inventory.size():
+		var it3 = g.inventory[i].get("item")
+		if it3 != null and str(it3.get("id")) == "fishing_rod":
+			g.equip_stack(i)
+			break
+	_assert(g.has_rod_equipped(), "rod-out: rod re-equipped for the session block")
 	_assert(str(g.legend_state()) == "fishing_ready", "legend: cast context with rod")
 	_assert(str(LegendScript.actions_for("warrior", "fishing_ready")["right"]).contains("cast"),
 		"legend: cast line with rod")
-	_assert(spot.prompt_text() == "Fish here", "gate: prompt clears with the rod")
+	_assert(spot.prompt_text() == "Fish here", "ungated: prompt is Fish here with the rod too")
 	SpotScript.debug_wait_override = 2.0
 	SpotScript.debug_now_msec = 900000
 	SpotScript.debug_catch_roll = 0.9 # deterministic minnow
@@ -9480,7 +9527,7 @@ func _test_fishing_rod_phase3() -> void:
 	_assert(_farm_inv_count(g2, "fishing_rod") == 1, "persist: rod survives save/load")
 	_assert(str(g2.equipped_ids.get("TOOL", "")) == "fishing_rod",
 		"persist: TOOL marker + equipped_ids survive save/load")
-	_assert(g2.has_rod_equipped(), "persist: restored player passes the gate")
+	_assert(g2.has_rod_equipped(), "persist: restored player has the rod equipped")
 
 	# --- Held visuals: own viewmodel + peer prop via push_snapshot.
 	_assert(g.find_child("RodProp", true, false) != null,
@@ -9499,6 +9546,15 @@ func _test_fishing_rod_phase3() -> void:
 		"visuals: peer sees the held rod")
 	_assert(held != null and held.get_node_or_null("WeaponProp") != null,
 		"visuals: peer sees the equipped weapon's world_model")
+	# Issue #126 Phase 1: rod_out rides the snapshot; in rod-out the
+	# peer HeldProp shows the rod alone (weapon suppressed).
+	pv.push_snapshot(pv.global_position, 100.0, 1, true, 0.0,
+		{"TOOL": "fishing_rod", "WEAPON": "iron_sword"}, true)
+	_assert(bool(pv.get("rod_out")), "visuals: snapshot carries rod_out to the peer replica")
+	held = pv.get_node_or_null("HeldProp")
+	_assert(held != null and held.get_node_or_null("RodProp") != null
+		and held.get_node_or_null("WeaponProp") == null,
+		"visuals: in rod-out peers see the rod alone")
 
 	# --- Merchant: GEAR listing, buy / dispose / re-buy (permanent stock).
 	var cat: Array = MerchScript.catalog()
