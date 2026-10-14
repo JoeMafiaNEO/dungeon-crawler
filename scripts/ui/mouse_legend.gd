@@ -26,15 +26,33 @@ const REGISTRY := {
 	"hl_charging": {
 		"mage": {"left": "", "right": "Disarm (cancel)", "middle": "Ping"},
 	},
-	# Issue #104 Phase 3: near a fishing spot (player.legend_state picks
-	# the state from proximity + the TOOL slot). With the rod equipped
-	# the right slot carries the cast context; without it, the
-	# requirement line.
+	# Issue #126 Phase 3: rod-out contexts (player.legend_state picks
+	# the state from the session mirrors + an aim probe). The left
+	# slot carries Cast / the aim guidance / the hook call; the right
+	# slot carries Reel in while a bobber is out.
 	"fishing_ready": {
-		"warrior": {"left": "Attack", "right": "E at spot: cast / reel", "middle": "Ping"},
-		"mage": {"left": "Cast selected ability", "right": "E at spot: cast / reel", "middle": "Ping"},
-		"rogue": {"left": "Attack", "right": "E at spot: cast / reel", "middle": "Ping"},
-		"architect": {"left": "Cast selected ability", "right": "E at spot: cast / reel", "middle": "Ping"},
+		"warrior": {"left": "Cast", "right": "", "middle": "Ping"},
+		"mage": {"left": "Cast", "right": "", "middle": "Ping"},
+		"rogue": {"left": "Cast", "right": "", "middle": "Ping"},
+		"architect": {"left": "Cast", "right": "", "middle": "Ping"},
+	},
+	"fishing_aim": {
+		"warrior": {"left": "Aim at water", "right": "", "middle": "Ping"},
+		"mage": {"left": "Aim at water", "right": "", "middle": "Ping"},
+		"rogue": {"left": "Aim at water", "right": "", "middle": "Ping"},
+		"architect": {"left": "Aim at water", "right": "", "middle": "Ping"},
+	},
+	"fishing_wait": {
+		"warrior": {"left": "", "right": "Reel in", "middle": "Ping"},
+		"mage": {"left": "", "right": "Reel in", "middle": "Ping"},
+		"rogue": {"left": "", "right": "Reel in", "middle": "Ping"},
+		"architect": {"left": "", "right": "Reel in", "middle": "Ping"},
+	},
+	"fishing_hook": {
+		"warrior": {"left": "Hook!", "right": "", "middle": "Ping"},
+		"mage": {"left": "Hook!", "right": "", "middle": "Ping"},
+		"rogue": {"left": "Hook!", "right": "", "middle": "Ping"},
+		"architect": {"left": "Hook!", "right": "", "middle": "Ping"},
 	},
 	# Issue #113 Phase 3: architect with the Field Wrench equipped near a
 	# damaged friendly repairable (player.legend_state picks the state).

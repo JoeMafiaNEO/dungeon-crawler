@@ -376,6 +376,11 @@ func fx_bite(peer: int) -> void:
 		var p := _local_player()
 		if p != null:
 			p.set_bite_ready(true)
+			# Issue #126 Phase 3 (bite-cue readability): the fisher
+			# gets a HUD toast too — at 15 m the bobber is a long way
+			# from the crosshair.
+			if p.has_method("toast"):
+				p.toast("Bite! LMB / E to hook")
 
 
 @rpc("authority", "call_local")

@@ -2,7 +2,8 @@ extends Node
 ## Issue #103 validation driver: boots the REAL Misty Docks dungeon
 ## (heightmap terrain integration) and plays a scripted run through it:
 ## spawn on terrain -> walk to a farm plot (till + plant) -> dock
-## merchant (E opens the vendor) -> fishing pier (claim + cast + reel)
+## merchant (E opens the vendor) -> fishing pier (buy the rod, equip,
+## rod-out cast + hook, early reel-in, walk-cancel, sell the catch)
 ## -> out the station-annex doorway and back (no step at the door).
 ## Also asserts the terrain's structural guarantees: only layout ponds
 ## are water, the doorway strip is flat at y=0, generation is
@@ -186,9 +187,18 @@ func _run_checks() -> void:
 	_check(director != null, "fishing director exists")
 	_check(_dungeon.get_node_or_null("FishingSpot_0") == null,
 		"fishing: spot nodes are gone (#126 Phase 2)")
-	# Rod grant + equip: rod-out requires the rod EQUIPPED in the TOOL
-	# slot (Phase 1, Choice B) — enter the mode under the real rule.
-	_player.receive_item("fishing_rod")
+	# Issue #126 Phase 3 (final form): the rod is BOUGHT at the
+	# merchant, not granted. The starting cash is a disclosed scaffold
+	# (prior-trip earnings — the economy's earn paths are suite-proven;
+	# this check's remit is the loop's wiring). Rod-out then requires
+	# the rod EQUIPPED in the TOOL slot (Phase 1, Choice B).
+	DockEconomy.grant_cash(1, DockEconomy.PRICE_ROD)
+	if merch != null and merch.has_method("request_buy"):
+		merch.request_buy("fishing_rod")
+	_check(_inv_count("fishing_rod") >= 1,
+		"fishing: rod bought at the merchant")
+	_check(DockEconomy.cash_balance(1) == 0,
+		"fishing: the purchase spent exactly PRICE_ROD")
 	var rod_idx := -1
 	var inv: Array = _player.get("inventory")
 	for i in inv.size():
@@ -260,10 +270,65 @@ func _run_checks() -> void:
 	var fish_stock: int = DockEconomy.stock_count(1, "fish_minnow")
 	_check(fish_held >= 1 or fish_stock >= 1,
 		"fishing: catch landed (inv=%d stock=%d)" % [fish_held, fish_stock])
+	# Issue #126 Phase 3 (final form): early reel-in + walk-cancel,
+	# still on the frozen clock (no bite can fire during the beats).
+	_mouse_btn(MOUSE_BUTTON_LEFT, true)
+	for i in hold_frames:
+		await get_tree().physics_frame
+	_mouse_btn(MOUSE_BUTTON_LEFT, false)
+	var recast := false
+	for i in 120:
+		await get_tree().process_frame
+		if bool(director.call("has_bobber", 1)):
+			recast = true
+			break
+	_check(recast, "fishing: recast opens a second session")
+	_mouse_btn(MOUSE_BUTTON_RIGHT, true)
+	_mouse_btn(MOUSE_BUTTON_RIGHT, false)
+	var reeled := false
+	for i in 120:
+		await get_tree().process_frame
+		if not bool(director.call("has_bobber", 1)):
+			reeled = true
+			break
+	_check(reeled and not bool(_player.get("_bobber_out")),
+		"fishing: early reel-in (RMB) clears the session")
+	_mouse_btn(MOUSE_BUTTON_LEFT, true)
+	for i in hold_frames:
+		await get_tree().physics_frame
+	_mouse_btn(MOUSE_BUTTON_LEFT, false)
+	var third := false
+	for i in 120:
+		await get_tree().process_frame
+		if bool(director.call("has_bobber", 1)):
+			third = true
+			break
+	_check(third, "fishing: third cast opens a session")
+	_key(KEY_W, true)
+	for i in 8:
+		await get_tree().physics_frame
+	_key(KEY_W, false)
+	var cancelled := false
+	for i in 120:
+		await get_tree().process_frame
+		if not bool(director.call("has_bobber", 1)):
+			cancelled = true
+			break
+	_check(cancelled and not bool(_player.get("_bobber_out")),
+		"fishing: WASD movement cancels the session")
 	DirectorScript.debug_wait_override = -1.0
 	DirectorScript.debug_catch_roll = -1.0
 	DirectorScript.debug_now_msec = -1
 	_player.call("_toggle_rod_out")
+	# Sell the catch back at the merchant — the loop closes.
+	st = await _walk_to((merch as Node3D).global_position, 2.0, 60.0)
+	_report_walk("pier->merchant (sell)", st)
+	if merch != null and merch.has_method("request_sell"):
+		merch.request_sell("fish_minnow")
+	_check(DockEconomy.cash_balance(1) == int(DockEconomy.FISH_SELL["fish_minnow"]),
+		"fishing: catch sold (cash=%d)" % DockEconomy.cash_balance(1))
+	_check(_inv_count("fish_minnow") == 0,
+		"fishing: sold fish left the inventory")
 	# --- Walk: pier -> annex doorway -> hall, and back (no step) ---
 	# Route to a staging point on the door axis first (BFS), then run
 	# straight through the doorway gap; the no-step measurement only

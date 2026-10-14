@@ -186,6 +186,11 @@ var _bobber_out := false
 var _bite_ready := false
 ## Cast charge state: -1 = not charging; 0..1 while LMB is held.
 var _cast_charge := -1.0
+## Issue #126 Phase 3: the last probed rod-out legend state (the aim
+## probe re-emits click_state_changed only when it flips), and the
+## viewmodel rod handle the charge bend drives.
+var _rod_legend_cache := ""
+var _vm_rod_prop: Node3D = null
 ## Unseen trait: next attack after veil/blink crits (2x). Set on veil expiry / blink land.
 var unseen_crit_ready := false
 ## Co-op ping: MMB / G drops a "!" marker visible to the whole party.
@@ -596,13 +601,21 @@ func _director_request(method: String, arg: Variant = null) -> void:
 
 ## Director fx mirror setters (called locally on the fisher's peer).
 func set_bobber_out(v: bool) -> void:
+	if _bobber_out == v:
+		return
 	_bobber_out = v
 	if not v:
 		_bite_ready = false
+	# Issue #126 Phase 3: the rod-out legend contexts follow the
+	# session mirrors — flip the legend the moment they change.
+	click_state_changed.emit()
 
 
 func set_bite_ready(v: bool) -> void:
+	if _bite_ready == v:
+		return
 	_bite_ready = v
+	click_state_changed.emit()
 
 
 ## The cast landing point: flat camera aim at the charged distance
@@ -622,6 +635,7 @@ func _begin_cast_charge() -> void:
 func _release_cast() -> void:
 	var charge := _cast_charge
 	_cast_charge = -1.0
+	_apply_rod_bend()
 	if hud != null and hud.has_method("set_charge_meter"):
 		hud.set_charge_meter(0.0, false)
 	var landing := _cast_landing(charge)
@@ -637,8 +651,24 @@ func _release_cast() -> void:
 
 func _cancel_cast_charge() -> void:
 	_cast_charge = -1.0
+	_apply_rod_bend()
 	if hud != null and hud.has_method("set_charge_meter"):
 		hud.set_charge_meter(0.0, false)
+
+
+## Issue #126 Phase 3: the rod-bend charge tell — the viewmodel rod
+## flexes as the charge builds (the pole leans further from its rest
+## angle and the whole prop pitches), and springs straight when the
+## charge ends. Charge 0 = the P1 rest framing, exactly.
+func _apply_rod_bend() -> void:
+	if _vm_rod_prop == null or not is_instance_valid(_vm_rod_prop):
+		return
+	var c := clampf(_cast_charge, 0.0, 1.0)
+	_vm_rod_prop.rotation.x = 0.45 + 0.25 * c
+	if _vm_rod_prop.get_child_count() > 0:
+		var pole := _vm_rod_prop.get_child(0) as Node3D
+		if pole != null:
+			pole.rotation.z = -0.5 - 0.45 * c
 
 
 ## True when the item may be equipped by this player's class. The class
@@ -795,7 +825,10 @@ func _refresh_viewmodel() -> void:
 		rod_out_prop.position = Vector3(-0.3, -0.24, -0.1)
 		rod_out_prop.rotation = Vector3(0.45, 0.0, 0.3)
 		_viewmodel.add_child(rod_out_prop)
+		_vm_rod_prop = rod_out_prop # Issue #126 P3: charge-bend handle
+		_apply_rod_bend()
 		return
+	_vm_rod_prop = null
 	var wid := str(equipped_ids.get("WEAPON", ""))
 	var witem: ItemData = ItemDB.get_item(wid) if wid != "" else null
 	if witem != null and witem.world_model != "" and ResourceLoader.exists(witem.world_model):
@@ -2716,14 +2749,22 @@ func _physics_process(delta: float) -> void:
 		# stays free and vulnerable, per the redesign). The mirror flag
 		# is cleared locally at once; the server's fx_clear reconciles.
 		if rod_out and _bobber_out and (ix != 0.0 or iz != 0.0):
-			_bobber_out = false
-			_bite_ready = false
+			set_bobber_out(false) # (also clears the bite mirror)
 			_director_request("request_cancel")
 		# Cast charge accumulates while LMB is held in rod-out.
 		if _cast_charge >= 0.0:
 			_cast_charge = minf(1.0, _cast_charge + delta / 1.5)
+			_apply_rod_bend()
 			if hud != null and hud.has_method("set_charge_meter"):
 				hud.set_charge_meter(_cast_charge, true)
+		# Issue #126 Phase 3: with the rod out and no bobber down, the
+		# legend's Cast / "aim at water" context follows the aim —
+		# re-probe each tick and flip the legend when it changes.
+		if rod_out and not _bobber_out and hud != null:
+			var ls := legend_state()
+			if ls != _rod_legend_cache:
+				_rod_legend_cache = ls
+				click_state_changed.emit()
 		var wish := Vector3(ix, 0, iz)
 		if wish.length() > 1.0:
 			wish = wish.normalized()
@@ -3482,13 +3523,23 @@ func legend_state() -> String:
 		return "hl_charging"
 	if _hl_state == HLState.ARMED:
 		return "hl_armed"
+	# Issue #126 Phase 3: rod-out legend contexts. The bite and bobber
+	# mirrors come from the fishing director; with no bobber out, an
+	# aim probe at a mid charge decides Cast vs "aim at water".
+	if rod_out:
+		if _bite_ready:
+			return "fishing_hook"
+		if _bobber_out:
+			return "fishing_wait"
+		var d := _fishing_director()
+		if d != null and d.has_method("is_water_at") \
+				and bool(d.call("is_water_at", _cast_landing(0.5))):
+			return "fishing_ready"
+		return "fishing_aim"
 	# Issue #113 Phase 3: repair context (wrench equipped + a damaged
 	# friendly repairable in reach).
 	if _near_repairable and has_wrench_equipped():
 		return "repair_ready"
-	# Issue #126 Phase 2: spots are deleted — the spot-proximity
-	# fishing context is gone with them (rod-out legend contexts are
-	# Phase 3's scope).
 	return "standard"
 
 
@@ -4186,12 +4237,14 @@ func _update_pickup_prompt() -> void:
 
 
 ## Nearest cipher note, lockbox, departure board, vendor stall, train
-## skip lever, bounty board, vault locker, depart lever, fishing spot, or
-## farm plot within E range.
+## skip lever, bounty board, vault locker, depart lever, or farm plot
+## within E range. (Issue #126 Phase 3: the deleted spots' group
+## entry swept from this scan — the layout's pier data is scenery,
+## not an interactable.)
 func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "fishing_spots", "farm_plots", "dock_merchant"]:
+	for group in ["cipher_plaques", "cipher_lockbox", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "farm_plots", "dock_merchant"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:

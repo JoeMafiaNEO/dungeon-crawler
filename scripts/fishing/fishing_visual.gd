@@ -48,6 +48,7 @@ var _arc_t: float = 0.0
 var _from: Vector3 = Vector3.ZERO
 var _to: Vector3 = Vector3.ZERO
 var _flop := false ## Issue #126 Phase 2: dirt landing — sink on arrival.
+var _dip_t := -1.0 ## Issue #126 Phase 3: bite dip timer (plunge + recover).
 var _bob_phase: float = 0.0
 var _resolve_t: float = -1.0
 var _resolve_mode: String = ""
@@ -106,6 +107,10 @@ func bite() -> void:
 	if _bang != null:
 		_bang.visible = true
 	_splash_at(_to)
+	# Issue #126 Phase 3 (bite-cue readability): the bobber PLUNGES
+	# and recovers — readable at 15 m where a splash ring alone is
+	# easy to miss.
+	_dip_t = 0.0
 
 
 func caught() -> void:
@@ -152,6 +157,11 @@ func _process(delta: float) -> void:
 			_bobber.global_position = pos
 			if t >= 1.0:
 				if _flop:
+					# Issue #126 Phase 3: a dirt landing reads DIRT —
+					# a dust-tan puff, not the water ring.
+					if _splash != null and _splash.material_override is StandardMaterial3D:
+						(_splash.material_override as StandardMaterial3D).albedo_color = Color(0.72, 0.58, 0.38, 0.85)
+					_splash_at(_to)
 					_phase = 2
 					_resolve_t = 0.0
 					_resolve_mode = "flop"
@@ -162,8 +172,15 @@ func _process(delta: float) -> void:
 					AudioManager.sfx("splashdown", _to)
 		1:
 			_bob_phase += delta * 2.2
+			var dip := 0.0
+			if _dip_t >= 0.0:
+				_dip_t += delta
+				var dk := clampf(_dip_t / 0.45, 0.0, 1.0)
+				dip = -0.17 * sin(dk * PI)
+				if dk >= 1.0:
+					_dip_t = -1.0
 			_bobber.global_position = Vector3(
-				_to.x, _to.y + sin(_bob_phase) * 0.05, _to.z)
+				_to.x, _to.y + sin(_bob_phase) * 0.05 + dip, _to.z)
 			if _bang != null and _bang.visible:
 				_bang.global_position = _bobber.global_position + Vector3(0, 1.1, 0)
 		2:

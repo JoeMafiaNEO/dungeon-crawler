@@ -9754,8 +9754,33 @@ func _test_fishing_rod_phase3() -> void:
 			g.equip_stack(i)
 			break
 	_assert(g.has_rod_equipped(), "rod-out: rod re-equipped for the session block")
-	_assert(str(LegendScript.actions_for("warrior", "fishing_ready")["right"]).contains("cast"),
-		"legend: fishing_ready rows remain in the registry (rod-out contexts are Phase 3)")
+	# Issue #126 Phase 3: rod-out legend contexts — registry rows for
+	# all four states + the live state machine on the player.
+	_assert(str(LegendScript.actions_for("warrior", "fishing_ready")["left"]).contains("Cast"),
+		"legend P3: fishing_ready left = Cast")
+	_assert(str(LegendScript.actions_for("mage", "fishing_wait")["right"]).contains("Reel"),
+		"legend P3: fishing_wait right = Reel in")
+	_assert(str(LegendScript.actions_for("rogue", "fishing_aim")["left"]).contains("Aim at water"),
+		"legend P3: fishing_aim left = Aim at water")
+	_assert(str(LegendScript.actions_for("architect", "fishing_hook")["left"]).contains("Hook"),
+		"legend P3: fishing_hook left = Hook!")
+	g._toggle_rod_out()
+	DirectorScript.debug_force_water = 1
+	_assert(g.legend_state() == "fishing_ready", "legend P3: aiming at water reads Cast")
+	DirectorScript.debug_force_water = 0
+	_assert(g.legend_state() == "fishing_aim", "legend P3: aiming at dirt reads Aim at water")
+	g.set_bobber_out(true)
+	_assert(g.legend_state() == "fishing_wait", "legend P3: bobber out reads the reel context")
+	g.set_bite_ready(true)
+	_assert(g.legend_state() == "fishing_hook", "legend P3: bite window reads Hook!")
+	g.set_bobber_out(false)
+	DirectorScript.debug_force_water = 1 # restore the section's seam state
+	g._toggle_rod_out()
+	# Issue #126 Phase 3 cleanup pin: the interact scan no longer
+	# enumerates the deleted spots group.
+	var player_src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(not player_src.contains("\"fishing_spots\""),
+		"cleanup P3: no fishing_spots group entry left in player.gd")
 	DirectorScript.debug_wait_override = 2.0
 	DirectorScript.debug_now_msec = 900000
 	DirectorScript.debug_catch_roll = 0.9 # deterministic minnow

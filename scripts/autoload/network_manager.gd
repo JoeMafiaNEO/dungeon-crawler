@@ -435,10 +435,9 @@ func _on_peer_disconnected(id: int) -> void:
 		# Drop the name so ghosts don't linger in the lobby list.
 		lan_names.erase(id)
 		_broadcast_lan_roster()
-	# Issue #102 Phase 2: a dropped peer releases any fishing spot or
-	# farm plot lock it held (and cancels its fishing session).
-	# Issue #126 Phase 2: spots are gone — the dungeon's
-	# FishingDirector ends the dropped peer's session instead.
+	# Issue #126 Phase 2: a dropped peer's fishing session ends — the
+	# dungeon's FishingDirector force-ends it (visuals clear on every
+	# peer via the fx broadcast).
 	if multiplayer.is_server():
 		for n in get_tree().get_nodes_in_group("fishing_director"):
 			if n.has_method("force_end_peer"):
