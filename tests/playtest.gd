@@ -176,6 +176,7 @@ func _run() -> void:
 	_test_village_terrain_118()
 	_test_terrain_skirt_124()
 	_test_dungeon_terrain_120()
+	_test_back_sprite_integration()
 	_test_depths_terrain_121()
 	_test_apex_terrain_122()
 
@@ -1065,6 +1066,72 @@ func _test_apex_terrain_122() -> void:
 	for t in [plain, disc]:
 		root.remove_child(t)
 		t.free()
+
+
+func _test_back_sprite_integration() -> void:
+	print("[Playtest] Back-sprite integration...")
+	# A character presents its back sprite when its replicated facing
+	# points away from the viewer, its front sprite otherwise; the two
+	# presentation planes are separated along the facing axis by the
+	# named depth constant (Jesse's depth rule).
+	var PlayerScript: GDScript = load("res://scripts/player/player.gd")
+	var cmap: Dictionary = PlayerScript.get_script_constant_map()
+	_assert(cmap.has("BACK_SPRITE_DEPTH_PX")
+		and absf(float(cmap["BACK_SPRITE_DEPTH_PX"]) - 3.0) < 0.001,
+		"backsprite: depth offset is a named tunable constant (3 px)")
+	for cid in ["warrior", "mage", "rogue", "architect"]:
+		var cd: Resource = load("res://data/classes/%s.tres" % cid)
+		_assert(cd != null and (cd.get("frames_back") as Array).size() == 1,
+			"backsprite: %s carries exactly one back frame" % cid)
+		var btex: Texture2D = (cd.get("frames_back") as Array)[0]
+		_assert(btex.resource_path.ends_with("_back.png"),
+			"backsprite: %s back frame is the Art Director back view" % cid)
+	# Live instance: frame sets build, decisions follow the yaw, and
+	# the depth offset lands on the facing axis.
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var w = PlayerScene.instantiate()
+	w.set("class_id", "warrior")
+	holder.add_child(w)
+	var spr = w.get("_sprite")
+	_assert(w.get("_frames_back") != null,
+		"backsprite: back frame set builds on spawn")
+	_assert(spr.get("sprite_frames") == w.get("_frames_front")
+		and not bool(w.get("_showing_back")),
+		"backsprite: front presentation is the spawn default")
+	_assert(str(w.get("_frames_back").get_frame_texture("default", 0).resource_path)
+		== "res://assets/sprites/knight_back.png",
+		"backsprite: warrior back set holds knight_back")
+	w.set("_yaw", 0.0) # facing -Z
+	_assert(not bool(w.call("_is_facing_away", Vector3(0, 0, -5))),
+		"backsprite: viewer in front sees the front")
+	_assert(bool(w.call("_is_facing_away", Vector3(0, 0, 5))),
+		"backsprite: viewer behind sees the back")
+	w.set("_yaw", PI) # facing +Z: the same viewers swap sides
+	_assert(bool(w.call("_is_facing_away", Vector3(0, 0, -5))),
+		"backsprite: decision follows the replicated yaw")
+	var base_pos: Vector3 = w.get("_sprite_base_pos")
+	w.set("_yaw", 0.0) # back to facing -Z for the offset asserts
+	w.call("_apply_sprite_side", true)
+	_assert(bool(w.get("_showing_back")) and spr.get("sprite_frames") == w.get("_frames_back"),
+		"backsprite: back side presents the back frame set")
+	var back_pos: Vector3 = spr.position
+	_assert(absf((back_pos - base_pos).length() - 0.03) < 0.002,
+		"backsprite: back plane offset by depth px * pixel size (0.03)")
+	_assert(back_pos.z > base_pos.z and absf(back_pos.x - base_pos.x) < 0.001,
+		"backsprite: offset runs along the facing axis (behind at yaw 0)")
+	w.call("_apply_sprite_side", false)
+	_assert(not bool(w.get("_showing_back")) and spr.get("sprite_frames") == w.get("_frames_front"),
+		"backsprite: front side restores the front frame set")
+	_assert((spr.position - base_pos).length() < 0.002,
+		"backsprite: front plane returns to the base position")
+	holder.remove_child(w)
+	w.free()
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] back sprite integration done")
 
 
 func _test_save_roundtrip() -> void:

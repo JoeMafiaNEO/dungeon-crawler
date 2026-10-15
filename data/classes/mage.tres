@@ -1,6 +1,7 @@
 [gd_resource type="Resource" format=3]
 
 [ext_resource type="Script" path="res://scripts/data/class_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/sprites/mage_back.png" id="3"]
 [ext_resource type="Texture2D" path="res://assets/sprites/mage.png" id="2"]
 
 [resource]
@@ -16,3 +17,4 @@ base_attack_cooldown = 0.85
 base_attack_range = 3.4
 starting_weapon = "apprentice_staff"
 frames = [ExtResource("2")]
+frames_back = [ExtResource("3")]

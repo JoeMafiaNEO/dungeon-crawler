@@ -17,6 +17,11 @@ signal click_state_changed
 const GRAVITY := 20.0
 const JUMP_VELOCITY := 7.0
 const SNAPSHOT_INTERVAL := 0.1
+## Back-sprite integration (Jesse's depth rule): the front and back
+## presentation planes are separated along the facing axis by this
+## many sprite pixels (~the sprite's black outline width), so the
+## pair never sits co-planar. Tunable; world offset = PX * pixel_size.
+const BACK_SPRITE_DEPTH_PX := 3.0
 const MOUSE_SENS := 0.0025
 const EYE_HEIGHT := 1.6
 const INVENTORY_MAX := 12
@@ -257,6 +262,12 @@ var _has_remote := false
 ## Issue #72 Phase 1: remote yaw for snapshot interpolation.
 var _remote_yaw := 0.0
 var _sprite: AnimatedSprite3D
+## Back-sprite integration: front/back frame sets + presentation state.
+var _frames_front: SpriteFrames = null
+var _frames_back: SpriteFrames = null
+var _showing_back := false
+var _sprite_base_pos := Vector3.ZERO
+var _sprite_base_captured := false
 var _yaw := 0.0
 var _pitch := 0.0
 var _camera: Camera3D
@@ -350,12 +361,76 @@ func _build_sprite() -> void:
 		frames.add_frame("default", tex)
 	frames.set_animation_speed("default", 4.0)
 	frames.set_animation_loop("default", true)
-	_sprite.frames = frames
+	_frames_front = frames
+	# Back-sprite integration: a parallel frame set from the class's
+	# back-view art (empty for a front-only class -> no swapping).
+	_frames_back = null
+	if class_data.frames_back.size() > 0:
+		var back := SpriteFrames.new()
+		for tex in class_data.frames_back:
+			back.add_frame("default", tex)
+		back.set_animation_speed("default", 4.0)
+		back.set_animation_loop("default", true)
+		_frames_back = back
+	if not _sprite_base_captured:
+		_sprite_base_pos = _sprite.position
+		_sprite_base_captured = true
+	_sprite.frames = _frames_front
+	_showing_back = false
+	_sprite.position.x = _sprite_base_pos.x
+	_sprite.position.z = _sprite_base_pos.z
 	_sprite.modulate = class_data.tint
 	# Issue #72 Phase 2: billboard disabled in tscn; sprite yaws to facing.
 	# NOTE: Do NOT set material_override here — StandardMaterial3D breaks
 	# AnimatedSprite3D texture rendering (white quads, issue #78).
 	_sprite.play("default")
+
+
+## Facing direction on the ground plane for the current yaw (the same
+## convention the movement code uses: forward = -Z rotated by _yaw).
+func _facing_dir() -> Vector3:
+	return Vector3(-sin(_yaw), 0.0, -cos(_yaw))
+
+
+## True when the character's replicated facing points away from a
+## viewer at cam_pos, i.e. the viewer sees the character's back. Pure
+## math on the synced _yaw — every peer computes the same side for the
+## same viewpoint (back-sprite integration, MP consistency rule).
+func _is_facing_away(cam_pos: Vector3) -> bool:
+	var to_cam := cam_pos - global_position
+	to_cam.y = 0.0
+	if to_cam.length() < 0.01:
+		return _showing_back
+	return _facing_dir().dot(to_cam) < 0.0
+
+
+## Present the front or back frame set. The back plane sits
+## BACK_SPRITE_DEPTH_PX sprite-pixels behind the front plane along
+## the facing axis (Jesse's depth rule — the pair never co-planar).
+func _apply_sprite_side(away: bool) -> void:
+	if _sprite == null or _frames_back == null:
+		return
+	_showing_back = away
+	_sprite.frames = _frames_back if away else _frames_front
+	_sprite.play("default")
+	var shift := Vector3.ZERO
+	if away:
+		shift = -_facing_dir() * (BACK_SPRITE_DEPTH_PX * _sprite.pixel_size)
+	_sprite.position.x = _sprite_base_pos.x + shift.x
+	_sprite.position.z = _sprite_base_pos.z + shift.z
+
+
+## Per-frame presentation update for remote instances: derive the
+## visible side from the replicated yaw and the local camera.
+func _update_sprite_presentation() -> void:
+	if _sprite == null or _frames_back == null:
+		return
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var away := _is_facing_away(cam.global_position)
+	if away != _showing_back:
+		_apply_sprite_side(away)
 
 
 func _give_starter_kit() -> void:
@@ -2864,6 +2939,9 @@ func _physics_process(delta: float) -> void:
 			# Issue #72 Phase 2: remote peers yaw the sprite to synced facing.
 			if _sprite != null:
 				_sprite.rotation.y = _yaw
+				# Back-sprite integration: front/back follows the same
+				# replicated yaw, judged against this peer's camera.
+				_update_sprite_presentation()
 
 
 func _process(delta: float) -> void:

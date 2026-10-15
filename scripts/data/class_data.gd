@@ -13,3 +13,6 @@ extends Resource
 @export var base_attack_range: float = 2.8
 @export var starting_weapon: String = ""
 @export var frames: Array[Texture2D] = []
+## Back-view sprite frames (back-sprite integration): presented when the
+## character faces away from the camera. Empty = front-only class.
+@export var frames_back: Array[Texture2D] = []
