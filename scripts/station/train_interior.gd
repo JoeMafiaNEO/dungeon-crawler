@@ -10,7 +10,8 @@ extends Node3D
 ## scenery (procedural, seeded), chug/rumble loop, E-interact skip lever,
 ## background load of the next dungeon, arrival (brake screech, platform
 ## visible through the windows, doors open + unlock), then disembark through
-## the car door into the next dungeon's annex (with a straggler fallback).
+## the car door into the next dungeon's annex (a late-loading peer recovers
+## the arrival via the ride-state pull — issue #135).
 
 ## Handoff statics (set by the dungeon before change_scene_to_file).
 static var passenger_classes: Dictionary = {} # peer_id -> class_id
@@ -19,9 +20,11 @@ static var ride_theme_id: String = "village" # destination theme
 ## Issue #3 Phase 2: the dungeon locks the car doors when boarding completes
 ## (all aboard or timer expiry) — nobody re-opens them during the ride.
 static var doors_locked := false
-## Ride state (issue #3 Phase 3): the server sets these when the ride starts;
-## a peer whose _ready runs after the server's ride_started rpc applies them
-## locally instead of missing the ride. Reset by board_train_interior.
+## Ride state (issue #3 Phase 3): the server sets these when the ride
+## starts. Reset by board_train_interior. NOTE (issue #135): statics are
+## process-local — a client can never see the server's copies, so they
+## cannot re-sync a late-loading peer; clients pull the live state from
+## the server instead (request_ride_state / ride_state_sync below).
 static var ride_active := false
 static var ride_dest_name := ""
 static var ride_seconds := 25.0
@@ -117,10 +120,14 @@ func _ready() -> void:
 		open_doors()
 	# Background-load the next dungeon during the ride so disembark is instant.
 	ResourceLoader.load_threaded_request(DUNGEON_SCENE)
-	# Late-apply: the server may have rpc'd ride_started before this peer's
-	# _ready ran (all peers change scene at once).
-	if ride_active:
-		_apply_ride_started()
+	# Issue #135: a client that finishes loading after the server's
+	# one-shot ride_started / begin_arrival broadcasts used to sit in a
+	# sealed car forever — the late-apply that used to live here read
+	# the ride_active static, which is never true on a client at
+	# _ready time (boarding resets it, and only the server's _run_ride
+	# or the ride_started handler itself can set it). Pull instead.
+	if not multiplayer.is_server():
+		_pull_ride_state()
 	if multiplayer.is_server():
 		_run_ride()
 
@@ -248,14 +255,90 @@ func ride_skip_notice() -> void:
 	_show_ride_hud()
 
 
+## Issue #135: ride-state pull. A client whose car finished loading
+## after the server's one-shot broadcasts asks for the live state;
+## the server answers the requester only. Applying the answer is
+## idempotent, so a healthy client that also got the broadcasts is
+## unaffected.
+@rpc("any_peer", "call_local")
+func request_ride_state() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		return
+	rpc_id(sender, "ride_state_sync", _arrived, _riding, _ride_dest, _ride_left)
+
+
+@rpc("any_peer", "call_local")
+func ride_state_sync(arrived: bool, riding: bool, dest_name: String, seconds_left: float) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		return
+	_apply_ride_state(arrived, riding, dest_name, seconds_left)
+
+
+## The sync application itself (no multiplayer access — tests drive
+## this directly on a bare car).
+func _apply_ride_state(arrived: bool, riding: bool, dest_name: String, seconds_left: float) -> void:
+	if _arrived or _disembarked_local:
+		return
+	if arrived:
+		_ride_dest = dest_name
+		_apply_arrival()
+	elif riding:
+		ride_dest_name = dest_name
+		ride_seconds = seconds_left
+		_apply_ride_started()
+		_watch_arrival_deadline(seconds_left)
+
+
+func _pull_ride_state() -> void:
+	if multiplayer.is_server() or _arrived or _disembarked_local:
+		return
+	rpc_id(NetworkManager.server_peer_id, "request_ride_state")
+	_watch_pull_reply()
+
+
+## If the answer never comes (the server's car wasn't loaded when we
+## asked, so the request hit no node) or the ride hadn't started yet,
+## ask again shortly. Stops once the ride is under way locally.
+func _watch_pull_reply() -> void:
+	if not is_inside_tree():
+		return
+	await get_tree().create_timer(2.5).timeout
+	if not is_inside_tree() or _arrived or _disembarked_local or multiplayer.is_server():
+		return
+	if not _riding:
+		_pull_ride_state()
+
+
+## A client that joined the ride mid-flight via sync re-pulls when
+## the server's clock should have run out, in case the one-shot
+## begin_arrival broadcast missed it too.
+func _watch_arrival_deadline(seconds_left: float) -> void:
+	if not is_inside_tree():
+		return
+	await get_tree().create_timer(seconds_left + 2.0).timeout
+	if is_inside_tree() and not _arrived and not _disembarked_local and not multiplayer.is_server():
+		_pull_ride_state()
+
+
 ## Arrival (all peers): brake screech, banner, scenery -> platform, doors
-## open + unlock, disembark zone live. The server then runs the straggler
-## fallback window.
+## open + unlock, disembark zone live. A client that missed this one-shot
+## broadcast applies the same state via the ride-state pull (issue #135).
 @rpc("any_peer", "call_local")
 func begin_arrival() -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
+	_apply_arrival()
+
+
+## The arrival state itself, shared by the broadcast and the pull.
+## Idempotent: the _arrived guard makes a second application (a sync
+## reply landing after the broadcast, or vice versa) a no-op.
+func _apply_arrival() -> void:
 	if _arrived:
 		return
 	_arrived = true
@@ -277,10 +360,12 @@ func begin_arrival() -> void:
 		_door_blocker.queue_free()
 	_door_blocker = null
 	_disembark_area.monitoring = true
-	# Disembark is local and voluntary (issue #92): every peer walks through
-	# the open door on its own schedule and hops via do_disembark() directly.
-	# No server round-trip, no timers, no pulls — the dungeon scene was
-	# background-loaded during the ride, so the hop is instant.
+	# Disembark is local and voluntary (issue #92): every peer walks
+	# through the open door on its own schedule and hops via
+	# do_disembark() directly — the dungeon scene was background-loaded
+	# during the ride, so the hop is instant. (Issue #135: the pull
+	# above recovers the ARRIVAL state for late loaders; the walk-out
+	# itself stays voluntary.)
 
 
 func _on_disembark_body_entered(body: Node3D) -> void:

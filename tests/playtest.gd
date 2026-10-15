@@ -72,6 +72,7 @@ func _run() -> void:
 	_test_lobby_full_cycle_2peer()
 	_test_disconnect_mid_boarding()
 	_test_train_ride()
+	_test_train_ride_state_sync()
 	_test_train_disembark_fallback()
 	_test_train_dressing()
 	_test_cycle_scaling()
@@ -2938,6 +2939,76 @@ func _test_train_ride() -> void:
 	_assert(hsrc.contains("func show_ride_status"), "ride: HUD ride status")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains('"skip_lever"'), "ride: skip lever in player interact groups")
+
+
+## Issue #135: a client whose car finished loading after the server's
+## one-shot ride_started / begin_arrival broadcasts pulls the live ride
+## state from the server and applies the answer. The old _ready
+## late-apply read the ride_active static, which is never true on a
+## client at _ready time — the pull replaces it.
+func _test_train_ride_state_sync() -> void:
+	print("[Playtest] Train ride-state sync (issue #135)...")
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+
+	# Fixture: a car in its sealed pre-ride state (doors locked by the
+	# boarding static, disembark zone dormant) — the late loader's car.
+	InteriorScript.doors_locked = true
+	var car = InteriorScript.new()
+	car._build_car()
+	car._build_scenery()
+	car._build_platform()
+	car._build_skip_lever()
+	car._build_disembark_zone()
+	_assert(not car._arrived and not car._doors_open, "135: late car starts sealed")
+	_assert(not car._disembark_area.monitoring, "135: late car zone dormant")
+
+	# The pull's answer after the ride ended: arrival applies in full.
+	car._apply_ride_state(true, false, "Village Outskirts", 0.0)
+	_assert(car._arrived, "135: sync (arrived) applies arrival")
+	_assert(not InteriorScript.doors_locked, "135: sync (arrived) unlocks the doors")
+	_assert(car._doors_open, "135: sync (arrived) opens the doors")
+	_assert(car._disembark_area.monitoring, "135: sync (arrived) arms the disembark zone")
+	_assert(car._door_blocker == null, "135: sync (arrived) clears the door blocker")
+
+	# Applied twice = the same end state (the broadcast AND a sync
+	# reply both landing on a healthy client must not double-apply).
+	car._apply_arrival()
+	car._apply_ride_state(true, false, "Village Outskirts", 0.0)
+	_assert(car._arrived and car._doors_open and car._disembark_area.monitoring,
+		"135: arrival applied twice ends in the same state")
+	car.free()
+
+	# The pull's answer mid-ride: the ride applies with the server's clock.
+	var car2 = InteriorScript.new()
+	car2._build_car()
+	car2._build_dressing()
+	car2._build_scenery()
+	car2._build_platform()
+	car2._build_skip_lever()
+	car2._build_disembark_zone()
+	car2._apply_ride_state(false, true, "Dungeon Depths", 7.5)
+	_assert(car2._riding, "135: sync (riding) starts the ride locally")
+	_assert(absf(car2._ride_left - 7.5) < 0.001, "135: sync (riding) takes the server's clock")
+	_assert(car2._scenery_root.visible, "135: sync (riding) shows the scenery")
+	car2.free()
+
+	# Wiring (source): _ready pulls; the server answers the requester only.
+	var isrc := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	_assert(isrc.contains("func request_ride_state"), "135: ride-state request exists")
+	_assert(isrc.contains("func ride_state_sync"), "135: ride-state sync exists")
+	_assert(isrc.contains('rpc_id(sender, "ride_state_sync"'), "135: server answers the requester only")
+	_assert(isrc.contains("_apply_ride_state(arrived, riding, dest_name, seconds_left)"),
+		"135: sync handler delegates to the testable application")
+	var rpos := isrc.find("func _ready")
+	var rend := isrc.find("func is_riding", rpos)
+	var rblock := isrc.substr(rpos, rend - rpos)
+	_assert(rblock.contains("_pull_ride_state()"), "135: _ready pulls the ride state")
+	_assert(not rblock.contains("if ride_active:"), "135: dead static late-apply gone from _ready")
+	# Leave the shared statics as the section found them.
+	InteriorScript.doors_locked = false
+	InteriorScript.ride_seconds = 25.0
+	InteriorScript.ride_dest_name = ""
+	print("[Playtest] Train ride-state sync done")
 
 
 ## Issue #92: voluntary local disembark. Every peer walks through the open
