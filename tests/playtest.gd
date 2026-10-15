@@ -164,6 +164,7 @@ func _run() -> void:
 	_test_equip_system_phase1()
 	_test_mp_save_c1_fix()
 	_test_character_panel_phase2()
+	_test_inventory_audit_136()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
 	_test_class_tagging_phase4()
@@ -9919,6 +9920,123 @@ func _test_character_panel_phase2() -> void:
 	hud.queue_free()
 	p.queue_free()
 	print("[Playtest] character panel phase 2 done")
+
+
+## Issue #136 diagnostic: the inventory-removal audit trap + the panel
+## swap regressions. The trap is TEMPORARY (its removal rides with the
+## #136 fix/closure); the panel pins lock the characterization result —
+## the double-click equip paths cannot delete a stack.
+func _test_inventory_audit_136() -> void:
+	print("[Playtest] Inventory audit trap (issue #136)...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+
+	# --- Panel regressions (the characterization fuzz, locked in) ---
+	var p = PlayerScene.instantiate()
+	p.class_id = "mage"
+	root.add_child(p) # starter kit: apprentice staff, equipped
+	p.receive_item("rusty_sword")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	hud.setup(p)
+	hud.refresh_inventory(p)
+	var dbl := InputEventMouseButton.new()
+	dbl.pressed = true
+	dbl.double_click = true
+	dbl.button_index = MOUSE_BUTTON_LEFT
+	var press := InputEventMouseButton.new()
+	press.pressed = true
+	press.button_index = MOUSE_BUTTON_LEFT
+	var sword_idx := -1
+	var staff_idx := -1
+	for i in p.inventory.size():
+		var iid := (p.inventory[i]["item"] as ItemData).id
+		if iid == "rusty_sword":
+			sword_idx = i
+		if iid == "apprentice_staff":
+			staff_idx = i
+	_assert(sword_idx >= 0 and staff_idx >= 0, "136: fixture carries staff + sword")
+	hud._on_bag_row_gui_input(dbl, sword_idx)
+	_assert(str(p.inventory[sword_idx].get("equipped_slot", "")) == "WEAPON",
+		"136: dbl-click equips the sword")
+	_assert(str(p.inventory[staff_idx].get("equipped_slot", "")) == "",
+		"136: swap unequips the staff in place")
+	hud._on_bag_row_gui_input(dbl, sword_idx)
+	_assert(p.inventory.size() == 2, "136: dbl-click on the equipped row changes nothing")
+	hud._on_bag_row_gui_input(dbl, staff_idx)
+	_assert(str(p.inventory[staff_idx].get("equipped_slot", "")) == "WEAPON",
+		"136: dbl-click swaps back to the staff")
+	hud._on_bag_row_gui_input(dbl, staff_idx)
+	_assert(p.inventory.size() == 2
+		and str(p.inventory[staff_idx].get("equipped_slot", "")) == "WEAPON",
+		"136: dbl-click on the equipped staff is a no-op")
+	hud._on_slot_gui_input(press, "WEAPON")
+	hud._on_slot_gui_input(press, "WEAPON")
+	_assert(p.inventory.size() == 2, "136: slot double-press never deletes")
+	var staff_present := false
+	for e in p.inventory:
+		if (e["item"] as ItemData).id == "apprentice_staff":
+			staff_present = true
+	_assert(staff_present, "136: staff present after every panel gesture")
+	hud.queue_free()
+	p.queue_free()
+
+	# --- Audit events on representative paths ---
+	var q = PlayerScene.instantiate()
+	q.class_id = "warrior"
+	root.add_child(q)
+	q.receive_item("health_potion")
+	q.inventory_audit_log.clear()
+	var pot_idx := -1
+	for i in q.inventory.size():
+		if (q.inventory[i]["item"] as ItemData).id == "health_potion":
+			pot_idx = i
+	q.dispose_item(pot_idx)
+	_assert(_audit_has(q, "dispose_item", "health_potion"),
+		"136: dispose emits an audit event")
+	q.receive_item("health_potion")
+	for i in q.inventory.size():
+		if (q.inventory[i]["item"] as ItemData).id == "health_potion":
+			pot_idx = i
+	q.inventory[pot_idx]["count"] = 1
+	q.hp = q.max_hp * 0.5
+	q.inventory_audit_log.clear()
+	q.use_item(pot_idx)
+	_assert(_audit_has(q, "use_item", "health_potion"),
+		"136: use-to-zero emits an audit event")
+	q.inventory_audit_log.clear()
+	var st: Dictionary = q.get_state()
+	(st["inventory"] as Array).append(
+		{"id": "nonexistent_item_xyz", "count": 2, "slot": "", "upgrade_level": 0})
+	q.apply_state(st)
+	_assert(_audit_has(q, "apply_state", "nonexistent_item_xyz"),
+		"136: apply_state drop emits an audit event")
+	q.inventory_audit_log.clear()
+	q.apply_state(q.get_state())
+	_assert(q.inventory_audit_log.is_empty(),
+		"136: lossless apply_state emits no audit event")
+	q.queue_free()
+
+	# --- Source pins: every eraser reports to the audit helper ---
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("func _audit_inventory("), "136: audit helper exists")
+	_assert(psrc.contains("[#136-INVENTORY-AUDIT]"), "136: audit line prefix present")
+	_assert(psrc.contains("TEMPORARY #136 diagnostic"), "136: instrumentation marked temporary")
+	for fname in ["dispose_item", "use_item", "_use_upgrade_kit", "consume_seed_item",
+			"consume_dock_good", "consume_farm_cash", "_do_death", "apply_state"]:
+		var fpos := psrc.find("func " + fname + "(")
+		var npos := psrc.find("\nfunc ", fpos + 1)
+		_assert(fpos != -1 and npos != -1
+			and psrc.substr(fpos, npos - fpos).contains("_audit_inventory("),
+			"136: %s reports to the audit helper" % fname)
+	print("[Playtest] Inventory audit trap done")
+
+
+func _audit_has(p, site: String, item_id: String) -> bool:
+	for line in p.inventory_audit_log:
+		if line.contains("site=" + site) and line.contains("item=" + item_id):
+			return true
+	return false
 
 
 func _test_inventory_pause_screen() -> void:

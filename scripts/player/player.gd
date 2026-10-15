@@ -4608,6 +4608,26 @@ func _pickup_feedback(item: ItemData) -> bool:
 	return item.rarity >= ItemData.Rarity.RARE
 
 
+## TEMPORARY #136 diagnostic: inventory-removal audit. Every path that
+## removes or replaces inventory stacks reports through here — one log
+## line (prefix [#136-INVENTORY-AUDIT]) plus a bounded in-memory copy
+## the suite can assert on. No behavior change. Removal of this
+## instrumentation rides with the #136 fix/closure.
+const INVENTORY_AUDIT_MAX := 64
+var inventory_audit_log: Array[String] = []
+
+
+func _audit_inventory(site: String, item_id: String, count: int, index: int, slot: String = "", extra: String = "") -> void:
+	var line := "[#136-INVENTORY-AUDIT] site=%s item=%s count=%d index=%d slot=%s class=%s level=%d tick=%d" % [
+		site, item_id, count, index, slot, class_id, level, Time.get_ticks_msec()]
+	if extra != "":
+		line += " " + extra
+	print(line)
+	inventory_audit_log.append(line)
+	while inventory_audit_log.size() > INVENTORY_AUDIT_MAX:
+		inventory_audit_log.pop_front()
+
+
 ## Destroy the selected stack entirely.
 func dispose_item(index: int) -> void:
 	if not is_multiplayer_authority():
@@ -4621,6 +4641,7 @@ func dispose_item(index: int) -> void:
 		if hud != null:
 			hud.toast("Unequip first.")
 		return
+	_audit_inventory("dispose_item", item.id, int(entry["count"]), index, _entry_equipped_slot(entry))
 	inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
@@ -4674,6 +4695,7 @@ func use_item(index: int) -> void:
 			sign, pct, item.buff_stat, int(item.buff_waves)]
 	entry["count"] = int(entry["count"]) - 1
 	if int(entry["count"]) <= 0:
+		_audit_inventory("use_item", item.id, 1, index, _entry_equipped_slot(entry))
 		inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
@@ -4702,8 +4724,10 @@ func _use_upgrade_kit(entry: Dictionary, index: int, item: ItemData) -> void:
 		return
 	var new_level := mini(UPGRADE_LEVEL_CAP, level + item.upgrade_levels)
 	weapon["upgrade_level"] = new_level
+	var kit_had := int(entry["count"])
 	entry["count"] = int(entry["count"]) - 1
 	if int(entry["count"]) <= 0:
+		_audit_inventory("use_upgrade_kit", item.id, kit_had, index, _entry_equipped_slot(entry))
 		inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
@@ -4729,8 +4753,10 @@ func consume_seed_item() -> void:
 		var entry: Dictionary = inventory[i]
 		var item := entry["item"] as ItemData
 		if item != null and item.id == "seed_packet":
+			var had := int(entry["count"])
 			entry["count"] = int(entry["count"]) - 1
 			if int(entry["count"]) <= 0:
+				_audit_inventory("consume_seed_item", item.id, had, i, _entry_equipped_slot(entry))
 				inventory.remove_at(i)
 			_recalc_stats()
 			if hud != null:
@@ -4751,8 +4777,10 @@ func consume_dock_good(item_id: String) -> void:
 		var entry: Dictionary = inventory[i]
 		var item := entry["item"] as ItemData
 		if item != null and item.id == item_id:
+			var had := int(entry["count"])
 			entry["count"] = int(entry["count"]) - 1
 			if int(entry["count"]) <= 0:
+				_audit_inventory("consume_dock_good", item.id, had, i, _entry_equipped_slot(entry))
 				inventory.remove_at(i)
 			_recalc_stats()
 			if hud != null:
@@ -4770,8 +4798,10 @@ func consume_farm_cash(n: int) -> void:
 		var entry: Dictionary = inventory[i]
 		var item := entry["item"] as ItemData
 		if item != null and item.id == "farm_cash":
+			var had := int(entry["count"])
 			entry["count"] = int(entry["count"]) - n
 			if int(entry["count"]) <= 0:
+				_audit_inventory("consume_farm_cash", item.id, had, i, _entry_equipped_slot(entry))
 				inventory.remove_at(i)
 			_recalc_stats()
 			if hud != null:
@@ -4974,6 +5004,15 @@ func _do_death() -> void:
 	no_death_streak = 0 # Relic Vault (issue #6): dying breaks the streak.
 	died.emit()
 	AudioManager.sfx("player_die")
+	# TEMPORARY #136 diagnostic: record the full stack list before the wipe.
+	if not inventory.is_empty():
+		var parts: Array[String] = []
+		var total := 0
+		for e in inventory:
+			var it := e["item"] as ItemData
+			parts.append("%sx%d" % [it.id if it != null else "?", int(e["count"])])
+			total += int(e["count"])
+		_audit_inventory("death_clear", "", total, -1, "", "stacks=" + ",".join(parts))
 	inventory.clear()
 	_recalc_stats()
 	if hud != null:
@@ -5340,6 +5379,16 @@ func get_state() -> Dictionary:
 
 ## Restore state after a level transition. Full heal on arrival.
 func apply_state(s: Dictionary) -> void:
+	# TEMPORARY #136 diagnostic: per-item totals claimed by the incoming
+	# state, diffed against the reconstruction at the end of the
+	# function — only actual drops are audited.
+	var _audit_before := {}
+	for e in (s.get("inventory", []) as Array):
+		if e is Dictionary:
+			var eid := str((e as Dictionary).get("id", ""))
+			if eid != "":
+				_audit_before[eid] = int(_audit_before.get(eid, 0)) \
+					+ int((e as Dictionary).get("count", 1))
 	# PF Phase 2: stash every key this build does NOT consume, so
 	# get_state() can merge it back verbatim (lossless round-trip).
 	_state_extras.clear()
@@ -5433,6 +5482,17 @@ func apply_state(s: Dictionary) -> void:
 	# dropped stacks (see last_restore_dropped).
 	if not last_restore_dropped.is_empty() and hud != null:
 		hud.show_toast("Some items could not be restored")
+	# TEMPORARY #136 diagnostic: audit only the items this reconstruction
+	# actually dropped (a lossless apply emits nothing).
+	var _audit_after := {}
+	for e in inventory:
+		var it1 := e["item"] as ItemData
+		if it1 != null:
+			_audit_after[it1.id] = int(_audit_after.get(it1.id, 0)) + int(e["count"])
+	for id in _audit_before:
+		var lost := int(_audit_before[id]) - int(_audit_after.get(id, 0))
+		if lost > 0:
+			_audit_inventory("apply_state", id, lost, -1)
 
 
 ## This peer's own level-entry state, captured on THIS machine at spawn
