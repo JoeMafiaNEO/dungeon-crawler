@@ -166,6 +166,7 @@ func _run() -> void:
 	_test_character_panel_phase2()
 	_test_inventory_audit_136()
 	_test_menu_batch_137()
+	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
 	_test_class_tagging_phase4()
@@ -10114,6 +10115,150 @@ func _test_menu_batch_137() -> void:
 		"137d: warning label wrapped minimum is honest")
 	menu.queue_free()
 	print("[Playtest] Menu batch done")
+
+
+## Issue #132: the Host menu's Lobby tab must show what Host will
+## actually create for the selected save. A legacy save (no visibility
+## key) continues FriendsOnly at its stored cap per M-5, but the tab
+## used to sit on the menu's own Public/4 defaults, never re-derived.
+func _test_host_lobby_prefill_132() -> void:
+	print("[Playtest] Host lobby prefill (issue #132)...")
+	var MenuScript := load("res://scripts/ui/main_menu.gd")
+	var NM = root.get_node("NetworkManager")
+	var SM = root.get_node("SaveManager")
+
+	# --- The pure derivation mirrors continue_multiplayer's defaults.
+	var s: Dictionary = MenuScript.lobby_settings_for_run(
+		{"lobby": {"max_players": 12, "lobby_name": "Old"}})
+	_assert(str(s["visibility"]) == "friends" and int(s["cap"]) == 12,
+		"132: legacy save (no visibility key) derives FriendsOnly / cap 12")
+	s = MenuScript.lobby_settings_for_run(
+		{"lobby": {"visibility": "public", "max_players": 6}})
+	_assert(str(s["visibility"]) == "public" and int(s["cap"]) == 6,
+		"132: stored public/6 derives Public / cap 6")
+	s = MenuScript.lobby_settings_for_run(
+		{"lobby": {"visibility": "private", "max_players": 8}})
+	_assert(str(s["visibility"]) == "private" and int(s["cap"]) == 8,
+		"132: stored private/8 derives Private / cap 8")
+	s = MenuScript.lobby_settings_for_run(
+		{"lobby": {"visibility": "bogus", "max_players": 99}})
+	_assert(str(s["visibility"]) == "friends" and int(s["cap"]) == 12,
+		"132: unknown visibility falls back to friends (never public), cap clamps to 12")
+	s = MenuScript.lobby_settings_for_run({})
+	_assert(str(s["visibility"]) == "friends" and int(s["cap"]) == 12
+		and str(s["password"]) == "",
+		"132: empty run derives the M-5 defaults (friends / 12 / no password)")
+	s = MenuScript.lobby_settings_for_run({"lobby": {"max_players": 2}})
+	_assert(int(s["cap"]) == 4, "132: cap clamps to the slider minimum 4")
+
+	# --- End to end through the real menu with seeded save fixtures.
+	# Back up any existing mp slots first (save-roundtrip discipline).
+	var backup := {}
+	for slot in SM.list_slots(SM.MODE_MP):
+		var p := "user://runs/%s_%d.cfg" % [SM.MODE_MP, slot]
+		if FileAccess.file_exists(p):
+			backup[p] = FileAccess.get_file_as_bytes(p)
+			DirAccess.remove_absolute(p)
+	var legacy_run := {
+		"theme_id": "village", "level_number": 1, "seed": 42,
+		"is_multiplayer": true,
+		"lobby": {"max_players": 12, "lobby_name": "Legacy"},
+		"roster": [{"steam_id": 111, "player_name": "Host", "class_id": "mage",
+			"player_state": {"level": 7}, "is_host": true}],
+	}
+	var public_run := {
+		"theme_id": "village", "level_number": 1, "seed": 43,
+		"is_multiplayer": true,
+		"lobby": {"max_players": 6, "lobby_name": "Pub", "visibility": "public"},
+		"roster": [{"steam_id": 111, "player_name": "Host", "class_id": "mage",
+			"player_state": {"level": 7}, "is_host": true}],
+	}
+	_assert(SM.save_run(legacy_run, SM.MODE_MP, 0), "132: legacy fixture saved")
+	_assert(SM.save_run(public_run, SM.MODE_MP, 1), "132: public fixture saved")
+
+	var MenuScene: PackedScene = load("res://scenes/ui/main_menu.tscn")
+	var menu = MenuScene.instantiate()
+	root.add_child(menu)
+	NM.host_save_slot = -1
+	NM.lobby_visibility = "public"
+	NM.lobby_player_cap = 4
+	NM.lobby_password = ""
+	menu._on_host_pressed()
+	var lobby_page = menu.get_node("%HostPhase/HostTabs").get_child(2)
+	var vis_public: Button = null
+	var vis_friends: Button = null
+	for b in lobby_page.find_children("*", "Button", true, false):
+		if (b as Button).text == "Public":
+			vis_public = b
+		elif (b as Button).text == "Friends Only":
+			vis_friends = b
+	var cap_slider = lobby_page.find_children("*", "HSlider", true, false)[0]
+	var cap_val := lobby_page.find_child("CapVal", true, false) as Label
+	var pw_toggle: CheckButton = null
+	for c in lobby_page.find_children("*", "CheckButton", true, false):
+		if (c as CheckButton).text == "Use password":
+			pw_toggle = c
+	var pw_field = lobby_page.find_children("*", "LineEdit", true, false)[0] as LineEdit
+	_assert(vis_public.button_pressed and not vis_friends.button_pressed,
+		"132: fresh entry shows the menu default Public")
+	_assert(int(cap_slider.value) == 4 and cap_val.text == "4",
+		"132: fresh entry shows the menu default cap 4")
+	# The host sets a fresh-flow password; it must survive save browsing.
+	# (Toggle flipped through its real pressed signal; the field text is
+	# set as typed and the text_changed handler delivered explicitly —
+	# programmatic text sets do not emit that signal.)
+	pw_toggle.button_pressed = true
+	pw_field.text = "secret"
+	menu._on_host_pw_changed("secret")
+	_assert(pw_toggle.button_pressed and pw_field.text == "secret",
+		"132: fresh password entry lands in the controls")
+
+	# Select the legacy save: FriendsOnly / 12 / no password.
+	menu._on_host_save_selected(true, 0)
+	_assert(vis_friends.button_pressed and not vis_public.button_pressed,
+		"132: legacy selection shows Friends Only")
+	_assert(int(cap_slider.value) == 12 and cap_val.text == "12",
+		"132: legacy selection shows the save's cap 12")
+	_assert(not pw_toggle.button_pressed and pw_field.text == "",
+		"132: legacy selection shows no password (none is stored or applied)")
+	# Display-only: the fresh-host values were never rewritten.
+	_assert(NM.lobby_visibility == "public" and NM.lobby_player_cap == 4
+		and NM.lobby_password == "secret",
+		"132: derivation never writes the NetworkManager fresh-host values")
+
+	# Switch to the public save: Public / 6 (derivation runs both ways).
+	menu._on_host_save_selected(true, 1)
+	_assert(vis_public.button_pressed and not vis_friends.button_pressed,
+		"132: public save selection shows Public")
+	_assert(int(cap_slider.value) == 6 and cap_val.text == "6",
+		"132: public save selection shows its cap 6")
+	# And back to the legacy save.
+	menu._on_host_save_selected(true, 0)
+	_assert(vis_friends.button_pressed and int(cap_slider.value) == 12,
+		"132: switching back re-derives the legacy settings")
+
+	# Fresh Run restores the menu's own values, password included.
+	menu._on_host_save_selected(true, -1)
+	_assert(vis_public.button_pressed and int(cap_slider.value) == 4
+		and cap_val.text == "4",
+		"132: Fresh Run restores the menu defaults (Public / 4)")
+	_assert(pw_toggle.button_pressed and pw_field.text == "secret",
+		"132: Fresh Run restores the host's fresh password entry")
+
+	# Cleanup: fixtures out, real slots back, menu state reset.
+	SM.clear_run(SM.MODE_MP, 0)
+	SM.clear_run(SM.MODE_MP, 1)
+	for p in backup.keys():
+		var f := FileAccess.open(p, FileAccess.WRITE)
+		f.store_buffer(backup[p])
+	NM.lobby_password = ""
+	NM.host_save_slot = -1
+	# Free immediately, not queue_free: the suite never yields a frame
+	# for the deferred free, and the churned save rows would otherwise
+	# land in the exit-time leaked-instance noise.
+	root.remove_child(menu)
+	menu.free()
+	print("[Playtest] Host lobby prefill done")
 
 
 func _test_inventory_pause_screen() -> void:

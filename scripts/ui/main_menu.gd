@@ -32,6 +32,11 @@ var _host_adv_box: VBoxContainer = null
 var _host_loot_custom_row: HBoxContainer = null
 var _host_rarity_custom_box: VBoxContainer = null
 var _host_pw_field: LineEdit = null
+var _host_pw_toggle: CheckButton = null
+## Issue #132: Lobby tab controls re-derived per save selection.
+var _host_vis_buttons: Dictionary = {}
+var _host_cap_slider: HSlider = null
+var _host_cap_val: Label = null
 
 const CLASS_DESCS := {
 	"warrior": "Warrior — Tanky melee, totems and auras.",
@@ -698,6 +703,7 @@ func _build_host_tabs() -> void:
 	pw_toggle.button_pressed = not NetworkManager.lobby_password.is_empty()
 	pw_toggle.toggled.connect(_on_host_pw_toggled)
 	pw_row.add_child(pw_toggle)
+	_host_pw_toggle = pw_toggle
 	_host_pw_field = LineEdit.new()
 	_host_pw_field.placeholder_text = "Password"
 	_host_pw_field.text = NetworkManager.lobby_password
@@ -719,8 +725,10 @@ func _build_host_tabs() -> void:
 		b.button_group = vis_group
 		b.button_pressed = (NetworkManager.lobby_visibility == spec[1])
 		b.toggled.connect(_on_host_visibility.bind(spec[1]))
+		b.name = "Vis_" + spec[1]
 		_style_one_button(b)
 		vis_row.add_child(b)
+		_host_vis_buttons[spec[1]] = b
 	var cap_label := Label.new()
 	cap_label.text = "Player Cap (4-12, default 4)"
 	cap_label.add_theme_font_size_override("font_size", 18)
@@ -736,10 +744,12 @@ func _build_host_tabs() -> void:
 	cap_slider.custom_minimum_size = Vector2(200, 0)
 	cap_slider.value_changed.connect(_on_host_cap_changed)
 	cap_row.add_child(cap_slider)
+	_host_cap_slider = cap_slider
 	var cap_val := Label.new()
 	cap_val.name = "CapVal"
 	cap_val.text = str(NetworkManager.lobby_player_cap)
 	cap_row.add_child(cap_val)
+	_host_cap_val = cap_val
 	var warn := Label.new()
 	warn.text = "Warning: players joining a pre-existing save file will start at level 1."
 	warn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
@@ -788,6 +798,58 @@ func _refresh_host_tabs() -> void:
 	if from_save and _host_tab_container.current_tab == 1:
 		_host_tab_container.current_tab = 0
 	_refresh_host_button()
+	_refresh_host_lobby_controls()
+
+
+## Issue #132: the lobby settings a continued run will actually host
+## with, derived from its save dict using the exact defaults the M-5
+## continue path applies (network_manager.gd continue_multiplayer):
+## visibility falls back to friends-only for legacy saves that predate
+## the field (unknown values fall back the same way, never to public),
+## cap is the save's max_players (default MAX_PLAYERS = 12) clamped to
+## the cap slider's 4-12 range, and no password is ever stored in a
+## save — a continued lobby is passwordless.
+static func lobby_settings_for_run(run: Dictionary) -> Dictionary:
+	var lobby_raw = run.get("lobby", {})
+	var lobby: Dictionary = lobby_raw if lobby_raw is Dictionary else {}
+	var vis := str(lobby.get("visibility", "friends"))
+	if vis not in ["public", "friends", "private"]:
+		vis = "friends"
+	var cap := clampi(int(lobby.get("max_players", 12)), 4, 12)
+	return {"visibility": vis, "cap": cap, "password": str(lobby.get("password", ""))}
+
+
+## Issue #132: re-derive the Lobby tab controls from the current
+## selection so the tab shows what Host will actually create. With a
+## save selected that is the save's stored settings (continue_run reads
+## the save, never these controls); on Fresh Run it is the menu's own
+## NetworkManager values, exactly as before. Controls are set without
+## emitting signals, so the derivation never writes the NetworkManager
+## values — hosting semantics are unchanged in both modes.
+func _refresh_host_lobby_controls() -> void:
+	if _host_tab_container == null:
+		return
+	var vis := NetworkManager.lobby_visibility
+	var cap := NetworkManager.lobby_player_cap
+	var pw := NetworkManager.lobby_password
+	if NetworkManager.host_save_slot >= 0:
+		var run := SaveManager.load_run(SaveManager.MODE_MP, NetworkManager.host_save_slot)
+		if not run.is_empty():
+			var s := lobby_settings_for_run(run)
+			vis = str(s["visibility"])
+			cap = int(s["cap"])
+			pw = str(s["password"])
+	for key in _host_vis_buttons:
+		(_host_vis_buttons[key] as Button).set_pressed_no_signal(key == vis)
+	if _host_cap_slider != null:
+		_host_cap_slider.set_value_no_signal(float(cap))
+	if _host_cap_val != null:
+		_host_cap_val.text = str(cap)
+	if _host_pw_toggle != null:
+		_host_pw_toggle.set_pressed_no_signal(not pw.is_empty())
+	if _host_pw_field != null:
+		_host_pw_field.text = pw
+		_host_pw_field.editable = not pw.is_empty()
 
 
 func _refresh_host_button() -> void:
