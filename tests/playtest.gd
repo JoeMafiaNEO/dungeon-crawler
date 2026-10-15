@@ -61,6 +61,7 @@ func _run() -> void:
 	_test_audio_combat_cues()
 	_test_audio_113_cues()
 	_test_audio_126_cues()
+	_test_fishing_cue_readability_139()
 	_test_station_annex()
 	_test_lobby_room()
 	_test_lobby_doors()
@@ -2278,6 +2279,29 @@ func _test_audio_126_cues() -> void:
 	var vsrc := FileAccess.get_file_as_string("res://scripts/fishing/fishing_visual.gd")
 	_assert(vsrc.contains('sfx("splashdown", _to)'), "splashdown wired to water arrival")
 	_assert(vsrc.contains('sfx("dirt_flop", _to)'), "dirt flop wired to dirt arrival")
+
+
+func _test_fishing_cue_readability_139() -> void:
+	print("[Playtest] Fishing cue readability (#139)...")
+	# [QA] #139 (Play Tester feel verdict on #126): the in-world
+	# cues failed at 15 m in the Docks' night lighting — the bite
+	# "!" rendered ~12 px tall at 1080p and the dirt-flop ring (an
+	# 0.08 m band on a flat torus, gone in 0.6 s) was lost in unlit
+	# ground shadow. The treatment is construction-pinned here; the
+	# readability itself is render-proven (before/after frames at
+	# 15 m in the dark, builder + Co-founder inspected).
+	var vsrc := FileAccess.get_file_as_string("res://scripts/fishing/fishing_visual.gd")
+	_assert(vsrc.contains("tm.inner_radius = 0.30") and vsrc.contains("tm.outer_radius = 0.58"),
+		"#139: splash/flop ring band widened 0.08 -> 0.28 m")
+	_assert(vsrc.contains("_bang.pixel_size = 0.02") and vsrc.contains("_bang.font_size = 160"),
+		"#139: bite mark scaled ~2.5x (160px font at pixel_size 0.02)")
+	_assert(vsrc.contains("func _spawn_dust_puff("),
+		"#139: dirt flop throws a billboard dust puff (the at-range read)")
+	_assert(vsrc.contains("Color(0.88, 0.70, 0.44"),
+		"#139: dirt ring + puff use the brightened dust-tan")
+	var bsrc := FileAccess.get_file_as_string("res://scripts/fishing/bobber.gd")
+	_assert(bsrc.count("SHADING_MODE_UNSHADED") >= 2,
+		"#139: bobber body + antenna unshaded (plunge reads in the dark)")
 
 
 func _test_lobby_room() -> void:

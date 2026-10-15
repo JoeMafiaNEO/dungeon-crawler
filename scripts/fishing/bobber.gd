@@ -18,6 +18,10 @@ func _ready() -> void:
 	sphere.height = 0.24
 	var red := StandardMaterial3D.new()
 	red.albedo_color = Color(0.9, 0.15, 0.1, 1.0)
+	# Issue #139: unshaded — a lit bobber is a black dot in the
+	# Docks' night shadow, and its 0.17 m bite plunge (the bite
+	# cue's moving part) could not resolve at 15 m.
+	red.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	var body := MeshInstance3D.new()
 	body.mesh = sphere
 	body.material_override = red
@@ -28,6 +32,7 @@ func _ready() -> void:
 	stick.height = 0.24
 	var white := StandardMaterial3D.new()
 	white.albedo_color = Color(0.95, 0.95, 0.9, 1.0)
+	white.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	var antenna := MeshInstance3D.new()
 	antenna.mesh = stick
 	antenna.material_override = white
