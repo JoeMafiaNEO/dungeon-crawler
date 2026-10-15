@@ -13,6 +13,8 @@ var is_paused := false
 ## and the local player takes no damage — Player.take_damage reads
 ## this on the player's authority peer, whose HUD is this one.
 var inventory_open := false
+## Issue #133: the session-lost notice dialog (null until shown).
+var _session_lost_dialog: ConfirmationDialog = null
 
 ## The local player. Untyped (Variant) so UI harnesses can drive the bounty
 ## panel/tracker with a lightweight test double (a Dictionary with
@@ -67,6 +69,9 @@ var _save_quit_btn: Button
 
 func _ready() -> void:
 	add_to_group("hud")
+	# Issue #133: a guest whose host vanished gets the session-lost
+	# notice (NetworkManager detects; the HUD presents).
+	NetworkManager.session_lost.connect(_on_session_lost)
 	_build_character_panel()
 	_build_pause_tabs()
 	_build_bounty_tracker()
@@ -1433,6 +1438,33 @@ func _on_quit_pressed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	NetworkManager.leave_lobby()
 	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
+
+
+## Issue #133: NetworkManager reports the session ended underneath a
+## guest (host process died or left mid-run). Supersedes whatever the
+## HUD is showing — pause, inventory, downed and death surfaces all
+## close, the same way show_downed/show_death_screen take over — then
+## an honest notice whose only action runs the pause menu's own Quit
+## path (_on_quit_pressed): shared leave_lobby() teardown and scene
+## return, so the abrupt exit and the graceful exit are one code path.
+func _on_session_lost() -> void:
+	if _session_lost_dialog != null:
+		return
+	hide_pause()
+	hide_death_screen()
+	hide_downed()
+	force_close_inventory()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "Connection Lost"
+	dialog.dialog_text = "The host has ended the session.\nThe run is over."
+	dialog.ok_button_text = "Return to Menu"
+	# No cancel: there is no session to return to.
+	dialog.get_cancel_button().hide()
+	add_child(dialog)
+	_session_lost_dialog = dialog
+	dialog.confirmed.connect(_on_quit_pressed)
+	dialog.popup_centered()
 
 
 ## Issue #111 minor 3: the run state a pause-save writes, sampled ONCE

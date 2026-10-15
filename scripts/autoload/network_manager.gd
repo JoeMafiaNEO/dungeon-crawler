@@ -9,6 +9,11 @@ signal lobby_join_succeeded
 signal lobby_members_changed
 signal lobby_ready_changed
 signal connection_failed(reason: String)
+## Issue #133: the session ended underneath a connected CLIENT (the
+## host process died or left mid-run). Emitted exactly once per session
+## by _note_session_lost; the in-world HUD and the lobby-phase main
+## menu each present it and run the shared leave_lobby() teardown.
+signal session_lost
 
 const GAME_TAG := "dungeon-crawler"
 const MAX_PLAYERS := 12
@@ -66,6 +71,18 @@ var server_peer_id: int = 1
 ## forever. Reset on every join attempt; cancelled on successful connect.
 const JOIN_TIMEOUT_S := 15.0
 var _join_timeout: float = 0.0
+## Issue #133: client session-loss detection. _session_established is
+## set when a CLIENT finishes connecting (_on_connected_to_server) and
+## cleared on teardown; the host and solo play never set it, so this
+## path cannot fire outside a joined session. The engine's
+## server_disconnected signal is the primary trigger; because the
+## 2026-10-14 host-kill evidence cannot distinguish "signal never
+## fired under Steam abrupt-kill" from "fired unhandled", a ~1 Hz
+## connection-status poll in _process backstops it.
+const SESSION_POLL_S := 1.0
+var _session_established: bool = false
+var _session_lost_handled: bool = false
+var _session_poll_t: float = 0.0
 var selected_class_id: String = "warrior"
 var lobby_members: Array[int] = []
 ## Active run slot (issue #4): every in-run save/clear targets this
@@ -86,6 +103,10 @@ func _ready() -> void:
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
+	# Issue #133: until now NOTHING connected server_disconnected, so a
+	# guest whose host vanished got no signal at all (the Oct 14 log
+	# contained zero disconnect-handling lines).
+	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	if transport == Transport.LAN:
 		# LAN mode: skip Steam lobby signals.
 		return
@@ -104,6 +125,17 @@ func _process(delta: float) -> void:
 	else:
 		if not SteamManager.steam_ready.is_connected(_connect_steam_signals):
 			SteamManager.steam_ready.connect(_connect_steam_signals)
+	# Issue #133: session-loss backstop poll (~1 Hz). Only an
+	# established client session is polled — the join handshake has its
+	# own timeout above, and hosts/solo have no server to lose.
+	if _client_session_active():
+		_session_poll_t += delta
+		if _session_poll_t >= SESSION_POLL_S:
+			_session_poll_t = 0.0
+			if peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+				_note_session_lost()
+	else:
+		_session_poll_t = 0.0
 
 
 ## Connect the Steam lobby signals (idempotent).
@@ -408,6 +440,11 @@ func _on_lobby_joined(joined_id: int, _permissions: int, _locked: bool, response
 
 func _on_connected_to_server() -> void:
 	_join_timeout = 0.0
+	# Issue #133: a client session now exists — arm session-loss
+	# detection for it (fresh latch for this session).
+	_session_established = true
+	_session_lost_handled = false
+	_session_poll_t = 0.0
 	if transport == Transport.LAN:
 		# ENet: server is always peer 1. Announce our cosmetic name.
 		server_id = 1
@@ -419,6 +456,30 @@ func _on_connected_to_server() -> void:
 func _on_connection_failed() -> void:
 	_join_timeout = 0.0
 	connection_failed.emit("Connection to host failed.")
+
+
+## Issue #133: true only while this peer is a CLIENT in an established
+## session — the one state that can lose a host. Solo play (peer null,
+## is_host set by play_solo) and hosting can never satisfy this.
+func _client_session_active() -> bool:
+	return _session_established and not is_host and peer != null
+
+
+func _on_server_disconnected() -> void:
+	_note_session_lost()
+
+
+## Issue #133: single funnel for session loss (engine signal + poll
+## backstop). Latched per session so the two triggers can't double-fire,
+## and guarded so it can only ever fire for a client holding a peer —
+## never for the host, never in solo, never after our own leave_lobby()
+## (which sets the latch as it tears down).
+func _note_session_lost() -> void:
+	if _session_lost_handled or is_host or peer == null:
+		return
+	_session_lost_handled = true
+	_session_established = false
+	session_lost.emit()
 
 
 # --- Members ---
@@ -492,6 +553,13 @@ func member_name(peer_id: int) -> String:
 # --- Leaving / solo ---
 
 func leave_lobby() -> void:
+	# Issue #133: our own teardown is not a session loss — disarm the
+	# detector (and latch it, so a server_disconnected raised by
+	# closing our own peer below can't present as one). A future
+	# client session re-arms in _on_connected_to_server.
+	_session_established = false
+	_session_lost_handled = true
+	_session_poll_t = 0.0
 	if transport == Transport.LAN:
 		lobby_id = 0
 		is_host = false

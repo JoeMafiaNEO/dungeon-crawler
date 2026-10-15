@@ -179,6 +179,7 @@ func _run() -> void:
 	_test_back_sprite_integration()
 	_test_depths_terrain_121()
 	_test_apex_terrain_122()
+	_test_session_lost_133()
 
 	_print_results()
 	quit()
@@ -12077,3 +12078,220 @@ func _test_weapon_model_coverage_113() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] weapon model coverage 113 done")
+
+
+## Issue #133: a guest whose host process dies mid-run was stranded
+## in-world forever — no notice, no exit, and a 10 Hz stream of
+## not-connected RPC errors from the player snapshot. The fix: (1)
+## NetworkManager detects session loss client-side (server_disconnected
+## was connected NOWHERE before) with a ~1 Hz status-poll backstop,
+## (2) the HUD presents an honest notice whose only action runs the
+## pause menu's own Quit path (shared leave_lobby teardown), and
+## (3) the periodic sync RPCs are gated on the peer being connected.
+func _test_session_lost_133() -> void:
+	print("[Playtest] Session lost (#133)...")
+	var NM: Variant = root.get_node("NetworkManager")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	# --- Wiring pins ---
+	_assert(nsrc.contains("signal session_lost"), "#133: NetworkManager declares session_lost")
+	_assert(nsrc.contains("multiplayer.server_disconnected.connect(_on_server_disconnected)"),
+		"#133: server_disconnected is connected (was connected nowhere)")
+	_assert(nsrc.contains("func _note_session_lost"), "#133: single session-loss funnel exists")
+	_assert(hsrc.contains("NetworkManager.session_lost.connect(_on_session_lost)"),
+		"#133: HUD presents session_lost")
+	_assert(msrc.contains("NetworkManager.session_lost.connect(_on_session_lost)"),
+		"#133: main menu presents session_lost (lobby phase)")
+	# Graceful path untouched and SHARED: the pause-menu Quit body still
+	# runs leave_lobby + the main-menu scene return, and the HUD's
+	# session-lost handler funnels into that same _on_quit_pressed.
+	var quit_body := _bughunt_body(hsrc, "_on_quit_pressed")
+	_assert(quit_body.contains("NetworkManager.leave_lobby()")
+		and quit_body.contains("res://scenes/ui/main_menu.tscn"),
+		"#133: graceful Quit still runs leave_lobby + menu return (unchanged)")
+	var lost_body := _bughunt_body(hsrc, "_on_session_lost")
+	_assert(lost_body.contains("dialog.confirmed.connect(_on_quit_pressed)"),
+		"#133: session-lost notice confirms into the shared Quit path")
+	_assert(lost_body.contains("force_close_inventory()") and lost_body.contains("hide_death_screen()")
+		and lost_body.contains("hide_downed()"),
+		"#133: notice supersedes inventory / death / downed surfaces")
+	# --- Spam-guard pins: all three periodic send sites gated ---
+	_assert(psrc.contains("func _mp_peer_connected()"), "#133: player has the peer-connected gate")
+	var phys_body := _bughunt_body(psrc, "_physics_process")
+	_assert(phys_body.contains("if _mp_peer_connected():\n\t\t\t\trpc(\"push_snapshot\""),
+		"#133: push_snapshot (the Oct 14 spam site) is gated")
+	_assert(phys_body.contains("if _mp_peer_connected():\n\t\t\t\t\trpc(\"set_stealthed\", false)"),
+		"#133: stealth-expiry RPC is gated")
+	var hl_body := _bughunt_body(psrc, "_hl_process")
+	_assert(hl_body.contains("elif _mp_peer_connected():"),
+		"#133: 10 Hz Holy Light aim updates are gated")
+	# --- Detection guard matrix on the live NetworkManager ---
+	# Snapshot everything this test mutates; restored at the end.
+	var saved := {
+		"peer": NM.peer, "is_host": NM.is_host, "lobby_id": NM.lobby_id,
+		"established": NM.get("_session_established"),
+		"handled": NM.get("_session_lost_handled"),
+		"poll_t": NM.get("_session_poll_t"),
+		"join_timeout": NM.get("_join_timeout"),
+	}
+	var lost_hits := [0]
+	var lost_probe := func() -> void: lost_hits[0] += 1
+	NM.session_lost.connect(lost_probe)
+	var dead_peer := ENetMultiplayerPeer.new() # never connects: status DISCONNECTED
+	# Solo safety: play_solo's resting state (no peer, is_host set) can
+	# never fire — neither via the funnel nor via the poll.
+	NM.peer = null
+	NM.is_host = true
+	NM.set("_session_established", false)
+	NM.set("_session_lost_handled", false)
+	NM._note_session_lost()
+	NM._process(2.0)
+	_assert(lost_hits[0] == 0, "#133: solo state never fires session_lost")
+	_assert(not bool(NM._client_session_active()), "#133: solo is not a client session")
+	# Host safety: a host holding a dead peer is not a stranded guest.
+	NM.peer = dead_peer
+	NM.is_host = true
+	NM.set("_session_established", true)
+	NM._note_session_lost()
+	NM._process(2.0)
+	_assert(lost_hits[0] == 0, "#133: host never fires session_lost")
+	_assert(not bool(NM._client_session_active()), "#133: host is not a client session")
+	# Unestablished client (still joining): the poll stays inert — the
+	# 15s join timeout owns that window, not the session-loss path.
+	NM.is_host = false
+	NM.set("_session_established", false)
+	NM.set("_session_lost_handled", false)
+	NM._process(2.0)
+	_assert(lost_hits[0] == 0, "#133: joining client does not fire (poll needs an established session)")
+	_assert(not bool(NM._client_session_active()), "#133: joining is not an established client session")
+	# Established client + the engine signal: fires exactly once.
+	NM.set("_session_established", true)
+	_assert(bool(NM._client_session_active()), "#133: established client session reads active")
+	NM.multiplayer.server_disconnected.emit()
+	_assert(lost_hits[0] == 1, "#133: server_disconnected fires session_lost for a guest")
+	_assert(not bool(NM.get("_session_established")), "#133: detection disarms the session")
+	NM.multiplayer.server_disconnected.emit()
+	NM._note_session_lost()
+	_assert(lost_hits[0] == 1, "#133: session_lost is latched (signal + poll can't double-fire)")
+	# Established client + dead peer + poll only (the Steam abrupt-kill
+	# backstop: signal never fires, the ~1 Hz poll still catches it).
+	# (Peer re-armed first: a stale main-menu instance from an earlier
+	# test is still in the tree and answered the emit above with its
+	# own lobby-phase leave_lobby — in production exactly one
+	# presenter, menu or HUD, is alive per scene.)
+	NM.peer = dead_peer
+	NM.is_host = false
+	NM._on_connected_to_server()
+	_assert(bool(NM._client_session_active()), "#133: reconnect re-arms detection")
+	NM._process(1.1)
+	_assert(lost_hits[0] == 2, "#133: poll backstop fires on a dead peer")
+	NM._process(2.0)
+	_assert(lost_hits[0] == 2, "#133: poll does not re-fire after handling")
+	# Our own Leave disarms: after leave_lobby, a stray
+	# server_disconnected (from closing our own peer) presents nothing.
+	NM.peer = dead_peer
+	NM.is_host = false
+	NM._on_connected_to_server()
+	NM.leave_lobby()
+	_assert(NM.peer == null, "#133: leave_lobby clears the peer (shared teardown ran)")
+	_assert(not bool(NM._client_session_active()), "#133: no client session after Leave")
+	NM.multiplayer.server_disconnected.emit()
+	_assert(lost_hits[0] == 2, "#133: graceful Leave never presents as session loss")
+	NM.session_lost.disconnect(lost_probe)
+	# --- HUD notice: behavioral, incl. the edge states ---
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	# Edge states up: downed overlay showing, inventory open.
+	hud.show_downed(30.0)
+	hud.inventory_open = true
+	hud.get_node("%InventoryPanel").visible = true
+	hud._on_session_lost()
+	var dlg = hud.get("_session_lost_dialog")
+	_assert(dlg != null, "#133: HUD builds the session-lost dialog")
+	if dlg != null:
+		_assert(str(dlg.dialog_text).contains("host") and str(dlg.dialog_text).contains("session"),
+			"#133: notice says honestly what happened")
+		_assert(str(dlg.ok_button_text) == "Return to Menu", "#133: notice action is Return to Menu")
+		_assert(not dlg.get_cancel_button().visible, "#133: no cancel (no session to return to)")
+		_assert(dlg.visible, "#133: notice is on screen")
+		var shared := false
+		for c in dlg.confirmed.get_connections():
+			if c["callable"] == Callable(hud, "_on_quit_pressed"):
+				shared = true
+		_assert(shared, "#133: notice confirm runs _on_quit_pressed (shared teardown, behavioral)")
+	_assert(not hud.inventory_open, "#133: session loss force-closes the inventory")
+	_assert(not hud.get_node("%InventoryPanel").visible, "#133: inventory panel hidden")
+	_assert(not hud.get_node("%DownedLabel").visible, "#133: downed overlay superseded")
+	_assert(Input.mouse_mode == Input.MOUSE_MODE_VISIBLE, "#133: mouse freed for the notice")
+	hud._on_session_lost() # repeat delivery: still the same single dialog
+	_assert(hud.get("_session_lost_dialog") == dlg, "#133: notice shown exactly once")
+	hud.queue_free()
+	# Death-screen edge: the notice supersedes a visible death screen.
+	var hud2 = HudScene.instantiate()
+	root.add_child(hud2)
+	hud2.show_death_screen({})
+	_assert(hud2.get_node("DeathPanel").visible, "#133: death screen up (edge setup)")
+	hud2._on_session_lost()
+	_assert(hud2.get("_session_lost_dialog") != null, "#133: notice builds over the death screen")
+	_assert(not hud2.get_node("DeathPanel").visible, "#133: death screen superseded")
+	hud2.queue_free()
+	# End-to-end: a fresh HUD + the real signal chain presents it.
+	var hud3 = HudScene.instantiate()
+	root.add_child(hud3)
+	NM.peer = dead_peer
+	NM.is_host = false
+	NM._on_connected_to_server()
+	NM.multiplayer.server_disconnected.emit()
+	_assert(hud3.get("_session_lost_dialog") != null,
+		"#133: signal chain NetworkManager -> HUD presents the notice")
+	hud3.queue_free()
+	# Restore the autoload exactly as found.
+	NM.peer = saved["peer"]
+	NM.is_host = saved["is_host"]
+	NM.lobby_id = saved["lobby_id"]
+	NM.set("_session_established", saved["established"])
+	NM.set("_session_lost_handled", saved["handled"])
+	NM.set("_session_poll_t", saved["poll_t"])
+	NM.set("_join_timeout", saved["join_timeout"])
+	# --- Spam guard: behavioral truth table + driven physics path ---
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	_assert(bool(p._mp_peer_connected()), "#133: offline peer reads connected (solo untouched)")
+	var api_peer = p.multiplayer.multiplayer_peer
+	# A DISCONNECTED peer can't be installed as the tree peer ("must be
+	# connecting or connected"), so use a client peer stuck CONNECTING
+	# to a dead address: installable, and not CONNECTED — the state a
+	# guest's Steam peer passes through as the host's death registers.
+	var dying_peer := ENetMultiplayerPeer.new()
+	dying_peer.create_client("127.0.0.1", 9)
+	p.multiplayer.multiplayer_peer = dying_peer
+	_assert(not bool(p._mp_peer_connected()), "#133: dead peer reads not-connected")
+	# Drive the real physics path against the dead peer: the snapshot
+	# branch runs (its timer resets) but the RPC must not fire — a
+	# not-connected ERROR here would abort nothing, so the run's log
+	# census carries that half; the timer proves the branch was reached.
+	p.set_multiplayer_authority(p.multiplayer.get_unique_id())
+	p.set("_snapshot", 0.0)
+	p._physics_process(0.016)
+	_assert(absf(float(p.get("_snapshot")) - 0.1) < 0.001,
+		"#133: snapshot branch reached against dead peer (timer reset, no RPC fired)")
+	# Connected again: the guard is a no-op — it reads true and the
+	# snapshot branch runs exactly as before the fix (the call itself
+	# sits inside the guard per the source pin above; in-suite RPC
+	# loopback doesn't deliver, the same limitation the LAN tests
+	# document, so branch + guard state are the observables here).
+	p.multiplayer.multiplayer_peer = api_peer
+	dying_peer.close()
+	p.set_multiplayer_authority(p.multiplayer.get_unique_id())
+	_assert(bool(p._mp_peer_connected()), "#133: restored peer reads connected")
+	p.set("_snapshot", 0.0)
+	p._physics_process(0.016)
+	_assert(absf(float(p.get("_snapshot")) - 0.1) < 0.001,
+		"#133: connected peer: snapshot branch runs as before (no-op guard)")
+	p.queue_free()
+	print("[Playtest] Session lost (#133) done")

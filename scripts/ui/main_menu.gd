@@ -61,6 +61,7 @@ func _ready() -> void:
 	NetworkManager.lobby_members_changed.connect(_refresh_lobby_start)
 	NetworkManager.lobby_ready_changed.connect(_refresh_lobby_start)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
+	NetworkManager.session_lost.connect(_on_session_lost)
 	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
 	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
 	NetworkManager.lobby_members_changed.connect(_refresh_lobby_strip)
@@ -2054,6 +2055,19 @@ func _on_lobby_list(lobbies: Array) -> void:
 
 func _on_connection_failed(reason: String) -> void:
 	%JoinStatusLabel.text = reason
+	_show_phase("JoinPhase")
+
+
+## Issue #133: a guest waiting in the lobby when the host's session
+## ends (the in-world case is the HUD's notice). Run the same
+## leave_lobby() teardown the lobby Leave button uses and say so.
+## Hosts and solo menus never satisfy the guard — session_lost only
+## fires for an established client session in the first place.
+func _on_session_lost() -> void:
+	if NetworkManager.is_host or NetworkManager.peer == null:
+		return
+	NetworkManager.leave_lobby()
+	%JoinStatusLabel.text = "The host ended the session."
 	_show_phase("JoinPhase")
 
 

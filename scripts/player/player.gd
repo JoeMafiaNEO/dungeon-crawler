@@ -2787,6 +2787,19 @@ func family_signature(fid: String) -> Dictionary:
 	AudioManager.sfx("ability_unlock")
 
 
+## Issue #133: gate for the periodic sync RPCs. Firing an RPC into a
+## peer that is no longer connected prints "Trying to call an RPC via
+## a multiplayer peer which is not connected" every tick — after the
+## host died mid-run (2026-10-14) the guest's log filled with 1,148 of
+## them in ~2.5 minutes. True when there is no peer object at all
+## (headless/local paths keep their pre-#133 behavior) or the peer
+## reports CONNECTED (the offline peer always does, so solo is
+## untouched); false only for a present-but-dead peer.
+func _mp_peer_connected() -> bool:
+	var mp := multiplayer.multiplayer_peer
+	return mp == null or mp.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+
+
 func _physics_process(delta: float) -> void:
 	# Issue #113 Phase 3: the server ticks repair channels on its own
 	# copies of player nodes (validity includes alive/not-downed).
@@ -2861,7 +2874,8 @@ func _physics_process(delta: float) -> void:
 			_stealth_t -= delta
 			if _stealth_t <= 0.0 and stealthed:
 				stealthed = false
-				rpc("set_stealthed", false)
+				if _mp_peer_connected():
+					rpc("set_stealthed", false)
 				# Unseen trait: first attack after the veil ends crits.
 				if has_trait("unseen"):
 					unseen_crit_ready = true
@@ -2930,7 +2944,10 @@ func _physics_process(delta: float) -> void:
 			# (and the server, for the fishing gate) see held gear.
 			# Issue #126 Phase 1: rod_out rides along so peers render
 			# the rod-out held prop.
-			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out)
+			# Issue #133: never fire into a dead peer (the Oct 14 spam
+			# site — 10 Hz of not-connected errors after the host died).
+			if _mp_peer_connected():
+				rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out)
 	else:
 		if _has_remote:
 			global_position = global_position.lerp(_remote_pos, clampf(delta * 10.0, 0.0, 1.0))
@@ -3460,7 +3477,9 @@ func _hl_process(delta: float) -> void:
 			_hl_aim_send_t = 0.0
 			if multiplayer.is_server():
 				hl_aim_update(_hl_aim)
-			else:
+			elif _mp_peer_connected():
+				# Issue #133: same dead-peer class as push_snapshot —
+				# 10 Hz aim updates must not fire into a dead peer.
 				rpc_id(NetworkManager.server_peer_id, "hl_aim_update", _hl_aim)
 		# Wind-down: beam narrows and dims.
 		if _hl_active_t >= HL_HOLD_TIME:
