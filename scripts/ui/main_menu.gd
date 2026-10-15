@@ -556,7 +556,9 @@ func _build_host_tabs() -> void:
 		child.visible = false
 	var tabs := TabContainer.new()
 	tabs.name = "HostTabs"
-	tabs.custom_minimum_size = Vector2(560, 420)
+	# Issue #137d: 360 (was 420) — the HostPhase stack must keep the
+	# Host/Back row on screen at 720p with margin to spare.
+	tabs.custom_minimum_size = Vector2(560, 360)
 	%HostPhase.add_child(tabs)
 	_host_tab_container = tabs
 	# --- Tab 1: Connection & Save ---
@@ -594,7 +596,7 @@ func _build_host_tabs() -> void:
 	save_label.add_theme_font_size_override("font_size", 18)
 	t1.add_child(save_label)
 	var save_scroll := ScrollContainer.new()
-	save_scroll.custom_minimum_size = Vector2(540, 180)
+	save_scroll.custom_minimum_size = Vector2(540, 130)
 	t1.add_child(save_scroll)
 	_host_save_list = VBoxContainer.new()
 	_host_save_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -742,6 +744,12 @@ func _build_host_tabs() -> void:
 	warn.text = "Warning: players joining a pre-existing save file will start at level 1."
 	warn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
 	warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# Issue #137d: an autowrap label with no minimum width reports a
+	# minimum size of (1, 1583) — the whole text stacked at 1px wide —
+	# which inflates the Lobby tab's minimum height to ~1830 and can
+	# push the Host/Back row off a 720p screen. A realistic minimum
+	# width keeps its wrapped minimum height honest (~2 lines).
+	warn.custom_minimum_size = Vector2(500, 0)
 	t3.add_child(warn)
 	var open_row := HBoxContainer.new()
 	open_row.add_theme_constant_override("separation", 12)
@@ -1832,14 +1840,34 @@ var _staging_active := false
 
 func _on_staging_ready() -> void:
 	# Jesse 2026-10-11: continued runs now use the lobby UI, not the old staging phase.
+	# Issue #137a: on a continue, the lobby class row must tell the
+	# truth — select the class the save's roster records for the host
+	# (flagged entry, else the saver's own entry, else the first),
+	# not the "warrior" default.
+	var players: Array = NetworkManager._continued_run.get("players", [])
+	var host_entry: Dictionary = {}
+	for entry in players:
+		if entry is Dictionary and bool(entry.get("is_host", false)):
+			host_entry = entry
+			break
+	if host_entry.is_empty() and SteamManager.initialized:
+		for entry in players:
+			if entry is Dictionary and int(entry.get("steam_id", 0)) == SteamManager.steam_id:
+				host_entry = entry
+				break
+	if host_entry.is_empty() and not players.is_empty() and players[0] is Dictionary:
+		host_entry = players[0]
+	if not host_entry.is_empty():
+		NetworkManager.selected_class_id = str(host_entry.get("class_id", NetworkManager.selected_class_id))
 	var run_title := "Continue Run"
 	if not NetworkManager._continued_run.is_empty():
 		var lobby: Dictionary = NetworkManager._continued_run.get("lobby", {})
 		var lname := str(lobby.get("lobby_name", "Dungeon"))
 		run_title = "Continue: %s" % lname
 	_show_lobby(run_title, true)
-	# Open the Steam invite dialog so the host can re-invite the crew.
-	NetworkManager.open_invite_dialog()
+	# Issue #137c: no invite overlay here — hosting a save must not
+	# spring Steam's invite UI unprompted. The manual Invite buttons
+	# (roster rows / Invite All) still open it on demand.
 
 
 func _process(delta: float) -> void:
@@ -1954,7 +1982,10 @@ func _on_lobby_list(lobbies: Array) -> void:
 	if lobbies.is_empty():
 		%JoinStatusLabel.text = "No lobbies found. Host one!"
 		return
-	%JoinStatusLabel.text = tr_n("FOUND_LOBBY_ONE", "FOUND_LOBBY_MANY", lobbies.size()) % [lobbies.size()]
+	# Issue #137e: plain English (the localization revert left a tr_n()
+	# call whose raw key has no % placeholder — the format failed on
+	# every refresh with "not all arguments converted").
+	%JoinStatusLabel.text = "Found %d %s" % [lobbies.size(), "lobby" if lobbies.size() == 1 else "lobbies"]
 	for lobby in lobbies:
 		%LobbyList.add_item("%s (%d/%d)" % [lobby["name"], lobby["players"], lobby["max_players"]])
 

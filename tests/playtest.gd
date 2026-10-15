@@ -165,6 +165,7 @@ func _run() -> void:
 	_test_mp_save_c1_fix()
 	_test_character_panel_phase2()
 	_test_inventory_audit_136()
+	_test_menu_batch_137()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
 	_test_class_tagging_phase4()
@@ -10037,6 +10038,82 @@ func _audit_has(p, site: String, item_id: String) -> bool:
 		if line.contains("site=" + site) and line.contains("item=" + item_id):
 			return true
 	return false
+
+
+## Issue #137: the menu-sequence batch — (a) continue-lobby class truth,
+## (c) no invite auto-open, (d) HostPhase fits 720p, (e) lobby-list
+## format. ((b) was ruled not-a-defect: the Architect is the secret
+## cipher class, unlock-gated in every class surface by design.)
+func _test_menu_batch_137() -> void:
+	print("[Playtest] Menu batch (issue #137)...")
+	var MenuScene: PackedScene = load("res://scenes/ui/main_menu.tscn")
+	var menu = MenuScene.instantiate()
+	root.add_child(menu)
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	var NM = root.get_node("NetworkManager")
+
+	# (e) The lobby list status line formats cleanly for 1 and N.
+	menu._on_lobby_list([{"name": "A", "players": 1, "max_players": 4}])
+	_assert(menu.get_node("%JoinStatusLabel").text == "Found 1 lobby",
+		"137e: singular lobby count formats")
+	menu._on_lobby_list([{"name": "A", "players": 1, "max_players": 4},
+		{"name": "B", "players": 2, "max_players": 4},
+		{"name": "C", "players": 3, "max_players": 4}])
+	_assert(menu.get_node("%JoinStatusLabel").text == "Found 3 lobbies",
+		"137e: plural lobby count formats")
+	_assert(not msrc.contains("tr_n(\""), "137e: no tr_n remnant in main_menu.gd")
+
+	# (a) A continued run's lobby selects the roster host's class.
+	NM._continued_run = {
+		"lobby": {"lobby_name": "Dungeon"},
+		"players": [
+			{"steam_id": 111, "name": "H", "class_id": "mage", "is_host": true,
+				"player_state": {"level": 7}},
+			{"steam_id": 222, "name": "G", "class_id": "warrior", "is_host": false,
+				"player_state": {"level": 5}},
+		],
+	}
+	NM.selected_class_id = "warrior"
+	menu._on_staging_ready()
+	_assert(NM.selected_class_id == "mage",
+		"137a: continue derives the selection from the roster host")
+	var row = menu.get_node("%LobbyPanel/LobbyClassRow")
+	var pressed_text := ""
+	for b in row.get_children():
+		if (b as Button).button_pressed:
+			pressed_text = (b as Button).text
+	_assert(pressed_text == "Mage", "137a: the Mage row button is the selected one")
+	NM._continued_run = {}
+	NM.selected_class_id = "warrior"
+
+	# (c) The staging handler no longer springs the invite overlay;
+	# the manual Invite All path still can.
+	var sp := msrc.find("func _on_staging_ready()")
+	var sp_end := msrc.find("\nfunc ", sp + 1)
+	_assert(sp != -1 and not msrc.substr(sp, sp_end - sp).contains("open_invite_dialog"),
+		"137c: staging ready does not auto-open the invite dialog")
+	var ia := msrc.find("func _on_invite_all_pressed()")
+	var ia_end := msrc.find("\nfunc ", ia + 1)
+	_assert(ia != -1 and msrc.substr(ia, ia_end - ia).contains("open_invite_dialog"),
+		"137c: manual Invite All still opens the dialog")
+
+	# (d) HostPhase geometry: no tab page may inflate the stack past a
+	# 720p fit; the warning label's wrapped minimum stays honest.
+	menu._on_host_pressed()
+	var tabs = menu.get_node("%HostPhase/HostTabs")
+	_assert(tabs.get_combined_minimum_size().y <= 380.0,
+		"137d: host tabs minimum height fits 720p with margin")
+	var lobby_page = tabs.get_child(2)
+	_assert(lobby_page.get_combined_minimum_size().y < 500.0,
+		"137d: Lobby tab minimum height is sane")
+	var warn_min := Vector2.ZERO
+	for c in lobby_page.get_children():
+		if c is Label and (c as Label).text.begins_with("Warning:"):
+			warn_min = (c as Control).get_combined_minimum_size()
+	_assert(warn_min.x >= 400.0 and warn_min.y < 80.0,
+		"137d: warning label wrapped minimum is honest")
+	menu.queue_free()
+	print("[Playtest] Menu batch done")
 
 
 func _test_inventory_pause_screen() -> void:
