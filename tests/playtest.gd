@@ -2741,9 +2741,13 @@ func _test_annex_forfeit() -> void:
 
 	# 2. Dungeon wiring: snapshots, level-clear flag, forfeit on departure.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("func _snapshot_entry"), "dungeon snapshots entry state")
-	_assert(dsrc.contains("_snapshot_entry(peer_id)"), "spawn takes the entry snapshot")
-	_assert(dsrc.contains("_snapshot_entry(sender)"), "mid-level join re-snapshots")
+	# Issue #134: the snapshot machinery is peer-authoritative — the
+	# server keeps NO entry snapshots (its replica captures fabricated
+	# a guest's rollback target). These pins lock that property in.
+	_assert(not dsrc.contains("_entry_snapshots"), "134: server keeps no entry snapshots")
+	_assert(not dsrc.contains("func _snapshot_entry"), "134: server snapshot capture gone")
+	_assert(dsrc.contains("p.capture_entry_snapshot()"), "134: owner captures its snapshot at spawn")
+	_assert(dsrc.contains("me.capture_entry_snapshot()"), "134: owner re-captures after a continued-state restore")
 	_assert(dsrc.contains("level_cleared = true"), "level clear sets the flag")
 	_assert(dsrc.contains('"Level cleared — gains secured."'), "level clear toasts gains secured")
 	_assert(dsrc.contains("func _apply_forfeits"), "forfeit applier exists")
@@ -2761,10 +2765,64 @@ func _test_annex_forfeit() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains("func apply_forfeit("), "player has apply_forfeit")
 	_assert(psrc.contains("alive = was_alive"), "forfeit preserves alive status")
+	# Issue #134 (DM pin): the forfeit signal carries NO state payload —
+	# a future refactor must not reintroduce a server-authored rollback.
+	_assert(psrc.contains("func capture_entry_snapshot"), "134: player captures its own entry snapshot")
+	_assert(psrc.contains("func apply_forfeit_local"), "134: player applies its own snapshot")
+	_assert(psrc.contains("func apply_forfeit_net() -> void"), "134: forfeit signal takes no state payload")
+	_assert(dsrc.contains('child.rpc_id(pid, "apply_forfeit_net")'), "134: server sends the bare forfeit signal")
 
 	# 3. Board posts the unanimous rule.
 	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
 	_assert(bsrc.contains('"ALL LIVING PLAYERS MUST AGREE ON A DESTINATION"'), "board shows the unanimity hint")
+
+	# 4. Issue #134 behavioral: the rollback target is the peer's OWN
+	# capture. A guest-shaped player (rich entry state, starter weapon
+	# equipped) forfeits only the level's gains — and what the departure
+	# save would then record (get_state) is the true entry state.
+	var q = PlayerScene.instantiate()
+	q.class_id = "warrior"
+	root.add_child(q) # _ready: class data, starter kit, full HP
+	var entry_ids: Array = []
+	var entry_equipped := 0
+	for e in (q.get_state()["inventory"] as Array):
+		entry_ids.append(str((e as Dictionary)["id"]))
+		if str((e as Dictionary).get("slot", "")) != "":
+			entry_equipped += 1
+	_assert(entry_ids.size() > 0 and entry_equipped > 0,
+		"134: fresh build carries its starter kit (equipped weapon present)")
+	q.level = 5
+	q.xp = 120
+	q.xp_next = 200
+	q.stat_points = 3
+	q.capture_entry_snapshot()
+	q.level = 8
+	q.xp = 40
+	q.run_kills = 11
+	q.inventory.append({"item": potion, "count": 1})
+	q.apply_forfeit_local()
+	_assert(q.level == 5 and q.xp == 120 and q.xp_next == 200,
+		"134: own snapshot restores entry level/xp")
+	_assert(q.stat_points == 3, "134: own snapshot restores entry stat points")
+	var saved_ids: Array = []
+	for e in (q.get_state()["inventory"] as Array):
+		saved_ids.append(str((e as Dictionary)["id"]))
+	saved_ids.sort()
+	var entry_sorted: Array = entry_ids.duplicate()
+	entry_sorted.sort()
+	_assert(saved_ids == entry_sorted,
+		"134: saved entry keeps the real entry inventory (in-level finds gone)")
+	q.queue_free()
+
+	# No local capture, no forfeit — never a fabricated rollback.
+	var r = PlayerScene.instantiate()
+	r.class_id = "mage"
+	root.add_child(r)
+	r.level = 7
+	r.xp = 55
+	r.apply_forfeit_local()
+	_assert(r.level == 7 and r.xp == 55, "134: no local snapshot -> no forfeit")
+	r.queue_free()
 
 
 func _test_train_interior() -> void:

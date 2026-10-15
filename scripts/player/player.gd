@@ -5435,6 +5435,30 @@ func apply_state(s: Dictionary) -> void:
 		hud.show_toast("Some items could not be restored")
 
 
+## This peer's own level-entry state, captured on THIS machine at spawn
+## (and again after a continued-state restore). The early-departure
+## forfeit rolls back to it. Issue #134: the snapshot used to be taken
+## by the server from its local node for the peer — for a remote peer
+## that node is a replica whose authoritative fields (xp, inventory,
+## stat points) never replicate, so the "entry state" was a fabricated
+## fresh spawn and the forfeit destroyed the guest's real character.
+var _entry_snapshot: Dictionary = {}
+
+
+## Capture the entry state for a possible forfeit. Called by the
+## dungeon on the OWNING peer only, once the spawn state is final.
+func capture_entry_snapshot() -> void:
+	_entry_snapshot = get_state()
+
+
+## Roll back to this peer's own captured entry state. No capture, no
+## forfeit — a missing snapshot must never be replaced by a guess.
+func apply_forfeit_local() -> void:
+	if _entry_snapshot.is_empty():
+		return
+	apply_forfeit(_entry_snapshot)
+
+
 ## Forfeit restore (Station Annex Phase 4): roll progression back to the
 ## level-entry snapshot. HP and alive status are NEVER touched — a dead
 ## player stays dead, a hurt player stays hurt.
@@ -5453,13 +5477,16 @@ func apply_forfeit(s: Dictionary) -> void:
 		hud.refresh_stats()
 
 
-## Server asks the owning peer to apply its forfeit (mirrors the heal pattern:
-## the server can't write fields on a client-owned player node directly).
+## Server signals an early-departure forfeit (mirrors the heal pattern:
+## the server can't write fields on a client-owned player node
+## directly). Issue #134: the signal carries NO state — the rollback
+## target is this peer's own captured entry snapshot, never a
+## server-authored state.
 @rpc("any_peer", "call_local")
-func apply_forfeit_net(s: Dictionary) -> void:
+func apply_forfeit_net() -> void:
 	if int(get_multiplayer_authority()) != multiplayer.get_unique_id():
 		return
-	apply_forfeit(s)
+	apply_forfeit_local()
 
 
 @rpc("any_peer", "call_local", "unreliable")

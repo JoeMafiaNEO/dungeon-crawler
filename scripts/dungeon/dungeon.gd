@@ -248,8 +248,9 @@ var _keys_found := 0
 ## victory, or market gate unlocked). Departing before this forfeits the
 ## level's gains.
 var level_cleared := false
-## peer_id -> get_state() dict taken at spawn/join (server-side).
-var _entry_snapshots := {}
+## Issue #134: entry snapshots live on each player (peer-captured —
+## see Player.capture_entry_snapshot). The server keeps none: its node
+## for a remote peer is a replica and cannot author that peer's state.
 
 
 func _ready() -> void:
@@ -444,7 +445,6 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 			# bounties — progress from the saved level does not carry over.
 			if _bounty != null:
 				node.set("bounty_progress", BountySys.new_progress(_bounty.bounties))
-			_snapshot_entry(sender)
 			rpc_id(sender, "apply_continued_state", ps)
 		# Warlord: reclaim their faction from AI control.
 		if is_warlord:
@@ -534,6 +534,9 @@ func apply_continued_state(ps: Dictionary) -> void:
 	var me := _my_player()
 	if me != null:
 		me.apply_state(ps)
+		# Issue #134: the restored state IS this peer's entry state —
+		# capture it here, on the owning peer, for a possible forfeit.
+		me.capture_entry_snapshot()
 
 
 ## A returning player takes their saved Warlord faction back from AI control.
@@ -730,17 +733,13 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 			if pnode != null:
 				for s in FarmPlot.STARTER_SEED_COUNT:
 					pnode.rpc_id(peer_id, "receive_item", FarmPlot.SEED_ITEM)
-		# Forfeit snapshot (issue #2 Phase 4): taken after any continue-state
-		# restore above, so "entry" means what the player arrived with.
-		_snapshot_entry(peer_id)
-
-
-## Server-side: remember what a player looked like on level entry so an
-## early departure can forfeit exactly the level's gains.
-func _snapshot_entry(peer_id: int) -> void:
-	var node := get_player_node(peer_id)
-	if node != null and node.has_method("get_state"):
-		_entry_snapshots[peer_id] = node.get_state()
+	# Issue #134: the OWNING peer captures its own entry snapshot, here
+	# at the end of spawn — after the continue-state restore above, so
+	# "entry" means what the player arrived with. (The server used to
+	# capture it from its local node; for remote peers that node is a
+	# replica and the capture was a fabricated fresh spawn.)
+	if peer_id == multiplayer.get_unique_id():
+		p.capture_entry_snapshot()
 
 
 @rpc("any_peer", "call_local")
@@ -2609,23 +2608,25 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	rpc("board_train_interior", theme_id, seed, new_level, peer_classes, saved_player_states)
 
 
-## Station annex (issue #2 Phase 4): server rolls every player back to
-## their level-entry snapshot. Each peer applies its own (the server can't
-## write fields on a client-owned player node directly); the forfeit RPCs go
-## out before the ride so the save 3.5s later captures the rolled-back state.
+## Station annex (issue #2 Phase 4): on an early departure every player
+## rolls back to their level-entry snapshot. Issue #134: the rollback
+## target is each peer's OWN capture (Player.capture_entry_snapshot) —
+## the server sends a bare signal and never authors state for another
+## peer (its replica capture was a fabricated fresh spawn). The signal
+## goes out before the ride so the save 3.5s later records the
+## rolled-back state.
 func _apply_forfeits() -> void:
 	var holders := get_node_or_null("Players")
 	if holders == null:
 		return
 	for child in holders.get_children():
-		var pid := int(child.get_multiplayer_authority())
-		if not _entry_snapshots.has(pid) or not child.has_method("apply_forfeit"):
+		if not child.has_method("apply_forfeit_local"):
 			continue
-		var snap: Dictionary = _entry_snapshots[pid]
+		var pid := int(child.get_multiplayer_authority())
 		if pid == multiplayer.get_unique_id():
-			child.apply_forfeit(snap)
+			child.apply_forfeit_local()
 		else:
-			child.rpc_id(pid, "apply_forfeit_net", snap)
+			child.rpc_id(pid, "apply_forfeit_net")
 
 
 ## Boarding spots near the train doors (global), one per connected player.
