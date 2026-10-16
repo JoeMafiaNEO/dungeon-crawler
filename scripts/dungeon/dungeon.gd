@@ -299,6 +299,11 @@ var _keys_found := 0
 ## victory, or market gate unlocked). Departing before this forfeits the
 ## level's gains.
 var level_cleared := false
+## Endless themes (Jesse 2026-10-15): set when the final-wave clear
+## sequence (loot shower + key scatter) has fired. It fires exactly
+## once per level instance; on an endless theme the host may then keep
+## starting waves, and their clears cycle INTERMISSION like waves 1-4.
+var _clear_sequence_done := false
 ## Issue #134: entry snapshots live on each player (peer-captured —
 ## see Player.capture_entry_snapshot). The server keeps none: its node
 ## for a remote peer is a replica and cannot author that peer's state.
@@ -2061,7 +2066,10 @@ func request_next_wave() -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
-	if wave_state == WaveState.INTERMISSION:
+	# Endless themes (Jesse 2026-10-15): the host may also start the
+	# next wave from the CLEARED state — continuing past the final wave
+	# while the key hunt (keys already scattered) runs its course.
+	if wave_state == WaveState.INTERMISSION or (wave_state == WaveState.CLEARED and _endless_waves()):
 		_start_wave()
 	_push_wave_info()
 	rpc_unreliable_wave()
@@ -2112,6 +2120,12 @@ func record_apex_kill(apex_mob_id: String) -> void:
 		AudioManager.sfx("unlock")
 
 
+## Jesse 2026-10-15: only themes that opt in (Misty Docks) continue
+## past the final wave; every other theme's wave flow is unchanged.
+func _endless_waves() -> bool:
+	return theme != null and theme.endless_waves
+
+
 func _wave_cleared() -> void:
 	# Issue #102 Phase 3: crops grow per wave cleared (host only). Plots
 	# exist on every peer; the server advances them, states sync via RPC.
@@ -2132,7 +2146,14 @@ func _wave_cleared() -> void:
 					pnode.on_wave_cleared()
 				else:
 					pnode.rpc_id(auth, "on_wave_cleared")
-	if wave >= TOTAL_WAVES:
+	# The clear sequence fires exactly once, at the first final-wave
+	# clear (Jesse 2026-10-15). On an endless theme the host can then
+	# start waves past the final one; those clears fall through to the
+	# INTERMISSION branch below like any other wave — no re-shower, no
+	# key re-scatter, no _keys_found reset. (Non-endless themes can
+	# never reach this branch twice: CLEARED locks their wave flow.)
+	if wave >= TOTAL_WAVES and not _clear_sequence_done:
+		_clear_sequence_done = true
 		wave_state = WaveState.CLEARED
 		_shower_loot()
 		if is_apex:
@@ -2254,7 +2275,10 @@ func _wave_progress_made(delta: float) -> bool:
 
 func _push_wave_info() -> void:
 	wave_info["wave"] = wave
-	wave_info["total"] = TOTAL_WAVES
+	# Endless themes report total 0 ("no final wave"): the HUD renders
+	# the bare "Wave N" form and offers the host a next-wave button in
+	# the CLEARED state; peers derive both from this same snapshot.
+	wave_info["total"] = 0 if _endless_waves() else TOTAL_WAVES
 	wave_info["level"] = level_number
 	wave_info["theme_name"] = theme.display_name
 	wave_info["theme_id"] = theme.theme_id

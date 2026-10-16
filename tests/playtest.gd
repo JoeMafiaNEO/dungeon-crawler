@@ -106,6 +106,7 @@ func _run() -> void:
 	_test_specials_phase1()
 	_test_specials_phase2()
 	_test_wave_stall_watchdog()
+	_test_endless_waves()
 	_test_eagle_eye_warlord_hide()
 	_test_issue18_ui_fixes()
 	_test_fireball_fuse()
@@ -7740,6 +7741,149 @@ func _test_wave_stall_watchdog() -> void:
 	d.free()
 	print("[Playtest] wave stall watchdog done")
 	print("[Playtest] wave stall watchdog done")
+
+
+## Fabricates a bare dungeon instance for the endless-waves tests:
+## mock theme + real generated layout + a $Mobs holder, NOT added to
+## the tree (rpc spawn calls drop harmlessly off-tree, exactly like
+## the wave stall watchdog harness above).
+func _endless_test_dungeon(endless: bool):
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var d = DungeonScript.new()
+	var mobs := Node3D.new()
+	mobs.name = "Mobs"
+	d.add_child(mobs)
+	var th := LevelTheme.new()
+	th.display_name = "Endless Test"
+	th.theme_id = "misty_docks"
+	th.puzzle_key_count = 2
+	th.endless_waves = endless
+	d.set("theme", th)
+	d.set("_layout", ProcGen.generate(th, 424242))
+	return d
+
+
+func _test_endless_waves() -> void:
+	print("[Playtest] Endless waves past the optional clear (Jesse 2026-10-15)...")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	var tsrc := FileAccess.get_file_as_string("res://scripts/procgen/level_theme.gd")
+
+	# --- Scoping: the opt-in export exists; only Misty Docks takes it.
+	_assert(tsrc.contains("@export var endless_waves"),
+		"endless: LevelTheme opt-in export exists")
+	_assert(dsrc.contains("theme.endless_waves"),
+		"endless: dungeon consults the theme flag")
+	for other in ["village", "dungeon", "depths", "apex", "supermarket", "warlord"]:
+		var t = load("res://data/levels/theme_%s.tres" % other)
+		_assert(t != null and not bool(t.get("endless_waves")),
+			"endless: %s does not opt in" % other)
+	var docks = load("res://data/levels/theme_misty_docks.tres")
+	_assert(docks != null and bool(docks.get("endless_waves")),
+		"endless: Misty Docks opts in")
+
+	# --- Gate pins (source): CLEARED continuation, once-only sequence,
+	# HUD offer in the endless CLEARED state, save/restore wave chain.
+	_assert(dsrc.contains("wave_state == WaveState.CLEARED and _endless_waves()"),
+		"endless: CLEARED continuation gated on the flag")
+	_assert(dsrc.contains("not _clear_sequence_done"),
+		"endless: clear-sequence once-gate present")
+	_assert(dsrc.contains("wave = next_wave"),
+		"endless: re-host restores the saved wave")
+	_assert(hsrc.contains("snap[\"wave\"] = w"),
+		"endless: departure snapshot stores the wave")
+	_assert(hsrc.contains("state == 2 and int(info.get(\"total\", 5)) <= 0"),
+		"endless: HUD offers next-wave in CLEARED when total is 0")
+
+	# --- The clear sequence fires at wave 5 (endless): CLEARED + keys.
+	var d = _endless_test_dungeon(true)
+	d.set("wave", 5)
+	d.set("wave_state", 1)  # ACTIVE
+	d.call("_wave_cleared")
+	_assert(int(d.get("wave_state")) == 2,
+		"endless: wave-5 clear enters CLEARED")
+	_assert(int(d.get("_keys_needed")) == 2 and int(d.get("_keys_found")) == 0,
+		"endless: wave-5 clear scatters the key hunt")
+	_assert(bool(d.get("_clear_sequence_done")),
+		"endless: clear sequence marked done at wave 5")
+
+	# --- Waves 6+ cycle INTERMISSION; the sequence never re-fires and
+	# the key hunt state is untouched (one key banked mid-hunt).
+	d.set("_keys_found", 1)
+	d.set("wave", 6)
+	d.set("wave_state", 1)  # ACTIVE
+	d.call("_wave_cleared")
+	_assert(int(d.get("wave_state")) == 0,
+		"endless: wave-6 clear cycles to INTERMISSION")
+	_assert(int(d.get("_keys_found")) == 1 and int(d.get("_keys_needed")) == 2,
+		"endless: wave-6 clear leaves the key hunt untouched")
+	d.set("wave", 7)
+	d.set("wave_state", 1)  # ACTIVE
+	d.call("_wave_cleared")
+	_assert(int(d.get("wave_state")) == 0,
+		"endless: wave-7 clear cycles to INTERMISSION")
+
+	# --- Snapshot: wave rides unclamped past 5; total reads 0 (the
+	# no-final-wave signal the HUD label + button derive from).
+	d.set("wave", 7)
+	d.call("_push_wave_info")
+	var info: Dictionary = d.get("wave_info")
+	_assert(int(info.get("wave")) == 7,
+		"endless: snapshot wave unclamped at 7 (re-host arithmetic)")
+	_assert(int(info.get("total")) == 0,
+		"endless: snapshot total is 0 (no final wave)")
+	d.free()
+
+	# --- Non-endless snapshot keeps the classic total.
+	var d2 = _endless_test_dungeon(false)
+	d2.set("wave", 3)
+	d2.call("_push_wave_info")
+	_assert(int((d2.get("wave_info") as Dictionary).get("total")) == 5,
+		"endless: non-endless snapshot total stays TOTAL_WAVES")
+	d2.free()
+
+	# --- Continuation unlock, behavioral (in-tree so multiplayer
+	# resolves; state hand-set to CLEARED so no spawn cascade runs).
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	for endless in [true, false]:
+		var host_node := Node3D.new()
+		root.add_child(host_node)
+		host_node.set_script(DungeonScript)
+		var hmobs := Node3D.new()
+		hmobs.name = "Mobs"
+		host_node.add_child(hmobs)
+		var th := LevelTheme.new()
+		th.display_name = "Endless Test"
+		th.theme_id = "misty_docks"
+		th.puzzle_key_count = 2
+		th.endless_waves = endless
+		host_node.set("theme", th)
+		var director = load("res://scripts/systems/ai_director.gd").new()
+		director.set_allowed_mobs(["goblin", "skeleton", "bat"])
+		host_node.set("_director", director)
+		host_node.set("wave", 5)
+		host_node.set("wave_state", 2)  # CLEARED
+		host_node.set("_clear_sequence_done", true)
+		host_node.call("request_next_wave")
+		if endless:
+			_assert(int(host_node.get("wave")) == 6,
+				"endless: host starts wave 6 from CLEARED")
+			_assert(int(host_node.get("wave_state")) == 1,
+				"endless: wave 6 is ACTIVE")
+			_assert(int(host_node.get("mobs_to_spawn")) > 0,
+				"endless: wave 6 composed by the AI Director")
+			_assert(int(host_node.get("mobs_to_spawn")) == (host_node.get("_wave_composition") as Array).size(),
+				"endless: wave-6 spawn count matches the director composition")
+			_assert(int(director.get("wave_number")) == 6,
+				"endless: director was started at wave 6")
+		else:
+			_assert(int(host_node.get("wave")) == 5,
+				"endless: non-endless CLEARED stays locked at wave 5 (negative)")
+			_assert(int(host_node.get("wave_state")) == 2,
+				"endless: non-endless CLEARED state unchanged (negative)")
+		host_node.free()
+		director.free()
+	print("[Playtest] endless waves done")
 
 
 func _test_eagle_eye_warlord_hide() -> void:

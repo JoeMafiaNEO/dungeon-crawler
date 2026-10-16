@@ -35,6 +35,7 @@ dmg_scale = 1.0
 puzzle_key_count = 2
 maze_walls = false
 boss_id = ""
+endless_waves = true
 has_fishing_water = true
 has_farm_plots = true
 use_heightmap_terrain = true

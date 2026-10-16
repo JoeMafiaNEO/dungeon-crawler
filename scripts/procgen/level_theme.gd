@@ -48,6 +48,14 @@ extends Resource
 @export var dmg_scale: float = 1.0
 ## Boss spawned on the final wave of this theme ("" = none).
 @export var boss_id: String = ""
+## Jesse 2026-10-15 (Misty Docks only): the wave flow does not end at
+## the final wave. The clear sequence (loot shower + key scatter) still
+## fires exactly once when the final wave is cleared, but the host may
+## then keep starting waves — they cycle intermission -> active like
+## waves 1-4, composed by the AI Director on its normal scaling curve,
+## while the scattered keys remain collectable. Every other theme
+## leaves this false and ends its wave flow at the final wave.
+@export var endless_waves: bool = false
 
 # --- Puzzle ---
 ## After the final wave this many keys scatter in the level; finding them

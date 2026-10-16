@@ -2060,7 +2060,13 @@ func set_wave(info: Dictionary) -> void:
 	if is_warlord:
 		%MarketLabel.visible = false
 		return
-	%WaveLabel.text = "Lv %d · %s%s · Wave %d/%d" % [level, str(info.get("theme_name", "")), cycle_str, int(info.get("wave", 0)), int(info.get("total", 5))]
+	var wave_num := int(info.get("wave", 0))
+	var wave_total := int(info.get("total", 5))
+	if wave_total > 0:
+		%WaveLabel.text = "Lv %d · %s%s · Wave %d/%d" % [level, str(info.get("theme_name", "")), cycle_str, wave_num, wave_total]
+	else:
+		# Endless theme (Jesse 2026-10-15): no final wave to count toward.
+		%WaveLabel.text = "Lv %d · %s%s · Wave %d" % [level, str(info.get("theme_name", "")), cycle_str, wave_num]
 	# Supermarket mode: show cash instead of waves.
 	var is_market := str(info.get("theme_id", "")) == "supermarket"
 	%MarketLabel.visible = is_market
@@ -2069,10 +2075,12 @@ func set_wave(info: Dictionary) -> void:
 		%WaveStatus.text = "Walk through CHECKOUT to sell loot and unlock the gate!"
 		%NextWaveButton.visible = false
 		return
-	# Host-only Next Wave button during intermission.
+	# Host-only Next Wave button during intermission. State 2 with
+	# total 0 is an endless theme's CLEARED state (Jesse 2026-10-15):
+	# the host may continue past the final wave there too.
 	var is_host := multiplayer.is_server()
 	# Issue #62: hide the wave button during boarding — it does nothing there.
-	%NextWaveButton.visible = is_host and state == 0 and not _boarding_active
+	%NextWaveButton.visible = is_host and (state == 0 or (state == 2 and int(info.get("total", 5)) <= 0)) and not _boarding_active
 	match state:
 		0: # intermission
 			# Issue #60: the "Press R to begin wave" hint is redundant with the
