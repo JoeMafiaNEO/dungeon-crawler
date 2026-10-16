@@ -4787,6 +4787,17 @@ func dispose_item(index: int) -> void:
 		if hud != null:
 			hud.toast("Unequip first.")
 		return
+	# Issue #146 (Jesse's tracker-20 ruling): where no dungeon pickup
+	# path exists in this scene (the train station), disposing is
+	# BLOCKED outright — no station pickup path is built, and the
+	# item stays in the player's inventory. In-level disposal is the
+	# #142 drop below. (The #136 audit hook sits past this block: a
+	# blocked attempt disposes nothing, so it is not a disposal.)
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null:
+		if hud != null:
+			hud.toast("Can't dispose here.")
+		return
 	_audit_inventory("dispose_item", item.id, int(entry["count"]), index, _entry_equipped_slot(entry))
 	# Issue #142: disposing drops the stack in the world as a pickup
 	# (spawned through the dungeon's path — all peers see it, late
@@ -4795,23 +4806,17 @@ func dispose_item(index: int) -> void:
 	# The Architect's tools drop like any other item (Jesse's ruling:
 	# world items are never persisted, so the #113 run-start re-grant
 	# — which works from saved state — has no duplication path here).
-	# Where no dungeon pickup path exists in the scene (e.g. the
-	# station), dispose destroys as before.
-	var dropped := false
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon != null:
-		var base := ItemDB.get_item(item.id)
-		var mult := 1.0
-		if base != null and base.sell_value > 0 and item.sell_value != base.sell_value:
-			mult = float(item.sell_value) / float(base.sell_value)
-		var drop_pos := global_position - global_transform.basis.z * 0.9
-		dungeon.rpc("spawn_pickup", item.id, drop_pos, mult, int(entry["count"]))
-		dropped = true
+	var base := ItemDB.get_item(item.id)
+	var mult := 1.0
+	if base != null and base.sell_value > 0 and item.sell_value != base.sell_value:
+		mult = float(item.sell_value) / float(base.sell_value)
+	var drop_pos := global_position - global_transform.basis.z * 0.9
+	dungeon.rpc("spawn_pickup", item.id, drop_pos, mult, int(entry["count"]))
 	inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
 	if hud != null:
-		hud.toast(("Dropped: %s x%d" if dropped else "Disposed: %s x%d") % [item.display_name, int(entry["count"])])
+		hud.toast("Dropped: %s x%d" % [item.display_name, int(entry["count"])])
 		hud.refresh_inventory(self)
 		hud.refresh_loadout(self)
 

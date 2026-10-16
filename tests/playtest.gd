@@ -175,6 +175,7 @@ func _run() -> void:
 	_test_level_label_140()
 	_test_pickup_claims_142()
 	_test_makewhole_142()
+	_test_station_dispose_146()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -10171,6 +10172,7 @@ func _test_popup_open_flags() -> void:
 
 
 func _test_equip_system_phase1() -> void:
+	_ensure_dungeon_stub() # #146: these rigs model in-level play (a dungeon pickup path exists)
 	print("[Playtest] Equipment system phase 1 (issue #104)...")
 	var ItemDBNode: Variant = root.get_node("ItemDB")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
@@ -10478,6 +10480,7 @@ func _test_mp_save_c1_fix() -> void:
 
 
 func _test_character_panel_phase2() -> void:
+	_ensure_dungeon_stub() # #146: these rigs model in-level play (a dungeon pickup path exists)
 	print("[Playtest] Character panel phase 2 (issue #104)...")
 	var ItemDBNode: Variant = root.get_node("ItemDB")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
@@ -10610,6 +10613,7 @@ func _test_character_panel_phase2() -> void:
 ## #136 fix/closure); the panel pins lock the characterization result —
 ## the double-click equip paths cannot delete a stack.
 func _test_inventory_audit_136() -> void:
+	_ensure_dungeon_stub() # #146: these rigs model in-level play (a dungeon pickup path exists)
 	print("[Playtest] Inventory audit trap (issue #136)...")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
 	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
@@ -11216,6 +11220,84 @@ func _test_makewhole_142() -> void:
 	print("[Playtest] Make-whole flows done")
 
 
+## Issue #146: recording stand-in for the dungeon's pickup path —
+## dispose must route its drop here when a dungeon is present.
+class _DungeonStub146:
+	extends Node
+	var spawns: Array = []
+
+	@rpc("any_peer", "call_local")
+	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
+		spawns.append([item_id, count])
+
+
+## Issue #146: sections modeling IN-LEVEL play need a dungeon
+## pickup path in the tree — dispose is blocked without one (the
+## station rule). No-op when a dungeon is already present.
+func _ensure_dungeon_stub() -> void:
+	if get_first_node_in_group("dungeon") != null:
+		return
+	var stub := _DungeonStub146.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+
+
+## Issue #146 (Jesse's tracker-20 ruling): disposing in the station
+## (no dungeon pickup path in the scene) is BLOCKED — the item stays
+## in the inventory, byte-identical. In-level, the #142 drop stands.
+func _test_station_dispose_146() -> void:
+	print("[Playtest] Station dispose block (issue #146)...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var di_body := _body_of(psrc, "func dispose_item(")
+	_assert(di_body.contains("Can't dispose here."),
+		"146: the station block refuses with a toast")
+	_assert(di_body.find("dungeon == null") < di_body.find("inventory.remove_at")
+		and di_body.find("dungeon == null") < di_body.find("_audit_inventory"),
+		"146: the block returns before any removal or disposal audit")
+	var idb = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder3 := Node3D.new()
+	root.add_child(holder3)
+	current_scene = holder3
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "mage")
+	holder3.add_child(p)
+	p.set("inventory", [
+		{"item": idb.get_item("health_potion"), "count": 3, "equipped_slot": ""},
+		{"item": idb.get_item("apprentice_staff"), "count": 1, "equipped_slot": ""}])
+	var snap := func() -> Array:
+		var out: Array = []
+		for e in p.get("inventory"):
+			out.append("%s:%d:%s" % [str((e["item"] as Resource).get("id")), int(e["count"]), str(e["equipped_slot"])])
+		return out
+	var before: Array = snap.call()
+	# Station context: no node in the "dungeon" group.
+	var ambient: Array = get_nodes_in_group("dungeon")
+	for n in ambient:
+		n.remove_from_group("dungeon")
+	p.call("dispose_item", 0)
+	_assert(snap.call() == before, "146: station dispose leaves the inventory byte-identical")
+	for n in ambient:
+		n.add_to_group("dungeon")
+	# In-level context: the #142 drop stands, through the dungeon
+	# path. My stub is the SOLE dungeon-group member for this half
+	# (an earlier section's stub may already be parked in the tree).
+	var stub := _DungeonStub146.new()
+	root.add_child(stub)
+	for n in ambient:
+		n.remove_from_group("dungeon")
+	stub.add_to_group("dungeon")
+	p.call("dispose_item", 0)
+	_assert(p.get("inventory").size() == 1, "146: in-level dispose still removes the stack")
+	_assert(stub.spawns == [["health_potion", 3]],
+		"146: in-level dispose drops the whole stack through the dungeon path")
+	stub.remove_from_group("dungeon")
+	for n in ambient:
+		n.add_to_group("dungeon")
+	p.set("hud", null)
+	print("[Playtest] Station dispose block done")
+
+
 ## Issue #132: the Host menu's Lobby tab must show what Host will
 ## actually create for the selected save. A legacy save (no visibility
 ## key) continues FriendsOnly at its stored cap per M-5, but the tab
@@ -11427,6 +11509,7 @@ func _test_inventory_pause_screen() -> void:
 
 
 func _test_fishing_rod_phase3() -> void:
+	_ensure_dungeon_stub() # #146: these rigs model in-level play (a dungeon pickup path exists)
 	print("[Playtest] Fishing rod + rod-out + director casting (issues #104 P3 / #126 P1+P2)...")
 	var ItemDBNode: Variant = root.get_node("ItemDB")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
