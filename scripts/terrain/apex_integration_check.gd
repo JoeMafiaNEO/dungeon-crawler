@@ -93,8 +93,8 @@ func _run_checks() -> void:
 	var theme := _dungeon.theme
 	_check(theme != null and theme.use_heightmap_terrain, "apex theme flag use_heightmap_terrain on")
 	_check(_terrain != null, "heightmap terrain built instead of flat floor")
-	_check(_dungeon.get_node_or_null("Floor") == null, "no flat Floor node on terrain apex")
-	_check(_dungeon.get_node_or_null("TerrainDoorApron") != null, "doorway apron built")
+	_check(_dungeon.get_node_or_null("Arena/Floor") == null, "no flat Floor node on terrain apex")
+	_check(_dungeon.get_node_or_null("Arena/TerrainDoorApron") != null, "doorway apron built")
 	if _terrain == null:
 		return
 	# Profile actually carried from the theme (issue #122 params).

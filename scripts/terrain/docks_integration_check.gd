@@ -100,8 +100,8 @@ func _run_checks() -> void:
 	var warlord_theme := load("res://data/levels/theme_warlord.tres") as LevelTheme
 	_check(warlord_theme != null and not warlord_theme.use_heightmap_terrain, "warlord theme flag stays off")
 	_check(_terrain != null, "heightmap terrain built instead of flat floor")
-	_check(_dungeon.get_node_or_null("Floor") == null, "no flat Floor node on terrain docks")
-	_check(_dungeon.get_node_or_null("TerrainDoorApron") != null, "doorway apron built")
+	_check(_dungeon.get_node_or_null("Arena/Floor") == null, "no flat Floor node on terrain docks")
+	_check(_dungeon.get_node_or_null("Arena/TerrainDoorApron") != null, "doorway apron built")
 	if _terrain == null:
 		return
 	# Cycle-scaling path duplicates the theme; the flag must survive.

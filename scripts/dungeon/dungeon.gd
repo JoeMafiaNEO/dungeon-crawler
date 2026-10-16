@@ -207,6 +207,12 @@ var _bounty: BountySys = null
 var wave_info := {"wave": 0, "total": TOTAL_WAVES, "level": 1, "theme_name": "", "state": 0, "time_left": 8.0, "mobs_left": 0, "keys_found": 0, "keys_needed": 0}
 
 var _layout: LevelLayout
+## Issue #138 Phase 1: the static arena output of the build (terrain /
+## floor, walls, obstacles, props, torches, door apron) lives under this
+## ONE container so the bake tool can capture exactly the static set as
+## a pregenerated scene. Identity transform — global placement of every
+## arena node is unchanged. Dynamic systems never parent here.
+var _arena: Node3D = null
 ## Issue #103: heightmap terrain instance when the theme opts in via
 ## LevelTheme.use_heightmap_terrain. Null on every flat-floor theme,
 ## where ground_height_at() is the old constant 0.0.
@@ -2486,6 +2492,11 @@ func _build_arena_from_layout() -> void:
 		var holder := Node3D.new()
 		holder.name = holder_name
 		add_child(holder)
+	# Issue #138 Phase 1: static arena container (see _arena). Created
+	# before every static builder runs; the builders parent into it.
+	_arena = Node3D.new()
+	_arena.name = "Arena"
+	add_child(_arena)
 	_build_environment()
 	_annex_plan = StationAnnex.plan(next_seed, _layout)
 	if theme != null and theme.use_heightmap_terrain:
@@ -2871,9 +2882,19 @@ func _build_terrain() -> void:
 		_terrain.flatten_targets.append({
 			"pos": Vector3.ZERO, "height": NAN,
 			"radius": theme.terrain_center_flatten_radius})
-	add_child(_terrain)
+	_arena_add(_terrain)
 	_terrain.generate()
 	_build_door_apron(ax)
+
+
+## Issue #138 Phase 1: parent a static arena node into the Arena
+## container (falls back to the dungeon root if a builder ever runs
+## outside _build_arena_from_layout).
+func _arena_add(node: Node) -> void:
+	if _arena != null:
+		_arena.add_child(node)
+	else:
+		add_child(node)
 
 
 ## The flat floor always reached 3m past the north wall to meet the
@@ -2898,7 +2919,7 @@ func _build_door_apron(ax: float) -> void:
 	bm.material = _flat_mat(theme.ground_color.darkened(0.35))
 	mesh.mesh = bm
 	body.add_child(mesh)
-	add_child(body)
+	_arena_add(body)
 
 
 func _build_floor() -> void:
@@ -2917,7 +2938,7 @@ func _build_floor() -> void:
 	plane.material = TextureGen.textured_mat(TextureGen.floor_tex(theme.ground_color), size / 8.0)
 	mesh.mesh = plane
 	body.add_child(mesh)
-	add_child(body)
+	_arena_add(body)
 
 
 func _build_walls() -> void:
@@ -2963,7 +2984,7 @@ func _wall_box(center: Vector3, size: Vector3, mat: Material) -> void:
 	mesh.mesh = bm
 	body.add_child(mesh)
 	body.position = center
-	add_child(body)
+	_arena_add(body)
 
 
 func _build_obstacles() -> void:
@@ -2989,7 +3010,7 @@ func _build_obstacles() -> void:
 			body.add_child(col)
 			shape_count += 1
 	if shape_count > 0:
-		add_child(body)
+		_arena_add(body)
 	else:
 		body.queue_free()
 
@@ -3014,7 +3035,7 @@ func _build_props() -> void:
 			visual = PropBuilder.build(prop_type, float(p.get("scl", 1.0)), {"pos": pos})
 		visual.position = pos
 		visual.rotation.y = float(p.get("rot", 0.0))
-		add_child(visual)
+		_arena_add(visual)
 
 
 func _tint_prop(node: Node, color: Color) -> void:
@@ -3049,13 +3070,13 @@ func _build_torches() -> void:
 		# ground_height_at is 0.0 on flat themes — identical placement.
 		var base := Vector3(pos.x, ground_height_at(pos), pos.z)
 		torch.position = base
-		add_child(torch)
+		_arena_add(torch)
 		for child in torch.get_children():
 			if child is OmniLight3D:
 				_torch_lights.append(child)
 		var sparks := Effects.make_flame()
 		sparks.position = base + Vector3(0, 1.95, 0)
-		add_child(sparks)
+		_arena_add(sparks)
 
 
 # --- Issue #102: fishing + farm plots ---

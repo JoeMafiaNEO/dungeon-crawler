@@ -120,6 +120,26 @@ func heights_copy() -> PackedFloat32Array:
 	return _heights.duplicate()
 
 
+## Issue #138: rebuild the surface from a baked height array instead of
+## generating it. Pregenerated scenes whose scene file would bust the
+## size budget ship heights-as-data only (LevelData.heights); at load
+## the mesh / collision / water are regenerated from those heights by
+## this same single-sourced build code, so the surface is identical
+## to the generated one. The profile exports (amplitude, tints, water
+## level, ...) must already carry the theme's values — the baked
+## scene's terrain node serializes them from the bake run.
+func build_from_heights(baked: PackedFloat32Array, points: int, cell: float) -> void:
+	map_points = points
+	cell_size = cell
+	_heights = baked.duplicate()
+	_min_height = _heights[0] if not _heights.is_empty() else 0.0
+	for h in _heights:
+		_min_height = minf(_min_height, h)
+	_build_mesh()
+	_build_collision()
+	_build_water()
+
+
 func _sample_grid(x: int, z: int) -> float:
 	return _heights[clampi(z, 0, map_points - 1) * map_points + clampi(x, 0, map_points - 1)]
 

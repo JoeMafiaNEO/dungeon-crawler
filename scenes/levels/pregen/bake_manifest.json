@@ -1,0 +1,14 @@
+{
+	"scenes": {
+		"village": {
+			"bake_date": "2026-10-15",
+			"content_hash": "17346d494dccbee4f95ea257e71e3df14fc4a64380fec16f8bef04f83e4bf19a",
+			"scene_bytes": 1607326,
+			"scene_path": "res://scenes/levels/pregen/theme_village.tscn",
+			"seed": 1,
+			"terrain_mode": "mesh",
+			"theme_id": "village"
+		}
+	},
+	"version": 1
+}

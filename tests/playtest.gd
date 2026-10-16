@@ -77,6 +77,7 @@ func _run() -> void:
 	_test_train_disembark_fallback()
 	_test_train_dressing()
 	_test_cycle_scaling()
+	_test_bake_integrity()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -3519,6 +3520,129 @@ func _test_disconnect_mid_boarding() -> void:
 	st.queue_free()
 	st2.queue_free()
 	p1.queue_free()
+
+func _test_bake_integrity() -> void:
+	print("[Playtest] Pregenerated bake integrity (#138)...")
+	# All script access is load()-based: no static references to
+	# LevelData / StationAnnex / HeightmapTerrain in this script's
+	# compile chain (the hollow-suite rule).
+	var manifest_path := "res://scenes/levels/pregen/bake_manifest.json"
+	_assert(FileAccess.file_exists(manifest_path), "#138: bake manifest exists")
+	if not FileAccess.file_exists(manifest_path):
+		return
+	var manifest = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
+	_assert(manifest is Dictionary and (manifest as Dictionary).has("scenes"),
+		"#138: manifest parses with a scenes table")
+	if not (manifest is Dictionary):
+		return
+	var scenes: Dictionary = (manifest as Dictionary).get("scenes", {})
+	_assert(scenes.has("village"), "#138: manifest pins village")
+	if not scenes.has("village"):
+		return
+	var entry: Dictionary = scenes["village"]
+	var pin_seed := int(entry.get("seed", -1))
+	_assert(pin_seed == 1, "#138: village pinned seed is 1 (first clean candidate of the gate set)")
+	var scene_path := str(entry.get("scene_path", ""))
+	var ps: PackedScene = load(scene_path)
+	_assert(ps != null, "#138: baked village scene loads standalone")
+	if ps == null:
+		return
+	var inst = ps.instantiate()
+	var data = inst.get_node_or_null("LevelData")
+	_assert(data != null, "#138: baked scene carries a LevelData node")
+	_assert(inst.get_node_or_null("Arena") != null, "#138: baked scene carries the Arena subtree")
+	if data == null:
+		inst.free()
+		return
+	_assert(str(data.get("theme_id")) == "village", "#138: LevelData theme_id is village")
+	_assert(int(data.get("level_seed")) == pin_seed, "#138: LevelData seed == pinned seed")
+	_assert(str(data.get("content_hash")) == str(entry.get("content_hash")),
+		"#138: scene content_hash matches the manifest")
+	_assert(str(data.get("terrain_mode")) == "mesh",
+		"#138: village ships the full mesh capture (it fits the budget)")
+	var sf := FileAccess.open(scene_path, FileAccess.READ)
+	var scene_bytes := int(sf.get_length()) if sf != null else -1
+	_assert(scene_bytes > 0 and scene_bytes <= 2000000,
+		"#138: village scene is %d bytes (<= 2 MB budget)" % scene_bytes)
+	_assert(scene_bytes == int(entry.get("scene_bytes", -2)),
+		"#138: manifest scene_bytes matches the file on disk")
+	# LevelData completeness (spec Phase 1 validation): heights length
+	# == (extent+1)^2, spawns present, village ponds empty.
+	var extent := int(round(float(data.get("grid_size")) * float(data.get("cell_size"))))
+	var heights: PackedFloat32Array = data.get("heights")
+	_assert(heights.size() == (extent + 1) * (extent + 1),
+		"#138: heights length %d == (extent+1)^2 %d" % [heights.size(), (extent + 1) * (extent + 1)])
+	_assert(int(data.get("terrain_map_points")) == extent + 1,
+		"#138: terrain_map_points == extent+1")
+	var spawns: PackedVector3Array = data.get("player_spawns")
+	_assert(not spawns.is_empty(), "#138: LevelData carries player spawns")
+	var ponds: Array = data.get("ponds_data")
+	_assert(ponds.is_empty(), "#138: village ponds == []")
+	# Self-consistency: the stored hash recomputes from the stored data.
+	_assert(str(data.call("compute_content_hash")) == str(data.get("content_hash")),
+		"#138: recomputed hash == stored hash")
+	# Mesh mode freezes the terrain surface + collision into the scene.
+	var arena_node = inst.get_node_or_null("Arena")
+	var terr = arena_node.get_node_or_null("HeightmapTerrain") if arena_node != null else null
+	_assert(terr != null, "#138: Arena carries the HeightmapTerrain node")
+	_assert(terr != null and terr.get_node_or_null("TerrainMesh") != null,
+		"#138: mesh mode: terrain mesh frozen into the scene")
+	_assert(terr != null and terr.get_node_or_null("TerrainBody") != null,
+		"#138: mesh mode: terrain collision frozen into the scene")
+	# Reproducibility (spec 6b): a fresh generation from the pinned
+	# (theme, seed) reproduces the baked layout AND the baked heights
+	# byte-for-byte — procgen drift fails here until a deliberate
+	# re-bake updates the scene + manifest.
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	var regen = ProcGenScript.generate(theme, pin_seed)
+	_assert(regen != null, "#138: procgen regenerates the village layout")
+	var baked2 = data.call("to_layout")
+	_assert(baked2.fingerprint() == regen.fingerprint(),
+		"#138: baked layout == fresh procgen(pinned seed) layout")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var plan: Dictionary = AnnexScript.plan(pin_seed, regen)
+	var HT = load("res://scripts/terrain/heightmap_terrain.gd")
+	var t = HT.new()
+	root.add_child(t)
+	t.set("map_points", extent + 1)
+	t.set("cell_size", 1.0)
+	t.set("terrain_seed", pin_seed)
+	t.set("noise_frequency", float(theme.get("terrain_noise_frequency")))
+	t.set("amplitude", float(theme.get("terrain_amplitude")))
+	t.set("height_offset", float(theme.get("terrain_height_offset")))
+	t.set("water_level", float(theme.get("terrain_water_level")))
+	t.set("pond_depth", float(theme.get("terrain_pond_depth")))
+	t.set("smooth_passes", int(theme.get("terrain_smooth_passes")))
+	t.set("flatten_radius", float(theme.get("terrain_flatten_radius")))
+	var pois: Array[Vector3] = []
+	for s in regen.player_spawns:
+		pois.append(s)
+	for fp in regen.farm_plots:
+		pois.append(fp)
+	if not regen.player_spawns.is_empty():
+		pois.append(regen.player_spawns[0] + Vector3(3.0, 0.0, 0.0))
+	t.set("poi_points", pois)
+	var pond_specs: Array[Dictionary] = []
+	for pd in regen.ponds:
+		pond_specs.append({"center": pd["center"], "radius": float(pd["radius"])})
+	t.set("pond_specs", pond_specs)
+	var fts: Array[Dictionary] = []
+	fts.append({"pos": Vector3(float(plan.get("attach_x", 0.0)), 0.0, -regen.arena_half_size()),
+		"height": 0.0, "radius": 6.5})
+	if float(theme.get("terrain_center_flatten_radius")) > 0.0:
+		fts.append({"pos": Vector3.ZERO, "height": NAN,
+			"radius": float(theme.get("terrain_center_flatten_radius"))})
+	t.set("flatten_targets", fts)
+	t.generate()
+	var regen_heights: PackedFloat32Array = t.heights_copy()
+	var baked_heights: PackedFloat32Array = data.get("heights")
+	_assert(regen_heights.to_byte_array() == baked_heights.to_byte_array(),
+		"#138: re-generated heights == baked heights (byte-exact)")
+	root.remove_child(t)
+	t.free()
+	inst.free()
+
 
 func _test_cycle_scaling() -> void:
 	print("[Playtest] Cycle scaling...")

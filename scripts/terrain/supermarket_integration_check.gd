@@ -99,8 +99,8 @@ func _run_checks() -> void:
 	var theme := _dungeon.theme
 	_check(theme != null and theme.use_heightmap_terrain, "supermarket theme flag use_heightmap_terrain on")
 	_check(_terrain != null, "heightmap terrain built instead of flat floor")
-	_check(_dungeon.get_node_or_null("Floor") == null, "no flat Floor node on terrain supermarket")
-	_check(_dungeon.get_node_or_null("TerrainDoorApron") != null, "doorway apron built")
+	_check(_dungeon.get_node_or_null("Arena/Floor") == null, "no flat Floor node on terrain supermarket")
+	_check(_dungeon.get_node_or_null("Arena/TerrainDoorApron") != null, "doorway apron built")
 	if _terrain == null:
 		return
 	# Profile actually carried from the theme (issue #119 params).
@@ -317,7 +317,7 @@ func _check_door_flatness() -> void:
 ## (half the 3m box). Checked against the dungeon's own sampler.
 func _check_obstacle_seating() -> void:
 	var layout := _dungeon.get("_layout") as LevelLayout
-	var body := _dungeon.get_node_or_null("Obstacles")
+	var body := _dungeon.get_node_or_null("Arena/Obstacles")
 	_check(body != null, "obstacle collision body built")
 	if body == null:
 		return
