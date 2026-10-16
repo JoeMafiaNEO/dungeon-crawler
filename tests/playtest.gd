@@ -78,6 +78,7 @@ func _run() -> void:
 	_test_train_dressing()
 	_test_cycle_scaling()
 	_test_bake_integrity()
+	_test_baked_runtime()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -2731,7 +2732,10 @@ func _test_annex_departure() -> void:
 	_assert(hop_start > 0, "departure: board_train_interior rpc exists")
 	_assert(not dsrc.contains("func hop_to_next_level"),
 		"departure: old direct hop rpc removed")
-	var hop := dsrc.substr(hop_start, 2200)
+	# Window widened 2200 -> 2850 for #138 Phase 2: board_train_interior
+	# grew a content-hash handshake block at its head; every pin below
+	# still reads the same function body.
+	var hop := dsrc.substr(hop_start, 2850)
 	_assert(hop.contains("saved_player_state = me.get_state()"), "boarding: captures player state")
 	_assert(hop.contains("Dungeon.next_theme_id = theme_id"), "boarding: sets next theme")
 	_assert(hop.contains("Dungeon.next_seed = new_seed"), "boarding: sets next seed")
@@ -3645,6 +3649,115 @@ func _test_bake_integrity() -> void:
 	root.remove_child(t)
 	t.free()
 	inst.free()
+
+
+func _test_baked_runtime() -> void:
+	print("[Playtest] Baked runtime path (#138 Phase 2)...")
+	# Load()-based access only (hollow-suite rule): Dungeon statics,
+	# LevelData statics, ProcGen — no new static refs in this script.
+	var DungeonScript: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	var LevelDataScript: GDScript = load("res://scripts/procgen/level_data.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var manifest = JSON.parse_string(FileAccess.get_file_as_string(
+		"res://scenes/levels/pregen/bake_manifest.json"))
+	var man_hash := ""
+	if manifest is Dictionary:
+		man_hash = str((manifest as Dictionary).get("scenes", {}).get("village", {}).get("content_hash", ""))
+	# --- Selection matrix (spec section 5 as amended) ---
+	_assert(bool(DungeonScript.select_baked("village", 1, 1)),
+		"#138P2: cycle-1 village at the pinned seed selects baked")
+	_assert(not bool(DungeonScript.select_baked("village", 3, 424242)),
+		"#138P2: cycle-1 village at an arbitrary seed falls back to procgen (continued pre-existing save)")
+	_assert(not bool(DungeonScript.select_baked("village", 6, 1)),
+		"#138P2: cycle-2 village never selects baked, even at the pinned seed")
+	_assert(not bool(DungeonScript.select_baked("dungeon", 2, 1)),
+		"#138P2: an unbaked theme never selects baked")
+	# --- Fresh-entry seed forcing ---
+	_assert(int(DungeonScript.fresh_seed_for("village", 1, 999)) == 1,
+		"#138P2: fresh village entry forces the pinned seed")
+	_assert(int(DungeonScript.fresh_seed_for("village", 5, 999)) == 1,
+		"#138P2: fresh level-5 village-lineage entry forces the pin")
+	_assert(int(DungeonScript.fresh_seed_for("village", 6, 999)) == 999,
+		"#138P2: cycle-2 entry keeps its rolled seed")
+	_assert(int(DungeonScript.fresh_seed_for("dungeon", 2, 999)) == 999,
+		"#138P2: unbaked theme entry keeps its rolled seed")
+	# --- Expected handshake hash ---
+	_assert(str(DungeonScript.expected_baked_hash("village", 1, 1)) == man_hash,
+		"#138P2: expected hash at the pin == manifest hash")
+	_assert(str(DungeonScript.expected_baked_hash("village", 1, 424242)) == "",
+		"#138P2: procgen-fallback level carries no hash")
+	_assert(str(DungeonScript.expected_baked_hash("village", 6, 1)) == "",
+		"#138P2: cycle-2 level carries no hash")
+	# --- LevelData manifest/shipped accessors ---
+	_assert(int(LevelDataScript.pinned_seed("village")) == 1, "#138P2: pinned_seed(village) == 1")
+	_assert(str(LevelDataScript.baked_scene_path("village")).ends_with("theme_village.tscn"),
+		"#138P2: baked_scene_path(village) names the shipped scene")
+	_assert(str(LevelDataScript.shipped_hash("village")) == man_hash,
+		"#138P2: shipped_hash reads the artifact's LevelData, matches manifest")
+	_assert(str(LevelDataScript.shipped_hash("dungeon")) == "",
+		"#138P2: shipped_hash of an unbaked theme is empty")
+	# --- Source pins: the handshake + forcing are wired ---
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("baked_version_mismatch"), "#138P2: NetworkManager carries the mismatch signal")
+	_assert(nsrc.contains('rpc("load_dungeon", "village", seed, 1, baked_hash)'),
+		"#138P2: start_game sends seed + hash in load_dungeon")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("seed = fresh_seed_for(theme_id, new_level, seed)"),
+		"#138P2: departure hop forces the destination pin")
+	_assert(dsrc.contains("expected_baked_hash(theme_id, new_level, seed)"),
+		"#138P2: boarding payload carries the destination hash")
+	# --- Real dungeon boots: baked at the pin, procgen off it ---
+	var theme_v: Resource = load("res://data/levels/theme_village.tres")
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_state: Dictionary = DungeonScript.saved_player_state
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	DungeonScript.next_theme_id = "village"
+	DungeonScript.next_seed = 1
+	DungeonScript.next_level_number = 1
+	DungeonScript.saved_player_state = {}
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	_assert(str(dgn.get("_baked_hash")) == man_hash,
+		"#138P2: dungeon at the pin loads baked (hash set)")
+	var blayout = dgn.get("_layout")
+	var shipped = (load(str(LevelDataScript.baked_scene_path("village"))) as PackedScene).instantiate()
+	var sdata = shipped.get_node_or_null("LevelData")
+	_assert(blayout != null and sdata != null and blayout.fingerprint() == sdata.call("to_layout").fingerprint(),
+		"#138P2: baked boot layout == shipped LevelData layout")
+	shipped.free()
+	var terr = dgn.get("_terrain")
+	_assert(terr != null, "#138P2: baked boot binds the terrain")
+	if terr != null:
+		var d2 = (load(str(LevelDataScript.baked_scene_path("village"))) as PackedScene).instantiate()
+		var dh: PackedFloat32Array = d2.get_node_or_null("LevelData").get("heights")
+		d2.free()
+		var th: PackedFloat32Array = terr.heights_copy()
+		_assert(th.to_byte_array() == dh.to_byte_array(),
+			"#138P2: baked boot terrain query heights == shipped heights (byte-exact)")
+	_assert(dgn.get_node_or_null("LevelData") != null,
+		"#138P2: adopted LevelData rides under the baked dungeon")
+	_assert(dgn.get_node_or_null("Arena/HeightmapTerrain/TerrainMesh") != null,
+		"#138P2: adopted Arena carries the frozen terrain mesh")
+	root.remove_child(dgn)
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	DungeonScript.next_seed = 424242
+	var dgn2 = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn2)
+	_assert(str(dgn2.get("_baked_hash")) == "",
+		"#138P2: dungeon off the pin stays procgen (no baked hash)")
+	var regen = ProcGenScript.generate(theme_v, 424242)
+	_assert(dgn2.get("_layout") != null and dgn2.get("_layout").fingerprint() == regen.fingerprint(),
+		"#138P2: procgen boot layout == fresh ProcGen(424242) layout (pre-existing-save fixture)")
+	root.remove_child(dgn2)
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_state
+	print("[Playtest] Baked runtime path done")
 
 
 func _test_cycle_scaling() -> void:

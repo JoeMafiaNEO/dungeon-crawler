@@ -38,6 +38,65 @@ extends Node3D
 @export var terrain_cell_size: float = 1.0
 
 
+## --- Bake manifest access (issue #138 Phase 2) ---
+## The manifest the bake tool writes next to the scenes is the single
+## runtime source for which themes are baked and their pins. Read
+## once, cached in a static. Missing/corrupt manifest = no baked
+## themes (pure procgen game, exactly the pre-#138 behavior).
+
+const MANIFEST_PATH := "res://scenes/levels/pregen/bake_manifest.json"
+const PREGEN_DIR := "res://scenes/levels/pregen"
+
+static var _manifest_cache: Dictionary = {}
+static var _manifest_read := false
+static var _shipped_hash_cache: Dictionary = {}
+
+
+static func manifest_entry(theme_id: String) -> Dictionary:
+	if not _manifest_read:
+		_manifest_read = true
+		if FileAccess.file_exists(MANIFEST_PATH):
+			var parsed = JSON.parse_string(FileAccess.get_file_as_string(MANIFEST_PATH))
+			if parsed is Dictionary:
+				_manifest_cache = parsed
+	var scenes: Dictionary = _manifest_cache.get("scenes", {})
+	var entry = scenes.get(theme_id, {})
+	return entry if entry is Dictionary else {}
+
+
+static func baked_scene_path(theme_id: String) -> String:
+	var entry := manifest_entry(theme_id)
+	return str(entry.get("scene_path", ""))
+
+
+static func pinned_seed(theme_id: String) -> int:
+	var entry := manifest_entry(theme_id)
+	if entry.is_empty():
+		return -1
+	return int(entry.get("seed", -1))
+
+
+## The content hash of the baked scene THIS build ships for a theme
+## ("" = no baked scene). Read from the shipped scene's LevelData —
+## not the manifest — because the MP handshake must verify the actual
+## artifact a peer would load, and cached after the first read.
+static func shipped_hash(theme_id: String) -> String:
+	if _shipped_hash_cache.has(theme_id):
+		return str(_shipped_hash_cache[theme_id])
+	var result := ""
+	var path := baked_scene_path(theme_id)
+	if path != "" and ResourceLoader.exists(path):
+		var ps := load(path) as PackedScene
+		if ps != null:
+			var inst = ps.instantiate()
+			var data = inst.get_node_or_null("LevelData")
+			if data != null:
+				result = str(data.get("content_hash"))
+			inst.free()
+	_shipped_hash_cache[theme_id] = result
+	return result
+
+
 static func _pack_vec3s(list: Array[Vector3]) -> PackedVector3Array:
 	var out := PackedVector3Array()
 	for v in list:

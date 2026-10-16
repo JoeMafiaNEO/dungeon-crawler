@@ -72,6 +72,7 @@ func _ready() -> void:
 	# Issue #133: a guest whose host vanished gets the session-lost
 	# notice (NetworkManager detects; the HUD presents).
 	NetworkManager.session_lost.connect(_on_session_lost)
+	NetworkManager.baked_version_mismatch.connect(_on_baked_version_mismatch)
 	_build_character_panel()
 	_build_pause_tabs()
 	_build_bounty_tracker()
@@ -1447,6 +1448,29 @@ func _on_quit_pressed() -> void:
 ## an honest notice whose only action runs the pause menu's own Quit
 ## path (_on_quit_pressed): shared leave_lobby() teardown and scene
 ## return, so the abrupt exit and the graceful exit are one code path.
+## Issue #138 Phase 2: a train boarding named a baked-scene hash
+## this build doesn't ship — the hop was refused before the scene
+## changed. Same honest-exit shape as session loss: explain, and
+## the only way out is the menu.
+func _on_baked_version_mismatch(message: String) -> void:
+	if _session_lost_dialog != null:
+		return
+	hide_pause()
+	hide_death_screen()
+	hide_downed()
+	force_close_inventory()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "Version Mismatch"
+	dialog.dialog_text = message + "\nThis run cannot continue on your build."
+	dialog.ok_button_text = "Return to Menu"
+	dialog.get_cancel_button().hide()
+	add_child(dialog)
+	_session_lost_dialog = dialog
+	dialog.confirmed.connect(_on_quit_pressed)
+	dialog.popup_centered()
+
+
 func _on_session_lost() -> void:
 	if _session_lost_dialog != null:
 		return

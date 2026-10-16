@@ -128,6 +128,18 @@ func heights_copy() -> PackedFloat32Array:
 ## to the generated one. The profile exports (amplitude, tints, water
 ## level, ...) must already carry the theme's values — the baked
 ## scene's terrain node serializes them from the bake run.
+## Issue #138 Phase 2: adopt a baked height array as this terrain's
+## query data WITHOUT rebuilding the surface — the mesh-mode baked
+## scene already froze mesh + collision into the scene; only the
+## (non-serialized) height array needs restoring so
+## get_ground_height() answers identically to the generation run.
+func load_heights(baked: PackedFloat32Array) -> void:
+	_heights = baked.duplicate()
+	_min_height = _heights[0] if not _heights.is_empty() else 0.0
+	for h in _heights:
+		_min_height = minf(_min_height, h)
+
+
 func build_from_heights(baked: PackedFloat32Array, points: int, cell: float) -> void:
 	map_points = points
 	cell_size = cell

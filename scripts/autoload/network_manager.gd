@@ -14,6 +14,11 @@ signal connection_failed(reason: String)
 ## by _note_session_lost; the in-world HUD and the lobby-phase main
 ## menu each present it and run the shared leave_lobby() teardown.
 signal session_lost
+## Issue #138 Phase 2: a transition payload named a baked-scene
+## content hash this build does not ship (version skew). Presented
+## by the main menu (lobby phase) and the HUD (in-world), mirroring
+## session_lost; the loading peer does NOT change scene.
+signal baked_version_mismatch(message: String)
 
 const GAME_TAG := "dungeon-crawler"
 const MAX_PLAYERS := 12
@@ -351,20 +356,37 @@ func kick_peer(peer_id: int) -> void:
 func start_game() -> void:
 	if not is_host:
 		return
+	# Issue #138 Phase 2: a fresh game always enters village level 1;
+	# when a baked village ships, the entry carries its pinned seed
+	# and content hash so every peer loads the same baked scene and
+	# can verify it before changing scene.
+	var seed := Dungeon.fresh_seed_for("village", 1, randi())
+	var baked_hash := Dungeon.expected_baked_hash("village", 1, seed)
 	if transport == Transport.LAN:
 		# LAN has no Steam lobby: broadcast the dungeon load directly.
 		Dungeon.saved_player_state = {}
-		rpc("load_dungeon", "village", randi(), 1)
+		rpc("load_dungeon", "village", seed, 1, baked_hash)
 		return
 	if lobby_id == 0:
 		return
 	Steam.setLobbyJoinable(lobby_id, false)
 	Dungeon.saved_player_state = {}
-	rpc("load_dungeon", "village", randi(), 1)
+	rpc("load_dungeon", "village", seed, 1, baked_hash)
 
 
 @rpc("any_peer", "call_local")
-func load_dungeon(theme_id: String, level_seed: int, level_number: int) -> void:
+func load_dungeon(theme_id: String, level_seed: int, level_number: int, baked_hash: String = "") -> void:
+	# Issue #138 Phase 2: MP content-hash handshake (spec section 8).
+	# A peer whose shipped baked scene differs from the host's (or
+	# who ships none) refuses the load LOUDLY instead of desyncing
+	# silently (the #135 lesson). "" = procgen level, no check.
+	if baked_hash != "":
+		var mine := LevelData.shipped_hash(theme_id)
+		if mine != baked_hash:
+			var msg := "Level version mismatch (%s): the host's game build differs from yours. Update the game to play this run." % theme_id
+			push_error("[Net] %s host=%s local=%s" % [msg, baked_hash, mine])
+			baked_version_mismatch.emit(msg)
+			return
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = theme_id
 	Dungeon.next_seed = level_seed
@@ -605,7 +627,9 @@ func play_solo(slot: int = 0) -> void:
 	SaveManager.clear_run(active_run_mode, active_run_slot)
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = "village"
-	Dungeon.next_seed = randi()
+	# Issue #138 Phase 2: fresh solo entry takes the pinned seed
+	# when a baked village ships (the baked path engages in _ready).
+	Dungeon.next_seed = Dungeon.fresh_seed_for("village", 1, randi())
 	Dungeon.next_level_number = 1
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
@@ -738,7 +762,11 @@ func start_continued_run() -> void:
 	if bool(run.get("at_station", false)):
 		rpc("load_station", int(run.get("level_number", 1)))
 	else:
-		rpc("load_dungeon", str(run.get("theme_id", "village")), int(run.get("seed", randi())), int(run.get("level_number", 1)))
+		var c_theme := str(run.get("theme_id", "village"))
+		var c_seed := int(run.get("seed", randi()))
+		var c_level := int(run.get("level_number", 1))
+		rpc("load_dungeon", c_theme, c_seed, c_level,
+			Dungeon.expected_baked_hash(c_theme, c_level, c_seed))
 	_continue_load_level()
 
 

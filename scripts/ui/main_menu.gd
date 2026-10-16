@@ -62,6 +62,7 @@ func _ready() -> void:
 	NetworkManager.lobby_ready_changed.connect(_refresh_lobby_start)
 	NetworkManager.connection_failed.connect(_on_connection_failed)
 	NetworkManager.session_lost.connect(_on_session_lost)
+	NetworkManager.baked_version_mismatch.connect(_on_baked_version_mismatch)
 	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
 	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
 	NetworkManager.lobby_members_changed.connect(_refresh_lobby_strip)
@@ -2075,6 +2076,17 @@ func _on_session_lost() -> void:
 		return
 	NetworkManager.leave_lobby()
 	%JoinStatusLabel.text = "The host ended the session."
+	_show_phase("JoinPhase")
+
+
+## Issue #138 Phase 2: the host's baked level doesn't match this
+## build's shipped scene — the load was refused before any scene
+## change. A client leaves the incompatible lobby; the message
+## explains the rest (the in-world case is the HUD's dialog).
+func _on_baked_version_mismatch(message: String) -> void:
+	if not NetworkManager.is_host and NetworkManager.peer != null:
+		NetworkManager.leave_lobby()
+	%JoinStatusLabel.text = message
 	_show_phase("JoinPhase")
 
 

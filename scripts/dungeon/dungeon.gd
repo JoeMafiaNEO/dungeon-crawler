@@ -148,6 +148,41 @@ func get_cycle_number() -> int:
 	return int((level_number - 1) / THEME_ORDER.size()) + 1
 
 
+## Issue #138 Phase 2: baked-path selection (spec section 5, as
+## amended). A level takes the baked path exactly when it is cycle 1,
+## a baked scene ships for its theme, and the level seed IS the
+## theme's pinned seed. Fresh entries force the pin (see
+## fresh_seed_for), so fresh cycle-1 runs and their saves always
+## qualify; a continued save carrying any other seed falls back to
+## the untouched procgen path and loads exactly as it always has.
+static func select_baked(theme_id: String, level_number: int, seed: int) -> bool:
+	if int((level_number - 1) / THEME_ORDER.size()) + 1 != 1:
+		return false
+	var pin := LevelData.pinned_seed(theme_id)
+	return pin >= 0 and seed == pin
+
+
+## The seed a FRESH entry to (theme, level) must carry: the pinned
+## seed when the baked path will engage there, else the rolled seed
+## untouched (cycle 2+, unbaked themes, daily/continue flows never
+## call this — they keep their own seed semantics).
+static func fresh_seed_for(theme_id: String, level_number: int, rolled: int) -> int:
+	var pin := LevelData.pinned_seed(theme_id)
+	if pin >= 0 and int((level_number - 1) / THEME_ORDER.size()) + 1 == 1:
+		return pin
+	return rolled
+
+
+## The content hash a peer must hold for (theme, level, seed) to load
+## the level without a version mismatch: the shipped baked hash when
+## the baked path engages there, else "" (procgen levels carry no
+## hash — their identity is the seed, as before #138).
+static func expected_baked_hash(theme_id: String, level_number: int, seed: int) -> String:
+	if not select_baked(theme_id, level_number, seed):
+		return ""
+	return LevelData.shipped_hash(theme_id)
+
+
 enum WaveState { INTERMISSION, ACTIVE, CLEARED }
 
 var theme: LevelTheme
@@ -213,6 +248,16 @@ var _layout: LevelLayout
 ## a pregenerated scene. Identity transform — global placement of every
 ## arena node is unchanged. Dynamic systems never parent here.
 var _arena: Node3D = null
+## Issue #138 Phase 2: pending baked-scene capture, set by
+## _try_baked() before _build_arena_from_layout adopts it. The
+## instance root shell is freed at adoption; its Arena subtree
+## becomes _arena and its LevelData node rides under the dungeon.
+var _pending_baked_root: Node = null
+var _pending_baked_arena: Node3D = null
+var _pending_baked_data: LevelData = null
+## The content hash of the baked scene this level loaded from
+## ("" on the procgen path). Read by checks and diagnostics.
+var _baked_hash: String = ""
 ## Issue #103: heightmap terrain instance when the theme opts in via
 ## LevelTheme.use_heightmap_terrain. Null on every flat-floor theme,
 ## where ground_height_at() is the old constant 0.0.
@@ -309,7 +354,10 @@ func _ready() -> void:
 	# mutate without touching the .tres.
 	if theme.theme_id == "apex":
 		theme.boss_id = apex_boss_id(get_cycle_number())
-	_layout = ProcGen.generate(theme, next_seed)
+	# Issue #138 Phase 2: baked path for pinned cycle-1 levels;
+	# every other level generates exactly as before.
+	if not _try_baked():
+		_layout = ProcGen.generate(theme, next_seed)
 	_mob_mix_sorted = ProcGen.sorted_mob_mix(theme)
 	# AI Director only spawns mobs this theme allows.
 	_director.set_allowed_mobs(theme.mob_mix.keys())
@@ -2574,26 +2622,92 @@ func complete_level_objective() -> void:
 
 # --- Arena construction from the procedural layout ---
 
+## Issue #138 Phase 2: when this level selects the baked path,
+## instance the shipped scene and stage its Arena + LevelData for
+## adoption by _build_arena_from_layout. Sets _layout from the
+## LevelData and returns true; returns false (procgen) for every
+## other level. The baked terrain node's own placement is the
+## generation run's, untouched — adoption only re-parents.
+func _try_baked() -> bool:
+	if not select_baked(theme.theme_id, level_number, next_seed):
+		return false
+	var path := LevelData.baked_scene_path(theme.theme_id)
+	if path == "" or not ResourceLoader.exists(path):
+		return false
+	var ps := load(path) as PackedScene
+	if ps == null:
+		return false
+	var root_node = ps.instantiate()
+	var data = root_node.get_node_or_null("LevelData") as LevelData
+	var arena_node = root_node.get_node_or_null("Arena") as Node3D
+	if data == null or arena_node == null or str(data.get("theme_id")) != theme.theme_id:
+		root_node.free()
+		return false
+	_pending_baked_root = root_node
+	_pending_baked_arena = arena_node
+	_pending_baked_data = data
+	_baked_hash = str(data.get("content_hash"))
+	_layout = data.to_layout()
+	return true
+
+
+## Adopt the staged baked Arena (see _try_baked): it becomes _arena,
+## its LevelData rides under the dungeon for inspection, the empty
+## instance shell is freed, and the terrain's query heights are
+## restored from the LevelData (the mesh-mode surface is already
+## frozen into the scene; heights-mode scenes regenerate it here
+## via the same terrain code that generated it).
+func _adopt_baked_arena() -> bool:
+	if _pending_baked_arena == null or _pending_baked_data == null:
+		return false
+	var data := _pending_baked_data
+	_pending_baked_root.remove_child(_pending_baked_arena)
+	_pending_baked_root.remove_child(data)
+	_arena = _pending_baked_arena
+	add_child(_arena)
+	add_child(data)
+	_pending_baked_root.free()
+	_pending_baked_root = null
+	_pending_baked_arena = null
+	_pending_baked_data = null
+	_terrain = _arena.get_node_or_null("HeightmapTerrain") as HeightmapTerrain
+	if _terrain != null:
+		if str(data.get("terrain_mode")) == "heights":
+			_terrain.build_from_heights(data.get("heights"),
+				int(data.get("terrain_map_points")), float(data.get("terrain_cell_size")))
+		else:
+			_terrain.load_heights(data.get("heights"))
+	return true
+
+
 func _build_arena_from_layout() -> void:
 	for holder_name in ["Players", "Mobs", "Pickups", "Projectiles", "RTS"]:
 		var holder := Node3D.new()
 		holder.name = holder_name
 		add_child(holder)
-	# Issue #138 Phase 1: static arena container (see _arena). Created
-	# before every static builder runs; the builders parent into it.
-	_arena = Node3D.new()
-	_arena.name = "Arena"
-	add_child(_arena)
 	_build_environment()
 	_annex_plan = StationAnnex.plan(next_seed, _layout)
-	if theme != null and theme.use_heightmap_terrain:
-		_build_terrain()
-	else:
-		_build_floor()
-	_build_walls()
-	_build_obstacles()
-	_build_props()
-	_build_torches()
+	# Issue #138 Phase 2: a baked level adopts its captured Arena
+	# subtree wholesale — the static builders below are the procgen
+	# path and are skipped entirely. Everything after this block
+	# (fishing, farm, annex, station, spawns, merchant) is runtime
+	# and runs identically on both paths, fed by _layout.
+	var adopted := _adopt_baked_arena()
+	if not adopted:
+		# Issue #138 Phase 1: static arena container (see _arena).
+		# Created before every static builder runs; the builders
+		# parent into it.
+		_arena = Node3D.new()
+		_arena.name = "Arena"
+		add_child(_arena)
+		if theme != null and theme.use_heightmap_terrain:
+			_build_terrain()
+		else:
+			_build_floor()
+		_build_walls()
+		_build_obstacles()
+		_build_props()
+		_build_torches()
 	_build_fishing_director()
 	_build_farm_plots()
 	StationAnnex.build(self, _annex_plan, _layout)
@@ -2661,6 +2775,11 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				p.rpc("rpc_level_cleared_streak")
 	var new_level := level_number + 1
 	var seed := randi()
+	# Issue #138 Phase 2: a fresh hop into a pinned cycle-1 level
+	# carries the pinned seed, so the baked path engages there and
+	# the save written below stores the pin (its continues re-enter
+	# the baked scene; see select_baked).
+	seed = fresh_seed_for(theme_id, new_level, seed)
 	rpc("begin_annex_departure", theme_id, _boarding_spots())
 	# 3.5s ride: 1.2s fade + ~1s black, whistle into chug. No moving-train
 	# gameplay (scope control).
@@ -2703,7 +2822,8 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				NetworkManager.active_run_slot)
 	# Jesse 2026-10-10 fix: send the collected states with the boarding RPC
 	# so clients don't rely on local capture.
-	rpc("board_train_interior", theme_id, seed, new_level, peer_classes, saved_player_states)
+	rpc("board_train_interior", theme_id, seed, new_level, peer_classes, saved_player_states,
+		expected_baked_hash(theme_id, new_level, seed))
 
 
 ## Station annex (issue #2 Phase 4): on an early departure every player
@@ -2790,10 +2910,23 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 ## saved_player_state, so every departure reset progression. The old
 ## go_to_station_net/change_level handoff did capture it.
 @rpc("any_peer", "call_local")
-func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}) -> void:
+func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}, baked_hash: String = "") -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
+	# Issue #138 Phase 2: MP content-hash handshake (spec section 8).
+	# The host names the baked scene's hash for the destination; a
+	# peer whose shipped scene differs (or is missing) fails LOUDLY
+	# here — before any state is captured or the scene changes —
+	# instead of desyncing silently (the #135 lesson). Procgen
+	# destinations carry "", and the check is skipped.
+	if baked_hash != "":
+		var mine := LevelData.shipped_hash(theme_id)
+		if mine != baked_hash:
+			var msg := "Level version mismatch (%s): the host's game build differs from yours. Update the game to play this run." % theme_id
+			push_error("[Dungeon] %s host=%s local=%s" % [msg, baked_hash, mine])
+			NetworkManager.baked_version_mismatch.emit(msg)
+			return
 	var me := _my_player()
 	# Jesse 2026-10-10 fix: prefer the host-collected states (reliable);
 	# fall back to local capture when the host entry is missing or empty.
