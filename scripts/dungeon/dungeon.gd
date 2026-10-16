@@ -257,10 +257,23 @@ var level_cleared := false
 ## Issue #134: entry snapshots live on each player (peer-captured —
 ## see Player.capture_entry_snapshot). The server keeps none: its node
 ## for a remote peer is a replica and cannot author that peer's state.
+## Issue #140: the server's dungeon works from its OWN captured copy of
+## the continued roster, taken at _ready. The hand-off static above is
+## cleared by leave_lobby() for hygiene; in the Oct 15 session that left
+## the matcher facing an empty roster when a continued guest registered
+## (they spawned fresh, unrejected — the roster guard itself was
+## skipped). The capture is a duplicate: later clears of the source can
+## never disarm a live session's matcher.
+var _session_roster: Array = []
+## TEMPORARY #140 diagnostic (removed at closure, #136 pattern).
+var register_audit_log: Array = []
 
 
 func _ready() -> void:
 	add_to_group("dungeon")
+	# Issue #140: capture this session's roster before anyone can register.
+	if multiplayer.is_server():
+		_session_roster = capture_session_roster(NetworkManager.continued_session_roster, continued_roster)
 	randomize()
 	_server_rng.seed = randi()
 	# AI Director for wave composition (server-side only, but harmless on clients).
@@ -429,9 +442,10 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 	if steam_id != 0:
 		peer_steam_ids[sender] = steam_id
 	var roster_entry := _find_roster_entry(sender)
-	if not continued_roster.is_empty():
+	if not _active_roster().is_empty():
 		if roster_entry.is_empty() and not continued_open_lobby:
 			# Stranger on a roster-locked lobby: reject.
+			_log_register_audit(sender, roster_entry, "rejected_stranger")
 			rpc_id(sender, "reject_join", "This lobby is continuing a saved run (roster-locked).")
 			return
 		if not roster_entry.is_empty():
@@ -455,14 +469,51 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 		# Warlord: reclaim their faction from AI control.
 		if is_warlord:
 			_reclaim_faction(sender, int(roster_entry.get("rts_faction", -1)))
+	# TEMPORARY #140 diagnostic: audit every register's outcome.
+	_log_register_audit(sender, roster_entry, "applied" if not roster_entry.is_empty() else "fresh_spawn")
 
 
 ## Find a roster entry by Steam ID. Returns {} if not found.
 ## Jesse 2026-10-10 fix: takes a peer ID, looks up the Steam ID from the
 ## handshake mapping, then matches against the roster's Steam IDs.
+## Issue #140: matches against this session's captured roster (see
+## _session_roster), never the clearable hand-off static directly.
 func _find_roster_entry(peer_id: int) -> Dictionary:
 	var sid: int = int(peer_steam_ids.get(peer_id, peer_id))
-	return find_roster_entry(continued_roster, sid)
+	return find_roster_entry(_active_roster(), sid)
+
+
+## Issue #140: pick the roster a dungeon session works from. The
+## NetworkManager session store (set when the continued run launches)
+## wins; the hand-off static is the fallback (the LAN continue path sets
+## only the static). Always a duplicate — the session copy is isolated
+## from any later clear of either source.
+static func capture_session_roster(nm_roster: Array, static_roster: Array) -> Array:
+	if not nm_roster.is_empty():
+		return nm_roster.duplicate()
+	return static_roster.duplicate()
+
+
+## Issue #140: the roster the matcher and setup consult — this session's
+## capture, falling back to the hand-off static when no capture exists.
+func _active_roster() -> Array:
+	if not _session_roster.is_empty():
+		return _session_roster
+	return continued_roster
+
+
+## TEMPORARY #140 diagnostic (removed at closure, #136 pattern): one
+## audit line per server-side register, so a continued-join retest
+## self-documents the matcher's inputs at the register instant.
+func _log_register_audit(sender: int, roster_entry: Dictionary, note: String) -> void:
+	var line := "[#140-REGISTER-AUDIT] sender=%d sid=%d session_roster=%d static_roster=%d matched=%s open=%s note=%s" % [
+		sender, int(peer_steam_ids.get(sender, 0)), _session_roster.size(),
+		continued_roster.size(), str(roster_entry.get("class_id", "MISS")),
+		str(continued_open_lobby), note]
+	print(line)
+	register_audit_log.append(line)
+	if register_audit_log.size() > 32:
+		register_audit_log.pop_front()
 
 
 ## Static roster match: which saved seat does this Steam ID own? Pure so
@@ -944,8 +995,8 @@ func _spawn_market_loot() -> void:
 ## How many player factions to expect on this warlord level. Used to delay
 ## RTS setup until everyone has loaded (Jesse 2026-10-10).
 func _warlord_expected_players() -> int:
-	if not continued_roster.is_empty():
-		return maxi(1, continued_roster.size())
+	if not _active_roster().is_empty():
+		return maxi(1, _active_roster().size())
 	# Fresh run: everyone currently connected (peers + host).
 	return maxi(1, multiplayer.get_peers().size() + 1)
 
@@ -996,7 +1047,7 @@ func _setup_warlord() -> void:
 	var faction_id := 0
 	# Jesse 2026-10-10: no AI warlords in multiplayer with 2+ players.
 	var want_ai := _warlord_wants_ai()
-	if not continued_roster.is_empty():
+	if not _active_roster().is_empty():
 		# Continued run: pre-register ALL roster factions by saved ID.
 		# No-shows become AI immediately; rejoiners reclaim via _reclaim_faction.
 		# Issue #106 (M-1): key the connected map by STEAM64 — roster
@@ -1013,7 +1064,7 @@ func _setup_warlord() -> void:
 			if psid == 0:
 				psid = int(peer_steam_ids.get(peer_id, peer_id))
 			connected[psid] = pl
-		for entry in continued_roster:
+		for entry in _active_roster():
 			var fid := int(entry.get("rts_faction", -1))
 			if fid < 0:
 				continue

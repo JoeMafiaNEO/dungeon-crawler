@@ -50,6 +50,11 @@ var lobby_visibility: String = "public"  # public, friends, private
 var lobby_player_cap: int = 4
 ## Allow strangers to join a continued save (fresh level-1 characters).
 var lobby_open_roster: bool = false
+## Issue #140: the continued run's roster, held by the session owner for
+## the whole session. The dungeon captures its own copy from here at
+## _ready; this store is set when a continued run launches and cleared
+## when a session ends or a fresh one begins — never mid-session.
+var continued_session_roster: Array = []
 ## Save file hosting: -1 = fresh run, else the slot index.
 var host_save_slot: int = -1
 ## Ready states for the lobby (Jesse 2026-10-11): peer_id -> bool.
@@ -157,6 +162,7 @@ func host_lobby(slot: int = 0) -> void:
 	if not SteamManager.initialized:
 		connection_failed.emit("Steam isn't running. Open Steam, then try again.")
 		return
+	continued_session_roster = []  # Issue #140: a fresh lobby owns no roster.
 	active_run_mode = SaveManager.MODE_MP
 	active_run_slot = slot
 	_reset_peer()
@@ -211,6 +217,7 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 
 ## Host a LAN game via ENet. No Steam lobby, no saves.
 func host_lan(port: int = LAN_PORT) -> void:
+	continued_session_roster = []  # Issue #140: fresh session owns no roster.
 	transport = Transport.LAN
 	active_run_mode = "lan"
 	active_run_slot = 0
@@ -398,6 +405,7 @@ func join_lobby(id: int) -> void:
 	if not SteamManager.initialized:
 		connection_failed.emit("Steam isn't running. Open Steam, then try again.")
 		return
+	continued_session_roster = []  # Issue #140: a joiner owns no roster.
 	_join_timeout = JOIN_TIMEOUT_S
 	Steam.joinLobby(id)
 
@@ -567,6 +575,7 @@ func leave_lobby() -> void:
 		lan_names.clear()
 		transport = Transport.STEAM  # Reset to default.
 		Dungeon.continued_roster = []
+		continued_session_roster = []  # Issue #140: session store ends too.
 		_reset_peer()
 		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		server_id = 1
@@ -579,6 +588,7 @@ func leave_lobby() -> void:
 	# Issue #4 Phase 4: a stale continued roster must never leak into the next
 	# session's rejoin matching (wrong slot's seats, phantom roster-lock).
 	Dungeon.continued_roster = []
+	continued_session_roster = []  # Issue #140: session store ends too.
 	_reset_peer()
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	server_id = 1
@@ -753,6 +763,8 @@ func _continue_load_level() -> void:
 	Dungeon.next_wave = int(run.get("wave", 0))
 	# Stash the roster for the staging UI.
 	Dungeon.continued_roster = run.get("roster", [])
+	# Issue #140: the session store the dungeon captures its roster from.
+	continued_session_roster = run.get("roster", []).duplicate()
 	# Jesse 2026-10-11: station saves resume AT the station.
 	if bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))

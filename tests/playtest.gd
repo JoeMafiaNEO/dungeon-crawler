@@ -168,6 +168,7 @@ func _run() -> void:
 	_test_character_panel_phase2()
 	_test_inventory_audit_136()
 	_test_menu_batch_137()
+	_test_session_roster_140()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -10283,7 +10284,7 @@ func _test_menu_batch_137() -> void:
 	# (a) A continued run's lobby selects the roster host's class.
 	NM._continued_run = {
 		"lobby": {"lobby_name": "Dungeon"},
-		"players": [
+		"roster": [
 			{"steam_id": 111, "name": "H", "class_id": "mage", "is_host": true,
 				"player_state": {"level": 7}},
 			{"steam_id": 222, "name": "G", "class_id": "warrior", "is_host": false,
@@ -10331,6 +10332,81 @@ func _test_menu_batch_137() -> void:
 		"137d: warning label wrapped minimum is honest")
 	menu.queue_free()
 	print("[Playtest] Menu batch done")
+
+
+## Issue #140: a continued guest registered while the server's
+## hand-off roster static stood empty and spawned fresh (unrejected —
+## the roster guard itself was skipped). The fix: the server dungeon
+## captures its own session roster at _ready (NetworkManager's session
+## store first, the static as fallback) and the matcher consults the
+## capture. These pins cover the capture's preference and its
+## isolation from later clears — the defect mechanism itself.
+func _test_session_roster_140() -> void:
+	print("[Playtest] Session roster (issue #140)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	var host_e := {"steam_id": 111, "class_id": "mage", "is_host": true, "player_state": {"level": 10}}
+	var guest_e := {"steam_id": 222, "class_id": "mage", "is_host": false, "player_state": {"level": 4, "xp": 70}}
+
+	# Capture preference: the NM session store wins; static is fallback.
+	var nm_store: Array = [host_e, guest_e]
+	var captured: Array = DungeonScript.capture_session_roster(nm_store, [])
+	_assert(captured.size() == 2, "140: capture takes the session store")
+	captured = DungeonScript.capture_session_roster([], [guest_e])
+	_assert(captured.size() == 1 and int(captured[0].get("steam_id", 0)) == 222,
+		"140: capture falls back to the static roster")
+	_assert(DungeonScript.capture_session_roster([], []).is_empty(),
+		"140: capture of two empties is empty")
+
+	# THE defect pin: clearing the source after capture (the
+	# leave_lobby hygiene clear) must not disarm the captured copy —
+	# the matcher still finds the guest in it.
+	var source: Array = [host_e, guest_e]
+	var session_copy: Array = DungeonScript.capture_session_roster(source, [])
+	source.clear()
+	_assert(session_copy.size() == 2, "140: captured roster survives a source clear")
+	var hit: Dictionary = DungeonScript.find_roster_entry(session_copy, 222)
+	_assert(str(hit.get("class_id", "")) == "mage" and int(hit.get("player_state", {}).get("level", 0)) == 4,
+		"140: matcher finds the guest in the captured roster after the clear")
+
+	# A dungeon instance consults its capture first, the static second.
+	var inst = DungeonScript.new()
+	inst._session_roster = [guest_e]
+	_assert(inst._active_roster().size() == 1 and int(inst._active_roster()[0].get("steam_id", 0)) == 222,
+		"140: active roster prefers the session capture")
+	inst._session_roster = []
+	_assert(inst._active_roster() == DungeonScript.continued_roster,
+		"140: active roster falls back to the static when uncaptured")
+
+	# The register audit records the matcher's inputs.
+	inst.peer_steam_ids = {7: 222}
+	inst._log_register_audit(7, guest_e, "applied")
+	_assert(inst.register_audit_log.size() == 1
+		and str(inst.register_audit_log[0]).contains("sid=222")
+		and str(inst.register_audit_log[0]).contains("matched=mage")
+		and str(inst.register_audit_log[0]).contains("open=false"),
+		"140: register audit logs sender, sid, the matched class and the open flag")
+	inst.free()
+
+	# Source pins: register matches on the capture (never the bare
+	# static), _ready captures, NM holds the store.
+	var reg := dsrc.find("func register_class(")
+	var reg_end := dsrc.find("\nfunc ", reg + 1)
+	var reg_body := dsrc.substr(reg, reg_end - reg)
+	_assert(reg_body.contains("_active_roster()") and reg_body.contains("_log_register_audit"),
+		"140: register_class guards on the active roster and audits")
+	_assert(not dsrc.contains("find_roster_entry(continued_roster"),
+		"140: the matcher never reads the bare static")
+	var rd := dsrc.find("func _ready()")
+	var rd_end := dsrc.find("\nfunc ", rd + 1)
+	_assert(dsrc.substr(rd, rd_end - rd).contains("capture_session_roster"),
+		"140: _ready captures the session roster")
+	_assert(nsrc.contains("continued_session_roster = run.get(\"roster\", []).duplicate()"),
+		"140: launching a continued run fills the session store")
+	_assert(nsrc.contains("var continued_session_roster: Array = []"),
+		"140: NetworkManager declares the session store")
+	print("[Playtest] Session roster done")
 
 
 ## Issue #132: the Host menu's Lobby tab must show what Host will

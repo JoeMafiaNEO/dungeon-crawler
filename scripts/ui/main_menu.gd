@@ -1173,6 +1173,9 @@ func _on_host_create_pressed() -> void:
 				Dungeon.next_wave = int(run.get("wave", 0))
 				Dungeon.continued_roster = run.get("roster", [])
 				NetworkManager.host_lan()
+				# Issue #140: the session store the dungeon captures from
+				# (set after host_lan, whose fresh-session clear precedes it).
+				NetworkManager.continued_session_roster = run.get("roster", []).duplicate()
 				if bool(run.get("at_station", false)):
 					Station.next_level_number = int(run.get("level_number", 1))
 					get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
@@ -1907,19 +1910,23 @@ func _on_staging_ready() -> void:
 	# truth — select the class the save's roster records for the host
 	# (flagged entry, else the saver's own entry, else the first),
 	# not the "warrior" default.
-	var players: Array = NetworkManager._continued_run.get("players", [])
+	# Issue #140 rider: the roster lives under the run's "roster" key
+	# (the save format's only roster key) — the original #137a code read
+	# a "players" key real saves never carry, so the derivation silently
+	# never fired outside the suite's fabricated dict.
+	var roster: Array = NetworkManager._continued_run.get("roster", [])
 	var host_entry: Dictionary = {}
-	for entry in players:
+	for entry in roster:
 		if entry is Dictionary and bool(entry.get("is_host", false)):
 			host_entry = entry
 			break
 	if host_entry.is_empty() and SteamManager.initialized:
-		for entry in players:
+		for entry in roster:
 			if entry is Dictionary and int(entry.get("steam_id", 0)) == SteamManager.steam_id:
 				host_entry = entry
 				break
-	if host_entry.is_empty() and not players.is_empty() and players[0] is Dictionary:
-		host_entry = players[0]
+	if host_entry.is_empty() and not roster.is_empty() and roster[0] is Dictionary:
+		host_entry = roster[0]
 	if not host_entry.is_empty():
 		NetworkManager.selected_class_id = str(host_entry.get("class_id", NetworkManager.selected_class_id))
 	var run_title := "Continue Run"
