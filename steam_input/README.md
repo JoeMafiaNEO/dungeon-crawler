@@ -54,7 +54,17 @@ exactly — same hands, whichever layer serves the pad:
    above for each controller family (Xbox / PlayStation / Switch Pro /
    Steam Deck), save as the **official configuration** for each, and
    publish.
-3. Live validation then needs a Steam-launched session under the true
+3. **Push-up observation (publish gate — do not skip):** with the
+   game running under Steam and a physical pad, push the left stick
+   UP — the character must move FORWARD; push the right stick UP —
+   the camera must look UP. If either reads inverted, set
+   `STEAM_ANALOG_Y_SIGN` to `-1.0` in
+   `scripts/autoload/steam_input_adapter.gd` (one constant, both
+   vectors) and re-observe. **Do not publish the official
+   configuration until this observation is recorded** — the sign is
+   reasoned from the shared HID lineage of Steam's and Godot's axis
+   data, not yet observed on live hardware.
+4. Live validation then needs a Steam-launched session under the true
    app ID with a physical pad (the VM's second seat cannot validate
    3441590 — it owns no license; app 480 cannot validate either, its
    configuration is Spacewar's).

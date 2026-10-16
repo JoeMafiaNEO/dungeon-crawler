@@ -43,7 +43,7 @@ const DIGITAL_ACTIONS: Array[String] = [
 ## (the full Phase 0/1 vocabulary; ability_1..7 and signature_ability
 ## carry no joypad bindings — Q6 — and are no-ops here).
 const VOCABULARY: Array[String] = [
-	"move_left", "move_right", "move_up", "move_down",
+	"move_left", "move_right", "move_forward", "move_back",
 	"look_left", "look_right", "look_up", "look_down",
 	"jump", "attack", "alt_attack", "interact", "dash", "cycle_ability",
 	"ability", "start_wave", "potion", "inventory", "pause", "ping",
@@ -55,6 +55,14 @@ const VOCABULARY: Array[String] = [
 ## pads report small indices; bindings copied onto this device can
 ## only ever be matched by the adapter.
 const SENTINEL_DEVICE := 7
+## Steam analog Y -> Godot axis Y conversion, applied to both stick
+## vectors at injection. Both Steam's analog data and Godot's native
+## joypad axes descend from the HID convention (push up = -1), so
+## verbatim (1.0) is the principled default — but this has NOT been
+## observed against live Steam hardware. The 5B checklist in
+## steam_input/README.md makes the push-up observation a publish
+## gate: if up reads inverted there, flip this one constant to -1.0.
+const STEAM_ANALOG_Y_SIGN := 1.0
 ## Injection shapes for the digital actions, mirroring the Phase 1
 ## pad map (and the manifest's default-bindings table): "btn" =
 ## joypad button, "trig" = trigger axis treated as a button.
@@ -309,10 +317,10 @@ func tick() -> void:
 			_inject_digital(name, st)
 	var mv: Dictionary = backend.analog_data(_controller, int(_handles["move"]))
 	_inject_axis(JOY_AXIS_LEFT_X, float(mv.get("x", 0.0)))
-	_inject_axis(JOY_AXIS_LEFT_Y, float(mv.get("y", 0.0)))
+	_inject_axis(JOY_AXIS_LEFT_Y, float(mv.get("y", 0.0)) * STEAM_ANALOG_Y_SIGN)
 	var lk: Dictionary = backend.analog_data(_controller, int(_handles["look"]))
 	_inject_axis(JOY_AXIS_RIGHT_X, float(lk.get("x", 0.0)))
-	_inject_axis(JOY_AXIS_RIGHT_Y, float(lk.get("y", 0.0)))
+	_inject_axis(JOY_AXIS_RIGHT_Y, float(lk.get("y", 0.0)) * STEAM_ANALOG_Y_SIGN)
 	Input.flush_buffered_events()
 
 

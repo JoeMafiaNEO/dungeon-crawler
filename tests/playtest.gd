@@ -11816,9 +11816,29 @@ func _test_steam_input_150() -> void:
 			out.append(e.get_class() + ":" + str(e.get("device")) + ":" + str(e.get("button_index")) + ":" + str(e.get("axis")) + ":" + str(e.get("axis_value")) + ":" + str(e.get("physical_keycode")))
 		out.sort()
 		return out
-	var vocab: Array = aconsts["VOCABULARY"]
+	# The section's OWN expectation of the verb vocabulary, written
+	# from the Phase 0/1 record — deliberately NOT the adapter's
+	# constant (iterating the system's own vocabulary proved only
+	# self-agreement once already: the move_forward/move_back fix).
+	var expected_actions: Array[String] = [
+		"move_left", "move_right", "move_forward", "move_back",
+		"look_left", "look_right", "look_up", "look_down",
+		"jump", "attack", "alt_attack", "interact", "dash", "cycle_ability",
+		"ability", "start_wave", "potion", "inventory", "pause", "ping",
+		"toggle_rod", "build_menu",
+		"ability_1", "ability_2", "ability_3", "ability_4", "ability_5",
+		"ability_6", "ability_7", "signature_ability",
+	]
+	for action_name in expected_actions:
+		_assert(InputMap.has_action(action_name), "150: expected action exists in the InputMap: " + action_name)
+	var adapter_vocab: Array = (aconsts["VOCABULARY"] as Array).duplicate()
+	adapter_vocab.sort()
+	var expected_sorted: Array = expected_actions.duplicate()
+	expected_sorted.sort()
+	_assert(adapter_vocab == expected_sorted,
+		"150: the adapter's vocabulary matches the independent expectation exactly")
 	var before: Dictionary = {}
-	for action_name in vocab:
+	for action_name in expected_actions:
 		before[action_name] = desc.call(action_name)
 	var joy_devices := func(action_name: String) -> Array:
 		var out: Array = []
@@ -11854,12 +11874,14 @@ func _test_steam_input_150() -> void:
 	fake.analog_handles["look"] = 0
 	_assert(not ad.try_activate() and not ad.active, "150: one missing analog handle -> native fallback")
 	fake.analog_handles["look"] = 200 + ana.find("look")
-	_assert(desc.call("jump") == before["jump"], "150: bindings pristine after every failed activation")
+	_assert(desc.call("jump") == before["jump"] and desc.call("move_forward") == before["move_forward"],
+		"150: bindings pristine after every failed activation")
 	# --- Activation: swap, set activation, first controller ---
 	_assert(ad.try_activate() and ad.active, "150: full session activates")
 	_assert(fake.activated_with == [42, 99], "150: gameplay set activated on the first controller")
-	_assert(joy_devices.call("jump") == [7] and joy_devices.call("move_left") == [7],
-		"150: arbitration — joypad bindings swapped to the sentinel device")
+	_assert(joy_devices.call("jump") == [7] and joy_devices.call("move_left") == [7]
+		and joy_devices.call("move_forward") == [7] and joy_devices.call("move_back") == [7],
+		"150: arbitration — joypad bindings swapped to the sentinel device (incl. forward/back)")
 	_assert(desc.call("jump").size() == (before["jump"] as Array).size(),
 		"150: arbitration keeps the keyboard bindings in place")
 	# Native pad input is inert while the adapter owns the pad.
@@ -11872,6 +11894,29 @@ func _test_steam_input_150() -> void:
 	_assert(not Input.is_action_pressed("jump"), "150: native A does not double-fire while Steam owns the pad")
 	nev.pressed = false
 	Input.parse_input_event(nev)
+	Input.flush_buffered_events()
+	# Same for the native STICK: while the adapter owns the pad, a
+	# device-0 stick push must produce zero move strength on either
+	# axis (the forward/back half of this was the landed defect).
+	var nmy := InputEventJoypadMotion.new()
+	nmy.axis = JOY_AXIS_LEFT_Y
+	nmy.axis_value = -1.0
+	nmy.device = 0
+	Input.parse_input_event(nmy)
+	var nmx := InputEventJoypadMotion.new()
+	nmx.axis = JOY_AXIS_LEFT_X
+	nmx.axis_value = 0.8
+	nmx.device = 0
+	Input.parse_input_event(nmx)
+	Input.flush_buffered_events()
+	_assert(Input.get_action_strength("move_forward") == 0.0
+		and Input.get_action_strength("move_right") == 0.0
+		and Input.get_vector("move_left", "move_right", "move_forward", "move_back", 0.2) == Vector2.ZERO,
+		"150: native stick is silent on the move vector while Steam owns the pad")
+	nmy.axis_value = 0.0
+	nmx.axis_value = 0.0
+	Input.parse_input_event(nmy)
+	Input.parse_input_event(nmx)
 	Input.flush_buffered_events()
 	# --- Digital edges: exactly once, state lands ---
 	ad.emitted.clear()
@@ -11900,17 +11945,33 @@ func _test_steam_input_150() -> void:
 	_assert(not Input.is_action_pressed("interact") and not Input.is_action_pressed("attack"),
 		"150: held states release cleanly")
 	# --- Analog vectors through the shared Q2 read path ---
+	var y_sign := float(aconsts["STEAM_ANALOG_Y_SIGN"])
 	fake.analog["move"] = Vector2(0.6, 0.0)
 	ad.tick()
-	var mv := Input.get_vector("move_left", "move_right", "move_up", "move_down", 0.2)
+	var mv := Input.get_vector("move_left", "move_right", "move_forward", "move_back", 0.2)
 	_assert(absf(mv.x - 0.5) < 0.001 and absf(mv.y) < 0.001,
 		"150: analog move vector lands with the settings deadzone applied (0.6 -> 0.5)")
+	# Y through the adapter's single sign conversion: Steam-space
+	# full up must read as FORWARD (Godot vector y = -sign), full
+	# down as back — the 5B push-up observation gates the constant.
+	fake.analog["move"] = Vector2(0.0, -1.0)
+	ad.tick()
+	mv = Input.get_vector("move_left", "move_right", "move_forward", "move_back", 0.2)
+	_assert(absf(mv.y - (-y_sign)) < 0.001 and absf(mv.x) < 0.001,
+		"150: Steam move up reads as forward through the Y sign conversion")
+	_assert(Input.get_action_strength("move_forward") > 0.99,
+		"150: move_forward strength is driven by the Steam vector (real action name)")
+	fake.analog["move"] = Vector2(0.0, 1.0)
+	ad.tick()
+	mv = Input.get_vector("move_left", "move_right", "move_forward", "move_back", 0.2)
+	_assert(absf(mv.y - y_sign) < 0.001,
+		"150: Steam move down reads as back through the Y sign conversion")
 	fake.analog["move"] = Vector2.ZERO
 	fake.analog["look"] = Vector2(0.0, -1.0)
 	ad.tick()
 	var lv := Input.get_vector("look_left", "look_right", "look_up", "look_down", 0.2)
-	_assert(absf(lv.x) < 0.001 and absf(lv.y + 1.0) < 0.001,
-		"150: analog look vector lands (full up)")
+	_assert(absf(lv.x) < 0.001 and absf(lv.y - (-y_sign)) < 0.001,
+		"150: analog look vector lands (full up, through the same sign conversion)")
 	# --- Glyph / binding interface (API only) ---
 	_assert(ad.binding_origin_for("jump") == 24, "150: prompt origin resolves through the backend")
 	_assert(ad.glyph_path_for("jump") == "glyph/24", "150: glyph path resolves for the origin")
@@ -11924,7 +11985,7 @@ func _test_steam_input_150() -> void:
 	_assert(not ad.active, "150: disconnect deactivates the adapter")
 	_assert(not Input.is_action_pressed("interact"), "150: disconnect releases the held action (no stuck verbs)")
 	var restored := true
-	for action_name in vocab:
+	for action_name in expected_actions:
 		if desc.call(action_name) != before[action_name]:
 			restored = false
 	_assert(restored, "150: native bindings restored exactly after the cycle")
