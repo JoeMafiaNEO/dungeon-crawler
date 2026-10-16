@@ -18,6 +18,15 @@
 			"terrain_mode": "mesh",
 			"theme_id": "dungeon"
 		},
+		"misty_docks": {
+			"bake_date": "2026-10-16",
+			"content_hash": "ead066de114029cdaec2edbfe0876a57ad5f56af9c18783ea00e88d5ab50dd19",
+			"scene_bytes": 1395650,
+			"scene_path": "res://scenes/levels/pregen/theme_misty_docks.tscn",
+			"seed": 1,
+			"terrain_mode": "mesh",
+			"theme_id": "misty_docks"
+		},
 		"supermarket": {
 			"bake_date": "2026-10-16",
 			"content_hash": "9584d4eafce8ac73253520c9f026f9639a7f38b6df9e5a0c9856a7e0dd733072",
@@ -39,9 +48,9 @@
 		"warlord": {
 			"bake_date": "2026-10-16",
 			"content_hash": "167b8a216a065367c0f32ac8e56de9530599b3f84680aa7b346a9e95bab9936a",
-			"scene_bytes": 546538,
+			"scene_bytes": 546538.0,
 			"scene_path": "res://scenes/levels/pregen/theme_warlord.tscn",
-			"seed": 1,
+			"seed": 1.0,
 			"terrain_mode": "mesh",
 			"theme_id": "warlord"
 		}
