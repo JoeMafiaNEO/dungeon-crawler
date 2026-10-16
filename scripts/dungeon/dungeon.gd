@@ -267,6 +267,18 @@ var level_cleared := false
 var _session_roster: Array = []
 ## TEMPORARY #140 diagnostic (removed at closure, #136 pattern).
 var register_audit_log: Array = []
+## Issue #140 leg 2: the register-time continued state, stashed per
+## peer so the owning client can PULL it once its player node exists
+## (the one-shot push raced the guest's scene readiness and dropped).
+## Instance state — dies with the scene, like the session it serves.
+var _continued_state_by_peer: Dictionary = {}
+## Issue #140 leg 2 (client side): latched when the server answers the
+## continued-state pull — with the state, or with an empty dict (its
+## definitive "none for you"). The register-time push sets it too.
+var _continued_state_latched := false
+var _continued_pull_tries := 0
+## TEMPORARY #140 diagnostic (removed at closure with the register audit).
+var continued_apply_audit_log: Array = []
 
 
 func _ready() -> void:
@@ -460,6 +472,10 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 	if not roster_entry.is_empty():
 		var ps: Dictionary = roster_entry.get("player_state", {})
 		if not ps.is_empty():
+			# Issue #140 leg 2: stash it — the push below is one-shot
+			# and can drop across the guest's readiness gap; the pull
+			# (request_continued_state) answers from this stash.
+			_continued_state_by_peer[sender] = ps
 			node.apply_state(ps)
 			# Bounty Board (issue #7): the continued level runs fresh
 			# bounties — progress from the saved level does not carry over.
@@ -588,12 +604,48 @@ func reject_join(reason: String) -> void:
 
 @rpc("any_peer", "call_local")
 func apply_continued_state(ps: Dictionary) -> void:
-	var me := _my_player()
-	if me != null:
-		me.apply_state(ps)
-		# Issue #134: the restored state IS this peer's entry state —
-		# capture it here, on the owning peer, for a possible forfeit.
-		me.capture_entry_snapshot()
+	_apply_continued_state_local(ps, _my_player())
+
+
+## Issue #140 leg 2: the continued-state answer, split from its RPC
+## guard so tests can drive it (the #135 pattern). Latch rules: an
+## empty answer is the server's definitive "none for you" — latch and
+## stop asking. A real state with no local player yet does NOT latch:
+## the pull retries until the node exists and the apply lands.
+func _apply_continued_state_local(ps: Dictionary, me: Player) -> void:
+	# TEMPORARY #140 diagnostic: guest-side apply audit.
+	var _line := "[#140-APPLY-AUDIT] me_found=%s ps_level=%d ps_empty=%s latched_before=%s" % [
+		str(me != null), int(ps.get("level", 0)), str(ps.is_empty()),
+		str(_continued_state_latched)]
+	print(_line)
+	continued_apply_audit_log.append(_line)
+	if continued_apply_audit_log.size() > 32:
+		continued_apply_audit_log.pop_front()
+	if ps.is_empty():
+		_continued_state_latched = true
+		return
+	if me == null:
+		return
+	me.apply_state(ps)
+	# Issue #134: the restored state IS this peer's entry state —
+	# capture it here, on the owning peer, for a possible forfeit.
+	me.capture_entry_snapshot()
+	_continued_state_latched = true
+
+
+## Issue #140 leg 2: a client whose player node now exists pulls its
+## continued state. The server answers through apply_continued_state
+## with the register-time stash — or an empty dict when it holds none
+## for this peer (a fresh-run joiner), which latches the pull.
+@rpc("any_peer", "call_local")
+func request_continued_state() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender <= 0:
+		return
+	var ps: Dictionary = _continued_state_by_peer.get(sender, {})
+	rpc_id(sender, "apply_continued_state", ps)
 
 
 ## A returning player takes their saved Warlord faction back from AI control.
@@ -797,6 +849,14 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 	# replica and the capture was a fabricated fresh spawn.)
 	if peer_id == multiplayer.get_unique_id():
 		p.capture_entry_snapshot()
+		# Issue #140 leg 2: pull my continued state — my node exists
+		# now, which is the readiness proof the register-time push
+		# could not rely on. Clients only; the host's state arrives
+		# via saved_player_state above. The server's answer (state or
+		# empty) latches the pull in apply_continued_state.
+		if not multiplayer.is_server():
+			print("[#140-APPLY-AUDIT] pull sent (request_continued_state)")
+			rpc_id(NetworkManager.server_peer_id, "request_continued_state")
 
 
 @rpc("any_peer", "call_local")
@@ -810,6 +870,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
 	peer_classes.erase(peer_id)
+	_continued_state_by_peer.erase(peer_id)  # Issue #140 leg 2 stash hygiene.
 	rpc("despawn_player", peer_id)
 	# Jesse 2026-10-10: clean up the leaver's Holy Light beams (including
 	# lingering heal zones) so they don't orphan.
@@ -886,7 +947,14 @@ func _process(delta: float) -> void:
 					me_found = true
 					break
 			if me_found:
-				_handshake_timer = -1.0
+				# Issue #140 leg 2: the node exists — the handshake is
+				# done, but keep pulling the continued state until the
+				# server's answer latches it (bounded tries).
+				if _continued_state_latched or _continued_pull_tries >= 30:
+					_handshake_timer = -1.0
+				else:
+					_continued_pull_tries += 1
+					rpc_id(NetworkManager.server_peer_id, "request_continued_state")
 			else:
 				_send_handshake()
 	# Torch flicker runs on every peer; pure ambience.

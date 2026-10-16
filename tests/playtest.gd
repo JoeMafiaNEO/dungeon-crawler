@@ -169,6 +169,7 @@ func _run() -> void:
 	_test_inventory_audit_136()
 	_test_menu_batch_137()
 	_test_session_roster_140()
+	_test_continued_pull_140()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -10407,6 +10408,59 @@ func _test_session_roster_140() -> void:
 	_assert(nsrc.contains("var continued_session_roster: Array = []"),
 		"140: NetworkManager declares the session store")
 	print("[Playtest] Session roster done")
+
+
+## Issue #140 leg 2: the register-time continued-state push is
+## one-shot and can drop across the guest's scene-readiness gap. The
+## server stashes the state at register; the guest pulls it once its
+## player node exists; any answer (state or empty) latches the pull.
+func _test_continued_pull_140() -> void:
+	print("[Playtest] Continued pull (issue #140 leg 2)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+
+	# Stash roundtrip on a bare instance.
+	var inst = DungeonScript.new()
+	inst._continued_state_by_peer[7] = {"level": 4, "xp": 70}
+	_assert(int(inst._continued_state_by_peer.get(7, {}).get("level", 0)) == 4,
+		"140L2: the stash holds a peer's state by peer id")
+	_assert((inst._continued_state_by_peer.get(9, {}) as Dictionary).is_empty(),
+		"140L2: an unknown peer's stash reads as the empty (negative) answer")
+
+	# Latch rules, driven through the split delegate (no tree needed):
+	# the empty answer latches; a real state with no player yet does NOT.
+	var neg = DungeonScript.new()
+	neg._apply_continued_state_local({}, null)
+	_assert(neg._continued_state_latched, "140L2: the empty answer latches the pull")
+	var early = DungeonScript.new()
+	early._apply_continued_state_local({"level": 4}, null)
+	_assert(not early._continued_state_latched,
+		"140L2: a real state with no local player yet does not latch")
+	_assert(early.continued_apply_audit_log.size() == 1
+		and str(early.continued_apply_audit_log[0]).contains("me_found=false"),
+		"140L2: the apply audit records the missed landing")
+	inst.free()
+	neg.free()
+	early.free()
+
+	# Source pins.
+	var reg := dsrc.find("func register_class(")
+	var reg_end := dsrc.find("\nfunc ", reg + 1)
+	_assert(dsrc.substr(reg, reg_end - reg).contains("_continued_state_by_peer[sender] = ps"),
+		"140L2: register_class stashes the matched state")
+	var rq := dsrc.find("func request_continued_state()")
+	var rq_end := dsrc.find("\nfunc ", rq + 1)
+	var rq_body := dsrc.substr(rq, rq_end - rq)
+	_assert(rq_body.contains("is_server") and rq_body.contains("_continued_state_by_peer.get(sender, {})")
+		and rq_body.contains("apply_continued_state"),
+		"140L2: the pull answers from the stash (or the empty negative)")
+	var ds := dsrc.find("func _do_spawn(")
+	var ds_end := dsrc.find("\nfunc ", ds + 1)
+	_assert(dsrc.substr(ds, ds_end - ds).contains("request_continued_state"),
+		"140L2: the local spawn branch sends the pull")
+	_assert(dsrc.contains("func _apply_continued_state_local("),
+		"140L2: the apply delegate exists (guard/delegate split)")
+	print("[Playtest] Continued pull done")
 
 
 ## Issue #132: the Host menu's Lobby tab must show what Host will
