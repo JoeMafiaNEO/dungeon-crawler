@@ -17,6 +17,12 @@ extends Node3D
 ## TEST SEAM: test_player overrides _player_for_peer().
 var test_player: Player = null
 
+## Issue #142: dock purchases awaiting their grant outcome, keyed by
+## purchase tag (see request_buy / report_claim). A purchase whose
+## outcome never reports rolls back by default after a timeout.
+var _pending_dock: Dictionary = {}
+var _dock_seq := 0
+
 
 ## Vendor buy catalog. Prices are the DockEconomy.PRICE_* consts (Jesse's
 ## numbers calls); the catalog is built here so the HUD reads one list.
@@ -97,21 +103,72 @@ func request_buy(item_id: String) -> void:
 	if not DockEconomy.spend_cash(peer, price):
 		_tell(peer, "on_dock_toast", ["Not enough farm cash. Need %d." % price])
 		return
+	# Issue #142: the purchase stays pending until the grant reports
+	# its outcome (receive_item's report leg). The per-class ledger
+	# credits below land at purchase time and roll back on a failed
+	# grant, together with the cash; the on_dock_bought tell fires in
+	# report_claim — money and goods never vanish silently.
+	_dock_seq += 1
+	_pending_dock[_dock_seq] = {"peer": peer, "item_id": item_id, "price": price,
+		"seed": item_id == DockEconomy.SEED_ITEM,
+		"stock": item_id == DockEconomy.BAIT_ITEM or item_id == DockEconomy.FERTILIZER_ITEM,
+		"since": Time.get_ticks_msec() / 1000.0}
 	match item_id:
 		DockEconomy.SEED_ITEM:
 			# Phase 3 flagged seam: vendor seed purchases MUST update the
 			# server seed ledger (closed here).
 			FarmPlot.grant_seeds(peer, 1)
-			_grant_to_peer(player, peer, item_id, 1)
 		DockEconomy.BAIT_ITEM, DockEconomy.FERTILIZER_ITEM:
 			DockEconomy.grant_stock(peer, item_id, 1)
-			_grant_to_peer(player, peer, item_id, 1)
 		_:
 			# Healing consumables / wave buffs: plain inventory items, no
 			# server tracking needed. They persist via the existing
 			# run inventory, so they stay usable in later levels.
-			_grant_to_peer(player, peer, item_id, 1)
-	_tell(peer, "on_dock_bought", [item_id])
+			pass
+	player.rpc_id(peer, "receive_item", item_id, -1, str(get_path()), 1, _dock_seq)
+
+
+## Issue #142: the grant outcome for a dock purchase (called by the
+## buyer's own receive_item via the report leg). Success moves the
+## on_dock_bought tell here; failure refunds the cash and rolls the
+## per-class ledger credits back.
+@rpc("any_peer", "call_local")
+func report_claim(taken: int, tag: int = 0) -> void:
+	if not multiplayer.is_server():
+		return
+	var rec: Dictionary = _pending_dock.get(tag, {})
+	if rec.is_empty() or int(rec.get("peer", -1)) != _sender_peer():
+		return
+	_pending_dock.erase(tag)
+	if taken >= 1:
+		_tell(int(rec["peer"]), "on_dock_bought", [str(rec["item_id"])])
+	else:
+		_rollback_dock(rec)
+
+
+## Issue #142: make a failed (or never-reported) dock purchase
+## whole: cash refund plus the ledger credits it carried.
+func _rollback_dock(rec: Dictionary) -> void:
+	var peer := int(rec.get("peer", 0))
+	DockEconomy.grant_cash(peer, int(rec.get("price", 0)))
+	if bool(rec.get("seed")):
+		FarmPlot.grant_seeds(peer, -1)
+	if bool(rec.get("stock")):
+		DockEconomy.spend_stock(peer, str(rec.get("item_id", "")), 1)
+	_tell(peer, "on_dock_toast", ["Inventory full — purchase refunded."])
+
+
+## Issue #142: dock purchases with no outcome after the timeout
+## roll back by default.
+func _process(_delta: float) -> void:
+	if not multiplayer.is_server() or _pending_dock.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	for tag in _pending_dock.keys():
+		var rec: Dictionary = _pending_dock[tag]
+		if now - float(rec.get("since", now)) > 3.0:
+			_pending_dock.erase(tag)
+			_rollback_dock(rec)
 
 
 ## --- Server RPCs: selling (fish/crops -> farm cash) ---

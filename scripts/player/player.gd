@@ -4643,13 +4643,32 @@ func on_buy_failed(price: int) -> void:
 		hud.toast("Not enough cash! Need $%d." % price)
 
 
+## Issue #142: a purchase whose grant could not land (inventory full)
+## was refunded in full server-side — money never vanishes silently.
 @rpc("any_peer", "call_local")
-func receive_item(item_id: String, sell_value: int = -1) -> void:
+func on_buy_refunded(price: int) -> void:
+	if not is_multiplayer_authority():
+		return
+	if hud != null:
+		hud.toast("Purchase refunded: $%d." % price)
+		if hud.vendor_open:
+			hud.refresh_vendor_cash()
+
+
+@rpc("any_peer", "call_local")
+func receive_item(item_id: String, sell_value: int = -1, claim_from: String = "", claim_count: int = 0, claim_tag: int = 0) -> void:
 	if not is_multiplayer_authority():
 		return
 	var item := ItemDB.get_item(item_id)
 	if item == null:
+		# A claim on an unresolvable item consumes the drop (it could
+		# never be granted); non-claim grants just no-op, as before.
+		_report_claim(claim_from, claim_count, claim_tag)
 		return
+	# Issue #142: units this grant moves — a world-pickup claim carries
+	# the drop's whole count (stacks are unbounded, so a claim takes
+	# all of it or, when full, none); every other grant moves one.
+	var add_n := claim_count if claim_count > 0 else 1
 	# Apex relic (issue #5): earns the special into the vault instead of
 	# entering the inventory. The passive applies when equipped (issue #6).
 	if not item.grants_special.is_empty():
@@ -4658,6 +4677,7 @@ func receive_item(item_id: String, sell_value: int = -1) -> void:
 		if hud != null and sp != null:
 			hud.toast("Relic claimed: %s — equip it in the Relic Vault!" % sp.display_name)
 		AudioManager.sfx("unlock")
+		_report_claim(claim_from, claim_count, claim_tag)
 		return
 	# Danger-model scaled drops carry their sell value from the pickup.
 	# Duplicate before mutating so the shared ItemDB entry stays pristine.
@@ -4668,7 +4688,7 @@ func receive_item(item_id: String, sell_value: int = -1) -> void:
 	for entry in inventory:
 		var e_item := entry["item"] as ItemData
 		if e_item != null and e_item.id == item.id:
-			entry["count"] = int(entry["count"]) + 1
+			entry["count"] = int(entry["count"]) + add_n
 			_recalc_stats()
 			health_changed.emit(hp, max_hp)
 			var rare := _pickup_feedback(item)
@@ -4678,15 +4698,19 @@ func receive_item(item_id: String, sell_value: int = -1) -> void:
 				hud.refresh_loadout(self)
 				if rare:
 					hud.toast("%s %s!" % [ItemData.rarity_name(item.rarity).to_upper(), item.display_name.to_upper()])
+			_report_claim(claim_from, claim_count, claim_tag)
 			return
 	if inventory.size() >= INVENTORY_MAX:
 		if hud != null:
 			hud.toast("Inventory full! Press I to manage it.")
+		# Issue #142: a claim that lands nothing reports a zero take —
+		# the drop stays in the world (ItemPickup.report_claim).
+		_report_claim(claim_from, 0, claim_tag)
 		return
 	# Issue #104 Phase 1: new pickups NEVER auto-equip. (If a stack of
 	# this item already exists, the merge path above grows it in place —
 	# an equipped stack stays equipped and grows.)
-	inventory.append({"item": item, "count": 1, "equipped_slot": ""})
+	inventory.append({"item": item, "count": add_n, "equipped_slot": ""})
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
 	var rare := _pickup_feedback(item)
@@ -4696,6 +4720,26 @@ func receive_item(item_id: String, sell_value: int = -1) -> void:
 		hud.refresh_loadout(self)
 		if rare:
 			hud.toast("%s %s!" % [ItemData.rarity_name(item.rarity).to_upper(), item.display_name.to_upper()])
+	_report_claim(claim_from, claim_count, claim_tag)
+
+
+## Issue #142: report a world-pickup claim's outcome to the pickup
+## (see ItemPickup.report_claim): how many units this grant actually
+## took. Non-claim grants pass no claim source and never report. The
+## claimer's own request flag clears here too — the claim has resolved
+## from their side whatever the outcome.
+func _report_claim(claim_from: String, taken: int, tag: int = 0) -> void:
+	if claim_from == "":
+		return
+	var pk := get_node_or_null(claim_from)
+	if pk == null:
+		return
+	if pk.has_method("resolve_my_claim"):
+		pk.call("resolve_my_claim")
+	if multiplayer.is_server():
+		pk.call("report_claim", taken, tag)
+	else:
+		pk.rpc_id(NetworkManager.server_peer_id, "report_claim", taken, tag)
 
 
 ## Pickup sound pitched by rarity. Returns true for rare+ finds (caller shows
@@ -4739,11 +4783,30 @@ func dispose_item(index: int) -> void:
 			hud.toast("Unequip first.")
 		return
 	_audit_inventory("dispose_item", item.id, int(entry["count"]), index, _entry_equipped_slot(entry))
+	# Issue #142: disposing drops the stack in the world as a pickup
+	# (spawned through the dungeon's path — all peers see it, late
+	# joiners re-sync it) instead of destroying it. The drop spawns
+	# BEFORE the removal so a spawn failure can never eat the stack.
+	# The Architect's tools drop like any other item (Jesse's ruling:
+	# world items are never persisted, so the #113 run-start re-grant
+	# — which works from saved state — has no duplication path here).
+	# Where no dungeon pickup path exists in the scene (e.g. the
+	# station), dispose destroys as before.
+	var dropped := false
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null:
+		var base := ItemDB.get_item(item.id)
+		var mult := 1.0
+		if base != null and base.sell_value > 0 and item.sell_value != base.sell_value:
+			mult = float(item.sell_value) / float(base.sell_value)
+		var drop_pos := global_position - global_transform.basis.z * 0.9
+		dungeon.rpc("spawn_pickup", item.id, drop_pos, mult, int(entry["count"]))
+		dropped = true
 	inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
 	if hud != null:
-		hud.toast("Disposed: %s x%d" % [item.display_name, int(entry["count"])])
+		hud.toast(("Dropped: %s x%d" if dropped else "Disposed: %s x%d") % [item.display_name, int(entry["count"])])
 		hud.refresh_inventory(self)
 		hud.refresh_loadout(self)
 

@@ -173,6 +173,8 @@ func _run() -> void:
 	_test_session_roster_140()
 	_test_continued_pull_140()
 	_test_level_label_140()
+	_test_pickup_claims_142()
+	_test_makewhole_142()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -5300,7 +5302,7 @@ func _test_station_phase3() -> void:
 	_assert(roundi(0.0 * 3.8) == 0, "zero sell_value stays zero")
 	# Wiring.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0)"),
+	_assert(dsrc.contains("func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1)"),
 		"spawn_pickup value_mult param")
 	_assert(dsrc.contains("pickup.value_mult = value_mult"), "pickup stores value_mult")
 	_assert(dsrc.contains("reward_scale: float = 1.0"), "spawn_mob reward_scale param")
@@ -5318,7 +5320,7 @@ func _test_station_phase3() -> void:
 		"XP scaled with floor")
 	_assert(msrc.contains("p_reward_scale: float = 1.0"), "setup takes reward_scale")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("func receive_item(item_id: String, sell_value: int = -1)"),
+	_assert(psrc.contains("func receive_item(item_id: String, sell_value: int = -1, claim_from: String = \"\", claim_count: int = 0, claim_tag: int = 0)"),
 		"receive_item sell_value param")
 	var isrc := FileAccess.get_file_as_string("res://scripts/items/item_pickup.gd")
 	_assert(isrc.contains("var value_mult := 1.0"), "pickup keeps value_mult")
@@ -10779,6 +10781,236 @@ func _test_level_label_140() -> void:
 	# just detach the stub so nothing can touch it post-section.
 	p.set("hud", null)
 	print("[Playtest] Level label restore done")
+
+
+## Issue #142: recording stand-in for a world pickup on the claim
+## protocol — receive_item reports the taken count here.
+class _ClaimStub142:
+	extends Node
+	var reported: Array = []
+	var resolved := false
+
+	func report_claim(taken: int, tag: int = 0) -> void:
+		reported.append(taken)
+
+	func resolve_my_claim() -> void:
+		resolved = true
+
+
+## Issue #142: a world-pickup claim whose grant can't land (full,
+## unstackable) must report a zero take so the drop stays in the
+## world; a stackable claim takes the drop's whole count even at a
+## full inventory; non-claim grants never report.
+func _test_pickup_claims_142() -> void:
+	print("[Playtest] Pickup claims (issue #142)...")
+	# Source pins: the claim protocol's shape.
+	var isrc := FileAccess.get_file_as_string("res://scripts/items/item_pickup.gd")
+	var cl := isrc.find("func claim(")
+	var cl_end := isrc.find("\nfunc ", cl + 1)
+	var cl_body := isrc.substr(cl, cl_end - cl)
+	_assert(cl_body.contains("_claim_since = _t") and cl_body.contains("str(get_path()), count"),
+		"142: claim locks, timestamps, and grants with the claim context")
+	_assert(isrc.contains("func report_claim(") and isrc.contains("sync_count"),
+		"142: the outcome leg (report_claim + count sync) exists")
+	_assert(isrc.contains("CLAIM_TIMEOUT"), "142: an unreported claim releases on a timeout")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("pickup.count = maxi(count, 1)"),
+		"142: spawn_pickup carries the drop count")
+	_assert(dsrc.contains("pickup.value_mult, pickup.count"),
+		"142: late-joiner resync passes the count through")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var di := psrc.find("func dispose_item(")
+	var di_end := psrc.find("\nfunc ", di + 1)
+	var di_body := psrc.substr(di, di_end - di)
+	_assert(not di_body.contains("ARCHITECT_TOOL_IDS"),
+		"142: no Architect exemption in dispose (Jesse's ruling — tools drop like any item)")
+	_assert(di_body.find("spawn_pickup") < di_body.find("inventory.remove_at"),
+		"142: dispose spawns the drop before removing the stack")
+
+	# Behavioral: drive receive_item with a claim context against a
+	# recording pickup stub.
+	var idb = root.get_node("ItemDB")
+	var ids: Array = []
+	for id in idb.items.keys():
+		if str(idb.get_item(id).get("grants_special")) == "":
+			ids.append(id)
+	_assert(ids.size() >= 13, "142: the catalog has enough plain items for the fixture")
+	var stub := _ClaimStub142.new()
+	stub.name = "ClaimStub142"
+	root.add_child(stub)
+	var claim_path := str(stub.get_path())
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "mage")
+	holder.add_child(p)
+	# Fill all 12 slots with distinct stacks.
+	var fill: Array = []
+	for i in 12:
+		fill.append({"item": idb.get_item(ids[i]), "count": 1, "equipped_slot": ""})
+	p.set("inventory", fill)
+	# (1) Full + unstackable: nothing lands, the take reports zero.
+	p.call("receive_item", ids[12], -1, claim_path, 3)
+	_assert(p.get("inventory").size() == 12, "142: a full unstackable claim adds nothing")
+	_assert(stub.reported == [0], "142: a full unstackable claim reports a zero take")
+	_assert(stub.resolved, "142: the claimer's request flag resolves on the outcome")
+	stub.reported.clear()
+	stub.resolved = false
+	# (2) Full + stackable: the whole drop count merges in.
+	p.call("receive_item", ids[3], -1, claim_path, 3)
+	var stack3 := {}
+	for e in p.get("inventory"):
+		if (e["item"] as Resource).get("id") == ids[3]:
+			stack3 = e
+	_assert(int(stack3.get("count", 0)) == 4, "142: a stackable claim merges the whole count at full inventory")
+	_assert(stub.reported == [3], "142: a stackable claim reports the full take")
+	stub.reported.clear()
+	# (3) Non-claim grant at full: today's behavior, and no report.
+	p.call("receive_item", ids[12])
+	_assert(p.get("inventory").size() == 12 and stub.reported.is_empty(),
+		"142: non-claim grants are unchanged (no report, no add at full)")
+	# (4) Room + claim: a new stack of the drop's full count.
+	p.set("inventory", [])
+	p.call("receive_item", ids[12], -1, claim_path, 4)
+	_assert(p.get("inventory").size() == 1 and int(p.get("inventory")[0].get("count", 0)) == 4,
+		"142: a claim with room lands one stack of the full count")
+	_assert(stub.reported == [4], "142: a landed claim reports the full take")
+	p.set("hud", null)
+	print("[Playtest] Pickup claims done")
+
+
+func _body_of(src: String, sig: String) -> String:
+	var i := src.find(sig)
+	if i < 0:
+		return ""
+	var e := src.find("\nfunc ", i + 1)
+	var e2 := src.find("\n@rpc", i + 1)
+	if e2 >= 0 and (e < 0 or e2 < e):
+		e = e2
+	return src.substr(i, (e if e >= 0 else src.length()) - i)
+
+
+## Issue #142 (added flows): purchases and grants whose inventory
+## grant cannot land are made whole — refund + ledger rollback at
+## the vendors, the crop left standing at harvest, the fish dropped
+## in the world at a catch — because the server cannot pre-check an
+## inventory it never sees and items/money never vanish silently.
+func _test_makewhole_142() -> void:
+	print("[Playtest] Make-whole flows (issue #142)...")
+	# Source pins for the two scene-heavy vendors (their full rigs
+	# are scenes; the protocol's failure semantics are pinned
+	# behaviorally below through the dock merchant, farm, fishing).
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var bp := _body_of(dsrc, "func buy_potion(")
+	_assert(bp.contains("_pending_buys") and not bp.contains('rpc_id(sender, "on_bought"'),
+		"142: supermarket buy defers its success tell to the grant outcome")
+	_assert(dsrc.contains("func _refund_buy(") and dsrc.contains("func report_claim("),
+		"142: supermarket refund + outcome legs exist")
+	var stsrc := FileAccess.get_file_as_string("res://scripts/station/station.gd")
+	var bv := _body_of(stsrc, "func buy_vendor_item(")
+	_assert(bv.contains("_pending_vendor") and not bv.contains('rpc_id(sender, "on_bought"'),
+		"142: station vendor defers its success tell to the grant outcome")
+	_assert(stsrc.contains("func _refund_vendor("), "142: station vendor refund leg exists")
+	var msrc2 := FileAccess.get_file_as_string("res://scripts/dungeon/dock_merchant.gd")
+	var rb := _body_of(msrc2, "func request_buy(")
+	_assert(rb.contains("_pending_dock") and not rb.contains('_tell(peer, "on_dock_bought"'),
+		"142: dock buy defers its success tell to the grant outcome")
+	_assert(_body_of(msrc2, "func _rollback_dock(").contains("grant_seeds(peer, -1)"),
+		"142: dock rollback reverses the seed ledger credit, not just the cash")
+	var fsrc := FileAccess.get_file_as_string("res://scripts/dungeon/farm_plot.gd")
+	_assert(not _body_of(fsrc, "func _harvest(").contains("grant_stock"),
+		"142: harvest records no stock before the outcome")
+	_assert(_body_of(fsrc, "func report_claim(").contains("still standing"),
+		"142: a failed harvest leaves the crop standing, with a toast")
+	var fdsrc := FileAccess.get_file_as_string("res://scripts/fishing/fishing_director.gd")
+	_assert(not _body_of(fdsrc, "func _resolve_catch(").contains("grant_stock"),
+		"142: a catch records no stock before the outcome")
+	_assert(_body_of(fdsrc, "func _land_catch(").contains("spawn_pickup"),
+		"142: an unlandable catch becomes a world drop")
+
+	# Behavioral rigs: real player + the flow owners, server-local
+	# loopback (the report resolves inside the same call).
+	var idb = root.get_node("ItemDB")
+	var plain: Array = []
+	for id in idb.items.keys():
+		if str(idb.get_item(id).get("grants_special")) == "":
+			plain.append(id)
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var FishScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder2 := Node3D.new()
+	root.add_child(holder2)
+	current_scene = holder2
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "warrior")
+	holder2.add_child(p)
+	var fill := func(exclude: Array) -> void:
+		var inv: Array = []
+		for id in plain:
+			if inv.size() >= 12:
+				break
+			if exclude.has(id):
+				continue
+			inv.append({"item": idb.get_item(id), "count": 1, "equipped_slot": ""})
+		p.set("inventory", inv)
+	# --- Dock merchant: refund + rollback, then a clean buy ---
+	var merch = MerchScript.new()
+	root.add_child(merch)
+	merch.test_player = p
+	EconScript.debug_reset()
+	PlotScript._seed_ledger.clear()
+	EconScript.grant_cash(1, 50)
+	fill.call(["dock_salve", "seed_packet"])
+	merch.request_buy("dock_salve")
+	_assert(EconScript.cash_balance(1) == 50, "142: a failed dock buy refunds in full")
+	_assert(_farm_inv_count(p, "dock_salve") == 0, "142: a failed dock buy delivers nothing")
+	merch.request_buy("seed_packet")
+	_assert(EconScript.cash_balance(1) == 50 and PlotScript.seed_count(1) == 0,
+		"142: a failed seed buy rolls the seed ledger back too")
+	p.set("inventory", [])
+	merch.request_buy("dock_salve")
+	_assert(EconScript.cash_balance(1) == 45 and _farm_inv_count(p, "dock_salve") == 1,
+		"142: a landed dock buy charges once and delivers")
+	# --- Farm: the crop stands on failure, flips + records on success ---
+	var plot = PlotScript.new()
+	root.add_child(plot)
+	plot.test_player = p
+	plot.set("debug_harvest_roll", 0.5)
+	var crop := str(plot.call("_roll_harvest_item"))
+	plot.set("plot_state", "ready")
+	fill.call([crop])
+	var stock0: int = EconScript.stock_count(1, crop)
+	plot.call("_harvest", 1)
+	_assert(str(plot.get("plot_state")) == "ready", "142: a failed harvest leaves the crop standing")
+	_assert(EconScript.stock_count(1, crop) == stock0, "142: a failed harvest writes no stock record")
+	p.set("inventory", [])
+	plot.call("_harvest", 1)
+	_assert(str(plot.get("plot_state")) == "untilled", "142: a landed harvest flips the plot")
+	_assert(EconScript.stock_count(1, crop) == stock0 + 1, "142: a landed harvest records the crop")
+	# --- Fishing: an unlandable catch is ledgered + dropped, not eaten ---
+	var director = FishScript.new()
+	root.add_child(director)
+	director.test_players = {1: p}
+	FishScript.debug_catch_roll = 0.5
+	var fish := str(director.roll_catch_item(1.0, false))
+	fill.call([fish])
+	var fstock0: int = EconScript.stock_count(1, fish)
+	director.call("_resolve_catch", 1, {"wait": 1.0, "baited": false})
+	_assert(_farm_inv_count(p, fish) == 0, "142: a full-inventory catch stays out of the bag")
+	_assert(EconScript.stock_count(1, fish) == fstock0 + 1,
+		"142: a dropped catch still records in the stock ledger")
+	_assert((director.get("_catch_pending") as Dictionary).is_empty(),
+		"142: the catch outcome is consumed by the report")
+	p.set("inventory", [])
+	director.call("_resolve_catch", 1, {"wait": 1.0, "baited": false})
+	_assert(_farm_inv_count(p, fish) == 1, "142: a landed catch enters the bag")
+	FishScript.debug_catch_roll = -1.0
+	p.set("hud", null)
+	print("[Playtest] Make-whole flows done")
 
 
 ## Issue #132: the Host menu's Lobby tab must show what Host will

@@ -42,6 +42,12 @@ static var _seed_ledger: Dictionary = {}
 
 var test_player: Player = null
 
+## Issue #142: a harvest awaiting its grant outcome. While set, the
+## plot does NOT flip and NO stock is recorded — the crop stays
+## standing until the harvester's inventory answers (report_claim);
+## an unanswered outcome leaves it standing too.
+var _harvest_pending: Dictionary = {}
+
 var plot_index: int = 0
 var occupied_by: int = 0 ## peer id holding the plot; 0 = free
 var plot_state: String = "untilled" ## Phase 3 state machine state.
@@ -192,10 +198,40 @@ func _plant(peer: int) -> void:
 
 
 func _harvest(peer: int) -> void:
+	if not _harvest_pending.is_empty():
+		return # an earlier harvest on this plot is still unanswered
 	var item_id := _roll_harvest_item()
 	var player := _player_for_peer(peer)
-	if player != null:
-		player.rpc_id(peer, "receive_item", item_id)
+	if player == null:
+		return
+	# Issue #142: the grant reports its outcome back (receive_item's
+	# report leg); the plot flips and the stock ledger records ONLY
+	# on success (report_claim). A failed grant leaves the crop
+	# standing and writes no record — recording a crop that never
+	# entered an inventory would corrupt sell validation, and a
+	# vanished crop is exactly the silent loss this issue kills.
+	_harvest_pending = {"peer": peer, "item_id": item_id,
+		"since": Time.get_ticks_msec() / 1000.0}
+	player.rpc_id(peer, "receive_item", item_id, -1, str(get_path()), 1, peer)
+
+
+## Issue #142: the harvest grant's outcome (called by the
+## harvester's own receive_item via the report leg).
+@rpc("any_peer", "call_local")
+func report_claim(taken: int, tag: int = 0) -> void:
+	if not multiplayer.is_server() or _harvest_pending.is_empty():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	if sender != int(_harvest_pending.get("peer", -1)):
+		return
+	var item_id := str(_harvest_pending.get("item_id", ""))
+	var peer := int(_harvest_pending["peer"])
+	_harvest_pending = {}
+	if taken < 1:
+		rpc_id(peer, "on_plot_toast", "Inventory full — your crop is still standing.")
+		return
 	# Phase 5 validation fix: the harvest is a server grant — record it
 	# in the DockEconomy stock ledger or the vendor's sell validation
 	# (spend_stock) rejects the very crop the server just gave.
@@ -209,6 +245,15 @@ func _harvest(peer: int) -> void:
 	occupied_by = 0
 	rpc("sync_occupant", 0)
 	_sync_plot()
+
+
+## Issue #142: an unanswered harvest outcome leaves the crop
+## standing — nothing flipped, nothing recorded.
+func _process(_delta: float) -> void:
+	if not multiplayer.is_server() or _harvest_pending.is_empty():
+		return
+	if Time.get_ticks_msec() / 1000.0 - float(_harvest_pending.get("since", 0.0)) > 3.0:
+		_harvest_pending = {}
 
 
 ## Harvest rarity: weighted roll, server-side.

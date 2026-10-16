@@ -9,6 +9,9 @@ const WARN_AT := 5.0
 
 var item: ItemData
 var claimed := false
+## Issue #142: how many units this drop holds. Mob loot is always 1;
+## a disposed stack drops as one pickup carrying its full count.
+var count := 1
 ## Danger-model loot multiplier at spawn (1.0 = base sell value). Preserved
 ## across late-joiner re-syncs so scaled drops keep their scaled price.
 var value_mult := 1.0
@@ -23,6 +26,14 @@ var _request_sent := false
 var _life := LIFETIME
 var _warned := false
 var _visual: Node3D
+## Issue #142: a claim is a lock with an outcome still owed. The server
+## records who claimed and when (its own _t clock); the claimer's grant
+## reports a taken count back (report_claim). No report within
+## CLAIM_TIMEOUT releases the lock — a disconnect mid-claim can never
+## wedge the drop or eat it.
+const CLAIM_TIMEOUT := 3.0
+var _claimer_peer := 0
+var _claim_since := -1.0
 
 
 func setup(p_item: ItemData) -> void:
@@ -33,10 +44,17 @@ func _ready() -> void:
 	if is_key:
 		$Label3D.text = "[E] Take Key"
 	else:
-		$Label3D.text = "[E] " + item.display_name
+		_refresh_label()
 		$Label3D.modulate = ItemData.rarity_color(item.rarity)
 	_build_visual()
 	_base_y = position.y
+
+
+## Issue #142: a multi-unit drop (a disposed stack) says how many it holds.
+func _refresh_label() -> void:
+	if item == null:
+		return
+	$Label3D.text = "[E] " + item.display_name + (" x%d" % count if count > 1 else "")
 
 
 const KEY_MODEL := "res://assets/models/kaykit/dungeon/key.glb"
@@ -184,6 +202,14 @@ func _process(delta: float) -> void:
 			rpc("warn_expiry")
 		if _life <= 0.0:
 			rpc("despawn")
+	# Issue #142: a claim whose outcome never reports (the claimer
+	# disconnected mid-claim) releases at the full count — a peer who
+	# left takes their inventory with them, so nothing can duplicate.
+	if multiplayer.is_server() and claimed and _claim_since >= 0.0 \
+			and _t - _claim_since > CLAIM_TIMEOUT:
+		claimed = false
+		_claimer_peer = 0
+		_claim_since = -1.0
 
 
 func is_available() -> bool:
@@ -212,17 +238,68 @@ func claim(claimer: int) -> void:
 	if claimed:
 		return
 	claimed = true
-	rpc("despawn")
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if is_key:
+		# Keys never enter an inventory — no outcome to await.
+		rpc("despawn")
 		if dungeon != null:
 			dungeon.collect_key(claimer)
 		return
+	# Issue #142: the drop is NOT freed here. The grant's outcome is
+	# decided on the claimer (only they can see their inventory), and
+	# they report the taken count back — report_claim despawns on a
+	# full take and releases the lock otherwise, so a full inventory
+	# leaves the drop in the world instead of destroying it.
+	_claimer_peer = claimer
+	_claim_since = _t
 	var player_node: Node = null
 	if dungeon != null:
 		player_node = dungeon.get_player_node(claimer)
 	if player_node != null:
-		player_node.rpc_id(claimer, "receive_item", item.id, item.sell_value)
+		player_node.rpc_id(claimer, "receive_item", item.id, item.sell_value,
+			str(get_path()), count)
+	else:
+		# Nobody to grant to (the claimer vanished mid-claim): release.
+		claimed = false
+		_claimer_peer = 0
+		_claim_since = -1.0
+
+
+## Issue #142: the claimer's grant reports how many units actually
+## landed. Full take -> the drop is consumed (despawn everywhere).
+## Anything less (inventory full) -> the lock releases and the drop
+## stays in the world at the remaining count, claimable by anyone.
+@rpc("any_peer", "call_local")
+func report_claim(taken: int, tag: int = 0) -> void:
+	if not multiplayer.is_server():
+		return
+	if not claimed or _claim_since < 0.0:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != _claimer_peer:
+		return
+	var got := clampi(taken, 0, count)
+	_claimer_peer = 0
+	_claim_since = -1.0
+	if got >= count:
+		rpc("despawn")
+	else:
+		claimed = false
+		rpc("sync_count", count - got)
+
+
+## Issue #142: keep every peer's remaining-count (and label) in step.
+@rpc("any_peer", "call_local")
+func sync_count(new_count: int) -> void:
+	count = maxi(new_count, 0)
+	_refresh_label()
+
+
+## Issue #142: called on the CLAIMER's own instance of this pickup when
+## its grant resolves — their request is no longer in flight, so the
+## pickup prompt may offer it again.
+func resolve_my_claim() -> void:
+	_request_sent = false
 
 
 @rpc("any_peer", "call_local")

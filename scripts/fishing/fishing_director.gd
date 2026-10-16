@@ -60,6 +60,11 @@ var test_players: Dictionary = {}
 
 ## peer -> {state, bite_at, deadline, wait, baited, bobber, cast_from}
 var _sessions: Dictionary = {}
+
+## Issue #142: catches awaiting their grant outcome, by peer. The
+## session itself ends at the catch either way; what the outcome
+## decides is only where the fish lands (report_claim).
+var _catch_pending: Dictionary = {}
 ## peer -> FishingVisual (presentation only, every peer's instance)
 var _visuals: Dictionary = {}
 ## Peers whose local cast prediction is awaiting the server broadcast.
@@ -208,16 +213,52 @@ func _handle_hook(peer: int) -> void:
 
 func _resolve_catch(peer: int, s: Dictionary) -> void:
 	var item_id := roll_catch_item(float(s["wait"]), bool(s["baited"]))
+	_sessions.erase(peer)
+	# Issue #142: the grant reports its outcome back (receive_item's
+	# report leg) and report_claim decides where the fish lands —
+	# the fisher's inventory on success, a world drop at their feet
+	# when it can't take the fish. The fish never just vanishes.
+	_catch_pending[peer] = {"item_id": item_id,
+		"since": Time.get_ticks_msec() / 1000.0}
 	var player := _player_for_peer(peer)
 	if player != null:
-		player.rpc_id(peer, "receive_item", item_id)
+		player.rpc_id(peer, "receive_item", item_id, -1, str(get_path()), 1, peer)
+	rpc("fx_catch", peer, item_id)
+
+
+## Issue #142: the catch grant's outcome (called by the fisher's
+## own receive_item via the report leg).
+@rpc("any_peer", "call_local")
+func report_claim(taken: int, tag: int = 0) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	var rec: Dictionary = _catch_pending.get(sender, {})
+	if rec.is_empty():
+		return
+	_catch_pending.erase(sender)
+	_land_catch(sender, str(rec.get("item_id", "")), taken >= 1)
+
+
+## Issue #142: record the catch in the stock ledger and land it.
+## A grant that failed (or never answered — the _process timeout)
+## becomes a world pickup at the fisher's feet instead of vanishing.
+func _land_catch(peer: int, item_id: String, in_inventory: bool) -> void:
 	# The catch is a server grant — record it in the DockEconomy stock
 	# ledger or the vendor's sell validation rejects the fish.
 	DockEconomy.grant_stock(peer, item_id)
-	_sessions.erase(peer)
 	if item_id == FISH_LEGENDARY:
 		rpc_id(peer, "record_dock_trophy", DOCK_TROPHY_LEGENDARY_FISH)
-	rpc("fx_catch", peer, item_id)
+	if in_inventory:
+		return
+	var player := _player_for_peer(peer)
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if player != null and dungeon != null:
+		var drop_pos: Vector3 = player.global_position
+		drop_pos += -player.global_transform.basis.z * 0.9
+		dungeon.rpc("spawn_pickup", item_id, drop_pos)
 
 
 func _miss(peer: int) -> void:
@@ -236,6 +277,15 @@ func _end_peer_session(peer: int, _reason: String) -> void:
 func _process(_delta: float) -> void:
 	if not multiplayer.is_server():
 		return
+	# Issue #142: a catch whose grant outcome never arrives lands
+	# as a world drop by default (see _land_catch).
+	if not _catch_pending.is_empty():
+		var now := Time.get_ticks_msec() / 1000.0
+		for peer in _catch_pending.keys():
+			var rec: Dictionary = _catch_pending[peer]
+			if now - float(rec.get("since", now)) > 3.0:
+				_catch_pending.erase(peer)
+				_land_catch(peer, str(rec.get("item_id", "")), false)
 	for peer in _sessions.keys():
 		var s: Dictionary = _sessions[peer]
 		var player := _player_for_peer(peer)

@@ -271,6 +271,11 @@ var _torch_lights: Array[OmniLight3D] = []
 var _ambient_timer := 6.0
 var _mob_id := 0
 var _pickup_id := 0
+## Issue #142: supermarket purchases awaiting their grant outcome,
+## keyed by purchase tag (see buy_potion / report_claim). A purchase
+## whose outcome never reports refunds by default after a timeout.
+var _pending_buys: Dictionary = {}
+var _buy_seq := 0
 var _spawn_tick := 0.0
 var _wave_broadcast := 0.0
 ## Wave-clear watchdog (issue #27): seconds since the wave had no alive mobs
@@ -714,7 +719,7 @@ func request_state() -> void:
 			if pickup.is_key:
 				rpc_id(sender, "spawn_key", pickup.position)
 			elif pickup.item != null:
-				rpc_id(sender, "spawn_pickup", pickup.item.id, pickup.position, pickup.value_mult)
+				rpc_id(sender, "spawn_pickup", pickup.item.id, pickup.position, pickup.value_mult, pickup.count)
 	# Warlord: sync RTS state for late joiners.
 	if is_warlord and _rts_manager != null:
 		sync_rts_state(sender)
@@ -954,6 +959,7 @@ func _hp_scale() -> float:
 func _process(delta: float) -> void:
 	# Sim clock for the RTS economy (respawns etc.) — tracks time_scale.
 	sim_time += delta
+	_process_pending_buys()
 	# Issue #86 Bug 2: retry the server handshake until the local player
 	# spawns. The first attempt can be lost if the server hasn't finished
 	# loading dungeon.tscn (train disembark race).
@@ -1858,8 +1864,62 @@ func buy_potion(item_id: String, price: int) -> void:
 		player.rpc_id(sender, "on_buy_failed", price)
 		return
 	player.set("supermarket_cash", cash - price)
-	player.rpc_id(sender, "receive_item", item_id)
-	player.rpc_id(sender, "on_bought", item_id, price)
+	# Issue #142: the purchase stays pending until the grant reports
+	# its outcome (receive_item's report leg). The success tell fires
+	# in report_claim; a grant that lands nothing refunds in full —
+	# money never vanishes silently.
+	_buy_seq += 1
+	_pending_buys[_buy_seq] = {"peer": sender, "item_id": item_id, "price": price,
+		"since": Time.get_ticks_msec() / 1000.0}
+	player.rpc_id(sender, "receive_item", item_id, -1, str(get_path()), 1, _buy_seq)
+
+
+## Issue #142: the grant outcome for a supermarket purchase (called
+## by the buyer's own receive_item via the report leg). Success moves
+## the on_bought tell here; failure refunds in full.
+@rpc("any_peer", "call_local")
+func report_claim(taken: int, tag: int = 0) -> void:
+	if not multiplayer.is_server():
+		return
+	var rec: Dictionary = _pending_buys.get(tag, {})
+	if rec.is_empty():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	if int(rec.get("peer", -1)) != sender:
+		return
+	_pending_buys.erase(tag)
+	if taken >= 1:
+		var player := get_player_node(sender)
+		if player != null:
+			player.rpc_id(sender, "on_bought", str(rec.get("item_id", "")), int(rec.get("price", 0)))
+	else:
+		_refund_buy(sender, rec)
+
+
+## Issue #142: refund a purchase whose grant landed nothing (or
+## whose outcome never arrived — _process_pending_buys).
+func _refund_buy(peer: int, rec: Dictionary) -> void:
+	var player := get_player_node(peer)
+	if player == null:
+		return
+	player.set("supermarket_cash", int(player.get("supermarket_cash")) + int(rec.get("price", 0)))
+	if peer == multiplayer.get_unique_id() or multiplayer.get_peers().has(peer):
+		player.rpc_id(peer, "on_buy_refunded", int(rec.get("price", 0)))
+
+
+## Issue #142: purchases with no outcome after the timeout refund
+## by default.
+func _process_pending_buys() -> void:
+	if not multiplayer.is_server() or _pending_buys.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	for tag in _pending_buys.keys():
+		var rec: Dictionary = _pending_buys[tag]
+		if now - float(rec.get("since", now)) > 3.0:
+			_pending_buys.erase(tag)
+			_refund_buy(int(rec.get("peer", 0)), rec)
 
 
 ## Server-side: convert a player's supermarket loot into cash.
@@ -2549,7 +2609,7 @@ func _random_mob_pos() -> Vector3:
 # --- Pickups ---
 
 @rpc("any_peer", "call_local")
-func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
+func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
 	var item := ItemDB.get_item(item_id)
 	if item == null:
 		return
@@ -2562,6 +2622,8 @@ func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> voi
 	var pickup := PickupScene.instantiate() as ItemPickup
 	pickup.name = "Pickup_%d" % _pickup_id
 	pickup.value_mult = value_mult
+	# Issue #142: a disposed stack drops as one multi-unit pickup.
+	pickup.count = maxi(count, 1)
 	pickup.setup(item)
 	pickup.position = pos
 	$Pickups.add_child(pickup)

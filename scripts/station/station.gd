@@ -29,6 +29,11 @@ const VENDOR_POTIONS := [
 ]
 const VENDOR_POTION_IDS := ["health_potion", "swift_potion", "power_elixir"]
 var vendor_stock: Array = [] # [{id, price}]
+## Issue #142: vendor purchases awaiting their grant outcome, keyed
+## by purchase tag (see buy_vendor_item / report_claim). A purchase
+## whose outcome never reports refunds by default after a timeout.
+var _pending_vendor: Dictionary = {}
+var _vendor_seq := 0
 
 ## Danger stars per theme (informational only — no locks). Moved here from
 ## the old floating HUD board panel; the physical 3D board reads it.
@@ -125,6 +130,7 @@ func _process(delta: float) -> void:
 		_process_heal_pad()
 	if not multiplayer.is_server():
 		return
+	_process_pending_vendor()
 	if not _departing and _timer_running:
 		_time_left -= delta
 		var sec := int(ceil(maxf(_time_left, 0.0)))
@@ -360,8 +366,62 @@ func buy_vendor_item(item_id: String) -> void:
 			player.rpc_id(sender, "on_buy_failed", int(res.get("price")))
 		return
 	player.set("supermarket_cash", int(res.get("new_cash")))
-	player.rpc_id(sender, "receive_item", item_id)
-	player.rpc_id(sender, "on_bought", item_id, int(res.get("price")))
+	# Issue #142: the purchase stays pending until the grant reports
+	# its outcome (receive_item's report leg). The success tell fires
+	# in report_claim; a grant that lands nothing refunds in full —
+	# money never vanishes silently.
+	_vendor_seq += 1
+	_pending_vendor[_vendor_seq] = {"peer": sender, "item_id": item_id,
+		"price": int(res.get("price")), "since": Time.get_ticks_msec() / 1000.0}
+	player.rpc_id(sender, "receive_item", item_id, -1, str(get_path()), 1, _vendor_seq)
+
+
+## Issue #142: the grant outcome for a vendor purchase (called by
+## the buyer's own receive_item via the report leg). Success moves
+## the on_bought tell here; failure refunds in full.
+@rpc("any_peer", "call_local")
+func report_claim(taken: int, tag: int = 0) -> void:
+	if not multiplayer.is_server():
+		return
+	var rec: Dictionary = _pending_vendor.get(tag, {})
+	if rec.is_empty():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	if int(rec.get("peer", -1)) != sender:
+		return
+	_pending_vendor.erase(tag)
+	if taken >= 1:
+		var player := get_player_node(sender)
+		if player != null:
+			player.rpc_id(sender, "on_bought", str(rec.get("item_id", "")), int(rec.get("price", 0)))
+	else:
+		_refund_vendor(sender, rec)
+
+
+## Issue #142: refund a vendor purchase whose grant landed nothing
+## (or whose outcome never arrived — _process_pending_vendor).
+func _refund_vendor(peer: int, rec: Dictionary) -> void:
+	var player := get_player_node(peer)
+	if player == null:
+		return
+	player.set("supermarket_cash", int(player.get("supermarket_cash")) + int(rec.get("price", 0)))
+	if peer == multiplayer.get_unique_id() or multiplayer.get_peers().has(peer):
+		player.rpc_id(peer, "on_buy_refunded", int(rec.get("price", 0)))
+
+
+## Issue #142: vendor purchases with no outcome after the timeout
+## refund by default.
+func _process_pending_vendor() -> void:
+	if not multiplayer.is_server() or _pending_vendor.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	for tag in _pending_vendor.keys():
+		var rec: Dictionary = _pending_vendor[tag]
+		if now - float(rec.get("since", now)) > 3.0:
+			_pending_vendor.erase(tag)
+			_refund_vendor(int(rec.get("peer", 0)), rec)
 
 
 @rpc("any_peer", "call_local")
