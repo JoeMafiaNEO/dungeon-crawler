@@ -177,6 +177,7 @@ func _run() -> void:
 	_test_makewhole_142()
 	_test_station_dispose_146()
 	_test_annex_floor_147()
+	_test_input_vocabulary_144()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -11328,6 +11329,93 @@ func _test_annex_floor_147() -> void:
 	_assert(asrc.contains("HALL_D + 2.5") and asrc.contains("-h - 14.75"),
 		"147: builder extends the hall floor to the back wall")
 	print("[Playtest] Annex floor reach done")
+
+
+## Issue #144 Phase 0: the InputMap verb vocabulary (characterization
+## §1.1 gameplay + §1.2 fishing). Every action's keyboard/mouse
+## bindings mirror today's raw reads EXACTLY — physical keycodes,
+## because the dispatch compares physical_keycode. No read site is
+## converted in this phase; the pins prove the vocabulary is a
+## faithful shadow of the current input surface.
+func _test_input_vocabulary_144() -> void:
+	print("[Playtest] Input vocabulary (issue #144 phase 0)...")
+	var key_actions := {
+		"move_forward": [KEY_W, KEY_UP],
+		"move_back": [KEY_S, KEY_DOWN],
+		"move_left": [KEY_A, KEY_LEFT],
+		"move_right": [KEY_D, KEY_RIGHT],
+		"jump": [KEY_SPACE],
+		"interact": [KEY_E],
+		"dash": [KEY_SHIFT],
+		"cycle_ability": [KEY_Q],
+		"ability": [KEY_T, KEY_F],
+		"signature_ability": [KEY_8],
+		"start_wave": [KEY_R],
+		"potion": [KEY_H],
+		"inventory": [KEY_I, KEY_TAB],
+		"pause": [KEY_ESCAPE],
+		"toggle_rod": [KEY_V],
+		"build_menu": [KEY_B],
+	}
+	for i in 7:
+		key_actions["ability_%d" % (i + 1)] = [KEY_1 + i]
+	var mouse_actions := {
+		"attack": [MOUSE_BUTTON_LEFT],
+		"alt_attack": [MOUSE_BUTTON_RIGHT],
+	}
+	var describe := func(action: String) -> Array:
+		var out: Array = []
+		for ev in InputMap.action_get_events(action):
+			if ev is InputEventKey:
+				out.append("K%d" % (ev as InputEventKey).physical_keycode)
+			elif ev is InputEventMouseButton:
+				out.append("M%d" % (ev as InputEventMouseButton).button_index)
+		out.sort()
+		return out
+	for action in key_actions:
+		_assert(InputMap.has_action(action), "144: action exists: " + action)
+		var want: Array = []
+		for k in key_actions[action]:
+			want.append("K%d" % k)
+		want.sort()
+		_assert(describe.call(action) == want,
+			"144: %s bound to today's physical keys" % action)
+	for action in mouse_actions:
+		_assert(InputMap.has_action(action), "144: action exists: " + action)
+		var want2: Array = []
+		for b in mouse_actions[action]:
+			want2.append("M%d" % b)
+		_assert(describe.call(action) == want2,
+			"144: %s bound to today's mouse button" % action)
+	# Ping wears both shapes today (MMB or G).
+	_assert(InputMap.has_action("ping"), "144: action exists: ping")
+	_assert(describe.call("ping") == ["K%d" % KEY_G, "M%d" % MOUSE_BUTTON_MIDDLE],
+		"144: ping bound to MMB + G, as today")
+	# The vocabulary is exactly the §1.1-1.2 set — nothing extra, and
+	# the engine's built-in ui_* actions survive the new [input] section.
+	var custom := 0
+	for a in InputMap.get_actions():
+		if not str(a).begins_with("ui_"):
+			custom += 1
+	_assert(custom == 26, "144: exactly 26 project actions (the verb vocabulary)")
+	_assert(InputMap.has_action("ui_accept") and not InputMap.action_get_events("ui_accept").is_empty(),
+		"144: built-in ui actions intact")
+	# Byte-for-byte spot check: the raw poll the game actually reads
+	# and the new vocabulary agree on an injected W press/release.
+	var ev := InputEventKey.new()
+	ev.physical_keycode = KEY_W
+	ev.pressed = true
+	Input.parse_input_event(ev)
+	Input.flush_buffered_events()
+	_assert(Input.is_physical_key_pressed(KEY_W), "144: raw poll path still sees W")
+	_assert(Input.is_action_pressed("move_forward"), "144: vocabulary agrees with the raw path (W down)")
+	var ev2 := InputEventKey.new()
+	ev2.physical_keycode = KEY_W
+	ev2.pressed = false
+	Input.parse_input_event(ev2)
+	Input.flush_buffered_events()
+	_assert(not Input.is_action_pressed("move_forward"), "144: vocabulary agrees with the raw path (W up)")
+	print("[Playtest] Input vocabulary done")
 
 
 ## Issue #132: the Host menu's Lobby tab must show what Host will
