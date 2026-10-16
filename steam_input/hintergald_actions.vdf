@@ -1,0 +1,63 @@
+"In Game Actions"
+{
+	"actions"
+	{
+		"gameplay"
+		{
+			"title"		"#Set_Gameplay"
+			"StickPadGyro"
+			{
+				"move"
+				{
+					"title"		"#Action_move"
+					"input_mode"	"joystick_move"
+				}
+				"look"
+				{
+					"title"		"#Action_look"
+					"input_mode"	"joystick_move"
+				}
+			}
+			"Button"
+			{
+				"jump"			"#Action_jump"
+				"attack"		"#Action_attack"
+				"alt_attack"		"#Action_alt_attack"
+				"interact"		"#Action_interact"
+				"dash"			"#Action_dash"
+				"cycle_ability"		"#Action_cycle_ability"
+				"ability"		"#Action_ability"
+				"start_wave"		"#Action_start_wave"
+				"potion"		"#Action_potion"
+				"inventory"		"#Action_inventory"
+				"pause"			"#Action_pause"
+				"ping"			"#Action_ping"
+				"toggle_rod"		"#Action_toggle_rod"
+				"build_menu"		"#Action_build_menu"
+			}
+		}
+	}
+	"localization"
+	{
+		"english"
+		{
+			"Set_Gameplay"		"Gameplay"
+			"Action_move"		"Move"
+			"Action_look"		"Look"
+			"Action_jump"		"Jump"
+			"Action_attack"		"Attack"
+			"Action_alt_attack"	"Alt Attack"
+			"Action_interact"	"Interact"
+			"Action_dash"		"Dash"
+			"Action_cycle_ability"	"Cycle Ability"
+			"Action_ability"	"Use Ability"
+			"Action_start_wave"	"Start Wave"
+			"Action_potion"		"Drink Potion"
+			"Action_inventory"	"Inventory"
+			"Action_pause"		"Pause"
+			"Action_ping"		"Ping"
+			"Action_toggle_rod"	"Toggle Fishing Rod"
+			"Action_build_menu"	"Build Menu"
+		}
+	}
+}

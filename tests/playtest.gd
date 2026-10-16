@@ -180,6 +180,7 @@ func _run() -> void:
 	_test_input_vocabulary_144()
 	_test_pad_parity_144()
 	_test_archer_shoot_148()
+	_test_steam_input_150()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -11639,6 +11640,299 @@ func _test_archer_shoot_148() -> void:
 	current_scene = prev_scene
 	root.remove_child(dgn)
 	print("[Playtest] Archer draw-and-loose done")
+
+
+## Issue #150: a scripted stand-in for the adapter's Steam backend.
+## Duck-typed to the adapter's backend contract; every handle/data
+## answer is set by the test.
+class _FakeSteamBackend150:
+	extends RefCounted
+	var ready := true
+	var init_ok := true
+	var controllers: Array = [42]
+	var set_handle := 99
+	var digital_handles: Dictionary = {}
+	var analog_handles: Dictionary = {}
+	var digital: Dictionary = {}
+	var analog: Dictionary = {}
+	var init_calls := 0
+	var shutdown_calls := 0
+	var run_frame_calls := 0
+	var activated_with: Array = []
+	var panel_calls := 0
+	var manifest_path := ""
+
+	func session_ready() -> bool:
+		return ready
+
+	func set_manifest_path(path: String) -> bool:
+		manifest_path = path
+		return true
+
+	func input_init() -> bool:
+		init_calls += 1
+		return init_ok
+
+	func input_shutdown() -> void:
+		shutdown_calls += 1
+
+	func run_frame() -> void:
+		run_frame_calls += 1
+
+	func connected_controllers() -> Array:
+		return controllers
+
+	func action_set_handle(_set_name: String) -> int:
+		return set_handle
+
+	func digital_handle(action_name: String) -> int:
+		return int(digital_handles.get(action_name, 100))
+
+	func analog_handle(action_name: String) -> int:
+		return int(analog_handles.get(action_name, 200))
+
+	func activate_action_set(controller: int, p_set_handle: int) -> void:
+		activated_with = [controller, p_set_handle]
+
+	func digital_data(_controller: int, _handle: int) -> Dictionary:
+		# The fake keys data by action through the handle map the
+		# adapter built; handles are unique per action below.
+		for name in digital_handles.keys():
+			if int(digital_handles[name]) == _handle:
+				return {"state": bool(digital.get(name, false)), "active": true}
+		return {"state": false, "active": false}
+
+	func analog_data(_controller: int, _handle: int) -> Dictionary:
+		for name in analog_handles.keys():
+			if int(analog_handles[name]) == _handle:
+				var v: Vector2 = analog.get(name, Vector2.ZERO)
+				return {"x": v.x, "y": v.y, "active": true}
+		return {"x": 0.0, "y": 0.0, "active": false}
+
+	func digital_origins(_controller: int, _set_handle: int, _handle: int) -> Array:
+		return [24]
+
+	func analog_origins(_controller: int, _set_handle: int, _handle: int) -> Array:
+		return [25]
+
+	func glyph_for_origin(origin: int) -> String:
+		return "glyph/%d" % origin
+
+	func string_for_origin(origin: int) -> String:
+		return "origin_%d" % origin
+
+	func show_binding_panel(_controller: int) -> bool:
+		panel_calls += 1
+		return true
+
+
+## Minimal KeyValues/VDF parser for the manifest pins: nested
+## dictionaries of strings (the manifest has no duplicate keys per
+## level). Returns {} on malformed input.
+func _parse_vdf_150(src: String) -> Dictionary:
+	var toks: Array = []
+	var i := 0
+	while i < src.length():
+		var c := src[i]
+		if c == "{" or c == "}":
+			toks.append(c)
+			i += 1
+		elif c == "\"":
+			var j := i + 1
+			var s := ""
+			while j < src.length() and src[j] != "\"":
+				s += src[j]
+				j += 1
+			toks.append(s)
+			i = j + 1
+		else:
+			i += 1
+	var root_vdf: Dictionary = {}
+	var stack: Array = [root_vdf]
+	var pending_key := ""
+	var have_key := false
+	for t in toks:
+		if t == "{":
+			var child: Dictionary = {}
+			(stack.back() as Dictionary)[pending_key] = child
+			stack.append(child)
+			have_key = false
+		elif t == "}":
+			stack.pop_back()
+			have_key = false
+		elif not have_key:
+			pending_key = t
+			have_key = true
+		else:
+			(stack.back() as Dictionary)[pending_key] = t
+			have_key = false
+	return root_vdf
+
+
+## Issue #150 (#144 Phase 5A): the Steam Input adapter — fail-closed
+## activation, sentinel arbitration, edge/held/analog translation,
+## disconnect release, and the manifest's structural contract
+## (incl. Q6 absence) — all against a fake backend.
+func _test_steam_input_150() -> void:
+	print("[Playtest] Steam Input adapter (issue #150)...")
+	# --- Manifest structure (Valve IGA format) ---
+	var mtxt := FileAccess.get_file_as_string("res://steam_input/hintergald_actions.vdf")
+	var man := _parse_vdf_150(mtxt)
+	_assert(man.has("In Game Actions"), "150: manifest root is 'In Game Actions'")
+	var game: Dictionary = man.get("In Game Actions", {})
+	var sets: Dictionary = game.get("actions", {})
+	_assert(sets.has("gameplay"), "150: the gameplay action set exists")
+	var gset: Dictionary = sets.get("gameplay", {})
+	var spg: Dictionary = gset.get("StickPadGyro", {})
+	_assert(spg.keys().has("move") and spg.keys().has("look") and spg.size() == 2,
+		"150: analog actions are exactly move + look")
+	_assert(str((spg.get("move", {}) as Dictionary).get("input_mode", "")) == "joystick_move"
+		and str((spg.get("look", {}) as Dictionary).get("input_mode", "")) == "joystick_move",
+		"150: analog input modes are joystick_move (constant-deflection reads)")
+	var btns: Dictionary = gset.get("Button", {})
+	var loc: Dictionary = (game.get("localization", {}) as Dictionary).get("english", {})
+	_assert(loc.has("Set_Gameplay"), "150: the set has an English localization token")
+	# --- Adapter vocabulary <-> manifest agreement ---
+	var ad = root.get_node("SteamInputAdapter")
+	var aconsts: Dictionary = ad.get_script().get_script_constant_map()
+	var digi: Array = aconsts["DIGITAL_ACTIONS"]
+	var ana: Array = aconsts["ANALOG_ACTIONS"]
+	_assert(btns.size() == digi.size(), "150: manifest digital count matches the adapter vocabulary")
+	for name in digi:
+		_assert(btns.has(name), "150: manifest carries digital action " + name)
+		_assert(str(btns[name]) == "#Action_" + name and loc.has("Action_" + name),
+			"150: localization token resolves for " + name)
+	for name in ana:
+		_assert(spg.has(name) and loc.has("Action_" + name),
+			"150: localization token resolves for analog " + name)
+	# --- Q6 at the manifest level ---
+	for n in 7:
+		_assert(not mtxt.contains("\"ability_%d\"" % (n + 1)), "150: Q6 — no ability_%d Steam action" % (n + 1))
+	_assert(not mtxt.contains("\"signature_ability\""), "150: Q6 — no signature_ability Steam action")
+	# --- Binding descriptors snapshot (arbitration restore proof) ---
+	var desc := func(action_name: String) -> Array:
+		var out: Array = []
+		for e in InputMap.action_get_events(action_name):
+			out.append(e.get_class() + ":" + str(e.get("device")) + ":" + str(e.get("button_index")) + ":" + str(e.get("axis")) + ":" + str(e.get("axis_value")) + ":" + str(e.get("physical_keycode")))
+		out.sort()
+		return out
+	var vocab: Array = aconsts["VOCABULARY"]
+	var before: Dictionary = {}
+	for action_name in vocab:
+		before[action_name] = desc.call(action_name)
+	var joy_devices := func(action_name: String) -> Array:
+		var out: Array = []
+		for e in InputMap.action_get_events(action_name):
+			if e is InputEventJoypadButton or e is InputEventJoypadMotion:
+				out.append(int(e.get("device")))
+		return out
+	# --- Activation matrix: every missing piece fails closed ---
+	var real_backend = ad.backend
+	var fake := _FakeSteamBackend150.new()
+	for name in digi:
+		fake.digital_handles[name] = 100 + digi.find(name)
+	for name in ana:
+		fake.analog_handles[name] = 200 + ana.find(name)
+	ad.set_backend(fake)
+	fake.ready = false
+	_assert(not ad.try_activate() and not ad.active, "150: no Steam session -> stays native")
+	fake.ready = true
+	fake.init_ok = false
+	_assert(not ad.try_activate() and not ad.active, "150: input init failure -> stays native")
+	fake.init_ok = true
+	fake.controllers = []
+	_assert(not ad.try_activate() and not ad.active, "150: no controller -> stays native")
+	_assert(fake.shutdown_calls == 0, "150: controller-wait does not shut input down (no churn)")
+	fake.controllers = [42]
+	fake.set_handle = 0
+	_assert(not ad.try_activate() and not ad.active, "150: missing action-set handle -> native fallback")
+	_assert(fake.shutdown_calls == 1, "150: handle failure shuts input down (fail closed)")
+	fake.set_handle = 99
+	fake.digital_handles["ping"] = 0
+	_assert(not ad.try_activate() and not ad.active, "150: one missing digital handle -> native fallback")
+	fake.digital_handles["ping"] = 100 + digi.find("ping")
+	fake.analog_handles["look"] = 0
+	_assert(not ad.try_activate() and not ad.active, "150: one missing analog handle -> native fallback")
+	fake.analog_handles["look"] = 200 + ana.find("look")
+	_assert(desc.call("jump") == before["jump"], "150: bindings pristine after every failed activation")
+	# --- Activation: swap, set activation, first controller ---
+	_assert(ad.try_activate() and ad.active, "150: full session activates")
+	_assert(fake.activated_with == [42, 99], "150: gameplay set activated on the first controller")
+	_assert(joy_devices.call("jump") == [7] and joy_devices.call("move_left") == [7],
+		"150: arbitration — joypad bindings swapped to the sentinel device")
+	_assert(desc.call("jump").size() == (before["jump"] as Array).size(),
+		"150: arbitration keeps the keyboard bindings in place")
+	# Native pad input is inert while the adapter owns the pad.
+	var nev := InputEventJoypadButton.new()
+	nev.button_index = JOY_BUTTON_A
+	nev.pressed = true
+	nev.device = 0
+	Input.parse_input_event(nev)
+	Input.flush_buffered_events()
+	_assert(not Input.is_action_pressed("jump"), "150: native A does not double-fire while Steam owns the pad")
+	nev.pressed = false
+	Input.parse_input_event(nev)
+	Input.flush_buffered_events()
+	# --- Digital edges: exactly once, state lands ---
+	ad.emitted.clear()
+	fake.digital["jump"] = true
+	ad.tick()
+	_assert(ad.emitted.size() == 1 and ad.emitted[0][0] == "jump" and ad.emitted[0][1] == true,
+		"150: press edge emitted exactly once")
+	_assert(Input.is_action_pressed("jump"), "150: press state reads through the action layer")
+	ad.tick()
+	_assert(ad.emitted.size() == 1 and Input.is_action_pressed("jump"),
+		"150: held tick emits no duplicate edge")
+	fake.digital["jump"] = false
+	ad.tick()
+	_assert(ad.emitted.size() == 2 and ad.emitted[1][1] == false and not Input.is_action_pressed("jump"),
+		"150: release edge emitted exactly once")
+	# --- Held interact (channels) + trigger-shaped digital ---
+	fake.digital["interact"] = true
+	fake.digital["attack"] = true
+	ad.tick()
+	ad.tick()
+	_assert(Input.is_action_pressed("interact"), "150: held interact reads through across ticks")
+	_assert(Input.is_action_pressed("attack"), "150: trigger-shaped digital reads through")
+	fake.digital["interact"] = false
+	fake.digital["attack"] = false
+	ad.tick()
+	_assert(not Input.is_action_pressed("interact") and not Input.is_action_pressed("attack"),
+		"150: held states release cleanly")
+	# --- Analog vectors through the shared Q2 read path ---
+	fake.analog["move"] = Vector2(0.6, 0.0)
+	ad.tick()
+	var mv := Input.get_vector("move_left", "move_right", "move_up", "move_down", 0.2)
+	_assert(absf(mv.x - 0.5) < 0.001 and absf(mv.y) < 0.001,
+		"150: analog move vector lands with the settings deadzone applied (0.6 -> 0.5)")
+	fake.analog["move"] = Vector2.ZERO
+	fake.analog["look"] = Vector2(0.0, -1.0)
+	ad.tick()
+	var lv := Input.get_vector("look_left", "look_right", "look_up", "look_down", 0.2)
+	_assert(absf(lv.x) < 0.001 and absf(lv.y + 1.0) < 0.001,
+		"150: analog look vector lands (full up)")
+	# --- Glyph / binding interface (API only) ---
+	_assert(ad.binding_origin_for("jump") == 24, "150: prompt origin resolves through the backend")
+	_assert(ad.glyph_path_for("jump") == "glyph/24", "150: glyph path resolves for the origin")
+	_assert(ad.show_binding_panel() and fake.panel_calls == 1, "150: binding panel wrapper reaches the backend")
+	# --- Disconnect mid-hold: releases, restores, hands back ---
+	fake.digital["interact"] = true
+	ad.tick()
+	_assert(Input.is_action_pressed("interact"), "150: interact held before the disconnect")
+	fake.controllers = []
+	ad.tick()
+	_assert(not ad.active, "150: disconnect deactivates the adapter")
+	_assert(not Input.is_action_pressed("interact"), "150: disconnect releases the held action (no stuck verbs)")
+	var restored := true
+	for action_name in vocab:
+		if desc.call(action_name) != before[action_name]:
+			restored = false
+	_assert(restored, "150: native bindings restored exactly after the cycle")
+	_assert(not ad.show_binding_panel(), "150: binding panel inert while inactive")
+	ad.set_backend(real_backend)
+	_assert(not ad.active, "150: adapter left inactive with its real backend")
+	print("[Playtest] Steam Input adapter done")
+
 
 
 func _test_host_lobby_prefill_132() -> void:
