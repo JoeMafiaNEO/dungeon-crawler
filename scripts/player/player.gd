@@ -2596,12 +2596,18 @@ func _can_act() -> bool:
 ## Keyboard/mouse satisfy it exactly as before — mouse captured. A pad
 ## session satisfies it logically: a joypad has been seen, and none of
 ## the states that release the mouse for the keyboard player (pause,
-## inventory, an interact popup, FPS command mode, board reading) is
-## active — the predicate flips on the same transitions as capture
-## (R2), needs no mouse-shaped recovery (R3), and is plain state a
-## headless test can assert (R4). vault_open is deliberately NOT
-## consulted: hud's bounty tracker can leave it set (known wart), and
-## a stuck flag must never lock the pad gate shut.
+## inventory, an interact popup, a terminal session dialog, FPS
+## command mode, board reading) is active — the predicate flips on
+## the same transitions as capture (R2), needs no mouse-shaped
+## recovery (R3), and is plain state a headless test can assert (R4).
+## vault_open is deliberately NOT consulted: its historic stuck-set
+## wart was fixed in 8673dd1, and the exclusion is consequence-free
+## either way — the vault UI runs through the cipher popup shell,
+## whose flag IS consulted — so no vault state can set this gate
+## wrong. Issue #149: the session-lost / version-mismatch dialog
+## state joins the list (its builders release the mouse and
+## force-close pause/inventory, so without it the pad leg read true
+## behind a terminal modal).
 func gameplay_focused() -> bool:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		return true
@@ -2611,7 +2617,7 @@ func gameplay_focused() -> bool:
 		return true
 	return not (hud.is_paused or hud.inventory_open or hud.cipher_popup_open
 		or hud.dest_popup_open or hud.vendor_open or hud.dock_vendor_open
-		or hud.bounty_open)
+		or hud.bounty_open or hud._session_lost_dialog != null)
 
 
 ## Issue #144 Phase 1 (Q2): look settings, persisted by the settings

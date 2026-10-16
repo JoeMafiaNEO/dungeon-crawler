@@ -11447,6 +11447,29 @@ func _test_pad_parity_144() -> void:
 	p._command_mode = true
 	_assert(not p.gameplay_focused(), "144: command mode closes the pad leg (cursor surface)")
 	p._command_mode = false
+	# --- Issue #149: the terminal session dialogs (session lost /
+	# version mismatch share hud's _session_lost_dialog) close the
+	# pad leg while open and restore it on close. The bare player
+	# rig has no HUD bound, so bind a real one the production way
+	# (hud.setup) for these pins ---
+	var hud149 = load("res://scenes/ui/hud.tscn").instantiate()
+	root.add_child(hud149)
+	hud149.setup(p)
+	var ja149 := InputEventJoypadButton.new()
+	ja149.button_index = JOY_BUTTON_A
+	ja149.pressed = true
+	var dlg149 := ConfirmationDialog.new()
+	hud149._session_lost_dialog = dlg149
+	_assert(not p.gameplay_focused(), "149: session dialog open — pad leg closed behind the modal")
+	p._input(ja149)
+	_assert(not p._jump_queued, "149: pad A is inert while the session dialog is open")
+	hud149._session_lost_dialog = null
+	dlg149.free()
+	_assert(p.gameplay_focused(), "149: dialog closed — pad leg restores")
+	p._input(ja149)
+	_assert(p._jump_queued, "149: pad A answers again once the dialog closes")
+	p._jump_queued = false
+	root.remove_child(hud149)
 	# --- Dispatch parity: pad jump fires through the logical gate ---
 	var ja := InputEventJoypadButton.new()
 	ja.button_index = JOY_BUTTON_A
