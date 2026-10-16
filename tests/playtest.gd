@@ -3554,6 +3554,16 @@ func _test_bake_integrity() -> void:
 		return
 	var scenes: Dictionary = (manifest as Dictionary).get("scenes", {})
 	_assert(scenes.has("village"), "#138: manifest pins village")
+	# Issue #151: the bake tool's --manifest-key override (the batch
+	# wrapper keys variant entries <theme>_<seed>); without the arg
+	# the entry key stays the theme_id, byte-identical to today.
+	var bake_src := FileAccess.get_file_as_string("res://tools/bake_levels.gd")
+	_assert(bake_src.contains("elif key == \"--manifest-key\":"),
+		"#151: bake_levels.gd parses --manifest-key")
+	_assert(bake_src.contains("var entry_key := _manifest_key if _manifest_key != \"\" else _theme_id"),
+		"#151: manifest key defaults to theme_id when --manifest-key is absent")
+	_assert(bake_src.contains("scenes[entry_key] = {"),
+		"#151: the manifest entry is written under the resolved key")
 	if not scenes.has("village"):
 		return
 	var entry: Dictionary = scenes["village"]

@@ -16,6 +16,11 @@ extends Node
 ## LevelData content_hash against the shipped scene's — a mismatch
 ## means procgen drifted from the shipped level.
 ##
+## --manifest-key <key> (issue #151) writes the manifest scenes entry
+## under <key> instead of the theme_id — the batch wrapper uses
+## <theme>_<seed> keys so variants don't clobber each other. Without
+## it, behavior is exactly as before.
+##
 ## Note: the engine may abort during process teardown after a
 ## successful bake (the same flaky exit crash the headless suite
 ## shows after "All tests passed!"). The [BAKE] lines and the files
@@ -34,6 +39,7 @@ var _theme_id := "village"
 var _seed := 1
 var _out_path := ""
 var _manifest_path := PREGEN_DIR + "/bake_manifest.json"
+var _manifest_key := ""
 var _verify := false
 var _failures: Array[String] = []
 
@@ -73,6 +79,8 @@ func _parse_args() -> void:
 			_out_path = val
 		elif key == "--manifest":
 			_manifest_path = val
+		elif key == "--manifest-key":
+			_manifest_key = val
 		elif key == "--verify":
 			_verify = true
 		i += 1
@@ -214,7 +222,11 @@ func _update_manifest(data: LevelData, size: int, mode: String) -> void:
 		if parsed is Dictionary and parsed.has("scenes"):
 			manifest = parsed
 	var scenes: Dictionary = manifest["scenes"]
-	scenes[_theme_id] = {
+	# Issue #151: the batch wrapper keys variant entries <theme>_<seed>
+	# via --manifest-key; without it the key is the theme_id, exactly
+	# as the shipped cycle-1 flow has always written it.
+	var entry_key := _manifest_key if _manifest_key != "" else _theme_id
+	scenes[entry_key] = {
 		"theme_id": _theme_id,
 		"seed": _seed,
 		"content_hash": data.content_hash,
