@@ -22,6 +22,16 @@ var reward_scale := 1.0
 
 var _target: Node3D
 var _attack_cd := 0.0
+## Issue #148: shoot-cycle state (mobs with shoot_frames data — the
+## goblin archer). _draw_t counts the wind-up down to the loose;
+## _follow_t is the release frame's follow-through (presentation
+## only). Frame times are the Art Director's table: the first four
+## sum to the 1.25s wind-up; the arrow leaves when frame 5 activates.
+const SHOOT_FRAME_TIMES: Array[float] = [0.30, 0.25, 0.25, 0.45, 0.65]
+const SHOOT_WINDUP := 1.25
+var _draw_t := 0.0
+var _follow_t := 0.0
+var _shoot_playing := false
 var _snapshot := 0.0
 var _retarget := 0.0
 var _remote_pos := Vector3.ZERO
@@ -189,6 +199,16 @@ func _ready() -> void:
 		frames.add_frame("default", tex)
 	frames.set_animation_speed("default", 3.0)
 	frames.set_animation_loop("default", true)
+	# Issue #148: the draw-and-loose cycle as a second animation,
+	# per-frame durations from the art timing table, no loop — the
+	# last frame (release) holds until the snapshot flag clears.
+	if not data.shoot_frames.is_empty():
+		frames.add_animation("shoot")
+		for i in data.shoot_frames.size():
+			var dur := SHOOT_FRAME_TIMES[i] if i < SHOOT_FRAME_TIMES.size() else 1.0
+			frames.add_frame("shoot", data.shoot_frames[i], dur)
+		frames.set_animation_speed("shoot", 1.0)
+		frames.set_animation_loop("shoot", false)
 	_sprite.frames = frames
 	_sprite.play("default")
 	if data.is_boss:
@@ -335,10 +355,12 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y -= GRAVITY * delta
 	move_and_slide()
+	if _follow_t > 0.0:
+		_follow_t -= delta
 	_snapshot -= delta
 	if _snapshot <= 0.0:
 		_snapshot = 0.15
-		rpc("push_snapshot", global_position, hp, alive)
+		rpc("push_snapshot", global_position, hp, alive, _draw_t > 0.0 or _follow_t > 0.0)
 
 
 func _process(delta: float) -> void:
@@ -432,6 +454,15 @@ func _ranged_think(delta: float, to: Vector3, dist: float) -> void:
 	var dir := Vector3.ZERO
 	if dist > 0.01:
 		dir = to / dist
+	# Issue #148: a committed draw counts down here (any range — the
+	# shot, once committed, looses on schedule) and fires at the
+	# release moment, aimed at the target's current position.
+	if _draw_t > 0.0:
+		_draw_t -= delta
+		if _draw_t <= 0.0:
+			_draw_t = 0.0
+			_follow_t = SHOOT_FRAME_TIMES[SHOOT_FRAME_TIMES.size() - 1]
+			_fire_arrow(dir)
 	_sprite.rotation.y = atan2(dir.x, dir.z)
 	_strafe_t -= delta
 	if _strafe_t <= 0.0:
@@ -450,9 +481,18 @@ func _ranged_think(delta: float, to: Vector3, dist: float) -> void:
 	# Fire when within a generous band of the ideal range.
 	if dist < ideal * 1.6:
 		_attack_cd -= delta
-		if _attack_cd <= 0.0:
+		if _attack_cd <= 0.0 and _draw_t <= 0.0:
 			_attack_cd = data.attack_cooldown
-			_fire_arrow(dir)
+			if data.shoot_frames.is_empty():
+				_fire_arrow(dir)
+			else:
+				# Issue #148: commit the shot — the draw animation is
+				# the wind-up/telegraph; the arrow leaves 1.25s later
+				# at the release frame. The cooldown already runs
+				# from the commit, so the sustained cycle (and shots
+				# per minute) is unchanged — only the first arrow of
+				# an engagement arrives one wind-up later.
+				_draw_t = SHOOT_WINDUP
 
 
 func _fire_arrow(dir: Vector3) -> void:
@@ -1565,13 +1605,24 @@ func phaseshift_end() -> void:
 
 
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, alive_v: bool) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, alive_v: bool, shoot_v: bool = false) -> void:
 	_remote_pos = pos
 	_has_remote = true
 	hp = hp_v
 	if alive and not alive_v:
+		_shoot_playing = false
 		_play_death()
 	alive = alive_v
+	# Issue #148: the shoot cycle rides the snapshot — the draw plays
+	# on every peer from the same flag, no parallel channel.
+	if shoot_v and not _shoot_playing:
+		_shoot_playing = true
+		if _sprite != null and _sprite.sprite_frames != null and _sprite.sprite_frames.has_animation("shoot"):
+			_sprite.play("shoot")
+	elif not shoot_v and _shoot_playing:
+		_shoot_playing = false
+		if _sprite != null:
+			_sprite.play("default")
 
 
 @rpc("any_peer", "call_local")

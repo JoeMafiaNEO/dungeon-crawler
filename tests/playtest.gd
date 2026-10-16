@@ -179,6 +179,7 @@ func _run() -> void:
 	_test_annex_floor_147()
 	_test_input_vocabulary_144()
 	_test_pad_parity_144()
+	_test_archer_shoot_148()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -11546,6 +11547,76 @@ func _test_pad_parity_144() -> void:
 	p.free()
 	p2.free()
 	print("[Playtest] Pad parity done")
+
+
+## Issue #148: goblin archer draw-and-loose. A committed shot plays
+## the shoot animation; the arrow leaves only at the release moment
+## (1.25s wind-up); exactly one arrow per cycle; the sustained cycle
+## is the data cooldown (2.2s), unchanged.
+func _test_archer_shoot_148() -> void:
+	print("[Playtest] Archer draw-and-loose (issue #148)...")
+	var data = load("res://data/mobs/archer.tres")
+	_assert(data.shoot_frames.size() == 5, "148: archer data carries the 5 shoot frames")
+	var warden = load("res://data/mobs/gravewarden.tres")
+	_assert(warden.shoot_frames.is_empty(), "148: gravewarden untouched (no shoot frames)")
+	var mob_consts: Dictionary = load("res://scripts/mobs/mob.gd").get_script_constant_map()
+	var times: Array = mob_consts["SHOOT_FRAME_TIMES"]
+	var windup := 0.0
+	for i in 4:
+		windup += float(times[i])
+	_assert(absf(windup - 1.25) < 0.001 and absf(float(mob_consts["SHOOT_WINDUP"]) - windup) < 0.001,
+		"148: frames 1-4 sum to the 1.25s wind-up")
+	# Rig: the #125 pattern — a real dungeon with its host player.
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	# Earlier sections leave stub fixtures in the "dungeon" group;
+	# the archer's arrow RPC resolves the group head, so it must be
+	# the real dungeon — detach any lingering members first.
+	for n in get_nodes_in_group("dungeon"):
+		(n as Node).get_parent().remove_child(n as Node)
+	var prev_scene := current_scene
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	current_scene = dgn
+	var players_now := get_nodes_in_group("players")
+	_assert(players_now.size() == 1, "148: dungeon spawned its host player")
+	if players_now.size() == 1:
+		var pp := (players_now[0] as Node3D).global_position
+		dgn.spawn_mob(14801, "archer", pp + Vector3(10, 0, 0))
+		var arc = dgn.get_node("Mobs/Mob_14801")
+		var arrow_script := load("res://scripts/combat/enemy_arrow.gd")
+		var arrows := func() -> int:
+			var c := 0
+			for ch in dgn.get_children():
+				if ch.get_script() == arrow_script:
+					c += 1
+			return c
+		_assert(arc._sprite.sprite_frames.has_animation("shoot"), "148: shoot animation built")
+		_assert(arc._sprite.sprite_frames.get_frame_count("shoot") == 5, "148: shoot animation has 5 frames")
+		_assert(absf(arc._sprite.sprite_frames.get_frame_duration("shoot", 3) - 0.45) < 0.001,
+			"148: frame 4 carries the 450ms full-draw hold")
+		var drive := func(n: int) -> void:
+			for i in n:
+				arc._physics_process(0.05)
+		drive.call(6) # 0.3s in: committed, drawing, no arrow yet
+		_assert(arc._draw_t > 0.0, "148: the shot commits into the draw")
+		_assert(arc._shoot_playing and arc._sprite.animation == "shoot",
+			"148: the draw plays on the sprite via the snapshot flag")
+		_assert(arrows.call() == 0, "148: no arrow before the release point (0.3s)")
+		drive.call(14) # 1.0s in
+		_assert(arrows.call() == 0, "148: no arrow before the release point (1.0s)")
+		drive.call(10) # 1.5s in: released at 1.25s
+		_assert(arrows.call() == 1, "148: exactly one arrow, spawned at the release moment")
+		drive.call(10) # 2.0s in: follow-through (ends 1.9s) over
+		_assert(arrows.call() == 1, "148: still one arrow — one per cycle")
+		_assert(not arc._shoot_playing and arc._sprite.animation == "default",
+			"148: sprite returns to idle after the follow-through")
+		drive.call(32) # 3.6s in: second commit at 2.2s, second loose at 3.45s
+		_assert(arrows.call() == 2, "148: second cycle looses on the same 2.2s cadence")
+	current_scene = prev_scene
+	root.remove_child(dgn)
+	print("[Playtest] Archer draw-and-loose done")
+
 
 func _test_host_lobby_prefill_132() -> void:
 	print("[Playtest] Host lobby prefill (issue #132)...")

@@ -13,6 +13,11 @@ extends Resource
 @export var drop_chance: float = 0.3
 @export var drops: Array[DropEntry] = []
 @export var frames: Array[Texture2D] = []
+## Issue #148: draw-and-loose shoot cycle (goblin archer). When set, a
+## committed shot plays these frames as a SpriteFrames "shoot"
+## animation and the arrow leaves at the release frame (the last
+## frame) instead of instantly. Empty = instant fire (all other mobs).
+@export var shoot_frames: Array[Texture2D] = []
 ## Loot luck: shifts drop weights toward rarer items (0 = normal).
 ## Tougher mobs and bosses have higher luck.
 @export var loot_luck: float = 0.0
