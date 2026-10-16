@@ -251,8 +251,11 @@ func _build() -> void:
 	# Floors (tops at y=0, matching the arena floor). Butt-jointed with no
 	# overlaps: the arena floor always extends exactly 3m past the walls
 	# (size = grid_size * cell_size + 6), so the corridor floor meets it at -h-3.
-	_solid(Vector3(HALL_W + 2.0 * WALL_T, 1.0, HALL_D + 0.5),
-		Vector3(ax, -0.5, -h - 13.75), stone).name = "HallFloor"
+	# The hall floor runs from that joint (-h-3.5) all the way to the back
+	# wall's inner face (-h - CORRIDOR_L - HALL_D): issue #147 — it used to
+	# stop 2m short of the back wall, leaving a gap across the hall.
+	_solid(Vector3(HALL_W + 2.0 * WALL_T, 1.0, HALL_D + 2.5),
+		Vector3(ax, -0.5, -h - 14.75), stone).name = "HallFloor"
 	_solid(Vector3(CORRIDOR_W + 1.0, 1.0, 3.5),
 		Vector3(ax, -0.5, -h - 4.75), stone).name = "CorridorFloor"
 

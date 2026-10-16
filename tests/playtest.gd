@@ -176,6 +176,7 @@ func _run() -> void:
 	_test_pickup_claims_142()
 	_test_makewhole_142()
 	_test_station_dispose_146()
+	_test_annex_floor_147()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -11296,6 +11297,37 @@ func _test_station_dispose_146() -> void:
 		n.add_to_group("dungeon")
 	p.set("hud", null)
 	print("[Playtest] Station dispose block done")
+
+
+## Issue #147: the annex hall floor must reach the back wall — it
+## stopped exactly 2m short across the hall's full width, at every
+## theme and arena size (constants-only geometry).
+func _test_annex_floor_147() -> void:
+	print("[Playtest] Annex floor reach (issue #147)...")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	var theme: Resource = load("res://data/levels/theme_village.tres")
+	var layout = ProcGenScript.generate(theme, 12345)
+	var plan: Dictionary = AnnexScript.plan(12345, layout)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var annex = AnnexScript.build(holder, plan, layout)
+	var h: float = layout.arena_half_size()
+	var hall_floor = annex.get_node_or_null("HallFloor")
+	_assert(hall_floor is StaticBody3D, "147: hall floor built")
+	var cs := hall_floor.get_child(0) as CollisionShape3D
+	var bs := cs.shape as BoxShape3D
+	var back_edge: float = hall_floor.position.z - bs.size.z * 0.5
+	var wall_face: float = -h - AnnexScript.CORRIDOR_L - AnnexScript.HALL_D
+	_assert(absf(back_edge - wall_face) < 0.01,
+		"147: hall floor reaches the back wall (gap closed)")
+	var front_edge: float = hall_floor.position.z + bs.size.z * 0.5
+	_assert(absf(front_edge - (-h - 3.5)) < 0.01,
+		"147: hall floor front edge unchanged (arena butt joint)")
+	var asrc := FileAccess.get_file_as_string("res://scripts/station/station_annex.gd")
+	_assert(asrc.contains("HALL_D + 2.5") and asrc.contains("-h - 14.75"),
+		"147: builder extends the hall floor to the back wall")
+	print("[Playtest] Annex floor reach done")
 
 
 ## Issue #132: the Host menu's Lobby tab must show what Host will
