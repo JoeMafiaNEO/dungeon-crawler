@@ -1658,7 +1658,32 @@ func _build_settings_panel() -> void:
 	fval.custom_minimum_size = Vector2(40, 0)
 	frow.add_child(fval)
 	vb.add_child(frow)
-	for spec in [["CRT filter", "crt_enabled", true], ["Screen shake", "shake_enabled", true], ["Fullscreen", "fullscreen", false]]:
+	# Issue #144 Phase 1 (Q2): look sensitivity + stick deadzone sliders.
+	# Stored as fractions via the shared handler (slider % / 100):
+	# sensitivity 10-200% (default 100 = 1.0x), deadzone 0-50% (default 20).
+	for spec in [["Look sensitivity", "look_sens", 10, 200, 5, 1.0], ["Stick deadzone", "look_deadzone", 0, 50, 1, 0.2]]:
+		var lrow := HBoxContainer.new()
+		lrow.add_theme_constant_override("separation", 12)
+		lrow.alignment = BoxContainer.ALIGNMENT_CENTER
+		var llab := Label.new()
+		llab.text = spec[0]
+		llab.custom_minimum_size = Vector2(120, 0)
+		lrow.add_child(llab)
+		var lslider := HSlider.new()
+		lslider.custom_minimum_size = Vector2(220, 0)
+		lslider.min_value = spec[2]
+		lslider.max_value = spec[3]
+		lslider.step = spec[4]
+		lslider.value = float(SaveManager.get_profile_setting("settings", spec[1], spec[5])) * 100.0
+		lslider.value_changed.connect(_on_settings_vol_changed.bind(spec[1]))
+		lrow.add_child(lslider)
+		var lval := Label.new()
+		lval.name = "Val_%s" % spec[1]
+		lval.text = "%d" % int(lslider.value)
+		lval.custom_minimum_size = Vector2(40, 0)
+		lrow.add_child(lval)
+		vb.add_child(lrow)
+	for spec in [["CRT filter", "crt_enabled", true], ["Screen shake", "shake_enabled", true], ["Fullscreen", "fullscreen", false], ["Invert look Y", "look_invert_y", false]]:
 		var trow := HBoxContainer.new()
 		trow.add_theme_constant_override("separation", 12)
 		trow.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -1715,6 +1740,10 @@ func _on_settings_vol_changed(value: float, key: String) -> void:
 			AudioManager.set_sfx_vol(v)
 		"fov":
 			SaveManager.set_profile_setting("settings", "fov", float(value))
+		"look_sens":
+			SaveManager.set_profile_setting("settings", "look_sens", v)
+		"look_deadzone":
+			SaveManager.set_profile_setting("settings", "look_deadzone", v)
 	if _settings_overlay != null:
 		var lab := _settings_overlay.find_child("Val_%s" % key, true, false) as Label
 		if lab != null:

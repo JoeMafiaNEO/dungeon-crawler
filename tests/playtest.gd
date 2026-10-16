@@ -178,6 +178,7 @@ func _run() -> void:
 	_test_station_dispose_146()
 	_test_annex_floor_147()
 	_test_input_vocabulary_144()
+	_test_pad_parity_144()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -8212,18 +8213,19 @@ func _test_e_interact_not_dead_code() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	var idx_return := psrc.find("hud.cipher_popup_open or _reading_board != null")
 	_assert(idx_return > 0, "#29: E guard found")
-	# The 'if Input.mouse_mode' guarding _try_pickup must be at elif-body
-	# level (3 tabs) — a sibling of the early-return if, NOT nested inside it
-	# (4 tabs = dead code, the #29 bug), and NOT at 2 tabs (which breaks the
-	# elif chain and routes R/SHIFT/Q/etc into _try_pickup, the #32 bug).
-	var idx_guard := psrc.find("if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED", idx_return)
-	_assert(idx_guard > idx_return, "#29: mouse-mode guard present after E guard")
+	# The focus guard on _try_pickup must sit at interact-branch level
+	# (2 tabs in the #144 unified dispatch) — a sibling of the early-return
+	# guard, NOT nested inside it (3 tabs = dead code, the #29 bug), and
+	# NOT at 1 tab (which would route every verb into _try_pickup, the
+	# #32 bug's shape in the old elif chain).
+	var idx_guard := psrc.find("if focused and (hud == null or not hud.is_paused):", idx_return)
+	_assert(idx_guard > idx_return, "#29: focus guard present after E guard")
 	var before := psrc.substr(0, idx_guard)
 	var line_start := before.rfind("\n") + 1
 	var indent := 0
 	while line_start + indent < psrc.length() and psrc[line_start + indent] == "\t":
 		indent += 1
-	_assert(indent == 3, "#29/#32: E-interact guard at elif-body level (3 tabs)")
+	_assert(indent == 2, "#29/#32: E-interact guard at branch level (2 tabs)")
 	print("[Playtest] E-interact reachable done")
 
 
@@ -8342,7 +8344,7 @@ func _test_r_wave_start_chain() -> void:
 	# Static: verify the R key handler, _try_start_wave, and request_next_wave
 	# chain is intact.
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("KEY_R:"), "#32: R key handler exists")
+	_assert(psrc.contains("event.is_action_pressed(\"start_wave\")"), "#32: wave-start verb handler exists (R / start_wave)")
 	_assert(psrc.contains("_try_start_wave()"), "#32: _try_start_wave called")
 	_assert(psrc.contains('rpc("request_next_wave")'), "#32: request_next_wave RPC sent")
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
@@ -8510,7 +8512,7 @@ func _test_potion_quick_slot() -> void:
 	_assert(hsrc.contains("POTION_IDS"), "potion ID list exists")
 	_assert(hsrc.contains("use_item"), "drink uses use_item path")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("KEY_H"), "H key handler exists")
+	_assert(psrc.contains("event.is_action_pressed(\"potion\")"), "H key handler exists (potion action)")
 	_assert(psrc.contains("drink_potion"), "H calls drink_potion")
 	# Issue #77 regression: the player joins group "players" (plural), so the
 	# HUD must never look up a nonexistent "player" group for the slot.
@@ -8963,7 +8965,7 @@ func _test_holy_light_key7() -> void:
 	print("[Playtest] Issue #88 Holy Light...")
 	# KEY_7 handler exists in player._input().
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
-	_assert(psrc.contains("KEY_1 and k.physical_keycode <= KEY_7"),
+	_assert(psrc.contains("for n in 7:") and psrc.contains("event.is_action_pressed(\"ability_%d\" % (n + 1))"),
 		"player handles KEY_1 through KEY_7")
 	# Holy Light ability def has key "7".
 	_assert(psrc.contains('"key": "7"') and psrc.contains("holy_light"),
@@ -8980,7 +8982,7 @@ func _test_holy_light_key7_label() -> void:
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc.contains("_select_ability_by_key"),
 		"label-based ability selection exists")
-	_assert(psrc.contains('_select_ability_by_key(str(k.physical_keycode - KEY_1 + 1))'),
+	_assert(psrc.contains('_select_ability_by_key(str(n + 1))'),
 		"input maps keys 1-7 by label")
 	# The old raw-index path for KEY_7 is gone.
 	_assert(not psrc.contains("_select_ability(k.physical_keycode - KEY_1)"),
@@ -11331,38 +11333,44 @@ func _test_annex_floor_147() -> void:
 	print("[Playtest] Annex floor reach done")
 
 
-## Issue #144 Phase 0: the InputMap verb vocabulary (characterization
-## §1.1 gameplay + §1.2 fishing). Every action's keyboard/mouse
-## bindings mirror today's raw reads EXACTLY — physical keycodes,
-## because the dispatch compares physical_keycode. No read site is
-## converted in this phase; the pins prove the vocabulary is a
-## faithful shadow of the current input surface.
+## Issue #144 Phases 0+1: the InputMap verb vocabulary (characterization
+## §1.1 gameplay + §1.2 fishing). Bindings mirror today's raw reads
+## EXACTLY — physical keycodes, because the dispatch compares
+## physical_keycode — plus the Phase 1 joypad bindings. Q6: the
+## direct-select and signature actions carry NO joypad events.
 func _test_input_vocabulary_144() -> void:
-	print("[Playtest] Input vocabulary (issue #144 phase 0)...")
-	var key_actions := {
-		"move_forward": [KEY_W, KEY_UP],
-		"move_back": [KEY_S, KEY_DOWN],
-		"move_left": [KEY_A, KEY_LEFT],
-		"move_right": [KEY_D, KEY_RIGHT],
-		"jump": [KEY_SPACE],
-		"interact": [KEY_E],
-		"dash": [KEY_SHIFT],
-		"cycle_ability": [KEY_Q],
-		"ability": [KEY_T, KEY_F],
-		"signature_ability": [KEY_8],
-		"start_wave": [KEY_R],
-		"potion": [KEY_H],
-		"inventory": [KEY_I, KEY_TAB],
-		"pause": [KEY_ESCAPE],
-		"toggle_rod": [KEY_V],
-		"build_menu": [KEY_B],
+	print("[Playtest] Input vocabulary (issue #144 phases 0+1)...")
+	var K := func(c: int) -> String: return "K%d" % c
+	var M := func(c: int) -> String: return "M%d" % c
+	var B := func(c: int) -> String: return "B%d" % c
+	var AX := func(a: int, s: int) -> String: return "A%d:%d" % [a, s]
+	var expected := {
+		"move_forward": [K.call(KEY_W), K.call(KEY_UP), AX.call(JOY_AXIS_LEFT_Y, -1)],
+		"move_back": [K.call(KEY_S), K.call(KEY_DOWN), AX.call(JOY_AXIS_LEFT_Y, 1)],
+		"move_left": [K.call(KEY_A), K.call(KEY_LEFT), AX.call(JOY_AXIS_LEFT_X, -1)],
+		"move_right": [K.call(KEY_D), K.call(KEY_RIGHT), AX.call(JOY_AXIS_LEFT_X, 1)],
+		"jump": [K.call(KEY_SPACE), B.call(JOY_BUTTON_A)],
+		"attack": [M.call(MOUSE_BUTTON_LEFT), AX.call(JOY_AXIS_TRIGGER_RIGHT, 1)],
+		"alt_attack": [M.call(MOUSE_BUTTON_RIGHT), AX.call(JOY_AXIS_TRIGGER_LEFT, 1)],
+		"interact": [K.call(KEY_E), B.call(JOY_BUTTON_X)],
+		"dash": [K.call(KEY_SHIFT), B.call(JOY_BUTTON_LEFT_STICK)],
+		"cycle_ability": [K.call(KEY_Q), B.call(JOY_BUTTON_LEFT_SHOULDER), B.call(JOY_BUTTON_RIGHT_SHOULDER)],
+		"ability": [K.call(KEY_T), K.call(KEY_F), B.call(JOY_BUTTON_Y)],
+		"signature_ability": [K.call(KEY_8)],
+		"start_wave": [K.call(KEY_R), B.call(JOY_BUTTON_DPAD_UP)],
+		"potion": [K.call(KEY_H), B.call(JOY_BUTTON_DPAD_DOWN)],
+		"inventory": [K.call(KEY_I), K.call(KEY_TAB), B.call(JOY_BUTTON_BACK)],
+		"pause": [K.call(KEY_ESCAPE), B.call(JOY_BUTTON_START)],
+		"ping": [M.call(MOUSE_BUTTON_MIDDLE), K.call(KEY_G), B.call(JOY_BUTTON_RIGHT_STICK)],
+		"toggle_rod": [K.call(KEY_V), B.call(JOY_BUTTON_DPAD_LEFT)],
+		"build_menu": [K.call(KEY_B), B.call(JOY_BUTTON_DPAD_RIGHT)],
+		"look_left": [AX.call(JOY_AXIS_RIGHT_X, -1)],
+		"look_right": [AX.call(JOY_AXIS_RIGHT_X, 1)],
+		"look_up": [AX.call(JOY_AXIS_RIGHT_Y, -1)],
+		"look_down": [AX.call(JOY_AXIS_RIGHT_Y, 1)],
 	}
 	for i in 7:
-		key_actions["ability_%d" % (i + 1)] = [KEY_1 + i]
-	var mouse_actions := {
-		"attack": [MOUSE_BUTTON_LEFT],
-		"alt_attack": [MOUSE_BUTTON_RIGHT],
-	}
+		expected["ability_%d" % (i + 1)] = [K.call(KEY_1 + i)]
 	var describe := func(action: String) -> Array:
 		var out: Array = []
 		for ev in InputMap.action_get_events(action):
@@ -11370,38 +11378,35 @@ func _test_input_vocabulary_144() -> void:
 				out.append("K%d" % (ev as InputEventKey).physical_keycode)
 			elif ev is InputEventMouseButton:
 				out.append("M%d" % (ev as InputEventMouseButton).button_index)
+			elif ev is InputEventJoypadButton:
+				out.append("B%d" % (ev as InputEventJoypadButton).button_index)
+			elif ev is InputEventJoypadMotion:
+				var jm := ev as InputEventJoypadMotion
+				out.append("A%d:%d" % [jm.axis, 1 if jm.axis_value > 0.0 else -1])
 		out.sort()
 		return out
-	for action in key_actions:
+	for action in expected:
 		_assert(InputMap.has_action(action), "144: action exists: " + action)
-		var want: Array = []
-		for k in key_actions[action]:
-			want.append("K%d" % k)
+		var want: Array = expected[action].duplicate()
 		want.sort()
 		_assert(describe.call(action) == want,
-			"144: %s bound to today's physical keys" % action)
-	for action in mouse_actions:
-		_assert(InputMap.has_action(action), "144: action exists: " + action)
-		var want2: Array = []
-		for b in mouse_actions[action]:
-			want2.append("M%d" % b)
-		_assert(describe.call(action) == want2,
-			"144: %s bound to today's mouse button" % action)
-	# Ping wears both shapes today (MMB or G).
-	_assert(InputMap.has_action("ping"), "144: action exists: ping")
-	_assert(describe.call("ping") == ["K%d" % KEY_G, "M%d" % MOUSE_BUTTON_MIDDLE],
-		"144: ping bound to MMB + G, as today")
-	# The vocabulary is exactly the §1.1-1.2 set — nothing extra, and
-	# the engine's built-in ui_* actions survive the new [input] section.
+			"144: %s bound to today's keys/buttons + the phase 1 pad map" % action)
+	# Q6, stated plainly: no joypad event on direct select / signature.
+	for action in ["ability_1", "ability_4", "ability_7", "signature_ability"]:
+		var has_pad := false
+		for d in describe.call(action):
+			if str(d).begins_with("B") or str(d).begins_with("A"):
+				has_pad = true
+		_assert(not has_pad, "144: Q6 — %s stays keyboard-only" % action)
 	var custom := 0
 	for a in InputMap.get_actions():
 		if not str(a).begins_with("ui_"):
 			custom += 1
-	_assert(custom == 26, "144: exactly 26 project actions (the verb vocabulary)")
+	_assert(custom == 30, "144: exactly 30 project actions (26 verbs + 4 look)")
 	_assert(InputMap.has_action("ui_accept") and not InputMap.action_get_events("ui_accept").is_empty(),
 		"144: built-in ui actions intact")
-	# Byte-for-byte spot check: the raw poll the game actually reads
-	# and the new vocabulary agree on an injected W press/release.
+	# Byte-for-byte spot check: the raw poll the game used to read and
+	# the vocabulary agree on an injected W press/release.
 	var ev := InputEventKey.new()
 	ev.physical_keycode = KEY_W
 	ev.pressed = true
@@ -11418,10 +11423,130 @@ func _test_input_vocabulary_144() -> void:
 	print("[Playtest] Input vocabulary done")
 
 
-## Issue #132: the Host menu's Lobby tab must show what Host will
-## actually create for the selected save. A legacy save (no visibility
-## key) continues FriendsOnly at its stored cap per M-5, but the tab
-## used to sit on the menu's own Public/4 defaults, never re-derived.
+## Issue #144 Phase 1: pad parity + the R1-R4 focus gate, proven
+## headlessly with synthetic joypad events (R4).
+func _test_pad_parity_144() -> void:
+	print("[Playtest] Pad parity + focus gate (issue #144 phase 1)...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var saved_mode := Input.mouse_mode
+	# --- The gate's four states (R1/R2) ---
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_assert(not p.gameplay_focused(), "144: unfocused — no capture, no pad seen")
+	# The captured leg can't be driven headlessly (the headless driver
+	# ignores mouse_mode) — pinned by source here and exercised for
+	# real by the Xvfb input-driving checks.
+	var psrc144 := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc144.contains("if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:\n\t\treturn true"),
+		"144: the gate's first leg is the historic capture test")
+	p._pad_seen = true
+	_assert(p.gameplay_focused(), "144: pad session satisfies the gate without any capture")
+	p._command_mode = true
+	_assert(not p.gameplay_focused(), "144: command mode closes the pad leg (cursor surface)")
+	p._command_mode = false
+	# --- Dispatch parity: pad jump fires through the logical gate ---
+	var ja := InputEventJoypadButton.new()
+	ja.button_index = JOY_BUTTON_A
+	ja.pressed = true
+	p._input(ja)
+	_assert(p._jump_queued, "144: pad A queues a jump with the mouse uncaptured")
+	p._jump_queued = false
+	# --- Keyboard fidelity: Space with an uncaptured mouse still does
+	# NOT jump (the byte-for-byte promise), and does once captured ---
+	var p2 = PlayerScene.instantiate()
+	p2.class_id = "warrior"
+	root.add_child(p2)
+	var sp := InputEventKey.new()
+	sp.physical_keycode = KEY_SPACE
+	sp.pressed = true
+	p2._input(sp)
+	_assert(not p2._jump_queued, "144: KB Space stays inert while uncaptured (as today)")
+	p2._pad_seen = true
+	p2._input(sp)
+	_assert(not p2._jump_queued, "144: key events keep the capture test even with a pad seen (per-source gate)")
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# --- Fishing on pad: d-pad Left toggles the rod under the pad
+	# gate; in command mode the pad's combat verbs stay inert (P4) ---
+	_grant_equipped(p, "fishing_rod")
+	var dl := InputEventJoypadButton.new()
+	dl.button_index = JOY_BUTTON_DPAD_LEFT
+	dl.pressed = true
+	p._input(dl)
+	_assert(p.rod_out, "144: pad toggles the rod out")
+	p._input(dl)
+	_assert(not p.rod_out, "144: pad toggles the rod away")
+	p._input(dl) # rod out again for the cast-charge probe
+	var rt := InputEventJoypadMotion.new()
+	rt.axis = JOY_AXIS_TRIGGER_RIGHT
+	rt.axis_value = 1.0
+	p._input(rt)
+	_assert(p._cast_charge >= 0.0, "144: pad RT begins the cast charge")
+	p._command_mode = true
+	p._cast_charge = -1.0
+	p._input(rt)
+	_assert(p._cast_charge < 0.0, "144: pad RT is inert in command mode (Phase 4's surface)")
+	p._command_mode = false
+	p.rod_out = false
+	p._cast_charge = -1.0
+	# --- Analog movement (Q2): tilt modulates the vector ---
+	var sm := root.get_node("SaveManager")
+	sm.set_profile_setting("settings", "look_deadzone", 0.2)
+	var stick := InputEventJoypadMotion.new()
+	stick.axis = JOY_AXIS_LEFT_X
+	stick.axis_value = 1.0
+	Input.parse_input_event(stick)
+	Input.flush_buffered_events()
+	_assert(absf(p._move_vector().x - 1.0) < 0.01, "144: full tilt reads full strength")
+	stick.axis_value = 0.6
+	Input.parse_input_event(stick)
+	Input.flush_buffered_events()
+	_assert(absf(p._move_vector().x - 0.5) < 0.01, "144: partial tilt walks — (0.6-0.2)/0.8 = 0.5 (Q2)")
+	stick.axis_value = 0.1
+	Input.parse_input_event(stick)
+	Input.flush_buffered_events()
+	_assert(p._move_vector() == Vector2.ZERO, "144: inside the deadzone reads zero")
+	stick.axis_value = 0.0
+	Input.parse_input_event(stick)
+	Input.flush_buffered_events()
+	# Keyboard diagonal through the same read stays unit-length, as the
+	# old normalized digital poll produced.
+	var kw := InputEventKey.new()
+	kw.physical_keycode = KEY_W
+	kw.pressed = true
+	var kd := InputEventKey.new()
+	kd.physical_keycode = KEY_D
+	kd.pressed = true
+	Input.parse_input_event(kw)
+	Input.parse_input_event(kd)
+	Input.flush_buffered_events()
+	var dv: Vector2 = p._move_vector()
+	_assert(absf(dv.length() - 1.0) < 0.01 and dv.x > 0.0 and dv.y < 0.0,
+		"144: KB diagonal through the action read is the old normalized vector")
+	kw.pressed = false
+	kd.pressed = false
+	Input.parse_input_event(kw)
+	Input.parse_input_event(kd)
+	Input.flush_buffered_events()
+	# --- Q2 settings accessors ride SaveManager profile settings ---
+	sm.set_profile_setting("settings", "look_sens", 1.5)
+	_assert(absf(p.look_sens_setting() - 1.5) < 0.001, "144: look sensitivity reads the settings store")
+	sm.set_profile_setting("settings", "look_sens", 1.0)
+	_assert(not p.look_invert_y_setting(), "144: invert-Y defaults off (today's feel)")
+	sm.set_profile_setting("settings", "look_invert_y", true)
+	_assert(p.look_invert_y_setting(), "144: invert-Y reads the settings store")
+	sm.set_profile_setting("settings", "look_invert_y", false)
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("\"look_sens\"") and msrc.contains("\"look_deadzone\"") and msrc.contains("\"look_invert_y\""),
+		"144: the settings phase ships all three look controls")
+	Input.mouse_mode = saved_mode
+	root.remove_child(p)
+	root.remove_child(p2)
+	p.free()
+	p2.free()
+	print("[Playtest] Pad parity done")
+
 func _test_host_lobby_prefill_132() -> void:
 	print("[Playtest] Host lobby prefill (issue #132)...")
 	var MenuScript := load("res://scripts/ui/main_menu.gd")
@@ -11664,10 +11789,10 @@ func _test_fishing_rod_phase3() -> void:
 		"#126: legend blocked state + refusal deleted")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(not psrc.contains("Requires " + "Fishing Rod"), "#126: no rod refusal in the player source")
-	_assert(psrc.contains("KEY_V"), "#126: rod key branch exists (V; F is the class ability)")
+	_assert(psrc.contains("event.is_action_pressed(\"toggle_rod\")"), "#126: rod verb branch exists (V / toggle_rod action; F is the class ability)")
 	_assert(psrc.contains("Equip your Fishing Rod (Tool slot) to cast"), "#126: equip toast text")
 	_assert(psrc.contains("The dock merchant sells a Fishing Rod"), "#126: merchant toast text")
-	_assert(psrc.contains("rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED"),
+	_assert(psrc.contains("rod_out and focused"),
 		"#126: LMB attacks disabled while rod-out")
 
 	# --- Server cast gate (Phase 2): the one rod check that survives

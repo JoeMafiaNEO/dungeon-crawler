@@ -23,6 +23,8 @@ const SNAPSHOT_INTERVAL := 0.1
 ## pair never sits co-planar. Tunable; world offset = PX * pixel_size.
 const BACK_SPRITE_DEPTH_PX := 3.0
 const MOUSE_SENS := 0.0025
+## Issue #144 Phase 1 (Q2): right-stick look rate at full tilt, rad/s.
+const LOOK_STICK_RATE := 2.4
 const EYE_HEIGHT := 1.6
 const INVENTORY_MAX := 12
 ## Issue #113 Phase 1: weapon upgrade kits. PLACEHOLDER tuning (Jesse
@@ -270,6 +272,9 @@ var _sprite_base_pos := Vector3.ZERO
 var _sprite_base_captured := false
 var _yaw := 0.0
 var _pitch := 0.0
+## Issue #144 Phase 1: latched the first time any joypad event arrives
+## this session; the pad leg of gameplay_focused() keys off it.
+var _pad_seen := false
 var _camera: Camera3D
 var _cam_base := Vector3(0, EYE_HEIGHT, 0)
 var _shake := 0.0
@@ -1204,6 +1209,8 @@ func _attack_anim() -> void:
 # --- Input ---
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		_pad_seen = true
 	if not is_multiplayer_authority() or not alive:
 		return
 	if _reading_board != null:
@@ -1212,195 +1219,203 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			var mm := event as InputEventMouseMotion
-			_yaw -= mm.relative.x * MOUSE_SENS
-			_pitch = clampf(_pitch - mm.relative.y * MOUSE_SENS, -1.2, 1.2)
+			var sens := look_sens_setting()
+			var inv := -1.0 if look_invert_y_setting() else 1.0
+			_yaw -= mm.relative.x * MOUSE_SENS * sens
+			_pitch = clampf(_pitch - mm.relative.y * MOUSE_SENS * sens * inv, -1.2, 1.2)
 			rotation.y = _yaw
 			if _camera != null:
 				_camera.rotation.x = _pitch
 		return
-	if event is InputEventMouseButton:
+	# Issue #144 Phase 1: the verb dispatch below serves mouse buttons,
+	# keys and joypad through the Phase 0 action vocabulary. `focused`
+	# is the gate: keyboard/mouse events keep the historic capture test
+	# verbatim; joypad events use the device-independent predicate.
+	var focused := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		focused = gameplay_focused()
+	var is_mouse := event is InputEventMouseButton
+	var pad := event is InputEventJoypadButton or event is InputEventJoypadMotion
+	# Jesse 2026-10-11: command mode click handling (warlord domain).
+	# Stays mouse-shaped in this phase — pad commanding is Phase 4.
+	if is_mouse and _command_mode and (hud == null or not hud.is_paused):
 		var mb := event as InputEventMouseButton
-		# Jesse 2026-10-11: command mode click handling (warlord domain).
-		if _command_mode and (hud == null or not hud.is_paused):
-			# Placement mode: left confirms, right cancels.
-			if _placing_type != "":
-				if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-					_command_confirm_placement()
-					return
-				elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
-					command_cancel_placement()
-					return
+		# Placement mode: left confirms, right cancels.
+		if _placing_type != "":
 			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-				_command_select()
+				_command_confirm_placement()
 				return
 			elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
-				_command_order()
+				command_cancel_placement()
 				return
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			# Issue #126 Phase 2: rod-out owns LMB — hook when the bite
-			# window is open, begin the cast charge otherwise (a bobber
-			# already out swallows the click). Attacks stay disabled.
-			if rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				if _bite_ready:
-					_director_request("request_hook")
-				elif not _bobber_out and _cast_charge < 0.0:
-					_begin_cast_charge()
-				get_viewport().set_input_as_handled()
-				return
-			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-				# Issue #65: don't steal the mouse back while the destination
-				# popup is open — clicks on popup rows must stay in UI mode.
-				if hud == null or (not hud.is_paused and not hud.inventory_open and not hud.cipher_popup_open and not hud.dest_popup_open and _reading_board == null):
-					# Don't steal the mouse back while in RTS command view.
-					var rts_cam := get_tree().get_first_node_in_group("rts_camera")
-					if rts_cam == null or not bool(rts_cam.get("active")):
-						Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-			elif _cooldown <= 0.0:
-				# Issue #91 Phase 1: LMB while Holy Light is armed starts the charge.
-				if _hl_state == HLState.ARMED:
-					_hl_start_charge()
-					return
-				# Issue #69 Phase 1: LMB while charging throws the dagger.
-				if _charging and class_id == "rogue":
-					_throw_dagger()
-				else:
-					_do_attack()
-		elif mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
-			# Issue #126 Phase 2: releasing LMB fires the charged cast.
-			if rod_out and _cast_charge >= 0.0:
-				_release_cast()
-				get_viewport().set_input_as_handled()
+			_command_select()
 			return
-		elif mb.button_index == MOUSE_BUTTON_RIGHT:
-			# Issue #126 Phase 2: rod-out owns RMB — reel the bobber in
-			# (never during the bite window; LMB/E hooks there).
-			if rod_out and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				if mb.pressed and _bobber_out and not _bite_ready:
-					_director_request("request_reel_in")
-				get_viewport().set_input_as_handled()
-				return
-			# Issue #91 Phase 1: RMB disarms Holy Light / cancels charge (free).
-			if mb.pressed and (_hl_state == HLState.ARMED or _hl_state == HLState.CHARGING):
-				_hl_disarm()
-				return
-			# Issue #69 Phase 1: RMB hold charges the thrown dagger (rogue only).
-			if class_id == "rogue" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				if mb.pressed:
-					_charging = true
-					_dagger_charge = 0.0
-				else:
-					# Release without LMB: cancel silently, no penalty.
-					_charging = false
-					_dagger_charge = 0.0
-					if hud != null and hud.has_method("set_charge_meter"):
-						hud.set_charge_meter(0.0, false)
-		elif mb.pressed and mb.button_index == MOUSE_BUTTON_MIDDLE:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_try_ping()
-		return
-	if event is InputEventKey:
-		var k := event as InputEventKey
-		if not k.pressed or k.echo:
+		elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+			_command_order()
 			return
-		if k.physical_keycode == KEY_ESCAPE:
-			# Issue #91 Phase 1: Esc disarms Holy Light / cancels charge (free).
-			if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
-				_hl_disarm()
-				get_viewport().set_input_as_handled()
-				return
-			# Inventory open: Esc swaps to the pause UI (no stacking).
-			if hud != null and hud.inventory_open:
-				hud.swap_inventory_to_pause()
-				get_viewport().set_input_as_handled()
-				return
-			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-				if hud != null:
-					hud.show_pause()
-			get_viewport().set_input_as_handled()
-		elif k.physical_keycode == KEY_SPACE:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_jump_queued = true
-		elif k.physical_keycode == KEY_E:
-			# Cipher/destination popups handle their own E/Esc; reading mode intercepts earlier.
-			if hud != null and (hud.cipher_popup_open or _reading_board != null or hud.get("dest_popup_open") == true):
-				return
-			# Issue #126 Phase 2: E hooks while the bite window is open
-			# (rod-out) — ahead of the world interact dispatch.
-			if rod_out and _bite_ready and alive \
-					and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
-					and (hud == null or not hud.is_paused):
+	# In command mode the pad's combat verbs stay inert — commanding
+	# is mouse-shaped until Phase 4; interact/build_menu/pause answer.
+	if event.is_action_pressed("attack") and not (_command_mode and pad):
+		# Issue #126 Phase 2: rod-out owns the attack verb — hook when
+		# the bite window is open, begin the cast charge otherwise (a
+		# bobber already out swallows the press). Attacks stay disabled.
+		if rod_out and focused:
+			if _bite_ready:
 				_director_request("request_hook")
+			elif not _bobber_out and _cast_charge < 0.0:
+				_begin_cast_charge()
+			get_viewport().set_input_as_handled()
+			return
+		if is_mouse and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			# Issue #65: don't steal the mouse back while the destination
+			# popup is open — clicks on popup rows must stay in UI mode.
+			if hud == null or (not hud.is_paused and not hud.inventory_open and not hud.cipher_popup_open and not hud.dest_popup_open and _reading_board == null):
+				# Don't steal the mouse back while in RTS command view.
+				var rts_cam := get_tree().get_first_node_in_group("rts_camera")
+				if rts_cam == null or not bool(rts_cam.get("active")):
+					Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			return
+		elif _cooldown <= 0.0 and focused:
+			# Issue #91 Phase 1: attack while Holy Light is armed starts the charge.
+			if _hl_state == HLState.ARMED:
+				_hl_start_charge()
+				return
+			# Issue #69 Phase 1: attack while charging throws the dagger.
+			if _charging and class_id == "rogue":
+				_throw_dagger()
+			else:
+				_do_attack()
+		return
+	if event.is_action_released("attack") and not (_command_mode and pad):
+		# Issue #126 Phase 2: releasing the attack verb fires the charged cast.
+		if rod_out and _cast_charge >= 0.0:
+			_release_cast()
+			get_viewport().set_input_as_handled()
+		return
+	if (event.is_action_pressed("alt_attack") or event.is_action_released("alt_attack")) and not (_command_mode and pad):
+		var alt_pressed := event.is_action_pressed("alt_attack")
+		# Issue #126 Phase 2: rod-out owns the alt verb — reel the
+		# bobber in (never during the bite window; attack/interact hook).
+		if rod_out and focused:
+			if alt_pressed and _bobber_out and not _bite_ready:
+				_director_request("request_reel_in")
+			get_viewport().set_input_as_handled()
+			return
+		# Issue #91 Phase 1: alt disarms Holy Light / cancels charge (free).
+		if alt_pressed and (_hl_state == HLState.ARMED or _hl_state == HLState.CHARGING):
+			_hl_disarm()
+			return
+		# Issue #69 Phase 1: alt hold charges the thrown dagger (rogue only).
+		if class_id == "rogue" and alive and focused:
+			if alt_pressed:
+				_charging = true
+				_dagger_charge = 0.0
+			else:
+				# Release without attacking: cancel silently, no penalty.
+				_charging = false
+				_dagger_charge = 0.0
+				if hud != null and hud.has_method("set_charge_meter"):
+					hud.set_charge_meter(0.0, false)
+		return
+	if event.is_action_pressed("ping") and not (_command_mode and pad):
+		if alive and focused and (hud == null or not hud.is_paused):
+			_try_ping()
+		return
+	if event.is_action_pressed("pause"):
+		# Issue #91 Phase 1: pause disarms Holy Light / cancels charge (free).
+		if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
+			_hl_disarm()
+			get_viewport().set_input_as_handled()
+			return
+		# Inventory open: pause swaps to the pause UI (no stacking).
+		if hud != null and hud.inventory_open:
+			hud.swap_inventory_to_pause()
+			get_viewport().set_input_as_handled()
+			return
+		if focused:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			if hud != null:
+				hud.show_pause()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("jump"):
+		if alive and focused and (hud == null or not hud.is_paused):
+			_jump_queued = true
+	if event.is_action_pressed("interact"):
+		if hud != null and (hud.cipher_popup_open or _reading_board != null or hud.get("dest_popup_open") == true):
+			return
+		# Issue #126 Phase 2: interact hooks while the bite window is
+		# open (rod-out) — ahead of the world interact dispatch.
+		if rod_out and _bite_ready and alive \
+				and focused \
+				and (hud == null or not hud.is_paused):
+			_director_request("request_hook")
+			get_viewport().set_input_as_handled()
+			return
+		# Jesse 2026-10-11: interact in command mode interacts with RTS buildings.
+		if _command_mode and (hud == null or not hud.is_paused):
+			_command_interact_building()
+			return
+		if focused and (hud == null or not hud.is_paused):
+			_try_pickup()
+	if event.is_action_pressed("build_menu"):
+		# Jesse 2026-10-11: build verb in command mode opens the RTS build menu.
+		if _command_mode and (hud == null or not hud.is_paused):
+			var dungeon := get_tree().get_first_node_in_group("dungeon")
+			var rhud := dungeon.get_node_or_null("RTSHUD") if dungeon else null
+			if rhud != null and rhud.has_method("toggle_build_menu"):
+				rhud.call("toggle_build_menu")
 				get_viewport().set_input_as_handled()
-				return
-			# Jesse 2026-10-11: E in command mode interacts with RTS buildings.
-			if _command_mode and (hud == null or not hud.is_paused):
-				_command_interact_building()
-				return
-			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_try_pickup()
-		elif k.physical_keycode == KEY_B:
-			# Jesse 2026-10-11: B in command mode opens the RTS build menu.
-			if _command_mode and (hud == null or not hud.is_paused):
-				var dungeon := get_tree().get_first_node_in_group("dungeon")
-				var rhud := dungeon.get_node_or_null("RTSHUD") if dungeon else null
-				if rhud != null and rhud.has_method("toggle_build_menu"):
-					rhud.call("toggle_build_menu")
-					get_viewport().set_input_as_handled()
-				return
-		elif k.physical_keycode == KEY_SHIFT:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_try_dash()
-		elif k.physical_keycode == KEY_Q:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_cycle_ability()
-		elif k.physical_keycode == KEY_T:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_use_class_ability()
-		elif k.physical_keycode == KEY_F:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_use_class_ability()
-		elif k.physical_keycode == KEY_V:
-			# Issue #126 Phase 1: the rod key. (The spec proposed F,
-			# but F already fires the class ability — V is the free
-			# dedicated key; an implementation fix, per the spec.)
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_toggle_rod_out()
-		elif k.physical_keycode == KEY_G:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_try_ping()
-		elif k.physical_keycode == KEY_H:
-			# Potion quick-slot: drink the equipped potion (Jesse's feature).
-			if alive and (hud == null or not hud.is_paused):
-				if hud != null and hud.has_method("drink_potion"):
-					hud.drink_potion()
-		elif k.physical_keycode == KEY_R:
-			if alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_try_start_wave()
-		elif k.physical_keycode >= KEY_1 and k.physical_keycode <= KEY_7:
-			if class_id in ["mage", "architect"] and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
+			return
+	if event.is_action_pressed("dash"):
+		if alive and focused and (hud == null or not hud.is_paused):
+			_try_dash()
+	if event.is_action_pressed("cycle_ability"):
+		if alive and focused and (hud == null or not hud.is_paused):
+			_cycle_ability()
+	if event.is_action_pressed("ability"):
+		if alive and focused and (hud == null or not hud.is_paused):
+			_use_class_ability()
+	if event.is_action_pressed("toggle_rod"):
+		# Issue #126 Phase 1: the rod verb. (The spec proposed F,
+		# but F already fires the class ability — V is the free
+		# dedicated key; an implementation fix, per the spec.)
+		if alive and focused and (hud == null or not hud.is_paused):
+			_toggle_rod_out()
+	if event.is_action_pressed("potion"):
+		# Potion quick-slot: drink the equipped potion (Jesse's feature).
+		# Not focus-gated, exactly as the H key was.
+		if alive and (hud == null or not hud.is_paused):
+			if hud != null and hud.has_method("drink_potion"):
+				hud.drink_potion()
+	if event.is_action_pressed("start_wave"):
+		if alive and focused and (hud == null or not hud.is_paused):
+			_try_start_wave()
+	if class_id in ["mage", "architect"] and alive and focused and (hud == null or not hud.is_paused):
+		for n in 7:
+			if event.is_action_pressed("ability_%d" % (n + 1)):
 				# Issue #89: map by ability "key" label, not raw index.
 				# Holy Light ("7") joins unlocked_abilities at whatever index
 				# it lands on, not index 6.
-				_select_ability_by_key(str(k.physical_keycode - KEY_1 + 1))
-		elif k.physical_keycode == KEY_8:
-			if class_id == "mage" and alive and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and (hud == null or not hud.is_paused):
-				_activate_mage_signature()
-		elif k.physical_keycode == KEY_I or k.physical_keycode == KEY_TAB:
-			if hud != null:
-				# Closing is always allowed: the mouse is free while the
-				# panel is open, so requiring CAPTURED here would trap
-				# it open. Opening keeps requiring the captured mouse,
-				# so the panel can never stack over the pause menu or a
-				# popup (both hold the mouse visible).
-				if hud.inventory_open:
-					hud.toggle_inventory()
-				elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-					# In Warlord's Domain, Tab toggles the RTS command view.
-					if k.physical_keycode == KEY_TAB and get_tree().get_first_node_in_group("rts_camera") != null:
-						return
-					hud.toggle_inventory()
-
+				_select_ability_by_key(str(n + 1))
+	if event.is_action_pressed("signature_ability"):
+		if class_id == "mage" and alive and focused and (hud == null or not hud.is_paused):
+			_activate_mage_signature()
+	if event.is_action_pressed("inventory"):
+		if hud != null:
+			# Closing is always allowed: the mouse is free while the
+			# panel is open, so requiring capture here would trap
+			# it open. Opening keeps requiring focus, so the panel
+			# can never stack over the pause menu or a popup (both
+			# hold the mouse visible).
+			if hud.inventory_open:
+				hud.toggle_inventory()
+			elif focused:
+				# In Warlord's Domain, Tab toggles the RTS command view.
+				if event is InputEventKey and (event as InputEventKey).physical_keycode == KEY_TAB and get_tree().get_first_node_in_group("rts_camera") != null:
+					return
+				hud.toggle_inventory()
 
 ## Downed bleed-out (runs on the downed player's authority).
 func _tick_downed(delta: float) -> void:
@@ -1414,7 +1429,7 @@ func _tick_downed(delta: float) -> void:
 ## Teammate revive: hold E near a downed ally to channel a revive.
 func _tick_revive_channel(delta: float) -> void:
 	var mate := _nearest_downed_teammate()
-	if mate != null and Input.is_physical_key_pressed(KEY_E) and (hud == null or not hud.is_paused):
+	if mate != null and Input.is_action_pressed("interact") and (hud == null or not hud.is_paused):
 		_revive_channel += delta
 		if hud != null:
 			hud.show_revive_progress(_revive_channel / REVIVE_CHANNEL)
@@ -1518,17 +1533,14 @@ func _resolve_repair_target(kind: String, key: String) -> Node3D:
 
 
 func _repair_move_input() -> bool:
-	return Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_A) \
-		or Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_D) \
-		or Input.is_physical_key_pressed(KEY_UP) or Input.is_physical_key_pressed(KEY_DOWN) \
-		or Input.is_physical_key_pressed(KEY_LEFT) or Input.is_physical_key_pressed(KEY_RIGHT)
+	return _move_vector() != Vector2.ZERO
 
 
 ## Client channel driver (authority peer only), mirroring the revive
 ## channel's shape. Runs every physics frame.
 func _tick_repair_channel(_delta: float) -> void:
 	var want: bool = alive and has_wrench_equipped() \
-		and Input.is_physical_key_pressed(KEY_E) \
+		and Input.is_action_pressed("interact") \
 		and not _repair_move_input() \
 		and _nearest_downed_teammate() == null \
 		and (hud == null or not hud.is_paused)
@@ -2575,8 +2587,54 @@ func apply_war_drums(duration: float) -> void:
 
 
 func _can_act() -> bool:
-	return (_cooldown <= 0.0 and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	return (_cooldown <= 0.0 and gameplay_focused()
 		and (hud == null or not hud.is_paused))
+
+
+## Issue #144 Phase 1: the device-independent gameplay-focus predicate
+## (characterization R1-R4), successor to the raw mouse-capture check.
+## Keyboard/mouse satisfy it exactly as before — mouse captured. A pad
+## session satisfies it logically: a joypad has been seen, and none of
+## the states that release the mouse for the keyboard player (pause,
+## inventory, an interact popup, FPS command mode, board reading) is
+## active — the predicate flips on the same transitions as capture
+## (R2), needs no mouse-shaped recovery (R3), and is plain state a
+## headless test can assert (R4). vault_open is deliberately NOT
+## consulted: hud's bounty tracker can leave it set (known wart), and
+## a stuck flag must never lock the pad gate shut.
+func gameplay_focused() -> bool:
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		return true
+	if not _pad_seen or _command_mode or _reading_board != null:
+		return false
+	if hud == null:
+		return true
+	return not (hud.is_paused or hud.inventory_open or hud.cipher_popup_open
+		or hud.dest_popup_open or hud.vendor_open or hud.dock_vendor_open
+		or hud.bounty_open)
+
+
+## Issue #144 Phase 1 (Q2): look settings, persisted by the settings
+## phase through SaveManager profile settings (the FOV pattern).
+func look_sens_setting() -> float:
+	return float(get_node("/root/SaveManager").get_profile_setting("settings", "look_sens", 1.0))
+
+
+func look_deadzone_setting() -> float:
+	return clampf(float(get_node("/root/SaveManager").get_profile_setting("settings", "look_deadzone", 0.2)), 0.0, 0.9)
+
+
+func look_invert_y_setting() -> bool:
+	return bool(get_node("/root/SaveManager").get_profile_setting("settings", "look_invert_y", false))
+
+
+## Issue #144 Phase 1: the unified move read behind the Phase 0/1
+## actions — keyboard exactly as the old physical polls (the actions
+## shadow them 1:1) plus the analog stick, tilt modulating the vector
+## magnitude per Q2. The settings deadzone shapes the stick only;
+## digital keys always read full strength.
+func _move_vector() -> Vector2:
+	return Input.get_vector("move_left", "move_right", "move_forward", "move_back", look_deadzone_setting())
 
 
 ## Solo-only: switch class. Resets level to 1, clears stat points and
@@ -2817,16 +2875,9 @@ func _physics_process(delta: float) -> void:
 	if is_multiplayer_authority():
 		_tick_revive_channel(delta)
 		_tick_repair_channel(delta)
-		var ix := 0.0
-		var iz := 0.0
-		if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
-			ix -= 1.0
-		if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
-			ix += 1.0
-		if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
-			iz -= 1.0
-		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
-			iz += 1.0
+		var mv := _move_vector()
+		var ix := mv.x
+		var iz := mv.y
 		# Gilded Cage: rooted while caged.
 		if _caged_t > 0.0:
 			_caged_t -= delta
@@ -2853,6 +2904,20 @@ func _physics_process(delta: float) -> void:
 			if ls != _rod_legend_cache:
 				_rod_legend_cache = ls
 				click_state_changed.emit()
+		# Issue #144 Phase 1 (Q2): right-stick look — rate-based and
+		# focus-gated like the mouse path, sensitivity / deadzone /
+		# invert-Y from the settings phase.
+		var lk := Input.get_vector("look_left", "look_right", "look_up", "look_down", look_deadzone_setting())
+		if lk != Vector2.ZERO and gameplay_focused() and (hud == null or not hud.is_paused):
+			var lsens := look_sens_setting()
+			_yaw -= lk.x * LOOK_STICK_RATE * lsens * delta
+			var pd := -lk.y * LOOK_STICK_RATE * lsens * delta
+			if look_invert_y_setting():
+				pd = -pd
+			_pitch = clampf(_pitch + pd, -1.2, 1.2)
+			rotation.y = _yaw
+			if _camera != null:
+				_camera.rotation.x = _pitch
 		var wish := Vector3(ix, 0, iz)
 		if wish.length() > 1.0:
 			wish = wish.normalized()
@@ -3014,16 +3079,9 @@ func _process(delta: float) -> void:
 func _try_dash() -> void:
 	if _dash_cd > 0.0 or _dash_t > 0.0:
 		return
-	var ix := 0.0
-	var iz := 0.0
-	if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
-		ix -= 1.0
-	if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
-		ix += 1.0
-	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
-		iz -= 1.0
-	if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
-		iz += 1.0
+	var mv := _move_vector()
+	var ix := mv.x
+	var iz := mv.y
 	var wish := Vector3(ix, 0, iz)
 	if wish.length() < 0.1:
 		wish = Vector3(0, 0, -1)  # dash forward when standing still
