@@ -3653,6 +3653,124 @@ func _test_bake_integrity() -> void:
 	root.remove_child(t)
 	t.free()
 	inst.free()
+	# --- Phase 3: the same integrity contract for the rest of the
+	# cycle-1 set (dungeon / depths / supermarket / warlord), plus
+	# the whole-set size budget. Village above keeps its own
+	# theme-specific asserts (mesh mode, empty ponds). ---
+	var total_bytes := 0
+	for tid0 in ["village", "dungeon", "depths", "supermarket", "warlord"]:
+		var e0: Dictionary = scenes.get(tid0, {})
+		_assert(not e0.is_empty(), "#138P3: manifest pins %s" % tid0)
+		total_bytes += int(e0.get("scene_bytes", 0))
+	_assert(total_bytes > 0 and total_bytes <= 10000000,
+		"#138P3: full cycle-1 baked set is %d bytes (<= 10 MB budget)" % total_bytes)
+	for tid in ["dungeon", "depths", "supermarket", "warlord"]:
+		var e: Dictionary = scenes.get(tid, {})
+		if e.is_empty():
+			continue
+		var pin := int(e.get("seed", -1))
+		_assert(pin == 1, "#138P3: %s pinned seed is 1 (first clean candidate of the gate set)" % tid)
+		var spath := str(e.get("scene_path", ""))
+		var ps2: PackedScene = load(spath)
+		_assert(ps2 != null, "#138P3: baked %s scene loads standalone" % tid)
+		if ps2 == null:
+			continue
+		var inst2 = ps2.instantiate()
+		var data2 = inst2.get_node_or_null("LevelData")
+		_assert(data2 != null, "#138P3: baked %s scene carries a LevelData node" % tid)
+		_assert(inst2.get_node_or_null("Arena") != null, "#138P3: baked %s scene carries the Arena subtree" % tid)
+		if data2 == null:
+			inst2.free()
+			continue
+		_assert(str(data2.get("theme_id")) == tid, "#138P3: %s LevelData theme_id matches" % tid)
+		_assert(int(data2.get("level_seed")) == pin, "#138P3: %s LevelData seed == pinned seed" % tid)
+		_assert(str(data2.get("content_hash")) == str(e.get("content_hash")),
+			"#138P3: %s scene content_hash matches the manifest" % tid)
+		_assert(str(data2.get("terrain_mode")) == str(e.get("terrain_mode")),
+			"#138P3: %s terrain_mode matches the manifest (%s)" % [tid, str(e.get("terrain_mode"))])
+		var sf2 := FileAccess.open(spath, FileAccess.READ)
+		var bytes2 := int(sf2.get_length()) if sf2 != null else -1
+		_assert(bytes2 > 0 and bytes2 <= 2000000,
+			"#138P3: %s scene is %d bytes (<= 2 MB budget)" % [tid, bytes2])
+		_assert(bytes2 == int(e.get("scene_bytes", -2)),
+			"#138P3: %s manifest scene_bytes matches the file on disk" % tid)
+		_assert(str(data2.call("compute_content_hash")) == str(data2.get("content_hash")),
+			"#138P3: %s recomputed hash == stored hash" % tid)
+		var spawns2: PackedVector3Array = data2.get("player_spawns")
+		_assert(not spawns2.is_empty(), "#138P3: %s LevelData carries player spawns" % tid)
+		var th: Resource = load("res://data/levels/theme_%s.tres" % tid)
+		var arena2 = inst2.get_node_or_null("Arena")
+		var terr2 = arena2.get_node_or_null("HeightmapTerrain") if arena2 != null else null
+		var heights2: PackedFloat32Array = data2.get("heights")
+		var ext2 := int(round(float(data2.get("grid_size")) * float(data2.get("cell_size"))))
+		if bool(th.get("use_heightmap_terrain")):
+			_assert(terr2 != null, "#138P3: %s Arena carries the HeightmapTerrain node" % tid)
+			_assert(heights2.size() == (ext2 + 1) * (ext2 + 1),
+				"#138P3: %s heights length %d == (extent+1)^2 %d" % [tid, heights2.size(), (ext2 + 1) * (ext2 + 1)])
+			_assert(int(data2.get("terrain_map_points")) == ext2 + 1,
+				"#138P3: %s terrain_map_points == extent+1" % tid)
+			if str(e.get("terrain_mode")) == "mesh":
+				_assert(terr2 != null and terr2.get_node_or_null("TerrainMesh") != null,
+					"#138P3: %s mesh mode: terrain mesh frozen into the scene" % tid)
+				_assert(terr2 != null and terr2.get_node_or_null("TerrainBody") != null,
+					"#138P3: %s mesh mode: terrain collision frozen into the scene" % tid)
+			else:
+				_assert(terr2 != null and terr2.get_node_or_null("TerrainMesh") == null
+					and terr2.get_node_or_null("TerrainBody") == null,
+					"#138P3: %s heights mode: surface stripped, regenerated from LevelData at load" % tid)
+		else:
+			# Warlord's Domain stays flat (Jesse's ruling): no
+			# terrain node, no heights — the layout is the artifact.
+			_assert(terr2 == null, "#138P3: %s ships flat (no HeightmapTerrain node)" % tid)
+			_assert(heights2.is_empty(), "#138P3: %s LevelData carries no heights (flat theme)" % tid)
+		# Reproducibility, as for village: fresh procgen at the pin
+		# reproduces the baked layout (and heights, where the theme
+		# has terrain) byte-for-byte.
+		var regen2 = ProcGenScript.generate(th, pin)
+		_assert(regen2 != null, "#138P3: procgen regenerates the %s layout" % tid)
+		var baked3 = data2.call("to_layout")
+		_assert(baked3.fingerprint() == regen2.fingerprint(),
+			"#138P3: %s baked layout == fresh procgen(pinned seed) layout" % tid)
+		if bool(th.get("use_heightmap_terrain")):
+			var plan2: Dictionary = AnnexScript.plan(pin, regen2)
+			var rt = HT.new()
+			root.add_child(rt)
+			rt.set("map_points", ext2 + 1)
+			rt.set("cell_size", 1.0)
+			rt.set("terrain_seed", pin)
+			rt.set("noise_frequency", float(th.get("terrain_noise_frequency")))
+			rt.set("amplitude", float(th.get("terrain_amplitude")))
+			rt.set("height_offset", float(th.get("terrain_height_offset")))
+			rt.set("water_level", float(th.get("terrain_water_level")))
+			rt.set("pond_depth", float(th.get("terrain_pond_depth")))
+			rt.set("smooth_passes", int(th.get("terrain_smooth_passes")))
+			rt.set("flatten_radius", float(th.get("terrain_flatten_radius")))
+			var pois2: Array[Vector3] = []
+			for s2 in regen2.player_spawns:
+				pois2.append(s2)
+			for fp2 in regen2.farm_plots:
+				pois2.append(fp2)
+			if not regen2.player_spawns.is_empty():
+				pois2.append(regen2.player_spawns[0] + Vector3(3.0, 0.0, 0.0))
+			rt.set("poi_points", pois2)
+			var pond_specs2: Array[Dictionary] = []
+			for pd2 in regen2.ponds:
+				pond_specs2.append({"center": pd2["center"], "radius": float(pd2["radius"])})
+			rt.set("pond_specs", pond_specs2)
+			var fts2: Array[Dictionary] = []
+			fts2.append({"pos": Vector3(float(plan2.get("attach_x", 0.0)), 0.0, -regen2.arena_half_size()),
+				"height": 0.0, "radius": 6.5})
+			if float(th.get("terrain_center_flatten_radius")) > 0.0:
+				fts2.append({"pos": Vector3.ZERO, "height": NAN,
+					"radius": float(th.get("terrain_center_flatten_radius"))})
+			rt.set("flatten_targets", fts2)
+			rt.generate()
+			var rh2: PackedFloat32Array = rt.heights_copy()
+			_assert(rh2.to_byte_array() == heights2.to_byte_array(),
+				"#138P3: %s re-generated heights == baked heights (byte-exact)" % tid)
+			root.remove_child(rt)
+			rt.free()
+		inst2.free()
 
 
 func _test_baked_runtime() -> void:
@@ -3674,8 +3792,27 @@ func _test_baked_runtime() -> void:
 		"#138P2: cycle-1 village at an arbitrary seed falls back to procgen (continued pre-existing save)")
 	_assert(not bool(DungeonScript.select_baked("village", 6, 1)),
 		"#138P2: cycle-2 village never selects baked, even at the pinned seed")
-	_assert(not bool(DungeonScript.select_baked("dungeon", 2, 1)),
+	_assert(not bool(DungeonScript.select_baked("misty_docks", 2, 1)),
 		"#138P2: an unbaked theme never selects baked")
+	# Phase 3: the rest of the cycle-1 rotation is baked at pin 1.
+	for tid in ["dungeon", "depths", "supermarket", "warlord"]:
+		var thash := ""
+		if manifest is Dictionary:
+			thash = str((manifest as Dictionary).get("scenes", {}).get(tid, {}).get("content_hash", ""))
+		_assert(bool(DungeonScript.select_baked(tid, 1, 1)),
+			"#138P3: cycle-1 %s at the pinned seed selects baked" % tid)
+		_assert(not bool(DungeonScript.select_baked(tid, 1, 424242)),
+			"#138P3: cycle-1 %s at an arbitrary seed falls back to procgen" % tid)
+		_assert(not bool(DungeonScript.select_baked(tid, 6, 1)),
+			"#138P3: cycle-2 %s never selects baked, even at the pinned seed" % tid)
+		_assert(int(LevelDataScript.pinned_seed(tid)) == 1,
+			"#138P3: pinned_seed(%s) == 1" % tid)
+		_assert(int(DungeonScript.fresh_seed_for(tid, 1, 999)) == 1,
+			"#138P3: fresh %s entry forces the pinned seed" % tid)
+		_assert(str(DungeonScript.expected_baked_hash(tid, 1, 1)) == thash and thash != "",
+			"#138P3: expected hash at the %s pin == manifest hash" % tid)
+		_assert(str(LevelDataScript.shipped_hash(tid)) == thash,
+			"#138P3: shipped_hash(%s) reads the artifact, matches manifest" % tid)
 	# --- Fresh-entry seed forcing ---
 	_assert(int(DungeonScript.fresh_seed_for("village", 1, 999)) == 1,
 		"#138P2: fresh village entry forces the pinned seed")
@@ -3683,7 +3820,7 @@ func _test_baked_runtime() -> void:
 		"#138P2: fresh level-5 village-lineage entry forces the pin")
 	_assert(int(DungeonScript.fresh_seed_for("village", 6, 999)) == 999,
 		"#138P2: cycle-2 entry keeps its rolled seed")
-	_assert(int(DungeonScript.fresh_seed_for("dungeon", 2, 999)) == 999,
+	_assert(int(DungeonScript.fresh_seed_for("misty_docks", 2, 999)) == 999,
 		"#138P2: unbaked theme entry keeps its rolled seed")
 	# --- Expected handshake hash ---
 	_assert(str(DungeonScript.expected_baked_hash("village", 1, 1)) == man_hash,
@@ -3698,7 +3835,7 @@ func _test_baked_runtime() -> void:
 		"#138P2: baked_scene_path(village) names the shipped scene")
 	_assert(str(LevelDataScript.shipped_hash("village")) == man_hash,
 		"#138P2: shipped_hash reads the artifact's LevelData, matches manifest")
-	_assert(str(LevelDataScript.shipped_hash("dungeon")) == "",
+	_assert(str(LevelDataScript.shipped_hash("misty_docks")) == "",
 		"#138P2: shipped_hash of an unbaked theme is empty")
 	# --- Source pins: the handshake + forcing are wired ---
 	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")

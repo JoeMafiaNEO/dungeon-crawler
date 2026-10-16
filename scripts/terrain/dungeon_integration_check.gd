@@ -95,6 +95,16 @@ func _run_checks() -> void:
 	_check(_terrain != null, "heightmap terrain built instead of flat floor")
 	_check(_dungeon.get_node_or_null("Arena/Floor") == null, "no flat Floor node on terrain dungeon")
 	_check(_dungeon.get_node_or_null("Arena/TerrainDoorApron") != null, "doorway apron built")
+	# Issue #138 Phase 3: seed 1 IS the dungeon pin — the dungeon
+	# must have loaded the baked scene there, and must NOT off it.
+	if _seed == LevelData.pinned_seed("dungeon"):
+		_check(str(_dungeon.get("_baked_hash")) == LevelData.shipped_hash("dungeon"),
+			"baked path engaged at the pinned seed (hash %s)" % str(_dungeon.get("_baked_hash")).substr(0, 8))
+		_check(_dungeon.get_node_or_null("LevelData") != null,
+			"adopted LevelData rides under the baked dungeon")
+	else:
+		_check(str(_dungeon.get("_baked_hash")) == "",
+			"procgen path at unpinned seed %d (no baked hash)" % _seed)
 	if _terrain == null:
 		return
 	# Profile actually carried from the theme (issue #120 params).
@@ -324,7 +334,13 @@ func _check_door_flatness() -> void:
 func _check_walls() -> void:
 	var walls := 0
 	var worst_bottom := -1e9
-	for child in _dungeon.get_children():
+	# Issue #138 Phase 3: since the Phase 1 container refactor the
+	# wall bodies are direct children of Arena (_arena_add per body)
+	# — scan there (the original dungeon-children scan found 0 and
+	# the buried assert below passed vacuously; subsidiary miss
+	# from the Phase 1 re-point).
+	var arena := _dungeon.get_node_or_null("Arena")
+	for child in (arena.get_children() if arena != null else []):
 		if not (child is StaticBody3D):
 			continue
 		for sub in child.get_children():
@@ -350,9 +366,13 @@ func _check_torches() -> void:
 		"layout carries the theme's torch points (%d of %d)" % [
 			layout.torches.size(), int(theme.torch_count)])
 	var grounded := 0
+	# Issue #138 Phase 3: torch props are direct children of Arena
+	# (identity transform, so local positions are world positions);
+	# same Phase 1 re-point miss as _check_walls.
+	var arena2 := _dungeon.get_node_or_null("Arena")
 	for pos in layout.torches:
 		var g := _terrain.get_ground_height(pos)
-		for child in _dungeon.get_children():
+		for child in (arena2.get_children() if arena2 != null else []):
 			if child is Node3D:
 				var cp := (child as Node3D).position
 				var x_ok := absf(cp.x - pos.x) < 0.01
@@ -366,6 +386,17 @@ func _check_torches() -> void:
 
 
 func _check_determinism() -> void:
+	# Issue #138 Phase 3, baked mode (same branch as the village
+	# check's Phase 2 leg): the adopted terrain's live config
+	# arrays are empty by design (they were bake inputs, not
+	# serialized) — the shipped artifact is the oracle instead: the
+	# dungeon's query heights must equal the LevelData heights.
+	if str(_dungeon.get("_baked_hash")) != "":
+		var data = _dungeon.get_node_or_null("LevelData")
+		var dh: PackedFloat32Array = data.get("heights") if data != null else PackedFloat32Array()
+		_check(dh == _terrain.heights_copy(),
+			"baked terrain heights == shipped LevelData heights (seed %d)" % _seed)
+		return
 	var t2 := HeightmapTerrain.new()
 	t2.map_points = _terrain.map_points
 	t2.cell_size = _terrain.cell_size

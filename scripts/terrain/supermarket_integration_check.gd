@@ -101,6 +101,18 @@ func _run_checks() -> void:
 	_check(_terrain != null, "heightmap terrain built instead of flat floor")
 	_check(_dungeon.get_node_or_null("Arena/Floor") == null, "no flat Floor node on terrain supermarket")
 	_check(_dungeon.get_node_or_null("Arena/TerrainDoorApron") != null, "doorway apron built")
+	# Issue #138 Phase 3: seed 1 IS the supermarket pin — the
+	# dungeon must have loaded the baked scene there, and must NOT
+	# off it. (The supermarket bake ships heights-mode: the surface
+	# is regenerated from LevelData heights at adoption.)
+	if _seed == LevelData.pinned_seed("supermarket"):
+		_check(str(_dungeon.get("_baked_hash")) == LevelData.shipped_hash("supermarket"),
+			"baked path engaged at the pinned seed (hash %s)" % str(_dungeon.get("_baked_hash")).substr(0, 8))
+		_check(_dungeon.get_node_or_null("LevelData") != null,
+			"adopted LevelData rides under the baked dungeon")
+	else:
+		_check(str(_dungeon.get("_baked_hash")) == "",
+			"procgen path at unpinned seed %d (no baked hash)" % _seed)
 	if _terrain == null:
 		return
 	# Profile actually carried from the theme (issue #119 params).
@@ -356,8 +368,20 @@ func _check_determinism_and_perf() -> void:
 	var t0 := Time.get_ticks_msec()
 	t2.generate()
 	var mart_ms := Time.get_ticks_msec() - t0
-	_check(t2.heights_copy() == _terrain.heights_copy(),
-		"terrain generation deterministic (identical heights, seed %d)" % _terrain.terrain_seed)
+	# Issue #138 Phase 3, baked mode (same oracle as the village
+	# check's Phase 2 leg): the adopted terrain's live config
+	# arrays are empty by design, so a regeneration cannot
+	# reproduce its heights — compare against the shipped
+	# LevelData heights instead. (The t2 generate above still
+	# runs: mart_ms feeds the perf sanity assert below.)
+	if str(_dungeon.get("_baked_hash")) != "":
+		var data = _dungeon.get_node_or_null("LevelData")
+		var dh: PackedFloat32Array = data.get("heights") if data != null else PackedFloat32Array()
+		_check(dh == _terrain.heights_copy(),
+			"baked terrain heights == shipped LevelData heights (seed %d)" % _seed)
+	else:
+		_check(t2.heights_copy() == _terrain.heights_copy(),
+			"terrain generation deterministic (identical heights, seed %d)" % _terrain.terrain_seed)
 	t2.queue_free()
 	# Perf A/B: the Docks profile at the Docks extent, same POI inputs,
 	# so the comparison isolates profile+extent cost. Reported, with

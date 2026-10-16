@@ -98,6 +98,16 @@ func _run_checks() -> void:
 	_check(_terrain != null, "heightmap terrain built instead of flat floor")
 	_check(_dungeon.get_node_or_null("Arena/Floor") == null, "no flat Floor node on terrain depths")
 	_check(_dungeon.get_node_or_null("Arena/TerrainDoorApron") != null, "doorway apron built")
+	# Issue #138 Phase 3: seed 1 IS the depths pin — the dungeon
+	# must have loaded the baked scene there, and must NOT off it.
+	if _seed == LevelData.pinned_seed("depths"):
+		_check(str(_dungeon.get("_baked_hash")) == LevelData.shipped_hash("depths"),
+			"baked path engaged at the pinned seed (hash %s)" % str(_dungeon.get("_baked_hash")).substr(0, 8))
+		_check(_dungeon.get_node_or_null("LevelData") != null,
+			"adopted LevelData rides under the baked dungeon")
+	else:
+		_check(str(_dungeon.get("_baked_hash")) == "",
+			"procgen path at unpinned seed %d (no baked hash)" % _seed)
 	if _terrain == null:
 		return
 	# Profile actually carried from the theme (issue #121 params).
@@ -320,6 +330,17 @@ func _check_door_flatness() -> void:
 
 
 func _check_determinism() -> void:
+	# Issue #138 Phase 3, baked mode (same branch as the village
+	# check's Phase 2 leg): the adopted terrain's live config
+	# arrays are empty by design (they were bake inputs, not
+	# serialized) — the shipped artifact is the oracle instead: the
+	# dungeon's query heights must equal the LevelData heights.
+	if str(_dungeon.get("_baked_hash")) != "":
+		var data = _dungeon.get_node_or_null("LevelData")
+		var dh: PackedFloat32Array = data.get("heights") if data != null else PackedFloat32Array()
+		_check(dh == _terrain.heights_copy(),
+			"baked terrain heights == shipped LevelData heights (seed %d)" % _seed)
+		return
 	var t2 := HeightmapTerrain.new()
 	t2.map_points = _terrain.map_points
 	t2.cell_size = _terrain.cell_size

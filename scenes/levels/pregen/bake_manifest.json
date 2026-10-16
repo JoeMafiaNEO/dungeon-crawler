@@ -1,14 +1,50 @@
 {
 	"scenes": {
+		"depths": {
+			"bake_date": "2026-10-16",
+			"content_hash": "11d9a787da45ead94a54d4c0f92f2f0f37c0f782faaa9230633bb010c46db045",
+			"scene_bytes": 1237287.0,
+			"scene_path": "res://scenes/levels/pregen/theme_depths.tscn",
+			"seed": 1.0,
+			"terrain_mode": "mesh",
+			"theme_id": "depths"
+		},
+		"dungeon": {
+			"bake_date": "2026-10-16",
+			"content_hash": "7323e73f8d1f5c0c718dbbc24a619d4506545b2cc88e4646339dc494d03edc79",
+			"scene_bytes": 1045027.0,
+			"scene_path": "res://scenes/levels/pregen/theme_dungeon.tscn",
+			"seed": 1.0,
+			"terrain_mode": "mesh",
+			"theme_id": "dungeon"
+		},
+		"supermarket": {
+			"bake_date": "2026-10-16",
+			"content_hash": "9584d4eafce8ac73253520c9f026f9639a7f38b6df9e5a0c9856a7e0dd733072",
+			"scene_bytes": 518770.0,
+			"scene_path": "res://scenes/levels/pregen/theme_supermarket.tscn",
+			"seed": 1.0,
+			"terrain_mode": "heights",
+			"theme_id": "supermarket"
+		},
 		"village": {
 			"bake_date": "2026-10-15",
 			"content_hash": "17346d494dccbee4f95ea257e71e3df14fc4a64380fec16f8bef04f83e4bf19a",
-			"scene_bytes": 1607326,
+			"scene_bytes": 1607326.0,
 			"scene_path": "res://scenes/levels/pregen/theme_village.tscn",
-			"seed": 1,
+			"seed": 1.0,
 			"terrain_mode": "mesh",
 			"theme_id": "village"
+		},
+		"warlord": {
+			"bake_date": "2026-10-16",
+			"content_hash": "167b8a216a065367c0f32ac8e56de9530599b3f84680aa7b346a9e95bab9936a",
+			"scene_bytes": 546538,
+			"scene_path": "res://scenes/levels/pregen/theme_warlord.tscn",
+			"seed": 1,
+			"terrain_mode": "mesh",
+			"theme_id": "warlord"
 		}
 	},
-	"version": 1
+	"version": 1.0
 }

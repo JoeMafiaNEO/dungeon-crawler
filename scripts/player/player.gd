@@ -1828,7 +1828,7 @@ func refresh_abilities() -> Dictionary:
 	var _dungeon := get_tree().get_first_node_in_group("dungeon")
 	if _dungeon != null and _dungeon.get("is_warlord") == true:
 		if not fresh.any(func(x): return x["id"] == "command"):
-			fresh.append({"id": "command", "name": "Command", "unlock": 1,
+			fresh.append({"id": "command", "name": "Command", "unlock": 1, "key": "T/F",
 				"desc": "Issue RTS orders: E on buildings, click to select/order units."})
 	unlocked_abilities = fresh
 	if selected_ability >= unlocked_abilities.size():
