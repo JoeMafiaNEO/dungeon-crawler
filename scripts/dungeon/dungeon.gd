@@ -277,6 +277,8 @@ var _continued_state_by_peer: Dictionary = {}
 ## definitive "none for you"). The register-time push sets it too.
 var _continued_state_latched := false
 var _continued_pull_tries := 0
+## TEMPORARY #140 diagnostic: the late census fires exactly once.
+var _state_census_late_done := false
 ## TEMPORARY #140 diagnostic (removed at closure with the register audit).
 var continued_apply_audit_log: Array = []
 
@@ -627,10 +629,35 @@ func _apply_continued_state_local(ps: Dictionary, me: Player) -> void:
 	if me == null:
 		return
 	me.apply_state(ps)
+	# TEMPORARY #140 diagnostic: same object, immediate read — did
+	# the apply take on this instance?
+	var _state_line := "[#140-STATE-AUDIT] after_apply level=%d inv=%d id=%d" % [
+		me.level, me.inventory.size(), int(me.get_instance_id())]
+	print(_state_line)
+	continued_apply_audit_log.append(_state_line)
 	# Issue #134: the restored state IS this peer's entry state —
 	# capture it here, on the owning peer, for a possible forfeit.
 	me.capture_entry_snapshot()
 	_continued_state_latched = true
+
+
+## TEMPORARY #140 diagnostic: players-group census with identity —
+## every player node (name, authority, level, instance id) plus the
+## HUD's bound-player level, so a retest separates a wrong-instance
+## apply from an overwrite from a presentation-only lie.
+func _log_players_census(tag: String) -> void:
+	var parts: Array = []
+	for n in get_tree().get_nodes_in_group("players"):
+		var pl := n as Player
+		if pl != null:
+			parts.append("%s auth=%d level=%d id=%d inv=%d" % [
+				pl.name, int(pl.get_multiplayer_authority()), pl.level,
+				int(pl.get_instance_id()), pl.inventory.size()])
+	var hud_level := -1
+	if _local_hud != null and _local_hud.get("_player") != null:
+		hud_level = int((_local_hud.get("_player") as Player).level)
+	print("[#140-STATE-AUDIT] census %s nodes=[%s] hud_bound_level=%d" % [
+		tag, "; ".join(parts), hud_level])
 
 
 ## Issue #140 leg 2: a client whose player node now exists pulls its
@@ -857,6 +884,8 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 		if not multiplayer.is_server():
 			print("[#140-APPLY-AUDIT] pull sent (request_continued_state)")
 			rpc_id(NetworkManager.server_peer_id, "request_continued_state")
+		# TEMPORARY #140 diagnostic: census at spawn completion.
+		_log_players_census("spawn_complete")
 
 
 @rpc("any_peer", "call_local")
@@ -952,6 +981,11 @@ func _process(delta: float) -> void:
 				# server's answer latches it (bounded tries).
 				if _continued_state_latched or _continued_pull_tries >= 30:
 					_handshake_timer = -1.0
+					# TEMPORARY #140 diagnostic: the ~2 s census, once,
+					# as the retry loop stands down.
+					if not _state_census_late_done:
+						_state_census_late_done = true
+						_log_players_census("stand_down")
 				else:
 					_continued_pull_tries += 1
 					rpc_id(NetworkManager.server_peer_id, "request_continued_state")

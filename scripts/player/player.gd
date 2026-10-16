@@ -5575,6 +5575,12 @@ func apply_state(s: Dictionary) -> void:
 		hud.refresh_inventory(self)
 		hud.refresh_loadout(self)
 		hud.refresh_stats()
+		# Issue #140: the level label is written ONLY at HUD setup
+		# and on level-up — a restore landing after setup (every
+		# continued guest) must refresh it explicitly, the
+		# switch_class precedent. Without this the restored guest
+		# presents "Lv 1" while every field is correct.
+		hud.set_level(level, self)
 	# Issue #111 minor 1: one-line player notice when the restore
 	# dropped stacks (see last_restore_dropped).
 	if not last_restore_dropped.is_empty() and hud != null:

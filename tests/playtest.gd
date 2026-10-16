@@ -170,6 +170,8 @@ func _run() -> void:
 	_test_menu_batch_137()
 	_test_session_roster_140()
 	_test_continued_pull_140()
+	_test_state_audit_140()
+	_test_level_label_140()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -10461,6 +10463,99 @@ func _test_continued_pull_140() -> void:
 	_assert(dsrc.contains("func _apply_continued_state_local("),
 		"140L2: the apply delegate exists (guard/delegate split)")
 	print("[Playtest] Continued pull done")
+
+
+## Issue #140 leg 3: recording stand-in for the HUD — apply_state's
+## refresh block calls these; set_level records what the label got.
+class _HudStub140:
+	extends CanvasLayer
+	var label_level := -1
+
+	func refresh_inventory(_p) -> void:
+		pass
+
+	func refresh_loadout(_p) -> void:
+		pass
+
+	func refresh_stats() -> void:
+		pass
+
+	func refresh_abilities(_p) -> void:
+		pass
+
+	func set_level(lvl: int, _p) -> void:
+		label_level = lvl
+
+
+## Issue #140 leg 3: a continued guest's restore lands AFTER the HUD
+## exists (setup wrote "Lv 1" at spawn) — apply_state must refresh the
+## level label explicitly, or the fully-restored guest presents Lv 1.
+func _test_level_label_140() -> void:
+	print("[Playtest] Level label restore (issue #140 leg 3)...")
+	# Source pins: the refresh block carries the explicit label write,
+	# after the panel refreshes.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var ab := psrc.find("func apply_state(")
+	var ab_end := psrc.find("\nfunc ", ab + 1)
+	var abody := psrc.substr(ab, ab_end - ab)
+	_assert(abody.contains("hud.set_level(level, self)"),
+		"140L3: apply_state refreshes the HUD level label")
+	_assert(abody.find("hud.refresh_stats()") < abody.find("hud.set_level(level, self)"),
+		"140L3: set_level rides with the HUD refresh block")
+	# Behavioral, guest-shaped: spawn fresh (label would read Lv 1),
+	# then the continued state lands — mp_3's guest entry verbatim.
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "mage")
+	holder.add_child(p)
+	_assert(int(p.get("level")) == 1, "140L3: the fixture player spawns at Lv 1")
+	var stub := _HudStub140.new()
+	p.set("hud", stub)
+	var guest_state := {"level": 4, "xp": 70, "xp_next": 174, "stat_points": 9,
+		"bonus_damage": 0.0, "bonus_health": 0.0, "bonus_speed": 0.0, "bonus_aura": 0.0,
+		"inventory": [{"id": "apprentice_staff", "count": 1, "slot": "WEAPON",
+			"upgrade_level": 0}],
+		"run_start_msec": 0, "run_kills": 0, "run_damage_dealt": 0.0,
+		"supermarket_cash": 0, "bounty_progress": {}, "totem_charges": 0,
+		"specialization": "", "affinity": {}, "family_collection": {},
+		"equipped_special": "", "no_death_streak": 0,
+		"second_wind_armed": false, "second_wind_used": false}
+	p.call("apply_state", guest_state)
+	_assert(int(p.get("level")) == 4, "140L3: the restored level lands on the player")
+	_assert(int(p.get("stat_points")) == 9, "140L3: the restored stat points land")
+	_assert(p.get("inventory").size() == 1, "140L3: the saved staff is the inventory")
+	_assert(stub.label_level == 4,
+		"140L3: the level label is refreshed to the restored level (the fix)")
+	# Fixture left in place like the other live-instance sections
+	# (ambient current_scene is load-bearing for later sections);
+	# just detach the stub so nothing can touch it post-section.
+	p.set("hud", null)
+	print("[Playtest] Level label restore done")
+## Issue #140 leg 3 (TEMPORARY instrument): the state audit reads the
+## applied player immediately after apply_state returns, and a census
+## with node identity runs at spawn completion and at retry stand-down.
+func _test_state_audit_140() -> void:
+	print("[Playtest] State audit (issue #140 leg 3)...")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var del := dsrc.find("func _apply_continued_state_local(")
+	var del_end := dsrc.find("\nfunc ", del + 1)
+	var del_body := dsrc.substr(del, del_end - del)
+	var apply_at := del_body.find("apply_state(ps)")
+	var audit_at := del_body.find("[#140-STATE-AUDIT] after_apply")
+	_assert(apply_at != -1 and audit_at > apply_at,
+		"140L3: the state audit reads the player immediately after the apply")
+	_assert(dsrc.contains("func _log_players_census("),
+		"140L3: the census helper exists")
+	var ds := dsrc.find("func _do_spawn(")
+	var ds_end := dsrc.find("\nfunc ", ds + 1)
+	_assert(dsrc.substr(ds, ds_end - ds).contains("_log_players_census(\"spawn_complete\")"),
+		"140L3: the census runs at spawn completion")
+	_assert(dsrc.contains("_log_players_census(\"stand_down\")"),
+		"140L3: the census runs again as the retry loop stands down")
+	print("[Playtest] State audit done")
 
 
 ## Issue #132: the Host menu's Lobby tab must show what Host will
