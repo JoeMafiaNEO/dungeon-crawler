@@ -259,14 +259,10 @@ var level_cleared := false
 ## for a remote peer is a replica and cannot author that peer's state.
 ## Issue #140: the server's dungeon works from its OWN captured copy of
 ## the continued roster, taken at _ready. The hand-off static above is
-## cleared by leave_lobby() for hygiene; in the Oct 15 session that left
-## the matcher facing an empty roster when a continued guest registered
-## (they spawned fresh, unrejected — the roster guard itself was
-## skipped). The capture is a duplicate: later clears of the source can
-## never disarm a live session's matcher.
+## cleared by leave_lobby() for hygiene; the capture is a duplicate, so
+## a live session's matcher can never be disarmed by a boundary clear
+## of its source.
 var _session_roster: Array = []
-## TEMPORARY #140 diagnostic (removed at closure, #136 pattern).
-var register_audit_log: Array = []
 ## Issue #140 leg 2: the register-time continued state, stashed per
 ## peer so the owning client can PULL it once its player node exists
 ## (the one-shot push raced the guest's scene readiness and dropped).
@@ -277,10 +273,6 @@ var _continued_state_by_peer: Dictionary = {}
 ## definitive "none for you"). The register-time push sets it too.
 var _continued_state_latched := false
 var _continued_pull_tries := 0
-## TEMPORARY #140 diagnostic: the late census fires exactly once.
-var _state_census_late_done := false
-## TEMPORARY #140 diagnostic (removed at closure with the register audit).
-var continued_apply_audit_log: Array = []
 
 
 func _ready() -> void:
@@ -459,7 +451,6 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 	if not _active_roster().is_empty():
 		if roster_entry.is_empty() and not continued_open_lobby:
 			# Stranger on a roster-locked lobby: reject.
-			_log_register_audit(sender, roster_entry, "rejected_stranger")
 			rpc_id(sender, "reject_join", "This lobby is continuing a saved run (roster-locked).")
 			return
 		if not roster_entry.is_empty():
@@ -487,8 +478,6 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 		# Warlord: reclaim their faction from AI control.
 		if is_warlord:
 			_reclaim_faction(sender, int(roster_entry.get("rts_faction", -1)))
-	# TEMPORARY #140 diagnostic: audit every register's outcome.
-	_log_register_audit(sender, roster_entry, "applied" if not roster_entry.is_empty() else "fresh_spawn")
 
 
 ## Find a roster entry by Steam ID. Returns {} if not found.
@@ -518,20 +507,6 @@ func _active_roster() -> Array:
 	if not _session_roster.is_empty():
 		return _session_roster
 	return continued_roster
-
-
-## TEMPORARY #140 diagnostic (removed at closure, #136 pattern): one
-## audit line per server-side register, so a continued-join retest
-## self-documents the matcher's inputs at the register instant.
-func _log_register_audit(sender: int, roster_entry: Dictionary, note: String) -> void:
-	var line := "[#140-REGISTER-AUDIT] sender=%d sid=%d session_roster=%d static_roster=%d matched=%s open=%s note=%s" % [
-		sender, int(peer_steam_ids.get(sender, 0)), _session_roster.size(),
-		continued_roster.size(), str(roster_entry.get("class_id", "MISS")),
-		str(continued_open_lobby), note]
-	print(line)
-	register_audit_log.append(line)
-	if register_audit_log.size() > 32:
-		register_audit_log.pop_front()
 
 
 ## Static roster match: which saved seat does this Steam ID own? Pure so
@@ -615,49 +590,16 @@ func apply_continued_state(ps: Dictionary) -> void:
 ## stop asking. A real state with no local player yet does NOT latch:
 ## the pull retries until the node exists and the apply lands.
 func _apply_continued_state_local(ps: Dictionary, me: Player) -> void:
-	# TEMPORARY #140 diagnostic: guest-side apply audit.
-	var _line := "[#140-APPLY-AUDIT] me_found=%s ps_level=%d ps_empty=%s latched_before=%s" % [
-		str(me != null), int(ps.get("level", 0)), str(ps.is_empty()),
-		str(_continued_state_latched)]
-	print(_line)
-	continued_apply_audit_log.append(_line)
-	if continued_apply_audit_log.size() > 32:
-		continued_apply_audit_log.pop_front()
 	if ps.is_empty():
 		_continued_state_latched = true
 		return
 	if me == null:
 		return
 	me.apply_state(ps)
-	# TEMPORARY #140 diagnostic: same object, immediate read — did
-	# the apply take on this instance?
-	var _state_line := "[#140-STATE-AUDIT] after_apply level=%d inv=%d id=%d" % [
-		me.level, me.inventory.size(), int(me.get_instance_id())]
-	print(_state_line)
-	continued_apply_audit_log.append(_state_line)
 	# Issue #134: the restored state IS this peer's entry state —
 	# capture it here, on the owning peer, for a possible forfeit.
 	me.capture_entry_snapshot()
 	_continued_state_latched = true
-
-
-## TEMPORARY #140 diagnostic: players-group census with identity —
-## every player node (name, authority, level, instance id) plus the
-## HUD's bound-player level, so a retest separates a wrong-instance
-## apply from an overwrite from a presentation-only lie.
-func _log_players_census(tag: String) -> void:
-	var parts: Array = []
-	for n in get_tree().get_nodes_in_group("players"):
-		var pl := n as Player
-		if pl != null:
-			parts.append("%s auth=%d level=%d id=%d inv=%d" % [
-				pl.name, int(pl.get_multiplayer_authority()), pl.level,
-				int(pl.get_instance_id()), pl.inventory.size()])
-	var hud_level := -1
-	if _local_hud != null and _local_hud.get("_player") != null:
-		hud_level = int((_local_hud.get("_player") as Player).level)
-	print("[#140-STATE-AUDIT] census %s nodes=[%s] hud_bound_level=%d" % [
-		tag, "; ".join(parts), hud_level])
 
 
 ## Issue #140 leg 2: a client whose player node now exists pulls its
@@ -882,10 +824,7 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 		# via saved_player_state above. The server's answer (state or
 		# empty) latches the pull in apply_continued_state.
 		if not multiplayer.is_server():
-			print("[#140-APPLY-AUDIT] pull sent (request_continued_state)")
 			rpc_id(NetworkManager.server_peer_id, "request_continued_state")
-		# TEMPORARY #140 diagnostic: census at spawn completion.
-		_log_players_census("spawn_complete")
 
 
 @rpc("any_peer", "call_local")
@@ -981,11 +920,6 @@ func _process(delta: float) -> void:
 				# server's answer latches it (bounded tries).
 				if _continued_state_latched or _continued_pull_tries >= 30:
 					_handshake_timer = -1.0
-					# TEMPORARY #140 diagnostic: the ~2 s census, once,
-					# as the retry loop stands down.
-					if not _state_census_late_done:
-						_state_census_late_done = true
-						_log_players_census("stand_down")
 				else:
 					_continued_pull_tries += 1
 					rpc_id(NetworkManager.server_peer_id, "request_continued_state")

@@ -170,7 +170,6 @@ func _run() -> void:
 	_test_menu_batch_137()
 	_test_session_roster_140()
 	_test_continued_pull_140()
-	_test_state_audit_140()
 	_test_level_label_140()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
@@ -10381,15 +10380,6 @@ func _test_session_roster_140() -> void:
 	inst._session_roster = []
 	_assert(inst._active_roster() == DungeonScript.continued_roster,
 		"140: active roster falls back to the static when uncaptured")
-
-	# The register audit records the matcher's inputs.
-	inst.peer_steam_ids = {7: 222}
-	inst._log_register_audit(7, guest_e, "applied")
-	_assert(inst.register_audit_log.size() == 1
-		and str(inst.register_audit_log[0]).contains("sid=222")
-		and str(inst.register_audit_log[0]).contains("matched=mage")
-		and str(inst.register_audit_log[0]).contains("open=false"),
-		"140: register audit logs sender, sid, the matched class and the open flag")
 	inst.free()
 
 	# Source pins: register matches on the capture (never the bare
@@ -10397,8 +10387,8 @@ func _test_session_roster_140() -> void:
 	var reg := dsrc.find("func register_class(")
 	var reg_end := dsrc.find("\nfunc ", reg + 1)
 	var reg_body := dsrc.substr(reg, reg_end - reg)
-	_assert(reg_body.contains("_active_roster()") and reg_body.contains("_log_register_audit"),
-		"140: register_class guards on the active roster and audits")
+	_assert(reg_body.contains("_active_roster()"),
+		"140: register_class guards on the active roster")
 	_assert(not dsrc.contains("find_roster_entry(continued_roster"),
 		"140: the matcher never reads the bare static")
 	var rd := dsrc.find("func _ready()")
@@ -10438,9 +10428,6 @@ func _test_continued_pull_140() -> void:
 	early._apply_continued_state_local({"level": 4}, null)
 	_assert(not early._continued_state_latched,
 		"140L2: a real state with no local player yet does not latch")
-	_assert(early.continued_apply_audit_log.size() == 1
-		and str(early.continued_apply_audit_log[0]).contains("me_found=false"),
-		"140L2: the apply audit records the missed landing")
 	inst.free()
 	neg.free()
 	early.free()
@@ -10518,10 +10505,11 @@ func _test_level_label_140() -> void:
 		"bonus_damage": 0.0, "bonus_health": 0.0, "bonus_speed": 0.0, "bonus_aura": 0.0,
 		"inventory": [{"id": "apprentice_staff", "count": 1, "slot": "WEAPON",
 			"upgrade_level": 0}],
-		"run_start_msec": 0, "run_kills": 0, "run_damage_dealt": 0.0,
-		"supermarket_cash": 0, "bounty_progress": {}, "totem_charges": 0,
+		"run_start_msec": 577987, "run_kills": 6, "run_damage_dealt": 0.0,
+		"supermarket_cash": 0, "totem_charges": 0,
+		"bounty_progress": {"bty_9211aebf_0": 0, "bty_9211aebf_1": 0, "bty_9211aebf_2": 0},
 		"specialization": "", "affinity": {}, "family_collection": {},
-		"equipped_special": "", "no_death_streak": 0,
+		"equipped_special": "", "no_death_streak": 1,
 		"second_wind_armed": false, "second_wind_used": false}
 	p.call("apply_state", guest_state)
 	_assert(int(p.get("level")) == 4, "140L3: the restored level lands on the player")
@@ -10534,28 +10522,6 @@ func _test_level_label_140() -> void:
 	# just detach the stub so nothing can touch it post-section.
 	p.set("hud", null)
 	print("[Playtest] Level label restore done")
-## Issue #140 leg 3 (TEMPORARY instrument): the state audit reads the
-## applied player immediately after apply_state returns, and a census
-## with node identity runs at spawn completion and at retry stand-down.
-func _test_state_audit_140() -> void:
-	print("[Playtest] State audit (issue #140 leg 3)...")
-	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	var del := dsrc.find("func _apply_continued_state_local(")
-	var del_end := dsrc.find("\nfunc ", del + 1)
-	var del_body := dsrc.substr(del, del_end - del)
-	var apply_at := del_body.find("apply_state(ps)")
-	var audit_at := del_body.find("[#140-STATE-AUDIT] after_apply")
-	_assert(apply_at != -1 and audit_at > apply_at,
-		"140L3: the state audit reads the player immediately after the apply")
-	_assert(dsrc.contains("func _log_players_census("),
-		"140L3: the census helper exists")
-	var ds := dsrc.find("func _do_spawn(")
-	var ds_end := dsrc.find("\nfunc ", ds + 1)
-	_assert(dsrc.substr(ds, ds_end - ds).contains("_log_players_census(\"spawn_complete\")"),
-		"140L3: the census runs at spawn completion")
-	_assert(dsrc.contains("_log_players_census(\"stand_down\")"),
-		"140L3: the census runs again as the retry loop stands down")
-	print("[Playtest] State audit done")
 
 
 ## Issue #132: the Host menu's Lobby tab must show what Host will
