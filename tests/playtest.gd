@@ -189,6 +189,7 @@ func _run() -> void:
 	_test_depths_terrain_121()
 	_test_apex_terrain_122()
 	_test_session_lost_133()
+	_test_held_prop_yaw_141()
 
 	_print_results()
 	quit()
@@ -13123,3 +13124,104 @@ func _test_session_lost_133() -> void:
 		"#133: connected peer: snapshot branch runs as before (no-op guard)")
 	p.queue_free()
 	print("[Playtest] Session lost (#133) done")
+
+
+func _test_held_prop_yaw_141() -> void:
+	print("[Playtest] Held prop yaw (issue #141)...")
+	# Issue #141: on a puppet the player root never yaws (facing lives
+	# only in the replicated _yaw), and the HeldProp holder received no
+	# rotation write at all — peers saw every held prop frozen at its
+	# build-time orientation while the sprite turned underneath it.
+	# The fix yaws the holder from the same _yaw, beside the sprite
+	# write, in the puppet block of _physics_process. Behavioral rig on
+	# the #113 Phase 2 pattern: real puppets driven through full-form
+	# push_snapshot calls, physics ticked until the yaw lerp converges
+	# (delta 0.05 -> lerp factor 0.5, 40 ticks leaves < 2^-39 of the
+	# swing; tolerance below is 0.01 rad).
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	# --- Staff leg: the holder tracks the replicated yaw. ---
+	var peer = PlayerScene.instantiate()
+	peer.class_id = "mage"
+	peer.set_multiplayer_authority(2)
+	holder.add_child(peer)
+	peer.push_snapshot(Vector3.ZERO, 100.0, 1, true, PI / 2.0,
+		{"WEAPON": "apprentice_staff"}, false)
+	var held = peer.get_node_or_null("HeldProp")
+	_assert(held != null and held.visible, "141: peer HeldProp builds + visible")
+	var wprop = peer.get_node_or_null("HeldProp/WeaponProp")
+	_assert(wprop != null, "141: staff WeaponProp builds under the holder")
+	for i in 40:
+		peer._physics_process(0.05)
+	_assert(absf(angle_difference(float(peer.get("_yaw")), PI / 2.0)) < 0.01,
+		"141: puppet _yaw converged to the snapshot yaw (rig sanity)")
+	_assert(absf(angle_difference(held.rotation.y, PI / 2.0)) < 0.01,
+		"141: holder yaws with the replicated facing (pi/2)")
+	_assert(absf(wprop.rotation_degrees.z - (-14.0)) < 0.01
+		and absf(wprop.rotation_degrees.x) < 0.01
+		and absf(wprop.rotation_degrees.y) < 0.01,
+		"141: WeaponProp grip constant (0,0,-14) untouched beneath the holder")
+	# Sweep: pi and -pi/2 (sign/axis proof — a single-angle test would
+	# pass on a mirrored or frozen-at-pi/2 holder).
+	peer.push_snapshot(Vector3.ZERO, 100.0, 1, true, PI,
+		{"WEAPON": "apprentice_staff"}, false)
+	for i in 40:
+		peer._physics_process(0.05)
+	_assert(absf(angle_difference(held.rotation.y, PI)) < 0.01,
+		"141: holder tracks yaw pi")
+	peer.push_snapshot(Vector3.ZERO, 100.0, 1, true, -PI / 2.0,
+		{"WEAPON": "apprentice_staff"}, false)
+	for i in 40:
+		peer._physics_process(0.05)
+	_assert(absf(angle_difference(held.rotation.y, -PI / 2.0)) < 0.01,
+		"141: holder tracks yaw -pi/2 (short way, correct sign)")
+	peer.free()
+	# --- Rod leg: same holder, same tracking (one mechanism). ---
+	var peer2 = PlayerScene.instantiate()
+	peer2.class_id = "mage"
+	peer2.set_multiplayer_authority(3)
+	holder.add_child(peer2)
+	peer2.push_snapshot(Vector3.ZERO, 100.0, 1, true, PI / 2.0,
+		{"TOOL": "fishing_rod"}, false)
+	var held2 = peer2.get_node_or_null("HeldProp")
+	var rod = peer2.get_node_or_null("HeldProp/RodProp")
+	_assert(rod != null, "141: RodProp builds under the same holder")
+	for i in 40:
+		peer2._physics_process(0.05)
+	_assert(absf(angle_difference(held2.rotation.y, PI / 2.0)) < 0.01,
+		"141: holder yaws with the rod equipped (one mechanism)")
+	_assert(absf(rod.rotation.x - 0.9) < 0.01
+		and absf(rod.rotation.y) < 0.01
+		and absf(rod.rotation.z - 0.15) < 0.01,
+		"141: RodProp build pose (0.9, 0, 0.15) untouched beneath the holder")
+	peer2.free()
+	# --- Authority negative pin: the write lives in the puppet block,
+	# so the owner's instance must never receive it — its HeldProp
+	# stays hidden (the FP viewmodel presents instead) and unrotated,
+	# and a forged snapshot is ignored outright.
+	var auth = PlayerScene.instantiate()
+	auth.class_id = "mage"
+	auth.set_multiplayer_authority(1)
+	holder.add_child(auth)
+	auth.receive_item("apprentice_staff")
+	for i in auth.inventory.size():
+		var ait = auth.inventory[i].get("item")
+		if ait != null and str(ait.get("id")) == "apprentice_staff":
+			auth.equip_stack(i)
+	var aheld = auth.get_node_or_null("HeldProp")
+	_assert(aheld != null and not aheld.visible,
+		"141: authority HeldProp exists but stays hidden (FP viewmodel instead)")
+	auth.push_snapshot(Vector3.ZERO, 100.0, 1, true, PI / 2.0,
+		{"WEAPON": "apprentice_staff"}, false)
+	_assert(not bool(auth.get("_has_remote")),
+		"141: authority ignores a forged snapshot")
+	for i in 10:
+		auth._physics_process(0.05)
+	_assert(absf(aheld.rotation.y) < 0.001,
+		"141: the puppet yaw write never fires on the authority instance")
+	auth.free()
+	current_scene = null
+	holder.free()
+	print("[Playtest] held prop yaw 141 done")

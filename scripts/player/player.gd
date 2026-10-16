@@ -2959,6 +2959,11 @@ func _physics_process(delta: float) -> void:
 				# Back-sprite integration: front/back follows the same
 				# replicated yaw, judged against this peer's camera.
 				_update_sprite_presentation()
+			# Issue #141: the held-prop holder yaws with the same synced
+			# facing — without this write the props keep their build-time
+			# orientation while the sprite turns underneath them.
+			if _held_prop != null:
+				_held_prop.rotation.y = _yaw
 
 
 func _process(delta: float) -> void:
