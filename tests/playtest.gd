@@ -108,6 +108,7 @@ func _run() -> void:
 	_test_revive_race_163()
 	_test_mob_status_rings_173()
 	_test_seed_tiering_155()
+	_test_focus_hygiene_156()
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
@@ -16557,6 +16558,114 @@ func _test_seed_tiering_155() -> void:
 	SM.call("save_game")
 	holder.free()
 	print("[Playtest] Seed tiering (issue #155 ii) done")
+
+
+## Issue #156: pad focus must never rest on a disabled control.
+## The engine never moves focus off a control that disables under
+## it, so the guarantee is the helper's: chains collect only live
+## controls, and a refresh that changes the focusable set without
+## re-chaining calls FocusChain.rescue to re-seed a dead owner.
+## Driven on the REAL helper, the REAL character panel and pause
+## surface (the #152 fixture idiom), not a chain re-implementation.
+func _test_focus_hygiene_156() -> void:
+	print("[Playtest] Focus hygiene (issue #156)...")
+	var FC = load("res://scripts/ui/focus_chain.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	root.add_child(hud)
+	hud.setup(p)
+	root.gui_release_focus()
+	var owner := func() -> Control:
+		return root.gui_get_focus_owner()
+	# A deterministic bag: exactly rows 0 and 1 filled.
+	p.inventory.clear()
+	p.receive_item("health_potion")
+	p.receive_item("cereal_box")
+	var rows: Array = hud.get("_bag_rows")
+	var panel = hud.get_node("%InventoryPanel")
+	hud.open_inventory()
+	# --- A: the collected chain excludes disabled controls -----
+	var chain: Array = FC.collect(panel)
+	var chain_has_disabled := false
+	for c in chain:
+		if c is BaseButton and (c as BaseButton).disabled:
+			chain_has_disabled = true
+	_assert(not chain_has_disabled,
+		"156: the panel chain's contents exclude disabled controls")
+	_assert(chain.has(rows[0]) and chain.has(rows[1]) and not chain.has(rows[2]),
+		"156: filled rows are chained, the empty (disabled) row is not")
+	# --- B: a focus walk across the bag never rests disabled ----
+	var start = owner.call()
+	var cur = start
+	var visited_names: Array = []
+	var walk_clean := true
+	for i in 40:
+		if cur == null:
+			walk_clean = false
+			break
+		visited_names.append(cur.name)
+		if cur is BaseButton and (cur as BaseButton).disabled:
+			walk_clean = false
+		var np: NodePath = cur.focus_neighbor_bottom
+		var nx: Control = cur.get_node(np) as Control if np != NodePath("") else null
+		if nx == null or nx == start:
+			break
+		nx.grab_focus()
+		cur = owner.call()
+	_assert(walk_clean and visited_names.has("BagRow_0") and visited_names.has("BagRow_1"),
+		"156: a focus walk across the bag never rests on a disabled row")
+	# --- C: a bag row disabling under focus re-seeds (refresh) ---
+	(rows[1] as Button).grab_focus()
+	p.inventory.resize(1)
+	hud.refresh_inventory(p)
+	_assert((rows[1] as Button).disabled and owner.call() != rows[1]
+		and owner.call() == FC.collect(panel)[0],
+		"156: emptying the focused bag row re-seeds focus to the chain head")
+	# --- D: the Unequip button disabling under focus re-seeds ---
+	# (The defect's live site: _refresh_char_actions changes the
+	# focusable set with no re-chain of its own.)
+	_grant_equipped(p, "iron_sword")
+	hud.refresh_inventory(p)
+	hud._select_slot("WEAPON")
+	var uneq := hud.get("_unequip_button") as Button
+	_assert(not uneq.disabled, "156: fixture — Unequip live with a filled slot selected")
+	uneq.grab_focus()
+	hud._select_slot("")
+	_assert(uneq.disabled and owner.call() != uneq
+		and FC.collect(panel).has(owner.call()),
+		"156: deselecting disables Unequip and focus re-seeds to a live control")
+	hud._select_slot("WEAPON")
+	uneq.grab_focus()
+	hud._on_unequip_pressed()
+	_assert(uneq.disabled and owner.call() != uneq
+		and FC.collect(panel).has(owner.call()),
+		"156: the unequip press itself disables the button and focus re-seeds")
+	# --- F: rescue never steals a live in-surface focus ---------
+	(rows[0] as Button).grab_focus()
+	FC.rescue(panel, null)
+	_assert(owner.call() == rows[0],
+		"156: rescue leaves a live in-surface focus exactly where it was")
+	hud.close_inventory()
+	# --- E: the pause stats +/- disabling under focus ----------
+	hud.show_pause()
+	p.stat_points = 1
+	hud.refresh_stats()
+	var dmg = hud.get_node("%DmgPlus") as Button
+	_assert(not dmg.disabled, "156: fixture — stat + live with a point unspent")
+	dmg.grab_focus()
+	p.stat_points = 0
+	hud.refresh_stats()
+	_assert(dmg.disabled and owner.call() != null and owner.call() != dmg
+		and not (owner.call() is BaseButton and (owner.call() as BaseButton).disabled),
+		"156: spending the last stat point re-seeds focus off the dead + button")
+	# --- Cleanup --------------------------------------------------
+	root.gui_release_focus()
+	p.free()
+	hud.free()
+	print("[Playtest] Focus hygiene (issue #156) done")
 
 
 class DockStub160 extends Node:

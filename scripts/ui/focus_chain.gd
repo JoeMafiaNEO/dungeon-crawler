@@ -20,6 +20,15 @@ extends RefCounted
 ##   which is what lets dynamic lists re-chain on every refresh while
 ##   the player keeps their place; a refresh that frees the focused
 ##   control re-seeds to the primary, per the spec.
+## - rescue() is the re-seed half on its own (issue #156): disabling
+##   a control NEVER moves focus off it by itself in this engine —
+##   focus rests on the dead control, deaf to the pad. A refresh
+##   that changes a surface's focusable set WITHOUT re-chaining
+##   (an action button enabling/disabling, a stat spend zeroing
+##   the +/- row) calls rescue() so the disable-under-focus case
+##   re-seeds exactly the way apply() does. The rule lives here,
+##   not at the disable sites: a surface only reports that its
+##   state changed.
 
 static func is_focusable(c: Control) -> bool:
 	if c == null or not is_instance_valid(c):
@@ -73,6 +82,22 @@ static func apply(surface: Control, primary: Control = null) -> void:
 		return
 	var controls := collect(surface)
 	chain_focus(controls)
+	_seed(surface, controls, primary)
+
+
+## Re-seed only (issue #156): if the focus owner is dead — no
+## owner, a freed control, a DISABLED control, or one outside the
+## surface's current focusable set — move focus to `primary` (or
+## the first focusable control). A live in-surface focus is never
+## stolen. For state changes that do not rebuild the chain; a
+## hidden surface collects empty and this is a no-op.
+static func rescue(surface: Control, primary: Control = null) -> void:
+	if surface == null or not is_instance_valid(surface):
+		return
+	_seed(surface, collect(surface), primary)
+
+
+static func _seed(surface: Control, controls: Array, primary: Control) -> void:
 	if controls.is_empty():
 		return
 	var vp := surface.get_viewport()

@@ -1888,6 +1888,11 @@ func refresh_stats() -> void:
 	%HpPlus.disabled = not can
 	%SpdPlus.disabled = not can
 	%AuraPlus.disabled = not can
+	# Issue #156: spending the last stat point disables all four
+	# +/- buttons at once — including, typically, the one the pad
+	# just pressed. Rescue re-seeds focus off the dead button (a
+	# no-op while focus lives elsewhere in the pause chain).
+	FocusChain.rescue(_pause_surface(), _pause_primary())
 
 
 # --- Family panel & collection log (Phase 5) ---
@@ -2947,6 +2952,11 @@ func _refresh_char_actions() -> void:
 	if _selected_slot != "" and _player != null:
 		live = not (_player.equipped_entry(_selected_slot) as Dictionary).is_empty()
 	_unequip_button.disabled = not live
+	# Issue #156: this refresh changes the panel's focusable set
+	# WITHOUT re-chaining — if the Unequip button just disabled
+	# under the pad's focus, focus would rest on the dead control.
+	# The helper's rescue re-seeds it (a no-op while focus lives).
+	FocusChain.rescue(get_node_or_null("%InventoryPanel"), null)
 
 
 func _on_unequip_pressed() -> void:
