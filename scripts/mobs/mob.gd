@@ -1815,7 +1815,7 @@ func _drop_and_reward(attacker: int) -> void:
 				continue
 			roll -= d.weight * _luck_weight(d.item.rarity)
 			if roll <= 0.0:
-				dungeon.rpc("spawn_pickup", d.item.id, global_position + Vector3(0, 0.8, 0), reward_scale)
+				dungeon.spawn_pickup_allocated(d.item.id, global_position + Vector3(0, 0.8, 0), reward_scale)
 				break
 	# Meta items from elites/bosses.
 	_try_meta_drop(dungeon)
@@ -1828,7 +1828,7 @@ func _drop_and_reward(attacker: int) -> void:
 	if data.apex_id != "":
 		var relic_id := SpecialData.relic_item_for_apex(data.id)
 		if relic_id != "":
-			dungeon.rpc("spawn_pickup", relic_id, global_position + Vector3(0, 0.8, 0), 1.0)
+			dungeon.spawn_pickup_allocated(relic_id, global_position + Vector3(0, 0.8, 0), 1.0)
 
 
 ## Potion/consumable item IDs (village-only drops).
@@ -1848,7 +1848,7 @@ func _try_meta_drop(dungeon) -> void:
 	if randf() > chance:
 		return
 	var item_id: String = unlocked[randi() % unlocked.size()]
-	dungeon.rpc("spawn_pickup", item_id, global_position + Vector3(0, 0.8, 0), reward_scale)
+	dungeon.spawn_pickup_allocated(item_id, global_position + Vector3(0, 0.8, 0), reward_scale)
 
 
 ## Issue #113 Phase 1: masterwork kits (+2 upgrade levels) drop from
@@ -1859,7 +1859,7 @@ func _try_masterwork_drop(dungeon) -> void:
 	var chance := MASTERWORK_DROP_CHANCE_BOSS if data.is_boss else MASTERWORK_DROP_CHANCE_ELITE
 	if randf() > chance:
 		return
-	dungeon.rpc("spawn_pickup", "masterwork_kit", global_position + Vector3(0, 0.8, 0), reward_scale)
+	dungeon.spawn_pickup_allocated("masterwork_kit", global_position + Vector3(0, 0.8, 0), reward_scale)
 
 
 ## Higher luck multiplies the weight of rarer items (rarity 0..4).

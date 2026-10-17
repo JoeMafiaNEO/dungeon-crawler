@@ -8,6 +8,10 @@ const LIFETIME := 30.0
 const WARN_AT := 5.0
 
 var item: ItemData
+## Issue #159: the server-allocated spawn id this node was named
+## from (Dungeon._alloc_pickup_id). 0 = not spawned through the
+## allocated path (scene-placed or test-built pickups).
+var pickup_id := 0
 var claimed := false
 ## Issue #142: how many units this drop holds. Mob loot is always 1;
 ## a disposed stack drops as one pickup carrying its full count.
@@ -223,20 +227,42 @@ func request_claim(claimer_peer: int) -> void:
 	# set by claim() on the server. Setting claimed here would break solo play,
 	# where this instance IS the server instance and claim() would early-out.
 	_request_sent = true
+	# Issue #159: the claim carries what the CLAIMER sees (item id +
+	# count; "__key__" for a key) so claim() can cross-check it
+	# against the server's own node at this path before granting.
+	var expect_id := "__key__" if is_key else (item.id if item != null else "")
 	# SteamMultiplayerPeer can't rpc_id its own peer ID: when this instance is
 	# the server, call directly (same outcome — claim() is call_local).
 	if multiplayer.is_server():
-		claim(claimer_peer)
+		claim(claimer_peer, expect_id, count)
 	else:
-		rpc_id(NetworkManager.server_peer_id, "claim", claimer_peer)
+		rpc_id(NetworkManager.server_peer_id, "claim", claimer_peer, expect_id, count)
 
 
+## Returns true when the claim was accepted (the grant issued or the
+## key collected). A cross-check refusal returns false with the pickup
+## left unclaimed — see the [#159-CLAIM-AUDIT] line in claim().
 @rpc("any_peer", "call_local")
-func claim(claimer: int) -> void:
+func claim(claimer: int, expect_item_id: String = "", expect_count: int = -1) -> bool:
 	if not multiplayer.is_server():
-		return
+		return false
 	if claimed:
-		return
+		return false
+	# Issue #159 cross-check: the claim RPC addresses this node by
+	# PATH, so a peer whose name bindings diverged from the server's
+	# asks for a different item than this node holds. Refuse + log
+	# instead of silently granting the wrong item. (With server-
+	# allocated spawn ids the bindings cannot diverge; this is the
+	# belt-and-braces net for any residual path.)
+	var actual_id := "__key__" if is_key else (item.id if item != null else "")
+	if expect_item_id != "" and expect_item_id != actual_id:
+		print("[#159-CLAIM-AUDIT] claim REFUSED at %s: claimer=%d expects %s x%d, server holds %s x%d" % [
+			str(get_path()), claimer, expect_item_id, expect_count, actual_id, count])
+		return false
+	if expect_count >= 0 and not is_key and expect_count != count:
+		print("[#159-CLAIM-AUDIT] claim REFUSED at %s: claimer=%d expects %s x%d, server holds %s x%d" % [
+			str(get_path()), claimer, expect_item_id, expect_count, actual_id, count])
+		return false
 	claimed = true
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if is_key:
@@ -244,7 +270,7 @@ func claim(claimer: int) -> void:
 		rpc("despawn")
 		if dungeon != null:
 			dungeon.collect_key(claimer)
-		return
+		return true
 	# Issue #142: the drop is NOT freed here. The grant's outcome is
 	# decided on the claimer (only they can see their inventory), and
 	# they report the taken count back — report_claim despawns on a
@@ -258,11 +284,12 @@ func claim(claimer: int) -> void:
 	if player_node != null:
 		player_node.rpc_id(claimer, "receive_item", item.id, item.sell_value,
 			str(get_path()), count)
-	else:
-		# Nobody to grant to (the claimer vanished mid-claim): release.
-		claimed = false
-		_claimer_peer = 0
-		_claim_since = -1.0
+		return true
+	# Nobody to grant to (the claimer vanished mid-claim): release.
+	claimed = false
+	_claimer_peer = 0
+	_claim_since = -1.0
+	return false
 
 
 ## Issue #142: the claimer's grant reports how many units actually

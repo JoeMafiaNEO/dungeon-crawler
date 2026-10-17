@@ -298,7 +298,12 @@ var _annex_plan := {}
 var _torch_lights: Array[OmniLight3D] = []
 var _ambient_timer := 6.0
 var _mob_id := 0
-var _pickup_id := 0
+## Issue #159: pickup ids are allocated ONLY by the server (see
+## _alloc_pickup_id). A pickup's node name derives from the allocated
+## id carried in the spawn RPC, never from a per-peer counter — the
+## counter discipline is what let one path bind different items on
+## different peers (the claim RPC addresses pickups by node path).
+var _next_pickup_id := 0
 ## Issue #142: supermarket purchases awaiting their grant outcome,
 ## keyed by purchase tag (see buy_potion / report_claim). A purchase
 ## whose outcome never reports refunds by default after a timeout.
@@ -754,9 +759,9 @@ func request_state() -> void:
 		var pickup := p as ItemPickup
 		if pickup != null and not pickup.claimed:
 			if pickup.is_key:
-				rpc_id(sender, "spawn_key", pickup.position)
+				rpc_id(sender, "spawn_key", pickup.position, pickup.pickup_id)
 			elif pickup.item != null:
-				rpc_id(sender, "spawn_pickup", pickup.item.id, pickup.position, pickup.value_mult, pickup.count)
+				rpc_id(sender, "spawn_pickup", pickup.item.id, pickup.position, pickup.value_mult, pickup.count, pickup.pickup_id)
 	# Warlord: sync RTS state for late joiners.
 	if is_warlord and _rts_manager != null:
 		sync_rts_state(sender)
@@ -1120,7 +1125,7 @@ func _spawn_market_loot() -> void:
 	if pos == Vector3.INF:
 		return
 	pos.y += 0.8
-	rpc("spawn_pickup", loot_ids[_server_rng.randi() % loot_ids.size()], pos)
+	spawn_pickup_allocated(loot_ids[_server_rng.randi() % loot_ids.size()], pos)
 
 
 ## Warlord's Domain setup: RTS factions, town halls, villagers, resources.
@@ -2262,7 +2267,7 @@ func _wave_cleared() -> void:
 		_keys_needed = theme.puzzle_key_count
 		_keys_found = 0
 		for spot in _key_spots():
-			rpc("spawn_key", spot)
+			spawn_key_allocated(spot)
 		rpc("announce_text", "%s CLEARED! Find %d keys to clear the level!" % [theme.display_name.to_upper(), _keys_needed], "clear")
 		rpc("update_key_count", 0, _keys_needed)
 	else:
@@ -2304,7 +2309,7 @@ func _shower_loot() -> void:
 		var item_id: String = ids[randi() % ids.size()]
 		var pos := Vector3(randf_range(-6.0, 6.0), 0.8, randf_range(-6.0, 6.0))
 		pos.y = ground_height_at(pos) + 0.8
-		rpc("spawn_pickup", item_id, pos)
+		spawn_pickup_allocated(item_id, pos)
 
 
 ## Exit-plaza landmark: away from the center so checkout/shop/lockbox
@@ -2645,8 +2650,60 @@ func _random_mob_pos() -> Vector3:
 
 # --- Pickups ---
 
+## Issue #159: the server is the ONLY allocator of pickup ids. Runs
+## on the server instance; clients never call this (their spawn
+## requests route through _alloc_spawn_pickup below).
+func _alloc_pickup_id() -> int:
+	_next_pickup_id += 1
+	return _next_pickup_id
+
+
+## True when this instance speaks for the server. An out-of-tree
+## instance (test rigs drive script instances) has no multiplayer
+## object at all; it is its own authority, and its rpc() broadcasts
+## no-op exactly as they did before the allocation door existed.
+func _is_server_authority() -> bool:
+	return multiplayer == null or multiplayer.is_server()
+
+
+## Issue #159: the single door for runtime pickup spawns, callable
+## from any peer's code. On the server it allocates and broadcasts;
+## on a client it asks the server to, so allocation is single-sourced
+## and every peer names the pickup from the same allocated id (the
+## RTSUnit_<id> discipline). Direct spawn_pickup broadcasts outside
+## this door must not come back — they re-open the ordering hole.
+func spawn_pickup_allocated(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
+	if _is_server_authority():
+		rpc("spawn_pickup", item_id, pos, value_mult, count, _alloc_pickup_id())
+	else:
+		rpc_id(NetworkManager.server_peer_id, "_alloc_spawn_pickup", item_id, pos, value_mult, count)
+
+
+@rpc("any_peer")
+func _alloc_spawn_pickup(item_id: String, pos: Vector3, value_mult: float, count: int) -> void:
+	if not multiplayer.is_server():
+		return
+	rpc("spawn_pickup", item_id, pos, value_mult, count, _alloc_pickup_id())
+
+
+## Issue #159: the key twin of spawn_pickup_allocated (keys share the
+## pickup id space, as they shared the old counter).
+func spawn_key_allocated(pos: Vector3) -> void:
+	if _is_server_authority():
+		rpc("spawn_key", pos, _alloc_pickup_id())
+	else:
+		rpc_id(NetworkManager.server_peer_id, "_alloc_spawn_key", pos)
+
+
+@rpc("any_peer")
+func _alloc_spawn_key(pos: Vector3) -> void:
+	if not multiplayer.is_server():
+		return
+	rpc("spawn_key", pos, _alloc_pickup_id())
+
+
 @rpc("any_peer", "call_local")
-func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
+func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1, pickup_id: int = 0) -> void:
 	var item := ItemDB.get_item(item_id)
 	if item == null:
 		return
@@ -2655,9 +2712,9 @@ func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count:
 	if value_mult != 1.0 and item.sell_value > 0:
 		item = item.duplicate() as ItemData
 		item.sell_value = roundi(float(item.sell_value) * value_mult)
-	_pickup_id += 1
 	var pickup := PickupScene.instantiate() as ItemPickup
-	pickup.name = "Pickup_%d" % _pickup_id
+	pickup.name = "Pickup_%d" % pickup_id
+	pickup.pickup_id = pickup_id
 	pickup.value_mult = value_mult
 	# Issue #142: a disposed stack drops as one multi-unit pickup.
 	pickup.count = maxi(count, 1)
@@ -2668,10 +2725,10 @@ func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count:
 
 ## Spawns a puzzle key. Keys never expire and count toward the key objective.
 @rpc("any_peer", "call_local")
-func spawn_key(pos: Vector3) -> void:
-	_pickup_id += 1
+func spawn_key(pos: Vector3, key_id: int = 0) -> void:
 	var key := PickupScene.instantiate() as ItemPickup
-	key.name = "Key_%d" % _pickup_id
+	key.name = "Key_%d" % key_id
+	key.pickup_id = key_id
 	key.is_key = true
 	key.position = pos
 	$Pickups.add_child(key)

@@ -4875,7 +4875,7 @@ func dispose_item(index: int) -> void:
 	if base != null and base.sell_value > 0 and item.sell_value != base.sell_value:
 		mult = float(item.sell_value) / float(base.sell_value)
 	var drop_pos := global_position - global_transform.basis.z * 0.9
-	dungeon.rpc("spawn_pickup", item.id, drop_pos, mult, int(entry["count"]))
+	dungeon.spawn_pickup_allocated(item.id, drop_pos, mult, int(entry["count"]))
 	inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)

@@ -178,6 +178,7 @@ func _run() -> void:
 	_test_continued_pull_140()
 	_test_level_label_140()
 	_test_pickup_claims_142()
+	_test_pickup_identity_159()
 	_test_makewhole_142()
 	_test_station_dispose_146()
 	_test_annex_floor_147()
@@ -6058,7 +6059,7 @@ func _test_station_phase3() -> void:
 	_assert(roundi(0.0 * 3.8) == 0, "zero sell_value stays zero")
 	# Wiring.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.contains("func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1)"),
+	_assert(dsrc.contains("func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1, pickup_id: int = 0)"),
 		"spawn_pickup value_mult param")
 	_assert(dsrc.contains("pickup.value_mult = value_mult"), "pickup stores value_mult")
 	_assert(dsrc.contains("reward_scale: float = 1.0"), "spawn_mob reward_scale param")
@@ -6405,7 +6406,7 @@ class ApexDungeonStub extends Node:
 	var pickups: Array = []
 
 	@rpc("any_peer", "call_local")
-	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
+	func spawn_pickup_allocated(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
 		pickups.append([item_id, pos, value_mult])
 
 	var placed: Array = []
@@ -7396,7 +7397,7 @@ class RelicDungeonStub extends Node:
 	var pickups: Array = []
 
 	@rpc("any_peer", "call_local")
-	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
+	func spawn_pickup_allocated(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
 		pickups.append([item_id, pos, value_mult])
 
 	func get_player_node(_peer_id: int) -> Node:
@@ -7445,7 +7446,7 @@ class HolyDungeonStub extends Node3D:
 	var pickups: Array = []
 
 	@rpc("any_peer", "call_local")
-	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0) -> void:
+	func spawn_pickup_allocated(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
 		pickups.append([item_id, pos, value_mult])
 
 
@@ -11641,6 +11642,131 @@ func _test_pickup_claims_142() -> void:
 	print("[Playtest] Pickup claims done")
 
 
+## Issue #159: a pickup's identity is its server-ALLOCATED id, carried
+## in the spawn arguments — never a per-peer execution counter. Two
+## Dungeon instances stand in for the server's tree and a late
+## joiner's (the #159 characterization probe, promoted to a pin): the
+## joiner receives only the request_state replay (existing ids) plus
+## one live spawn, and its name->item bindings must equal the
+## server's exactly, gaps from a pre-sync claim included. claim()
+## grants whatever the SERVER's node at the claimed path holds, so
+## binding equality is grant equality.
+func _test_pickup_identity_159() -> void:
+	print("[Playtest] Pickup identity (issue #159)...")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("func _alloc_pickup_id("), "159: the server allocator exists")
+	_assert(dsrc.contains("pickup.count, pickup.pickup_id"),
+		"159: the state resync replays each pickup's existing id")
+	_assert(dsrc.count("rpc(\"spawn_pickup\"") == 2,
+		"159: spawn_pickup broadcasts live only in the allocation door")
+	_assert(dsrc.count("rpc(\"spawn_key\"") == 2,
+		"159: spawn_key broadcasts live only in the allocation door")
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	_assert(not msrc.contains("rpc(\"spawn_pickup\""),
+		"159: mob drops route through the allocation door")
+	# --- Two worlds ---------------------------------------------------
+	var DungeonScene: PackedScene = load("res://scenes/dungeon/dungeon.tscn")
+	var srv = DungeonScene.instantiate()
+	var joiner = DungeonScene.instantiate()
+	for world in [srv, joiner]:
+		var holders := Node3D.new()
+		holders.name = "Pickups"
+		world.add_child(holders)
+	var pos := Vector3(1, 1, 1)
+	# Server spawn sequence, delivered to the server world with the
+	# ids its allocator issues (what the door broadcasts verbatim).
+	var ids: Array = []
+	for item_id in ["cereal_box", "soda_can"]:
+		var id1: int = srv.call("_alloc_pickup_id")
+		ids.append(id1)
+		srv.call("spawn_pickup", item_id, pos, 1.0, 1, id1)
+	var key_id: int = srv.call("_alloc_pickup_id")
+	ids.append(key_id)
+	srv.call("spawn_key", pos, key_id)
+	for item_id in ["milk_carton", "frozen_pizza"]:
+		var id2: int = srv.call("_alloc_pickup_id")
+		ids.append(id2)
+		srv.call("spawn_pickup", item_id, pos, 1.0, 1, id2)
+	_assert(ids == [1, 2, 3, 4, 5], "159: the allocator issues sequential ids")
+	# The host claims the soda before the joiner syncs: it despawns.
+	var soda = srv.get_node("Pickups/Pickup_2")
+	srv.get_node("Pickups").remove_child(soda)
+	soda.free()
+	# The joiner's request_state replay, verbatim semantics: live,
+	# unclaimed pickups re-spawn WITH THEIR EXISTING IDS.
+	for pk in srv.get_node("Pickups").get_children():
+		if bool(pk.get("claimed")):
+			continue
+		if bool(pk.get("is_key")):
+			joiner.call("spawn_key", pk.get("position"), pk.get("pickup_id"))
+		elif pk.get("item") != null:
+			joiner.call("spawn_pickup", str(pk.get("item").get("id")),
+				pk.get("position"), pk.get("value_mult"), pk.get("count"),
+				pk.get("pickup_id"))
+	# One live spawn after the sync, allocated once, delivered to both.
+	var snack_id: int = srv.call("_alloc_pickup_id")
+	srv.call("spawn_pickup", "snack_cake", pos, 1.0, 1, snack_id)
+	joiner.call("spawn_pickup", "snack_cake", pos, 1.0, 1, snack_id)
+	var expect := {
+		"Pickup_1": "cereal_box", "Key_3": "<key>",
+		"Pickup_4": "milk_carton", "Pickup_5": "frozen_pizza",
+		"Pickup_6": "snack_cake",
+	}
+	for world in [srv, joiner]:
+		var bindings := {}
+		for pk in world.get_node("Pickups").get_children():
+			bindings[pk.name] = "<key>" if bool(pk.get("is_key")) \
+				else str(pk.get("item").get("id"))
+		_assert(bindings == expect,
+			"159: bindings match the literal map (server and joiner alike)")
+	# Claim resolution: every name the joiner sees grants the item it
+	# sees when resolved against the server's bindings.
+	for node_name in expect.keys():
+		var seen = joiner.get_node("Pickups/" + node_name)
+		var held = srv.get_node("Pickups/" + node_name)
+		_assert(held != null, "159: the joiner's %s exists on the server" % node_name)
+		if not bool(seen.get("is_key")):
+			_assert(str(held.get("item").get("id")) == str(seen.get("item").get("id")),
+				"159: a claim at %s grants what the joiner sees" % node_name)
+	# The name derives from the ARGUMENT, not from any local counter:
+	# a fresh world spawning with id 41 names its first pickup so.
+	var fresh = DungeonScene.instantiate()
+	var fholders := Node3D.new()
+	fholders.name = "Pickups"
+	fresh.add_child(fholders)
+	fresh.call("spawn_pickup", "milk_carton", pos, 1.0, 1, 41)
+	_assert(fresh.get_node_or_null("Pickups/Pickup_41") != null,
+		"159: the spawn argument names the node (Pickup_41, not Pickup_1)")
+	srv.free()
+	joiner.free()
+	fresh.free()
+	# --- The claim cross-check ---------------------------------------
+	var ItemDBNode2: Variant = root.get_node("ItemDB")
+	var PickupScene: PackedScene = load("res://scenes/items/item_pickup.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var milk = PickupScene.instantiate()
+	milk.call("setup", ItemDBNode2.get_item("milk_carton"))
+	holder.add_child(milk)
+	milk.set("count", 2)
+	# Deliberately diverged claims: refused, no lock, no grant.
+	_assert(not bool(milk.call("claim", 1, "frozen_pizza", 2)),
+		"159: a claim naming a different item is refused")
+	_assert(not bool(milk.get("claimed")), "159: a refused claim takes no lock (item id)")
+	_assert(not bool(milk.call("claim", 1, "milk_carton", 5)),
+		"159: a claim naming a different count is refused")
+	_assert(not bool(milk.get("claimed")), "159: a refused claim takes no lock (count)")
+	var keypk = PickupScene.instantiate()
+	keypk.set("is_key", true) # before add_child, as spawn_key does it
+	holder.add_child(keypk)
+	_assert(not bool(keypk.call("claim", 1, "milk_carton", 1)),
+		"159: an item claim against a key node is refused")
+	_assert(bool(keypk.call("claim", 1, "__key__", 1)),
+		"159: a key claim naming the key is accepted")
+	holder.queue_free()
+	print("[Playtest] Pickup identity done")
+
+
 func _body_of(src: String, sig: String) -> String:
 	var i := src.find(sig)
 	if i < 0:
@@ -11780,7 +11906,7 @@ class _DungeonStub146:
 	var spawns: Array = []
 
 	@rpc("any_peer", "call_local")
-	func spawn_pickup(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
+	func spawn_pickup_allocated(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
 		spawns.append([item_id, count])
 
 

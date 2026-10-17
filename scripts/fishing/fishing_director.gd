@@ -258,7 +258,7 @@ func _land_catch(peer: int, item_id: String, in_inventory: bool) -> void:
 	if player != null and dungeon != null:
 		var drop_pos: Vector3 = player.global_position
 		drop_pos += -player.global_transform.basis.z * 0.9
-		dungeon.rpc("spawn_pickup", item_id, drop_pos)
+		dungeon.spawn_pickup_allocated(item_id, drop_pos)
 
 
 func _miss(peer: int) -> void:
