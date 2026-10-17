@@ -16,6 +16,14 @@ extends Node3D
 
 @export var theme_id: String = ""
 @export var level_seed: int = 0
+## Issue #153 D1: the cycle this bake was generated at (1 = the
+## shipped pinned library; higher cycles are library-only today).
+@export var cycle: int = 1
+## Issue #153 D1 (B): the player count a warlord bake was generated
+## for. Only warlord's grid depends on it; every other theme records
+## 1. Part of the v2 content hash — a p2 warlord bake can never
+## collide with the p1 scene's hash.
+@export var player_count: int = 1
 @export var content_hash: String = ""
 ## How the terrain surface ships: "mesh" = the generated mesh +
 ## collision are frozen into the scene; "heights" = the scene carries
@@ -115,9 +123,12 @@ static func _unpack_vec3s(packed: PackedVector3Array) -> Array[Vector3]:
 ## fields and the terrain's final height array, then stamps the
 ## content hash. Flat themes pass an empty height array / 0 points.
 func fill(p_theme_id: String, p_seed: int, layout: LevelLayout,
-		p_heights: PackedFloat32Array, p_map_points: int, p_terrain_cell: float) -> void:
+		p_heights: PackedFloat32Array, p_map_points: int, p_terrain_cell: float,
+		p_cycle: int = 1, p_player_count: int = 1) -> void:
 	theme_id = p_theme_id
 	level_seed = p_seed
+	cycle = p_cycle
+	player_count = p_player_count
 	grid_size = layout.grid_size
 	cell_size = layout.cell_size
 	grid = layout.grid.duplicate()
@@ -153,14 +164,17 @@ func to_layout() -> LevelLayout:
 	return layout
 
 
-## SHA-256 over theme + seed + the canonical layout fingerprint +
-## the raw height bytes. Deterministic across machines and runs:
-## every input derives from (theme, seed) through the existing
-## generation path, and floats serialize exactly.
+## Content hash v2 (issue #153 D1 — one format, forever): SHA-256
+## over theme + seed + cycle + player_count + the canonical layout
+## fingerprint + the raw height bytes. Deterministic across machines
+## and runs: every input derives from (theme, seed, cycle, players)
+## through the existing generation path, and floats serialize
+## exactly. (v1 hashed theme + seed + fingerprint + heights only;
+## pre-D1 variant files keep their v1 hashes until re-baked.)
 func compute_content_hash() -> String:
 	var ctx := HashingContext.new()
 	ctx.start(HashingContext.HASH_SHA256)
-	var header := "%s\n%d\n%s\n" % [theme_id, level_seed, to_layout().fingerprint()]
+	var header := "%s\n%d\n%d\n%d\n%s\n" % [theme_id, level_seed, cycle, player_count, to_layout().fingerprint()]
 	ctx.update(header.to_utf8_buffer())
 	ctx.update(heights.to_byte_array())
 	return ctx.finish().hex_encode()

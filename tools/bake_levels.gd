@@ -21,6 +21,30 @@ extends Node
 ## <theme>_<seed> keys so variants don't clobber each other. Without
 ## it, behavior is exactly as before.
 ##
+## --cycle N (issue #153 D1, default 1): bake the level as cycle N.
+## Scaling is NOT reimplemented here — at N >= 2 the dungeon boots
+## at level number (N-1)*5 + slot + 1 (slot = the theme's index in
+## Dungeon.THEME_ORDER; Misty Docks uses slot 0, arbitrary but fixed)
+## and its own _ready duplicates/scales/generates exactly as in
+## production. At N = 1 the boot is byte-identical to before
+## (next_level_number = 1). The cycle is stamped on LevelData and
+## into the v2 content hash.
+##
+## --players N (issue #153 D1 (B), default 1): the party size a
+## WARLORD bake is generated for, carried on Dungeon.next_player_
+## count exactly like a real departure handoff (#154). Only warlord
+## consumes it; other themes record player_count 1 (a [BAKE] note
+## says so when N != 1 is requested for them).
+##
+## HONEST SCOPE: cycle >= 2 bakes and warlord player-count >= 2
+## bakes are LIBRARY-ONLY — the runtime consumes exactly the cycle-1
+## 1-player pinned scene per theme. Wiring the library into rotation
+## is a separate, Jesse-gated step.
+##
+## Output is atomic: the scene is saved to <out>.tmp.tscn first and
+## renamed onto the target only after a successful save, so a killed
+## bake never leaves a partial file at the target path.
+##
 ## Note: the engine may abort during process teardown after a
 ## successful bake (the same flaky exit crash the headless suite
 ## shows after "All tests passed!"). The [BAKE] lines and the files
@@ -37,11 +61,23 @@ const PREGEN_DIR := "res://scenes/levels/pregen"
 
 var _theme_id := "village"
 var _seed := 1
+var _cycle := 1
+var _players := 1
 var _out_path := ""
 var _manifest_path := PREGEN_DIR + "/bake_manifest.json"
 var _manifest_key := ""
 var _verify := false
+var _eff_players := 1
 var _failures: Array[String] = []
+
+## Issue #153 D1: THEME_ORDER slots for the cycle level-number
+## formula (mirrors Dungeon.THEME_ORDER; Misty Docks is not in the
+## runtime rotation and uses slot 0 — arbitrary but fixed, since its
+## scaling depends only on the cycle index).
+const THEME_SLOTS := {
+	"village": 0, "dungeon": 1, "depths": 2,
+	"supermarket": 3, "warlord": 4, "misty_docks": 0,
+}
 
 
 func _ready() -> void:
@@ -75,6 +111,10 @@ func _parse_args() -> void:
 			_theme_id = val
 		elif key == "--seed":
 			_seed = int(val)
+		elif key == "--cycle":
+			_cycle = maxi(1, int(val))
+		elif key == "--players":
+			_players = maxi(1, int(val))
 		elif key == "--out":
 			_out_path = val
 		elif key == "--manifest":
@@ -93,7 +133,16 @@ func _bake() -> int:
 	Dungeon.saved_player_state = {}
 	Dungeon.next_theme_id = _theme_id
 	Dungeon.next_seed = _seed
-	Dungeon.next_level_number = 1
+	# Issue #153 D1: cycle >= 2 boots at the cycle's own level number
+	# so the dungeon's _ready applies production cycle scaling;
+	# cycle 1 keeps next_level_number = 1, exactly as before. (B):
+	# the party size rides the #154 handoff static — only warlord
+	# consumes it; every other theme records player_count 1.
+	_eff_players = _players if _theme_id == "warlord" else 1
+	if _theme_id != "warlord" and _players != 1:
+		print("[BAKE] NOTE: --players %d ignored for theme %s — player_count recorded as 1 (only warlord consumes it)" % [_players, _theme_id])
+	Dungeon.next_level_number = 1 if _cycle <= 1 else (_cycle - 1) * 5 + int(THEME_SLOTS.get(_theme_id, 0)) + 1
+	Dungeon.next_player_count = _eff_players
 	var packed := load("res://scenes/dungeon/dungeon.tscn") as PackedScene
 	if packed == null:
 		_failures.append("dungeon.tscn failed to load")
@@ -127,12 +176,19 @@ func _bake() -> int:
 	var data := LevelData.new()
 	data.name = "LevelData"
 	bake_root.add_child(data)
-	data.fill(_theme_id, _seed, layout, heights, map_points, terrain_cell)
+	data.fill(_theme_id, _seed, layout, heights, map_points, terrain_cell, _cycle, _eff_players)
 	data.terrain_mode = "mesh"
 	_own_recursive(bake_root, bake_root)
 	var target := "user://rebake_check.tscn" if _verify else _out_path
 	DirAccess.make_dir_recursive_absolute(target.get_base_dir())
-	var size := _save_scene(bake_root, target)
+	# Issue #153 D1: atomic output — save to a .tmp.tscn sibling and
+	# rename onto the target only after a successful save, so a
+	# killed bake leaves no partial file at the target. The --verify
+	# scratch target is exempt (it is not a deliverable).
+	var save_path := target
+	if not _verify:
+		save_path = target.get_basename() + ".tmp.tscn"
+	var size := _save_scene(bake_root, save_path)
 	if size < 0:
 		return ERR_CANT_CREATE
 	var mode := "mesh"
@@ -141,12 +197,19 @@ func _bake() -> int:
 		_strip_terrain_surface(arena)
 		data.terrain_mode = "heights"
 		mode = "heights"
-		size = _save_scene(bake_root, target)
+		size = _save_scene(bake_root, save_path)
 		if size < 0:
 			return ERR_CANT_CREATE
 		print("[BAKE] full capture busted the %d-byte budget; stripped to heights-as-data" % SIZE_BUDGET_BYTES)
-	print("[BAKE] theme=%s seed=%d hash=%s mode=%s bytes=%d -> %s" % [
-		_theme_id, _seed, data.content_hash, mode, size, target])
+	if not _verify:
+		var ren := DirAccess.rename_absolute(
+			ProjectSettings.globalize_path(save_path),
+			ProjectSettings.globalize_path(target))
+		if ren != OK:
+			_failures.append("atomic rename failed (%d): %s -> %s" % [ren, save_path, target])
+			return ERR_CANT_CREATE
+	print("[BAKE] theme=%s seed=%d cycle=%d players=%d hash=%s mode=%s bytes=%d -> %s" % [
+		_theme_id, _seed, _cycle, _eff_players, data.content_hash, mode, size, target])
 	var result := OK
 	if _verify:
 		result = _verify_against_shipped(data)
@@ -229,6 +292,8 @@ func _update_manifest(data: LevelData, size: int, mode: String) -> void:
 	scenes[entry_key] = {
 		"theme_id": _theme_id,
 		"seed": _seed,
+		"cycle": _cycle,
+		"player_count": _eff_players,
 		"content_hash": data.content_hash,
 		"scene_path": _out_path,
 		"scene_bytes": size,

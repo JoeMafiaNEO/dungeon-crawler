@@ -1,8 +1,10 @@
 {
 	"scenes": {
 		"depths": {
-			"bake_date": "2026-10-16",
-			"content_hash": "11d9a787da45ead94a54d4c0f92f2f0f37c0f782faaa9230633bb010c46db045",
+			"bake_date": "2026-10-17",
+			"content_hash": "9429a94203e0800dfd614635b564fba737c87ee773f0133fc7cc37124157b61d",
+			"cycle": 1.0,
+			"player_count": 1.0,
 			"scene_bytes": 1237287.0,
 			"scene_path": "res://scenes/levels/pregen/theme_depths.tscn",
 			"seed": 1.0,
@@ -10,8 +12,10 @@
 			"theme_id": "depths"
 		},
 		"dungeon": {
-			"bake_date": "2026-10-16",
-			"content_hash": "7323e73f8d1f5c0c718dbbc24a619d4506545b2cc88e4646339dc494d03edc79",
+			"bake_date": "2026-10-17",
+			"content_hash": "5d1d4ad3efed9c967b985b7fc57d9202984030cb4a59fe103c4108e811c8d39c",
+			"cycle": 1.0,
+			"player_count": 1.0,
 			"scene_bytes": 1045027.0,
 			"scene_path": "res://scenes/levels/pregen/theme_dungeon.tscn",
 			"seed": 1.0,
@@ -19,36 +23,44 @@
 			"theme_id": "dungeon"
 		},
 		"misty_docks": {
-			"bake_date": "2026-10-16",
-			"content_hash": "ead066de114029cdaec2edbfe0876a57ad5f56af9c18783ea00e88d5ab50dd19",
-			"scene_bytes": 1395650,
+			"bake_date": "2026-10-17",
+			"content_hash": "b21252e4b5368b320318009df1c264b9d680e5d39dc637defcf27dcde6f6add0",
+			"cycle": 1,
+			"player_count": 1,
+			"scene_bytes": 1395651,
 			"scene_path": "res://scenes/levels/pregen/theme_misty_docks.tscn",
 			"seed": 1,
 			"terrain_mode": "mesh",
 			"theme_id": "misty_docks"
 		},
 		"supermarket": {
-			"bake_date": "2026-10-16",
-			"content_hash": "9584d4eafce8ac73253520c9f026f9639a7f38b6df9e5a0c9856a7e0dd733072",
-			"scene_bytes": 518770.0,
+			"bake_date": "2026-10-17",
+			"content_hash": "3f483bd1bff47dc00a9da50dd8c9a414e8b7ddb320c287d3fbfad2a4496c2490",
+			"cycle": 1.0,
+			"player_count": 1.0,
+			"scene_bytes": 518771.0,
 			"scene_path": "res://scenes/levels/pregen/theme_supermarket.tscn",
 			"seed": 1.0,
 			"terrain_mode": "heights",
 			"theme_id": "supermarket"
 		},
 		"village": {
-			"bake_date": "2026-10-15",
-			"content_hash": "17346d494dccbee4f95ea257e71e3df14fc4a64380fec16f8bef04f83e4bf19a",
-			"scene_bytes": 1607326.0,
+			"bake_date": "2026-10-17",
+			"content_hash": "224dd56d0c3c12da3e0facdb5610f43a9674134f2129aa1eaca84364efdab4c2",
+			"cycle": 1.0,
+			"player_count": 1.0,
+			"scene_bytes": 1607327.0,
 			"scene_path": "res://scenes/levels/pregen/theme_village.tscn",
 			"seed": 1.0,
 			"terrain_mode": "mesh",
 			"theme_id": "village"
 		},
 		"warlord": {
-			"bake_date": "2026-10-16",
-			"content_hash": "167b8a216a065367c0f32ac8e56de9530599b3f84680aa7b346a9e95bab9936a",
-			"scene_bytes": 546538.0,
+			"bake_date": "2026-10-17",
+			"content_hash": "c273b1b332a05ff8ba1f3448d349cb0372a2f27ba28ca44e6b1f0c5d969e1f0c",
+			"cycle": 1.0,
+			"player_count": 1.0,
+			"scene_bytes": 546549.0,
 			"scene_path": "res://scenes/levels/pregen/theme_warlord.tscn",
 			"seed": 1.0,
 			"terrain_mode": "mesh",

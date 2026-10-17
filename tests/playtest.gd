@@ -78,6 +78,7 @@ func _run() -> void:
 	_test_train_dressing()
 	_test_cycle_scaling()
 	_test_warlord_player_count_154()
+	_test_bake_cycles_153()
 	_test_bake_integrity()
 	_test_baked_runtime()
 	_test_ai_director()
@@ -4120,6 +4121,137 @@ func _test_warlord_player_count_154() -> void:
 	DungeonScript.saved_player_state = prev_state
 	nm.lobby_members = prev_lobby
 	print("[Playtest] Warlord player-count scaling done")
+
+
+func _test_bake_cycles_153() -> void:
+	print("[Playtest] Cycle-aware bake + content hash v2 (issue #153 D1)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var LevelDataScript = load("res://scripts/procgen/level_data.gd")
+	var sha_of := func(bytes: PackedByteArray) -> String:
+		var ctx := HashingContext.new()
+		ctx.start(HashingContext.HASH_SHA256)
+		ctx.update(bytes)
+		return ctx.finish().hex_encode()
+	# --- (iii) Cycle-1 identity: the v2 migration changed the six
+	# shipped scenes' hash FORMAT only. Fingerprints and heights are
+	# pinned to literals captured from the pre-migration artifacts
+	# themselves; each stored hash must now recompute live under v2
+	# and differ from its captured v1 literal.
+	var identity := {
+		"village": {"v1": "17346d494dccbee4f95ea257e71e3df14fc4a64380fec16f8bef04f83e4bf19a", "fpsha": "c70f8532bb526f06961fb268045fc570664d45570fd643126910e0a656baf15e", "hlen": 16900, "hsha": "91153531908f38ad48d431d83a3eec4722893e6e641c5098c063071d0fb99e05", "grid": 32},
+		"dungeon": {"v1": "7323e73f8d1f5c0c718dbbc24a619d4506545b2cc88e4646339dc494d03edc79", "fpsha": "42360335d11be5246690ba1f21b90ebce280973490d64a8ae16be6ea9cfedb21", "hlen": 9604, "hsha": "3cdd4782a936abf225bc0ce0c2d83142796bc2891faae5659ddf8dcb791dbb5a", "grid": 24},
+		"depths": {"v1": "11d9a787da45ead94a54d4c0f92f2f0f37c0f782faaa9230633bb010c46db045", "fpsha": "b303af5d2f222ed932843f9cdd242fb3d9d1b7ec3022e90493b39d7b01076cde", "hlen": 9604, "hsha": "46a1e6981b40f3eb552c0a8303ffe390af514e9402babdb4e9edcd05cdba3598", "grid": 24},
+		"supermarket": {"v1": "9584d4eafce8ac73253520c9f026f9639a7f38b6df9e5a0c9856a7e0dd733072", "fpsha": "09713d46841663d88803aebb968cb16629943f3c05a53a756c25e7685b2eb5b5", "hlen": 21316, "hsha": "98d886ec6f5b2f110e1aa7e7ea73ba53164b572ef7207f6d2dc5648aa6adfcac", "grid": 36},
+		"warlord": {"v1": "167b8a216a065367c0f32ac8e56de9530599b3f84680aa7b346a9e95bab9936a", "fpsha": "92d4d74945fb3ec9a63a2439cb07eb55006c6623d3e1761b05c7ebd916e023db", "hlen": 0, "hsha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "grid": 48},
+		"misty_docks": {"v1": "ead066de114029cdaec2edbfe0876a57ad5f56af9c18783ea00e88d5ab50dd19", "fpsha": "57b7bd56841a258da39d1d02339f14c6679b22f487fdb91b9ac508014c9a366d", "hlen": 12996, "hsha": "d2dbbc6af70faca32ea6853400918361f8fbb1a59da70386e6a1c63ea7ecb7e4", "grid": 28},
+	}
+	for tid in identity:
+		var exp: Dictionary = identity[tid]
+		var inst = (load("res://scenes/levels/pregen/theme_%s.tscn" % tid) as PackedScene).instantiate()
+		var data = inst.get_node_or_null("LevelData")
+		_assert(data != null and int(data.get("cycle")) == 1 and int(data.get("player_count")) == 1,
+			"153: %s shipped scene stamps cycle 1 / player_count 1" % tid)
+		if data != null:
+			_assert(sha_of.call(str(data.to_layout().fingerprint()).to_utf8_buffer()) == str(exp["fpsha"]),
+				"153: %s layout fingerprint identical to the pre-migration artifact" % tid)
+			var hb: PackedByteArray = (data.get("heights") as PackedFloat32Array).to_byte_array()
+			_assert(hb.size() == int(exp["hlen"]) and sha_of.call(hb) == str(exp["hsha"]),
+				"153: %s heights identical to the pre-migration artifact (length + sha256)" % tid)
+			_assert(int(data.get("grid_size")) == int(exp["grid"]),
+				"153: %s grid unchanged by the migration" % tid)
+			_assert(str(data.get("content_hash")) == str(data.call("compute_content_hash"))
+				and str(data.get("content_hash")) != str(exp["v1"]),
+				"153: %s stored hash is v2 (recomputes live; differs from the v1 literal)" % tid)
+		inst.free()
+	# --- (i)+(ii) Reference-build equivalence: boot the UNMODIFIED
+	# runtime entry (dungeon.tscn at the cycle's level number, no
+	# bake code involved), then capture through LevelData.fill —
+	# exactly what the bake tool stamps — and require a lossless
+	# round-trip. Grid expectations are literals from the .tres
+	# bases and Jesse's rules, never from the bake path's outputs.
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_state: Dictionary = DungeonScript.saved_player_state
+	# Hygiene: a misty-docks boot's _do_spawn additively grants the
+	# local peer starter seeds (FarmPlot's ledger is a static) — the
+	# farming sections later assume the ledger they find. Snapshot
+	# peer 1's count and restore it after the boots below.
+	var PlotScript = load("res://scripts/dungeon/farm_plot.gd")
+	var prev_seeds_1: int = PlotScript.seed_count(1)
+	var boot := func(theme_id: String, level: int, sim: int, cycle: int, players: int) -> Dictionary:
+		DungeonScript.simulated_player_count = sim
+		DungeonScript.next_player_count = 0
+		DungeonScript.next_theme_id = theme_id
+		DungeonScript.next_seed = 777
+		DungeonScript.next_level_number = level
+		DungeonScript.saved_player_state = {}
+		for n in get_nodes_in_group("players"):
+			(n as Node).get_parent().remove_child(n as Node)
+		var d = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+		root.add_child(d)
+		var lay = d.get("_layout")
+		var terr = d.get("_terrain")
+		var heights := PackedFloat32Array()
+		var mp := 0
+		var cell := 1.0
+		if terr != null:
+			heights = terr.heights_copy()
+			mp = int(terr.get("map_points"))
+			cell = float(terr.get("cell_size"))
+		var data = LevelDataScript.new()
+		data.fill(theme_id, 777, lay, heights, mp, cell, cycle, players)
+		var out := {
+			"grid": int(lay.grid_size) if lay != null else -1,
+			"fp": str(lay.fingerprint()) if lay != null else "",
+			"heights": heights,
+			"data_fp": str(data.to_layout().fingerprint()),
+			"data_heights": data.heights,
+			"data_cycle": int(data.cycle),
+			"data_players": int(data.player_count),
+			"data_hash": str(data.content_hash),
+			"data_recompute": str(data.compute_content_hash()),
+		}
+		data.free()
+		root.remove_child(d)
+		d.free()
+		for n in get_nodes_in_group("players"):
+			(n as Node).get_parent().remove_child(n as Node)
+		return out
+	var check_case := func(theme_id: String, level: int, sim: int, cycle: int, players: int, grid_lit: int, label: String) -> void:
+		var r: Dictionary = boot.call(theme_id, level, sim, cycle, players)
+		if grid_lit > 0:
+			_assert(int(r["grid"]) == grid_lit, "%s: grid is %d" % [label, grid_lit])
+		_assert(str(r["data_fp"]) == str(r["fp"]),
+			"%s: baked LevelData fingerprint equals the reference build" % label)
+		_assert((r["data_heights"] as PackedFloat32Array).to_byte_array()
+			== (r["heights"] as PackedFloat32Array).to_byte_array(),
+			"%s: baked LevelData heights equal the reference build byte-for-byte" % label)
+		_assert(int(r["data_cycle"]) == cycle and int(r["data_players"]) == players,
+			"%s: cycle / player_count stamped on the bake" % label)
+		_assert(str(r["data_hash"]) == str(r["data_recompute"]),
+			"%s: v2 content hash is self-consistent" % label)
+	check_case.call("village", 6, 0, 2, 1, 72, "153: village cycle 2")
+	check_case.call("village", 11, 0, 3, 1, 96, "153: village cycle 3")
+	check_case.call("supermarket", 9, 0, 2, 1, 76, "153: supermarket cycle 2")
+	check_case.call("supermarket", 14, 0, 3, 1, 96, "153: supermarket cycle 3")
+	check_case.call("dungeon", 7, 0, 2, 1, 64, "153: dungeon cycle 2")
+	check_case.call("depths", 8, 0, 2, 1, 64, "153: depths cycle 2")
+	check_case.call("warlord", 5, 2, 1, 2, 72, "153(B): warlord cycle 1 x 2 players")
+	check_case.call("warlord", 10, 1, 2, 1, 48, "153(B): warlord cycle 2 x 1 player")
+	check_case.call("warlord", 10, 3, 2, 3, 96, "153(B): warlord cycle 2 x 3 players")
+	check_case.call("warlord", 15, 1, 3, 1, 48, "153(B): warlord cycle 3 x 1 player")
+	check_case.call("misty_docks", 6, 0, 2, 1, -1, "153: misty docks cycle 2")
+	PlotScript.clear_ledger(1)
+	if prev_seeds_1 > 0:
+		PlotScript.grant_seeds(1, prev_seeds_1)
+	DungeonScript.simulated_player_count = 0
+	DungeonScript.next_player_count = 0
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_state
+	print("[Playtest] Cycle-aware bake + content hash v2 done")
 
 
 func _test_ai_director() -> void:
