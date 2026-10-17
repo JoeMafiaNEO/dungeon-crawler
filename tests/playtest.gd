@@ -9731,8 +9731,8 @@ func _test_snapshot_yaw() -> void:
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
 	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids;
 	# since issue #126 Phase 1, rod_out too).
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed)'),
-		"caller passes _yaw (and, since #167, max_hp; since #163, downed)")
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac)'),
+		"caller passes _yaw (and, since #167, max_hp; since #163, downed; since #172, the revive pool fraction)")
 	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
 	_assert(src.contains("rod_out_v: bool = false"), "push_snapshot takes rod_out_v (#126 P1)")
 	# _remote_yaw stored and interpolated with lerp_angle.
@@ -16085,59 +16085,110 @@ func _test_revive_race_163() -> void:
 	p.call("push_snapshot", p.global_position, 100.0, 1, true, 0.0, {}, false, 100.0, false)
 	_assert(not bool(p.get("downed")) and bool(p.get("alive")) and not marker.visible,
 		"163P1: the replica converges when the snapshot clears (self-heals within an interval)")
+	# Issue #172: the pool fraction rides the same snapshot.
+	p.call("push_snapshot", p.global_position, 0.0, 1, false, 0.0, {}, false, 100.0, true, 0.5)
+	_assert(absf(float(p.get("_revive_pool_frac")) - 0.5) < 0.001,
+		"172: the pool fraction rides the snapshot onto the replica")
+	p.call("push_snapshot", p.global_position, 100.0, 1, true, 0.0, {}, false, 100.0, false, 0.0)
+	_assert(float(p.get("_revive_pool_frac")) == 0.0 and not bool(p.get("downed")),
+		"172: the fraction clears with the stream when the pool empties")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(_body_of(psrc, "func revive(").contains("NetworkManager.server_peer_id"),
 		"163P3: revive() itself refuses non-server senders (the record is the only road in)")
 	_assert(psrc.contains("_emit_snapshot(delta)"),
 		"163P1: the downed/dead authority paths keep emitting snapshots")
-	# --- Part 3: completions are refused without a live record.
+	# --- Part 3 (issue #172): the completion endpoint is GONE;
+	# completion is server-determined from the target's POOL.
+	_assert(not srv_a.has_method("revive_complete"),
+		"172: the client revive_complete endpoint no longer exists")
 	t.set("downed", true)
 	t.set("alive", false)
 	t.set("hp", 0.0)
-	srv_a.call("revive_complete", 1)
-	_assert(bool(t.get("downed")),
-		"163P3: a bare completion RPC is refused (no record)")
+	# The forgery itself is not driven through call(): invoking
+	# a nonexistent method IS the refusal (the engine errors and
+	# executes nothing — verified at build time: the target
+	# stayed downed), and the error line would pollute the
+	# suite's SCRIPT ERROR census. The absence above is the
+	# pin; this assert is its behavioral face.
+	_assert(bool(t.get("downed")) and float(t.get("_srv_revive_pool")) == 0.0,
+		"172: with no endpoint, a forged completion has no road in (target downed, pool untouched)")
 	srv_a.call("revive_start", 1)
 	_assert(int(srv_a.get("_srv_revive_target")) == 1,
 		"163P3: a validated channel-start creates the server record")
-	srv_a.set("_srv_revive_t", 3.0)
-	srv_a.call("revive_complete", 999)
-	_assert(bool(t.get("downed")) and int(srv_a.get("_srv_revive_target")) == 1,
-		"163P3: a completion against a different target is refused, record intact")
-	srv_a.set("_srv_revive_t", 0.5)
-	srv_a.call("revive_complete", 1)
-	_assert(bool(t.get("downed")),
-		"163P3: a completion with implausible elapsed time is refused")
-	srv_a.set("_srv_revive_t", 3.0)
-	srv_a.call("revive_complete", 1)
+	# Single-reviver degenerate case: ticks credit the pool at
+	# the standard rate; completion fires server-side at ~3.0s.
+	srv_a.call("_server_revive_tick", 1.0)
+	srv_a.call("_server_revive_tick", 1.0)
+	_assert(bool(t.get("downed")) and absf(float(t.get("_srv_revive_pool")) - 2.0) < 0.001,
+		"172: valid ticks credit the target's pool (2.0s banked, no completion yet)")
+	srv_a.call("_server_revive_tick", 1.0)
 	_assert(not bool(t.get("downed")) and bool(t.get("alive"))
 		and is_equal_approx(float(t.get("hp")), float(t.get("max_hp")) * 0.5)
-		and int(srv_a.get("_srv_revive_target")) == 0,
-		"163P3: a recorded, plausible completion revives the target and consumes the record")
-	# --- Part 3: the two-reviver race, through the new path —
-	# first completion wins, the second is a clean no-op.
+		and float(t.get("_srv_revive_pool")) == 0.0,
+		"172: the server completes the revive when the pool reaches 3.0 (single reviver, ~3.0s)")
+	srv_a.call("_server_revive_tick", 0.1)
+	_assert(int(srv_a.get("_srv_revive_target")) == 0,
+		"172: the completing reviver's record ends on its next tick (target standing)")
+	# --- Two revivers (the #163 race, pooled form): both
+	# records credit ONE pool; the completion is a single
+	# server event at half the wall-clock time.
 	t.set("downed", true)
 	t.set("alive", false)
 	t.set("hp", 0.0)
 	srv_a.call("revive_start", 1)
 	srv_b.call("revive_start", 1)
-	srv_a.set("_srv_revive_t", 3.0)
-	srv_b.set("_srv_revive_t", 3.0)
-	srv_a.call("revive_complete", 1)
-	var hp_won: float = t.get("hp")
-	srv_b.call("revive_complete", 1)
-	_assert(is_equal_approx(float(t.get("hp")), hp_won) and not bool(t.get("downed")),
-		"163P3: the second reviver's completion is a clean no-op (first wins)")
-	# --- Part 3: the server record ends the moment the target
-	# leaves the downed state for any reason (the loser's clean end).
+	srv_a.call("_server_revive_tick", 0.75)
+	srv_b.call("_server_revive_tick", 0.75)
+	_assert(bool(t.get("downed")) and absf(float(t.get("_srv_revive_pool")) - 1.5) < 0.001,
+		"172: two revivers credit ONE pool (0.75 + 0.75 = 1.5 banked)")
+	srv_a.call("_server_revive_tick", 0.75)
+	srv_b.call("_server_revive_tick", 0.75)
+	_assert(not bool(t.get("downed")) and bool(t.get("alive")),
+		"172: two revivers complete in ~half the channel time (pool 3.0 at 1.5s each)")
+	srv_a.call("_server_revive_tick", 0.1)
+	srv_b.call("_server_revive_tick", 0.1)
+	_assert(int(srv_a.get("_srv_revive_target")) == 0 and int(srv_b.get("_srv_revive_target")) == 0,
+		"172: both records end after the pooled completion (no second revive, no residue)")
+	# --- Dropout retention (issue #172 section 3): banked
+	# progress persists while the target stays downed.
 	t.set("downed", true)
 	t.set("alive", false)
+	t.set("hp", 0.0)
 	srv_a.call("revive_start", 1)
-	_assert(int(srv_a.get("_srv_revive_target")) == 1, "163P3: the loser's record is live mid-channel")
-	t.set("downed", false) # the other channel's revive landed (or death resolved it)
+	srv_a.call("_server_revive_tick", 1.2)
+	srv_a.call("revive_stop") # the reviver drops out
+	_assert(absf(float(t.get("_srv_revive_pool")) - 1.2) < 0.001,
+		"172: a dropout's 1.2s stays banked in the pool")
+	srv_b.call("revive_start", 1)
+	srv_b.call("_server_revive_tick", 1.81)
+	_assert(not bool(t.get("downed")),
+		"172: a second reviver finishes from the banked pool (1.2 + ~1.8 = 3.0)")
+	srv_b.call("_server_revive_tick", 0.1)
+	# --- Bleed-out (issue #172 section 3): the pool zeroes
+	# when the target leaves downed for ANY reason, and a
+	# re-down starts from zero — no late completion.
+	t.set("downed", true)
+	t.set("alive", false)
+	t.set("hp", 0.0)
+	srv_a.call("revive_start", 1)
+	srv_a.call("_server_revive_tick", 2.5)
+	_assert(absf(float(t.get("_srv_revive_pool")) - 2.5) < 0.001,
+		"172: the pool banks toward completion")
+	t.set("downed", false) # bleed-out resolves the down (death)
+	t.call("_srv_zero_revive_pool") # the server copy's per-frame target discipline
+	_assert(float(t.get("_srv_revive_pool")) == 0.0,
+		"172: the pool zeroes when the target leaves the downed state")
 	srv_a.call("_server_revive_tick", 0.1)
 	_assert(int(srv_a.get("_srv_revive_target")) == 0,
 		"163P3: the record ends when the target leaves the downed state")
+	t.set("downed", true)
+	t.set("alive", false)
+	srv_a.call("revive_start", 1)
+	srv_a.call("_server_revive_tick", 2.9)
+	_assert(bool(t.get("downed")) and absf(float(t.get("_srv_revive_pool")) - 2.9) < 0.001,
+		"172: a re-down starts from zero (2.9s of new credit does not complete)")
+	srv_a.call("revive_stop")
+	t.set("downed", false)
 	# --- Part 4: channel progress binds to its target.
 	var r = PlayerScene.instantiate()
 	r.class_id = "cleric"

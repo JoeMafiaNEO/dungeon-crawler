@@ -108,8 +108,25 @@ var _revive_channel := 0.0
 var _revive_target_peer := 0
 ## Issue #163 Part 3: the server's revive-channel record for THIS
 ## node's player (target peer + elapsed), validated like repair's.
+## Issue #172: the record's elapsed no longer gates anything —
+## each valid tick credits its delta into the TARGET's pool.
 var _srv_revive_target := 0
 var _srv_revive_t := 0.0
+## Issue #172: the revive POOL, living on the TARGET's node and
+## owned by the server: seconds credited toward REVIVE_CHANNEL
+## by every validated channel record aimed at this player.
+## Contributions persist while the target stays downed (a
+## reviver dropping out loses nothing); the pool zeroes
+## exactly when the target leaves the downed state.
+var _srv_revive_pool := 0.0
+## Issue #172: the pool fraction as replicated presentation
+## state — set by the server (sync_revive_pool) and carried
+## onward by the snapshot stream, so the channeling clients
+## and the downed player all render ONE pooled bar.
+var _revive_pool_frac := 0.0
+## Issue #172: pool-fraction sync bookkeeping (server copy).
+var _srv_pool_frac_sent := -1.0
+var _srv_pool_sync_t := 0.0
 ## World-space downed marker (Label3D "!"), visible to teammates.
 var _downed_marker: Label3D = null
 const REVIVE_WINDOW := 30.0
@@ -1440,14 +1457,23 @@ func _tick_downed(delta: float) -> void:
 	_bleedout -= delta
 	if hud != null:
 		hud.update_downed(_bleedout)
+		# Issue #172: the downed player sees the same ONE pooled
+		# bar the channeling teammates see (the replicated pool
+		# fraction on this node), never a local guess.
+		if _revive_pool_frac > 0.0:
+			hud.show_revive_progress(_revive_pool_frac)
+		else:
+			hud.hide_revive_progress()
 	if _bleedout <= 0.0:
 		_do_death()
 
 
 ## Teammate revive: hold E near a downed ally to channel a revive.
-## Issue #163: the channel is server-witnessed (start/complete go
+## Issue #163: the channel is server-witnessed (the start goes
 ## through the server's validated record, mirroring the repair
 ## channel) and its progress binds to one target (Part 4).
+## Issue #172: completion is the server's own determination
+## from the target's pool — the client sends no completion.
 func _tick_revive_channel(delta: float) -> void:
 	var mate := _nearest_downed_teammate()
 	var mate_peer := int(mate.get_multiplayer_authority()) if mate != null else 0
@@ -1459,14 +1485,14 @@ func _tick_revive_channel(delta: float) -> void:
 		if mate_peer != 0:
 			_send_revive_start(mate_peer)
 	if mate != null and Input.is_action_pressed("interact") and (hud == null or not hud.is_paused):
-		_revive_channel += delta
+		# Issue #172: the local accumulation is bookkeeping only
+		# (target binding, Part 4) — it no longer completes
+		# anything and no longer drives the bar. Completion is
+		# the server's, decided by the target's POOL; the bar
+		# renders the pool fraction replicated on the target.
+		_revive_channel = minf(_revive_channel + delta, REVIVE_CHANNEL)
 		if hud != null:
-			hud.show_revive_progress(_revive_channel / REVIVE_CHANNEL)
-		if _revive_channel >= REVIVE_CHANNEL:
-			_revive_channel = 0.0
-			if hud != null:
-				hud.hide_revive_progress()
-			_send_revive_complete(mate_peer)
+			hud.show_revive_progress(float(mate.get("_revive_pool_frac")))
 	else:
 		if _revive_channel > 0.0 and hud != null:
 			hud.hide_revive_progress()
@@ -1488,13 +1514,6 @@ func _send_revive_stop() -> void:
 		revive_stop()
 	else:
 		rpc_id(NetworkManager.server_peer_id, "revive_stop")
-
-
-func _send_revive_complete(target_peer: int) -> void:
-	if multiplayer.is_server():
-		revive_complete(target_peer)
-	else:
-		rpc_id(NetworkManager.server_peer_id, "revive_complete", target_peer)
 
 
 func _player_node_for_peer(peer: int) -> Node3D:
@@ -1536,34 +1555,13 @@ func revive_stop() -> void:
 	_srv_revive_t = 0.0
 
 
-## Server completion endpoint (issue #163 Part 3): accepted only
-## against the live record, for the recorded target, after a
-## plausible channel elapsed. The completion itself still lands
-## on the target's authority (revive()), from the server only.
-@rpc("any_peer", "call_local")
-func revive_complete(target_peer: int) -> void:
-	if not multiplayer.is_server():
-		return
-	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != get_multiplayer_authority():
-		return
-	if _srv_revive_target == 0 or target_peer != _srv_revive_target:
-		return
-	if _srv_revive_t < REVIVE_CHANNEL * 0.8:
-		return
-	_srv_revive_target = 0
-	_srv_revive_t = 0.0
-	if not alive or downed:
-		return
-	var target := _player_node_for_peer(target_peer)
-	if target == null or not bool(target.get("downed")):
-		return
-	if target.global_position.distance_to(global_position) > REVIVE_RANGE + 1.0:
-		return
-	if target_peer == multiplayer.get_unique_id():
-		target.call("revive")
-	else:
-		target.rpc_id(target_peer, "revive")
+## Issue #172: there is NO client completion endpoint anymore.
+## The #163 revive_complete RPC is REMOVED outright — a forged
+## completion now calls a method that does not exist, and the
+## 0.8x-plausibility check died with it (R3 closed in its
+## strongest form). Completion is server-determined: the pool
+## on the target's node fills from validated channel ticks
+## (_srv_credit_revive) and the server alone fires it.
 
 
 ## Server notice: the record ended server-side (target left the
@@ -1583,6 +1581,12 @@ func revive_channel_ended() -> void:
 ## ends the record the moment the world leaves the channel's
 ## premises (issue #163: the loser's channel ends when the target
 ## leaves the downed state for ANY reason).
+## Issue #172 tick order, specced so the race cannot reopen:
+## validity is re-checked BEFORE crediting; completion is
+## evaluated AFTER crediting (inside the target's pool); if
+## the target left the downed state this tick, the credit
+## fails, the pool zeroes, and there is no completion —
+## state exits beat completion.
 func _server_revive_tick(delta: float) -> void:
 	if _srv_revive_target == 0:
 		return
@@ -1598,6 +1602,62 @@ func _server_revive_tick(delta: float) -> void:
 			rpc_id(int(get_multiplayer_authority()), "revive_channel_ended")
 		else:
 			revive_channel_ended()
+		return
+	# Valid: credit this tick's delta into the target's pool.
+	# Every valid record credits at the standard rate — two
+	# revivers fill the pool twice as fast; there are no
+	# diminishing or bonus constants.
+	target.call("_srv_credit_revive", delta)
+
+
+## Issue #172 (server only, on the TARGET's node): credit one
+## validated channel tick into this target's pool and fire
+## completion when the pool reaches REVIVE_CHANNEL. The
+## downed re-check here is the second half of the tick-order
+## rule: a target that left the downed state takes no credit.
+func _srv_credit_revive(delta: float) -> void:
+	if not multiplayer.is_server() or not downed:
+		return
+	_srv_revive_pool += delta
+	if _srv_revive_pool >= REVIVE_CHANNEL:
+		_srv_revive_pool = 0.0
+		_srv_sync_pool_frac(true)
+		# Completion lands on the target's authority (revive()),
+		# from the server only — the same landing #163 used,
+		# now fired by the server's own determination.
+		var my_peer := int(get_multiplayer_authority())
+		if my_peer == int(multiplayer.get_unique_id()):
+			call("revive")
+		else:
+			rpc_id(my_peer, "revive")
+
+
+## Issue #172: zero this target's pool (server copy) and push
+## the cleared fraction out.
+func _srv_zero_revive_pool() -> void:
+	if _srv_revive_pool != 0.0:
+		_srv_revive_pool = 0.0
+		_srv_sync_pool_frac(true)
+
+
+## Issue #172: the pool fraction leaves the server on the
+## target's own sync — every copy of the target converges to
+## the same fraction, and the owner's snapshot stream then
+## carries it onward (push_snapshot's trailing field).
+@rpc("any_peer", "call_local", "unreliable")
+func sync_revive_pool(frac: float) -> void:
+	_revive_pool_frac = frac
+
+
+## Issue #172 (server copy of the target): keep the replicated
+## fraction fresh while a pool is live — throttled to the
+## snapshot cadence, immediate when forced (completion, zero).
+func _srv_sync_pool_frac(force := false) -> void:
+	var frac := clampf(_srv_revive_pool / REVIVE_CHANNEL, 0.0, 1.0)
+	if not force and absf(frac - _srv_pool_frac_sent) < 0.02:
+		return
+	_srv_pool_frac_sent = frac
+	rpc("sync_revive_pool", frac)
 
 
 func _nearest_downed_teammate() -> Node3D:
@@ -3027,6 +3087,18 @@ func _physics_process(delta: float) -> void:
 	if multiplayer.is_server():
 		_server_repair_tick(delta)
 		_server_revive_tick(delta)
+		# Issue #172: the target-side pool discipline — the pool
+		# zeroes the moment this node is observed not-downed on
+		# the server (bleed-out, death, any exit), and its
+		# fraction stays synced at the snapshot cadence while a
+		# pool is live.
+		if not downed:
+			_srv_zero_revive_pool()
+		elif _srv_revive_pool > 0.0:
+			_srv_pool_sync_t += delta
+			if _srv_pool_sync_t >= SNAPSHOT_INTERVAL:
+				_srv_pool_sync_t = 0.0
+				_srv_sync_pool_frac()
 		if _srv_smash_cd > 0.0:
 			_srv_smash_cd = maxf(0.0, _srv_smash_cd - delta)
 		if _srv_lightning_cd > 0.0:
@@ -5624,6 +5696,8 @@ func revive() -> void:
 	# completion (or a direct local call on this instance) — a
 	# bare client rpc is refused, so the channel record is the
 	# sole path and R3's unvalidated endpoint is closed.
+	# Issue #172: that completion is now the pool's — the server
+	# fires it from _srv_credit_revive when the pool fills.
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
@@ -5638,6 +5712,7 @@ func revive() -> void:
 	AudioManager.sfx("revive")
 	if hud != null:
 		hud.hide_downed()
+		hud.hide_revive_progress() # issue #172: the pooled bar clears with the revive
 		hud.toast("Revived! Back in the fight.")
 
 
@@ -6208,7 +6283,7 @@ func _emit_snapshot(delta: float) -> void:
 		# Issue #133: never fire into a dead peer (the Oct 14 spam
 		# site — 10 Hz of not-connected errors after the host died).
 		if _mp_peer_connected():
-			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed)
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac)
 
 
 ## Issue #164 (parts A + C): a puppet's presentation follows its
@@ -6232,7 +6307,7 @@ func _refresh_puppet_presentation() -> void:
 
 
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false, max_hp_v: float = 0.0, downed_v: bool = false) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false, max_hp_v: float = 0.0, downed_v: bool = false, pool_frac_v: float = 0.0) -> void:
 	if is_multiplayer_authority():
 		return
 	_remote_pos = pos
@@ -6255,6 +6330,11 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: fl
 			_show_downed_marker()
 		else:
 			_hide_downed_marker()
+	# Issue #172: the revive pool fraction rides the snapshot
+	# too — the server seeds it on every copy via
+	# sync_revive_pool and the owner's stream carries the
+	# latest value onward, so all copies render the same bar.
+	_revive_pool_frac = pool_frac_v
 	level = lvl
 	alive = alive_v
 	if eq_ids != equipped_ids:
