@@ -86,6 +86,12 @@ func _network_manager() -> Node:
 	return null
 
 
+## Issue #165 (D5): selection is presentation, not authority —
+## replicated so every peer's replica shows the ring; any peer may
+## set it (the building.gd precedent). Without the annotation,
+## every rpc("set_selected", …) call site errored and the ring
+## never appeared on receiving replicas.
+@rpc("any_peer", "call_local")
 func set_selected(on: bool) -> void:
 	if on:
 		if _select_ring == null or not is_instance_valid(_select_ring):
@@ -109,6 +115,12 @@ func _process_select_ring(delta: float) -> void:
 	_select_t += delta
 	var s := 1.0 + 0.12 * sin(_select_t * 6.0)
 	_select_ring.scale = Vector3(s, 1.0, s)
+
+## Issue #165 (F2): physics layer 3 (bitmask 4) — RTS unit
+## picking only. The in-tree bit census (gate-confirmed) puts
+## 1 on world bodies, 2/3 on structures, 8 on the departure
+## board; 4 is the free value, and nothing else sets or scans it.
+const PICK_LAYER := 4
 
 # AoE-style conversion: channel time and leash range (tunable via [monks]).
 const CONVERT_TIME := 5.0
@@ -305,6 +317,26 @@ func _build_visual() -> void:
 		col.shape = shape
 		col.position.y = 0.25
 		add_child(col)
+
+	# Issue #165 (F2): the pick proxy. A unit is a plain Node3D —
+	# it has no physics body a ray can hit (why FPS click-select
+	# could never work). Every peer's replica builds this Area3D
+	# in construction, on the dedicated pick layer nothing else
+	# sets or scans, so aim/from-above queries find the unit.
+	if get_node_or_null("PickArea") == null:
+		var area := Area3D.new()
+		area.name = "PickArea"
+		area.collision_layer = PICK_LAYER
+		area.collision_mask = 0
+		area.monitoring = false
+		var pcol := CollisionShape3D.new()
+		var pcyl := CylinderShape3D.new()
+		pcyl.radius = 0.45
+		pcyl.height = 1.0
+		pcol.shape = pcyl
+		pcol.position.y = 0.5
+		area.add_child(pcol)
+		add_child(area)
 
 	# Floating HP bar (billboarded, hidden at full HP).
 	_hp_bar_w = 1.0

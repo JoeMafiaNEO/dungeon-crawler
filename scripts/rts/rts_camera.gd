@@ -273,7 +273,14 @@ func _issue_order(screen_pos: Vector2) -> void:
 		if RTSSquad.squad_size_for(unit_ids.size()) > 0:
 			var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 			if mgr != null:
-				mgr.rpc_id(_server_id(), "rpc_order_move_squad", unit_ids, ground)
+				# Issue #165 (D1/F1): the house direct-call pattern —
+				# a Steam peer cannot rpc_id its own peer ID, so when
+				# this peer IS the server the handler is called
+				# directly; clients rpc_id the server as before.
+				if multiplayer.is_server():
+					mgr.rpc_order_move_squad(unit_ids, ground)
+				else:
+					mgr.rpc_id(_server_id(), "rpc_order_move_squad", unit_ids, ground)
 				return
 	for n in _selected:
 		if not is_instance_valid(n):
@@ -282,22 +289,50 @@ func _issue_order(screen_pos: Vector2) -> void:
 		# Right-click with a building selected should not fire unit RPCs.
 		if n.is_in_group("rts_buildings"):
 			continue
-		if target_unit:
-			if str(n.get("unit_type")) == "monk" and target_unit.is_in_group("rts_units"):
-				n.rpc_id(_server_id(), "order_convert", target_unit.get_path())
+		# Issue #165 (D1/F1): every order below travels the house
+		# direct-call pattern (see the squad branch) — direct when
+		# this peer is the server, rpc_id otherwise; the literal
+		# arguments are identical in both branches.
+		# Trade first for carts (issue #165 pin finding): the enemy
+		# pick also returns buildings, so a clicked foreign market
+		# always arrived as target_unit and the cart attacked it —
+		# the trade order could never be issued from this camera.
+		# A cart with a market under the click trades; every other
+		# unit type keeps the old precedence exactly.
+		if target_market and str(n.get("unit_type")) == "trade_cart":
+			if multiplayer.is_server():
+				n.rpc_order_trade(target_market.get_path())
 			else:
-				n.rpc_id(_server_id(), "rpc_order_attack", target_unit.get_path())
-		elif target_market and str(n.get("unit_type")) == "trade_cart":
-			n.rpc_id(_server_id(), "rpc_order_trade", target_market.get_path())
+				n.rpc_id(_server_id(), "rpc_order_trade", target_market.get_path())
+		elif target_unit:
+			if str(n.get("unit_type")) == "monk" and target_unit.is_in_group("rts_units"):
+				if multiplayer.is_server():
+					n.order_convert(target_unit.get_path())
+				else:
+					n.rpc_id(_server_id(), "order_convert", target_unit.get_path())
+			else:
+				if multiplayer.is_server():
+					n.rpc_order_attack(target_unit.get_path())
+				else:
+					n.rpc_id(_server_id(), "rpc_order_attack", target_unit.get_path())
 		elif target_node and str(n.get("unit_type")) == "villager":
-			n.rpc_id(_server_id(), "rpc_order_gather", target_node.get_path())
+			if multiplayer.is_server():
+				n.rpc_order_gather(target_node.get_path())
+			else:
+				n.rpc_id(_server_id(), "rpc_order_gather", target_node.get_path())
 		elif target_construction and str(n.get("unit_type")) == "villager":
 			# Jesse 2026-10-11: more villagers on a building = faster construction.
-			n.rpc_id(_server_id(), "rpc_order_build", target_construction.get_path())
+			if multiplayer.is_server():
+				n.rpc_order_build(target_construction.get_path())
+			else:
+				n.rpc_id(_server_id(), "rpc_order_build", target_construction.get_path())
 		else:
 			# Spread move targets slightly.
 			var offset := Vector3(randf_range(-1, 1), 0, randf_range(-1, 1))
-			n.rpc_id(_server_id(), "rpc_order_move", ground + offset)
+			if multiplayer.is_server():
+				n.rpc_order_move(ground + offset)
+			else:
+				n.rpc_id(_server_id(), "rpc_order_move", ground + offset)
 
 
 func _pick_enemy_at(ground: Vector3) -> Node3D:
@@ -445,7 +480,11 @@ func _confirm_placement(screen_pos: Vector2) -> void:
 	cancel_placement()
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null and dungeon.has_method("rpc_start_construction"):
-		dungeon.rpc_id(_server_id(), "rpc_start_construction", faction_id, btype, ground, builders)
+		# Issue #165 (D1/F1): the house direct-call pattern.
+		if multiplayer.is_server():
+			dungeon.rpc_start_construction(faction_id, btype, ground, builders)
+		else:
+			dungeon.rpc_id(_server_id(), "rpc_start_construction", faction_id, btype, ground, builders)
 
 
 func _server_id() -> int:
@@ -463,7 +502,11 @@ func _find_rts_hud() -> Node:
 func start_placement(btype: String) -> void:
 	cancel_placement()
 	_placing_type = btype
-	_clear_selection()
+	# Issue #165 pin finding: do NOT clear the selection here —
+	# _confirm_placement takes its builders FROM the selection
+	# (Jesse's explicit-assignment rule), so clearing made every
+	# top-down placement toast "select villager/s" and die. The
+	# FPS surface (command_start_placement) never cleared either.
 	_ghost = MeshInstance3D.new()
 	var bm := BoxMesh.new()
 	bm.size = Vector3(3.0, 2.0, 3.0)

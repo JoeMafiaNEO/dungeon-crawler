@@ -311,6 +311,12 @@ var _prompt_interact := false
 var _command_mode := false
 var _command_selected: Array = []
 var _command_faction := -1
+## Issue #165 (F2): the FPS command aim — the ground point under
+## the camera-center aim, refreshed per frame in command mode,
+## with its ground marker. Targeting resolves from the aim at
+## click time, never from a free cursor (the mouse stays captured).
+var _command_aim := Vector3.INF
+var _aim_marker: MeshInstance3D = null
 ## Jesse 2026-10-11: FPS building placement state (B in command mode).
 var _placing_type := ""
 var _placing_ghost: MeshInstance3D = null
@@ -3183,6 +3189,9 @@ func _process(delta: float) -> void:
 	# Jesse 2026-10-11: update FPS placement ghost while placing.
 	if _placing_type != "" and is_multiplayer_authority():
 		_command_update_ghost()
+	# Issue #165 (F2): FPS command-mode upkeep (aim + cursor rule).
+	if _command_mode and is_multiplayer_authority():
+		_command_process()
 	# Downed marker pulse (runs on every peer's instance).
 	if _downed_marker != null and _downed_marker.visible:
 		var t := Time.get_ticks_msec() / 1000.0
@@ -4632,24 +4641,68 @@ func _nearest_interact_node() -> Node3D:
 
 
 ## Jesse 2026-10-11: toggles RTS command mode (warlord domain only).
-## Frees the mouse for click/drag selection; recaptures on exit.
+## Issue #165 (F2, Jesse's mouse rule): first-person command keeps
+## the mouse CAPTURED and targets by aim — only menus un-capture,
+## for their lifetime (see _command_process).
 func _toggle_command_mode() -> void:
 	_command_mode = not _command_mode
 	if _command_mode:
 		# Cache the player's RTS faction.
 		_command_faction = int(get("rts_faction"))
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		if hud != null:
-			hud.set_hint("Command: E on building | Click select | Right-click order | T exits")
+			hud.set_hint("Command: aim + click select | Right-click order | E building | T exits")
 	else:
 		command_cancel_placement()
 		for u in _command_selected:
 			if is_instance_valid(u) and u.has_method("set_selected"):
-				u.call("set_selected", false)
+				u.rpc("set_selected", false)
 		_command_selected.clear()
+		_command_aim = Vector3.INF
+		if _aim_marker != null and is_instance_valid(_aim_marker):
+			_aim_marker.queue_free()
+		_aim_marker = null
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		if hud != null:
 			hud.set_hint("")
+
+
+## Issue #165 (F2): per-frame FPS command upkeep — the aim point
+## and its marker follow the camera-center aim, and the cursor
+## belongs to the aim (CAPTURED) except while an RTS menu is open
+## (VISIBLE for the menu's lifetime, re-captured when it closes).
+func _command_process() -> void:
+	_command_aim = _command_aim_point()
+	if _aim_marker == null:
+		_aim_marker = MeshInstance3D.new()
+		var tm := TorusMesh.new()
+		tm.inner_radius = 0.42
+		tm.outer_radius = 0.55
+		_aim_marker.mesh = tm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.35, 0.9, 1.0, 0.8)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_aim_marker.material_override = mat
+		_aim_marker.top_level = true
+		add_child(_aim_marker)
+	_aim_marker.visible = _command_aim != Vector3.INF
+	if _aim_marker.visible:
+		_aim_marker.global_position = _command_aim + Vector3(0, 0.06, 0)
+	if hud != null and hud.is_paused:
+		return
+	var menu_open := false
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null:
+		var rhud = dungeon.get_node_or_null("RTSHUD")
+		if rhud != null:
+			if rhud.has_method("is_build_menu_open") and bool(rhud.call("is_build_menu_open")):
+				menu_open = true
+			var tp = rhud.get("_train_panel")
+			if tp != null and (tp as CanvasItem).visible:
+				menu_open = true
+	var want := Input.MOUSE_MODE_VISIBLE if menu_open else Input.MOUSE_MODE_CAPTURED
+	if Input.mouse_mode != want:
+		Input.mouse_mode = want
 
 
 ## Nearest friendly RTS building within interact range.
@@ -4683,76 +4736,109 @@ func _command_interact_building() -> void:
 		get_viewport().set_input_as_handled()
 
 
-## Raycast from the FPS camera through the mouse position.
-func _command_raycast() -> Dictionary:
+## Issue #165 (F2): the FPS command aim point — the ground under
+## the camera-center aim (physics ray first, y=0 plane fallback),
+## Vector3.INF when the aim meets neither. This replaces the old
+## free-cursor raycast: with the mouse captured there is no
+## cursor, so the crosshair IS the pointer.
+func _command_aim_point() -> Vector3:
 	var cam := get("_camera") as Camera3D
 	if cam == null:
-		return {}
-	var mouse_pos := get_viewport().get_mouse_position()
-	var from := cam.project_ray_origin(mouse_pos)
-	var to := from + cam.project_ray_normal(mouse_pos) * 200.0
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collide_with_areas = false
-	query.collide_with_bodies = true
-	var space := get_world_3d().direct_space_state
-	return space.intersect_ray(query)
+		return Vector3.INF
+	var origin := cam.global_position
+	var dir := -cam.global_transform.basis.z.normalized()
+	var query := PhysicsRayQueryParameters3D.create(origin, origin + dir * 200.0)
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if not hit.is_empty():
+		return hit.get("position")
+	if absf(dir.y) > 0.001:
+		var t := -origin.y / dir.y
+		if t > 0:
+			return origin + dir * t
+	return Vector3.INF
 
 
-## Left-click in command mode: select RTS units of the player's faction.
+## Issue #165 (F2): the unit/building the aim points at — a ray
+## from high above the aim point straight down over the units'
+## pick areas; on no hit, the proximity fallback (nearest within
+## 2.0 m, the top-down camera's _pick_enemy_at tolerance) over
+## units, then buildings by the same rule.
+func _command_pointed(aim: Vector3) -> Node3D:
+	if aim == Vector3.INF:
+		return null
+	var query := PhysicsRayQueryParameters3D.create(aim + Vector3(0, 30, 0), aim + Vector3(0, -2, 0))
+	query.collide_with_bodies = false
+	query.collide_with_areas = true
+	query.collision_mask = RTSUnit.PICK_LAYER
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if not hit.is_empty():
+		var area := hit.get("collider") as Area3D
+		if area != null and area.get_parent() != null and area.get_parent().is_in_group("rts_units"):
+			return area.get_parent() as Node3D
+	var best: Node3D = null
+	var best_d := 2.0
+	for n in get_tree().get_nodes_in_group("rts_units"):
+		var d := aim.distance_to((n as Node3D).global_position)
+		if d < best_d:
+			best_d = d
+			best = n
+	if best != null:
+		return best
+	for n in get_tree().get_nodes_in_group("rts_buildings"):
+		var d := aim.distance_to((n as Node3D).global_position)
+		if d < best_d:
+			best_d = d
+			best = n
+	return best
+
+
+## Left-click in command mode (issue #165 F2): select the pointed
+## own-faction unit, through the replicated selection path.
 func _command_select() -> void:
-	var hit := _command_raycast()
 	for u in _command_selected:
 		if is_instance_valid(u) and u.has_method("set_selected"):
-			u.call("set_selected", false)
+			u.rpc("set_selected", false)
 	_command_selected.clear()
-	if hit.is_empty():
-		return
-	var collider := hit.get("collider") as Node3D
-	if collider != null and collider.is_in_group("rts_units"):
-		if int(collider.get("faction")) == _command_faction:
-			_command_selected.append(collider)
-			# Show selection ring (reuse unit's ring if available).
-			if collider.has_method("set_selected"):
-				collider.call("set_selected", true)
+	var pointed := _command_pointed(_command_aim_point())
+	if pointed != null and pointed.is_in_group("rts_units") \
+			and int(pointed.get("faction")) == _command_faction:
+		_command_selected.append(pointed)
+		if pointed.has_method("set_selected"):
+			pointed.rpc("set_selected", true)
 	get_viewport().set_input_as_handled()
 
 
-## Right-click in command mode: order selected units.
-## Clicked enemy/unit/building -> attack; otherwise -> move.
+## Right-click in command mode (issue #165 F1+F2): order the
+## selection — pointed enemy unit/building -> attack; otherwise
+## -> move to the aim point.
 func _command_order() -> void:
 	if _command_selected.is_empty():
 		return
-	var hit := _command_raycast()
+	var aim := _command_aim_point()
+	if aim == Vector3.INF:
+		return
 	var target: Node3D = null
-	var ground := Vector3.INF
-	if not hit.is_empty():
-		var collider := hit.get("collider") as Node3D
-		if collider != null and (collider.is_in_group("rts_units") or collider.is_in_group("rts_buildings")):
-			# Only order attacks on enemies.
-			var tf := int(collider.get("faction"))
-			if tf != _command_faction:
-				target = collider
-		if target == null:
-			ground = hit.get("position")
-	else:
-		# No hit: project mouse ray to y=0 plane for a move target.
-		var cam := get("_camera") as Camera3D
-		if cam != null:
-			var mp := get_viewport().get_mouse_position()
-			var origin := cam.project_ray_origin(mp)
-			var dir := cam.project_ray_normal(mp)
-			if absf(dir.y) > 0.001:
-				var t := -origin.y / dir.y
-				if t > 0:
-					ground = origin + dir * t
-	var server_id := 1  # NetworkManager.server_peer_id
+	var pointed := _command_pointed(aim)
+	if pointed != null and (pointed.is_in_group("rts_units") or pointed.is_in_group("rts_buildings")) \
+			and int(pointed.get("faction")) != _command_faction:
+		target = pointed
 	for u in _command_selected:
 		if not is_instance_valid(u):
 			continue
+		# Issue #165 (D1/F1): the house direct-call pattern — a
+		# Steam peer cannot rpc_id its own peer ID (peer-id
+		# hygiene: the remote leg targets
+		# NetworkManager.server_peer_id, never a hardcoded 1).
 		if target != null:
-			u.rpc_id(server_id, "rpc_order_attack", target.get_path())
-		elif ground != Vector3.INF:
-			u.rpc_id(server_id, "rpc_order_move", ground)
+			if multiplayer.is_server():
+				u.rpc_order_attack(target.get_path())
+			else:
+				u.rpc_id(NetworkManager.server_peer_id, "rpc_order_attack", target.get_path())
+		else:
+			if multiplayer.is_server():
+				u.rpc_order_move(aim)
+			else:
+				u.rpc_id(NetworkManager.server_peer_id, "rpc_order_move", aim)
 	get_viewport().set_input_as_handled()
 
 
@@ -4793,7 +4879,7 @@ func command_cancel_placement() -> void:
 func _command_update_ghost() -> void:
 	if _placing_ghost == null or not is_instance_valid(_placing_ghost):
 		return
-	var ground := _command_ground_point()
+	var ground := _command_aim_point()
 	if ground == Vector3.INF:
 		_placing_valid = false
 		return
@@ -4802,27 +4888,6 @@ func _command_update_ghost() -> void:
 	var mat := _placing_ghost.material_override as StandardMaterial3D
 	if mat != null:
 		mat.albedo_color = Color(0.2, 0.9, 0.3, 0.4) if _placing_valid else Color(0.9, 0.2, 0.2, 0.4)
-
-
-## Ground point under the mouse via FPS camera raycast (INF if none).
-func _command_ground_point() -> Vector3:
-	var cam := get("_camera") as Camera3D
-	if cam == null:
-		return Vector3.INF
-	var mp := get_viewport().get_mouse_position()
-	var origin := cam.project_ray_origin(mp)
-	var dir := cam.project_ray_normal(mp)
-	# Try physics raycast first (hits terrain).
-	var query := PhysicsRayQueryParameters3D.create(origin, origin + dir * 200.0)
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	if not hit.is_empty():
-		return hit.get("position")
-	# Fallback: intersect y=0 plane.
-	if absf(dir.y) > 0.001:
-		var t := -origin.y / dir.y
-		if t > 0:
-			return origin + dir * t
-	return Vector3.INF
 
 
 func _command_valid_build_spot(ground: Vector3) -> bool:
@@ -4840,7 +4905,7 @@ func _command_valid_build_spot(ground: Vector3) -> bool:
 func _command_confirm_placement() -> void:
 	if _placing_type == "" or not _placing_valid:
 		return
-	var ground := _command_ground_point()
+	var ground := _command_aim_point()
 	if ground == Vector3.INF:
 		return
 	# Builders = selected villagers (mirrors RTSCamera._confirm_placement).
@@ -4858,7 +4923,13 @@ func _command_confirm_placement() -> void:
 	command_cancel_placement()
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null and dungeon.has_method("rpc_start_construction"):
-		dungeon.rpc_id(1, "rpc_start_construction", _command_faction, btype, Vector3(ground.x, 0, ground.z), builders)
+		# Issue #165 (D1/F1): the house direct-call pattern — a
+		# Steam peer cannot rpc_id its own peer ID (peer-id
+		# hygiene: NetworkManager.server_peer_id on the remote leg).
+		if multiplayer.is_server():
+			dungeon.rpc_start_construction(_command_faction, btype, Vector3(ground.x, 0, ground.z), builders)
+		else:
+			dungeon.rpc_id(NetworkManager.server_peer_id, "rpc_start_construction", _command_faction, btype, Vector3(ground.x, 0, ground.z), builders)
 	get_viewport().set_input_as_handled()
 
 

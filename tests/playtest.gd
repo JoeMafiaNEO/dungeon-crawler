@@ -24,6 +24,7 @@ func _run() -> void:
 	_test_rts_multimesh()
 	_test_rts_squads()
 	_test_rts_squad_reorder_no_leak()
+	_test_rts_command_part_a_165()
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
@@ -506,6 +507,223 @@ func _test_rts_squad_reorder_no_leak() -> void:
 		n.free()
 	root.remove_child(mgr)
 	mgr.free()
+
+
+## Issue #165 Part A: host orders travel the house direct-call
+## pattern (D1/F1), the FPS command surface is aim-driven (F2),
+## and selection replicates (D5). Host pins drive the REAL issuing
+## functions (RTSCamera._issue_order/_confirm_placement, Player
+## _command_select/_command_order) with is_server() true — the
+## self-address path itself, never a direct-call substitute for
+## the transport. The client leg's branch shape is source-pinned
+## (its live proof is the two-seat hardware checklist); the
+## PickArea ray + mouse-mode invariant live in
+## scenes/terrain/warlord_command_check.tscn (real frames, Xvfb).
+func _test_rts_command_part_a_165() -> void:
+	print("[Playtest] RTS command Part A (issue #165)...")
+	# Fixture hygiene: earlier sections boot real dungeons whose
+	# nodes can shadow first-in-group lookups and whose terrain
+	# bodies share this physics space — displace the incumbents
+	# (restored at the end) and stage everything far from the
+	# origin arenas.
+	var displaced_dungeons: Array = []
+	for n in get_nodes_in_group("dungeon"):
+		displaced_dungeons.append(n)
+		n.remove_from_group("dungeon")
+	var displaced_mgrs: Array = []
+	for n in get_nodes_in_group("rts_manager"):
+		displaced_mgrs.append(n)
+		n.remove_from_group("rts_manager")
+	var holder := Node3D.new()
+	holder.name = "RTS165Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var UnitScript: GDScript = load("res://scripts/rts/unit.gd")
+	var BuildingScript: GDScript = load("res://scripts/rts/building.gd")
+	var ResScript: GDScript = load("res://scripts/rts/resource_node.gd")
+	var mgr = load("res://scripts/rts/rts_manager.gd").new()
+	holder.add_child(mgr)
+	var mk_unit := func(id: int, faction: int, utype: String, pos: Vector3) -> Node3D:
+		var u = UnitScript.new()
+		u.name = "RTSUnit_%d" % id
+		holder.add_child(u)
+		u.setup(faction, utype, null)
+		u.set("unit_id", id)
+		u.global_position = pos
+		return u
+	var villager = mk_unit.call(201, 0, "villager", Vector3(400, 0, 430))
+	var spearman = mk_unit.call(202, 0, "spearman", Vector3(405, 0, 430))
+	var monk = mk_unit.call(203, 0, "monk", Vector3(410, 0, 430))
+	var cart = mk_unit.call(204, 0, "trade_cart", Vector3(415, 0, 430))
+	var enemy = mk_unit.call(301, 1, "spearman", Vector3(500, 0, 500))
+	var res_node = ResScript.new()
+	res_node.name = "RTSNode_401"
+	holder.add_child(res_node)
+	res_node.add_to_group("rts_resources") # the production spawner joins it
+	res_node.setup("wood", 500)
+	res_node.global_position = Vector3(520, 0, 500)
+	var market = BuildingScript.new()
+	market.name = "Market1"
+	holder.add_child(market)
+	market.setup(1, "market", null)
+	market.global_position = Vector3(540, 0, 500)
+	var construction = BuildingScript.new()
+	construction.name = "Construction1"
+	holder.add_child(construction)
+	construction.setup(0, "barracks", null)
+	construction.set("under_construction", true)
+	construction.global_position = Vector3(560, 0, 500)
+	# The camera, driven from directly above each click point
+	# (viewport center -> the ground below the camera).
+	var cam = load("res://scripts/rts/rts_camera.gd").new()
+	holder.add_child(cam)
+	cam.setup(mgr, 0)
+	var center := root.get_visible_rect().size * 0.5
+	var click_at := func(ground: Vector3, selected: Array) -> void:
+		cam.position = Vector3(ground.x, 40, ground.z)
+		cam.rotation = Vector3(-PI / 2, 0, 0)
+		cam.set("_selected", selected)
+		cam.call("_issue_order", center)
+	# (a1) per-unit move on empty ground.
+	click_at.call(Vector3(450, 0, 450), [villager])
+	_assert(villager.get("_move_target") != Vector3.INF
+		and (villager.get("_move_target") as Vector3).distance_to(Vector3(450, 0, 450)) < 1.5,
+		"165A: camera move order lands on the unit (host direct path)")
+	# (a2) attack: spearman ordered onto the enemy.
+	click_at.call(enemy.global_position, [spearman])
+	_assert(spearman.get("_attack_target") == enemy,
+		"165A: camera attack order lands (host direct path)")
+	# (a3) convert: monk ordered onto the enemy.
+	click_at.call(enemy.global_position, [monk])
+	_assert(monk.get("_convert_target") == enemy,
+		"165A: camera convert order lands (host direct path)")
+	# (a4) gather: villager ordered onto the resource node.
+	click_at.call(res_node.global_position, [villager])
+	_assert(villager.get("_gather_node") == res_node,
+		"165A: camera gather order lands (host direct path)")
+	# (a5) build: villager ordered onto the construction.
+	click_at.call(construction.global_position, [villager])
+	_assert(villager.get("_build_target") == construction,
+		"165A: camera build order lands (host direct path)")
+	# (a6) trade: cart ordered onto the foreign market.
+	click_at.call(market.global_position, [cart])
+	_assert(cart.get("_trade_target") == market,
+		"165A: camera trade order lands (host direct path)")
+	# (a7) squad move: 25 villagers take the manager's batch path.
+	var squad_units: Array = []
+	for i in 25:
+		squad_units.append(mk_unit.call(400 + i, 0, "villager", Vector3(600 + i, 0, 600)))
+	click_at.call(Vector3(640, 0, 640), squad_units)
+	var moved := 0
+	for u in squad_units:
+		if u.get("_move_target") != Vector3.INF:
+			moved += 1
+	_assert(moved >= 20, "165A: squad move order lands on the batch (%d/25)" % moved)
+	# (b) FPS surface: a real player aims, selects, orders.
+	var player = load("res://scenes/player/player.tscn").instantiate()
+	player.class_id = "warrior"
+	holder.add_child(player)
+	player.global_position = Vector3(400, 0, 400)
+	player.set("_command_mode", true)
+	player.set("_command_faction", 0)
+	var pcam = player.get("_camera")
+	# Aim -Z at the villager standing 6 m ahead.
+	villager.global_position = Vector3(400, 0, 394)
+	pcam.rotation.x = -0.26
+	player.call("_command_select")
+	_assert((player.get("_command_selected") as Array).has(villager),
+		"165A: FPS aim-select picks the pointed own-faction unit")
+	_assert(not (player.get("_command_selected") as Array).has(enemy),
+		"165A: FPS aim-select does not pick the enemy")
+	# Order the selection onto the enemy, aimed +X.
+	enemy.global_position = Vector3(406, 0, 400)
+	player.rotation.y = -PI / 2
+	player.call("_command_order")
+	_assert(villager.get("_attack_target") == enemy,
+		"165A: FPS aim-order on an enemy lands as an attack (host direct path)")
+	# Order a move onto empty ground, aimed -X.
+	villager.set("_attack_target", null)
+	player.rotation.y = PI / 2
+	player.call("_command_order")
+	_assert(villager.get("_attack_target") == null
+		and (villager.get("_move_target") as Vector3).distance_to(Vector3(394, 0, 400)) < 1.0,
+		"165A: FPS aim-order on empty ground lands as a move (host direct path)")
+	# (a8) construction placement through the camera: a bare real
+	# Dungeon carries the handler; the manager funds the barracks.
+	# (Runs after the FPS legs: the bare dungeon's TerrainBody
+	# would otherwise intercept the aim ray.)
+	var DungeonScript: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	var dgn = DungeonScript.new()
+	dgn.name = "Dungeon165"
+	holder.add_child(dgn)
+	dgn.add_to_group("dungeon")
+	var rts_holder := Node3D.new()
+	rts_holder.name = "RTS"
+	dgn.add_child(rts_holder)
+	dgn.set("_rts_manager", mgr)
+	mgr.register_faction(0, 1, "warrior")
+	mgr.add_resource(0, "wood", 500)
+	var buildings_before := get_nodes_in_group("rts_buildings").size()
+	cam.set("_selected", [villager])
+	cam.call("start_placement", "barracks")
+	cam.position = Vector3(480, 40, 560)
+	cam.rotation = Vector3(-PI / 2, 0, 0)
+	cam.set("_ghost_valid", true)
+	cam.call("_confirm_placement", center)
+	_assert(get_nodes_in_group("rts_buildings").size() == buildings_before + 1,
+		"165A: camera construction placement lands (host direct path)")
+	# (b2) FPS placement confirm (the gate's tenth site): the
+	# player's own confirm path reaches the same construction
+	# state, through the real function on the host leg.
+	player.set("_placing_type", "barracks")
+	player.set("_placing_valid", true)
+	player.call("_command_confirm_placement")
+	_assert(get_nodes_in_group("rts_buildings").size() == buildings_before + 2,
+		"165A: FPS placement confirm lands construction (host direct path, tenth site)")
+	# (d, suite half) PickArea exists on the pick layer.
+	var pick = villager.get_node_or_null("PickArea")
+	_assert(pick != null and int(pick.get("collision_layer")) == 4,
+		"165A: PickArea rides the dedicated pick layer (17)")
+	# (e) D5: selection replicates — the rpc executes, the ring
+	# shows and clears; death clears it too.
+	var fresh = mk_unit.call(501, 0, "spearman", Vector3(370, 0, 370))
+	fresh.rpc("set_selected", true)
+	_assert(fresh.get("_select_ring") != null and (fresh.get("_select_ring") as Node3D).visible,
+		"165A: rpc set_selected shows the ring on the replica")
+	fresh.rpc("set_selected", false)
+	_assert(not (fresh.get("_select_ring") as Node3D).visible,
+		"165A: rpc set_selected(false) clears the ring")
+	fresh.rpc("set_selected", true)
+	fresh.call("_die")
+	_assert(not is_instance_valid(fresh) or fresh.get("_select_ring") == null
+		or not (fresh.get("_select_ring") as Node3D).visible,
+		"165A: death clears the selection ring")
+	# Building selection regression (the annotated precedent).
+	market.rpc("set_selected", true)
+	_assert((market.get("_select_ring") as Node3D).visible,
+		"165A: building selection still replicates")
+	# (c) client-leg branch shape: every converted site carries
+	# both branches with the peer-id-safe remote leg.
+	var cam_src := FileAccess.get_file_as_string("res://scripts/rts/rts_camera.gd")
+	_assert(cam_src.contains("mgr.rpc_order_move_squad(unit_ids, ground)")
+		and cam_src.contains("n.rpc_order_move(ground + offset)")
+		and cam_src.contains("dungeon.rpc_start_construction(faction_id, btype, ground, builders)"),
+		"165A: camera sites carry the direct branch")
+	var pl_src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(not pl_src.contains("server_id := 1") and not pl_src.contains("rpc_id(1,"),
+		"165A: no hardcoded server id remains in player.gd")
+	_assert(_body_of(pl_src, "func _command_order(").contains("NetworkManager.server_peer_id"),
+		"165A: FPS order remote leg targets server_peer_id")
+	_assert(not pl_src.contains("func _command_raycast("),
+		"165A: the free-cursor raycast is retired")
+	holder.free()
+	for n in displaced_dungeons:
+		if is_instance_valid(n):
+			n.add_to_group("dungeon")
+	for n in displaced_mgrs:
+		if is_instance_valid(n):
+			n.add_to_group("rts_manager")
+	print("[Playtest] RTS command Part A (issue #165) done.")
 
 
 func _test_village_terrain_118() -> void:
@@ -12139,7 +12357,7 @@ func _test_pad_parity_144() -> void:
 	p._pad_seen = true
 	_assert(p.gameplay_focused(), "144: pad session satisfies the gate without any capture")
 	p._command_mode = true
-	_assert(not p.gameplay_focused(), "144: command mode closes the pad leg (cursor surface)")
+	_assert(not p.gameplay_focused(), "144: command mode closes the pad leg (commanding is aim/mouse-shaped until Phase 4; #165 retired the cursor premise, the closure stands)")
 	p._command_mode = false
 	# --- Issue #149: the terminal session dialogs (session lost /
 	# version mismatch share hud's _session_lost_dialog) close the
