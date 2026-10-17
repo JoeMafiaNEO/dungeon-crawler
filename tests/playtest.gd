@@ -34,6 +34,7 @@ func _run() -> void:
 	_test_mp_slots()
 	_test_saves_ui()
 	_test_save_scroll_affordance_145()
+	_test_theme_lighting_readability()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -1227,8 +1228,8 @@ func _test_dungeon_terrain_120() -> void:
 	_assert(absf(float(dungeon.get("terrain_flatten_radius")) - 5.0) < 0.0001, "#120: dungeon flatten 5.0")
 	_assert(absf(float(dungeon.get("terrain_pond_depth")) - 0.5) < 0.0001, "#120: dungeon pond depth 0.5 (unused, dry)")
 	_assert(dungeon.get("terrain_tint_bed") == Color(0.13, 0.13, 0.16), "#120: dungeon tint bed = damp stone")
-	_assert(dungeon.get("terrain_tint_low") == Color(0.27, 0.27, 0.31), "#120: dungeon tint low = cold stone")
-	_assert(dungeon.get("terrain_tint_mid") == Color(0.36, 0.36, 0.41), "#120: dungeon tint mid = worn stone")
+	_assert(dungeon.get("terrain_tint_low") == Color(0.31, 0.31, 0.35), "#120: dungeon tint low = cold stone")
+	_assert(dungeon.get("terrain_tint_mid") == Color(0.44, 0.44, 0.49), "#120: dungeon tint mid = worn stone")
 	_assert(dungeon.get("terrain_tint_high") == Color(0.48, 0.48, 0.54), "#120: dungeon tint high = pale stone")
 	# Tint anchor: the dry-theme form — the design floor
 	# (offset - amp/2 = 0.18 - 0.175 = 0.005), not the parked water.
@@ -1341,9 +1342,9 @@ func _test_depths_terrain_121() -> void:
 	_assert(absf(float(depths.get("terrain_pond_depth")) - 0.5) < 0.0001, "#121: depths pond depth 0.5")
 	_assert(int(depths.get("terrain_smooth_passes")) == 1, "#121: depths smooth 1")
 	_assert(absf(float(depths.get("terrain_flatten_radius")) - 5.0) < 0.0001, "#121: depths flatten 5.0")
-	_assert(depths.get("terrain_tint_bed") == Color(0.09, 0.08, 0.13), "#121: depths tint bed = deep violet-black")
-	_assert(depths.get("terrain_tint_low") == Color(0.13, 0.11, 0.18), "#121: depths tint low = near-black violet")
-	_assert(depths.get("terrain_tint_mid") == Color(0.23, 0.2, 0.29), "#121: depths tint mid = dark violet-grey")
+	_assert(depths.get("terrain_tint_bed") == Color(0.11, 0.1, 0.15), "#121: depths tint bed = deep violet-black")
+	_assert(depths.get("terrain_tint_low") == Color(0.19, 0.17, 0.24), "#121: depths tint low = near-black violet")
+	_assert(depths.get("terrain_tint_mid") == Color(0.33, 0.3, 0.39), "#121: depths tint mid = dark violet-grey")
 	_assert(depths.get("terrain_tint_high") == Color(0.62, 0.6, 0.55), "#121: depths tint high = pale bone-grey")
 	# Tint anchor: dry theme, so the ramp anchors at the design
 	# floor 0.0 (= offset 0.9 - amp/2 0.9), not the parked water.
@@ -2334,6 +2335,57 @@ func _test_save_scroll_affordance_145() -> void:
 		"145: the track is the menu's dark inset with a 1px frame border")
 	mm.free()
 	print("[Playtest] Save-scroll affordance (issue #145) done")
+
+
+## Lighting readability (Jesse's walkthrough ruling): the
+## Dungeon/Depths/Apex tint ramps must READ as steps in play.
+## Data pins on the theme resources themselves: adjacent-band
+## luminance steps meet literal floors (a future re-compression
+## fails loudly), and the environment values equal the tuned
+## numbers literally. The untouched bands and the deliberate
+## sun=0 non-change are pinned too.
+func _test_theme_lighting_readability() -> void:
+	print("[Playtest] Theme lighting readability...")
+	var ceq := func(a: Color, b: Color) -> bool:
+		return absf(a.r - b.r) < 0.002 and absf(a.g - b.g) < 0.002 and absf(a.b - b.b) < 0.002
+	var dun: Resource = load("res://data/levels/theme_dungeon.tres")
+	_assert(dun.get("terrain_tint_low").get_luminance() - dun.get("terrain_tint_bed").get_luminance() >= 0.06,
+		"lighting dungeon: low-bed luminance step >= 0.06")
+	_assert(dun.get("terrain_tint_mid").get_luminance() - dun.get("terrain_tint_low").get_luminance() >= 0.08,
+		"lighting dungeon: mid-low luminance step >= 0.08")
+	_assert(ceq.call(dun.get("terrain_tint_bed"), Color(0.13, 0.13, 0.16))
+		and ceq.call(dun.get("terrain_tint_low"), Color(0.31, 0.31, 0.35))
+		and ceq.call(dun.get("terrain_tint_mid"), Color(0.44, 0.44, 0.49))
+		and ceq.call(dun.get("terrain_tint_high"), Color(0.48, 0.48, 0.54)),
+		"lighting dungeon: tint ramp = bed .13 / low .31 / mid .44 / high .48 (bed+high untouched)")
+	_assert(absf(dun.get("ambient_energy") - 0.45) < 0.001 and absf(dun.get("fog_density") - 0.022) < 0.0005,
+		"lighting dungeon: ambient 0.45, fog 0.022")
+	_assert(absf(dun.get("sun_energy")) < 0.0001,
+		"lighting dungeon: sun stays 0 (torch-lit identity, deliberate non-change)")
+	var dep: Resource = load("res://data/levels/theme_depths.tres")
+	_assert(dep.get("terrain_tint_low").get_luminance() - dep.get("terrain_tint_bed").get_luminance() >= 0.06,
+		"lighting depths: low-bed luminance step >= 0.06")
+	_assert(dep.get("terrain_tint_mid").get_luminance() - dep.get("terrain_tint_low").get_luminance() >= 0.08,
+		"lighting depths: mid-low luminance step >= 0.08")
+	_assert(ceq.call(dep.get("terrain_tint_bed"), Color(0.11, 0.10, 0.15))
+		and ceq.call(dep.get("terrain_tint_low"), Color(0.19, 0.17, 0.24))
+		and ceq.call(dep.get("terrain_tint_mid"), Color(0.33, 0.30, 0.39))
+		and ceq.call(dep.get("terrain_tint_high"), Color(0.62, 0.60, 0.55)),
+		"lighting depths: tint ramp = bed .11 / low .19 / mid .33 / high .62 (peak accent untouched)")
+	_assert(absf(dep.get("ambient_energy") - 0.42) < 0.001 and absf(dep.get("fog_density") - 0.03) < 0.0005
+		and absf(dep.get("torch_light_energy") - 1.9) < 0.001,
+		"lighting depths: ambient 0.42, fog 0.030, torch energy 1.9")
+	_assert(absf(dep.get("sun_energy")) < 0.0001,
+		"lighting depths: sun stays 0 (torch-lit identity, deliberate non-change)")
+	var apx: Resource = load("res://data/levels/theme_apex.tres")
+	_assert(absf(apx.get("ambient_energy") - 0.55) < 0.001 and absf(apx.get("fog_density") - 0.015) < 0.0005,
+		"lighting apex: ambient 0.55, fog 0.015")
+	_assert(ceq.call(apx.get("terrain_tint_bed"), Color(0.32, 0.24, 0.19))
+		and ceq.call(apx.get("terrain_tint_low"), Color(0.45, 0.32, 0.25))
+		and ceq.call(apx.get("terrain_tint_mid"), Color(0.55, 0.40, 0.26))
+		and ceq.call(apx.get("terrain_tint_high"), Color(0.78, 0.68, 0.52)),
+		"lighting apex: tint ramp untouched")
+	print("[Playtest] Theme lighting readability done")
 
 
 func _test_station_phase4() -> void:
