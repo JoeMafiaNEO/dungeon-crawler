@@ -3373,7 +3373,14 @@ func _cast_reinforce() -> void:
 	ability_cds["reinforce"] = (25.0) * cooldown_mult()
 	AudioManager.sfx("totem_place")
 	var target: Player = best if best != null else self
-	target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0)
+	# Issue #169: when the target's authority is THIS peer (a
+	# self-target — the common case), rpc_id would be self-addressed
+	# and a Steam peer cannot rpc_id its own id (the #165 D1
+	# family): the reinforce silently never landed. Call directly.
+	if int(target.get_multiplayer_authority()) == int(multiplayer.get_unique_id()):
+		target.apply_reinforce(6.0)
+	else:
+		target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0)
 	if hud != null:
 		hud.refresh_abilities(self)
 
@@ -3501,6 +3508,8 @@ var _hl_beam_root: Node3D = null
 ## Issue #91 Phase 2: active beams by owner peer ID. Each entry:
 ## {node, aim, target_aim, beam_mesh, light, rings, tick_t, owner}
 var _hl_beams := {}
+## Issue #162: per-instance spawn sequence for unique beam-root names.
+var _hl_spawn_seq := 0
 ## Issue #91 Phase 2: 10Hz aim update timer (owner -> server, unreliable).
 var _hl_aim_send_t := 0.0
 
@@ -3509,9 +3518,11 @@ var _hl_aim_send_t := 0.0
 func _hl_process(delta: float) -> void:
 	# Issue #91 Phase 2: all peers lerp remote beams toward target aim.
 	_hl_update_beam_visuals(delta)
-	# Issue #91 Phase 2: server runs 0.5s damage/heal ticks at latest aim.
-	if multiplayer.is_server():
-		_hl_server_tick(delta)
+	# Issue #162: the damage/heal tick is NOT run here anymore — it is
+	# server-owned (the dungeon's server process ticks every player's
+	# registry via server_tick_holy_light). It used to run only inside
+	# the caster's authority process, which never executes on the
+	# server for a client-caster, leaving client beams inert.
 	if _hl_state == HLState.IDLE:
 		return
 	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
@@ -3621,6 +3632,13 @@ func _hl_winddown(delta: float) -> void:
 				mat.albedo_color = c
 
 
+## Issue #162: public entry for the server-owned tick — the dungeon's
+## server process calls this on EVERY player each frame, so beams are
+## ticked regardless of which seat cast them.
+func server_tick_holy_light(delta: float) -> void:
+	_hl_server_tick(delta)
+
+
 ## Issue #91 Phase 2: server runs 0.5s damage/heal ticks at the latest aim.
 ## Jesse 2026-10-10: lingering beams (post-ability heal zone) heal but no
 ## longer damage.
@@ -3651,8 +3669,13 @@ func _hl_server_tick(delta: float) -> void:
 				continue
 			if p.global_position.distance_to(aim) <= HOLY_LIGHT_HEAL_RADIUS:
 				var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC
-				# In headless tests there's no multiplayer peer; call directly.
-				if multiplayer.multiplayer_peer == null:
+				# Issue #162 routing audit: when the heal target's
+				# authority is THIS peer (the host healing himself),
+				# rpc_id would be self-addressed — a Steam peer cannot
+				# rpc_id its own id (the #165 D1 family), so the heal
+				# silently never landed. Call directly on this peer,
+				# exactly like the no-peer case.
+				if multiplayer.multiplayer_peer == null or int(p.get_multiplayer_authority()) == int(multiplayer.get_unique_id()):
 					p.call("heal", heal_amount)
 				else:
 					p.rpc_id(int(p.get_multiplayer_authority()), "heal", heal_amount)
@@ -3916,10 +3939,24 @@ func spawn_holy_light(aim_point: Vector3, owner_id: int = 0) -> void:
 		map_size = float(layout.grid_size) * layout.cell_size
 	if owner_id == 0:
 		owner_id = int(multiplayer.get_unique_id())
+	# Issue #162 clean-replace: a recast while the prior beam is still
+	# lingering frees the old beam outright — its root leaves with the
+	# entry, so nothing is orphaned. (The old spawn replaced the
+	# registry entry and left the prior root in the dungeon forever,
+	# its name colliding with the new beam's.)
+	if _hl_beams.has(owner_id):
+		var old_beam: Dictionary = _hl_beams[owner_id]
+		var old_node: Variant = old_beam.get("node")
+		if old_node != null and is_instance_valid(old_node):
+			(old_node as Node).queue_free()
+		_hl_beams.erase(owner_id)
 	# Issue #91 Phase 2: beam container for steering. All visuals are
-	# children; moving the container moves the beam.
+	# children; moving the container moves the beam. The name carries
+	# a per-spawn sequence so two beams of one owner can never
+	# collide on it (the collision was the corruption vector).
+	_hl_spawn_seq += 1
 	var beam_root := Node3D.new()
-	beam_root.name = "HolyLightBeam_%d" % owner_id
+	beam_root.name = "HolyLightBeam_%d_%d" % [owner_id, _hl_spawn_seq]
 	beam_root.position = center
 	dungeon.add_child(beam_root)
 	# Track for steering (owner moves directly, remotes lerp).
@@ -4051,16 +4088,48 @@ func cast_frost(origin: Vector3, dir: Vector3, dmg: float, owner: int, seq: int)
 
 func _cast_chain_lightning() -> void:
 	# Instant: zap nearest mob in 18m, chain to 2 more within 8m of each hit.
-	if not multiplayer.is_server():
-		# Client predicts the visual; server does damage.
+	# Issue #166: the damage value is computed from the caster's local
+	# stats (the snapshot does not replicate damage/buffs/traits, so
+	# the server cannot recompute it) and rides the cast intent,
+	# exactly like Fan of Knives / Hammer Smash.
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.8 * trait_damage_mult("lightning")
+	if multiplayer.is_server():
+		_execute_chain_lightning(dmg)
+	else:
+		# Client predicts the visual; the server does damage via the
+		# validated intent endpoint below. (Before #166 this branch
+		# returned without ever telling the server — the cast died
+		# at the source and no damage ever landed.)
 		_chain_lightning_fx(global_position + Vector3(0, 1.2, 0), global_position + Vector3(0, 1.2, 0) + Vector3(0, 0.1, 0))
+		rpc_id(NetworkManager.server_peer_id, "request_chain_lightning", dmg)
+
+
+## Issue #166: server endpoint for a client's Chain Lightning intent
+## (the P3 pattern, templated on request_hammer_smash): validates the
+## sender is this node's authority, the caster is a living mage, and
+## the claimed damage is sane, then executes the chain on the
+## server's world.
+@rpc("any_peer", "call_local")
+func request_chain_lightning(claimed_damage: float) -> void:
+	if not multiplayer.is_server():
 		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	if not alive or downed or class_id != "mage" or claimed_damage <= 0.0:
+		return
+	_execute_chain_lightning(claimed_damage)
+
+
+## The chain itself: target selection + damage, server-side only
+## (host cast directly, or a validated client intent). Kill credit
+## follows the caster (this node's multiplayer authority).
+func _execute_chain_lightning(dmg: float) -> void:
 	_cast_seq += 1
-	var from := int(multiplayer.get_unique_id())
+	var from := int(get_multiplayer_authority())
 	var hit: Array = []
 	var current := _nearest_mob(global_position, 18.0, hit)
 	var last_pos := global_position + Vector3(0, 1.2, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.8 * trait_damage_mult("lightning")
 	var cast_id := "lightning_%d" % _cast_seq
 	# Arc Conduit: lightning chains +1 target.
 	var max_chains := 4 if has_trait("arc_conduit") else 3
@@ -4079,10 +4148,8 @@ func _cast_chain_lightning() -> void:
 		var mob_pos: Vector3 = current.global_position + Vector3(0, 1.0, 0)
 		# Overcharge: 15% chance to double-strike.
 		var zap_dmg := dmg * 2.0 if has_trait("overcharge") and randf() < 0.15 else dmg
-		if multiplayer.is_server():
-			current.take_damage(zap_dmg, from, global_position)
-		else:
-			current.rpc_id(NetworkManager.server_peer_id, "take_damage", zap_dmg, from, global_position)
+		# _execute only ever runs on the server.
+		current.take_damage(zap_dmg, from, global_position)
 		# Affinity: +2 per enemy zapped, max +8/cast.
 		gain_affinity_capped("lightning", 2.0, current.get_instance_id(), cast_id, 8.0)
 		rpc("chain_fx", last_pos, mob_pos)

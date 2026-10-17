@@ -1055,6 +1055,15 @@ func _process(delta: float) -> void:
 				_check_stalled_construction()
 			_process_node_respawns()
 			_process_river(delta)
+			# Issue #162: Holy Light's damage/heal tick is server-owned
+			# — tick EVERY player's beam registry from here, so a
+			# client-cast beam applies on the server's world too (it
+			# used to run only inside the caster's authority process,
+			# which the server never executes for a client-caster).
+			for pn in get_tree().get_nodes_in_group("players"):
+				var pp := pn as Player
+				if pp != null:
+					pp.server_tick_holy_light(delta)
 		if is_supermarket:
 			_process_supermarket(delta)
 		else:

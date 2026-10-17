@@ -99,6 +99,7 @@ func _run() -> void:
 	_test_station_roster_carry_forward()
 	_test_architect_tools_repair()
 	_test_hammer_smash()
+	_test_ability_matrix_162()
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
@@ -14940,6 +14941,161 @@ func _test_hammer_smash() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] hammer smash done")
+func _test_ability_matrix_162() -> void:
+	print("[Playtest] Ability matrix fixes (issues #162/#166/#169)...")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var slime_data: Resource = load("res://data/mobs/slime.tres")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	# Clear stale dungeon-group members (heal-section pattern): the
+	# lightning leg wants an empty group (LOS trivially true), and the
+	# Holy Light legs install their own stub below.
+	for n in get_nodes_in_group("dungeon"):
+		n.get_parent().remove_child(n)
+		n.free()
+
+	# --- Part 1 (#166): Chain Lightning intent endpoint ---
+	_assert(psrc.contains("rpc_id(NetworkManager.server_peer_id, \"request_chain_lightning\", dmg)"),
+		"matrix166: client cast sends the intent to the server")
+	_assert(psrc.contains("func request_chain_lightning(claimed_damage: float)"),
+		"matrix166: server endpoint exists")
+	var mage = PlayerScene.instantiate()
+	mage.set("class_id", "mage")
+	mage.set("specialization", "lightning") # affinity accrues only to the specialized skill
+	holder.add_child(mage)
+	mage.global_position = Vector3(3000, 0, 3000)
+	var mobs: Array = []
+	for i in range(3):
+		var m = MobScene.instantiate()
+		m.setup(50 + i, slime_data)
+		holder.add_child(m)
+		m.set("max_hp", 10000.0)
+		m.set("hp", 10000.0)
+		mobs.append(m)
+	mobs[0].global_position = Vector3(3003, 0, 3000) # 3m: first target
+	mobs[1].global_position = Vector3(3009, 0, 3000) # 6m past it: chain hop
+	mobs[2].global_position = Vector3(3030, 0, 3000) # out of chain reach
+	mage.request_chain_lightning(50.0)
+	_assert(float(mobs[0].get("hp")) <= 10000.0 - 50.0,
+		"matrix166: endpoint damage lands on the first target")
+	_assert(float(mobs[1].get("hp")) <= 10000.0 - 37.0,
+		"matrix166: endpoint chain reaches the second target (decayed)")
+	_assert(float(mobs[2].get("hp")) == 10000.0,
+		"matrix166: out-of-chain mob untouched")
+	_assert(float((mage.get("affinity") as Dictionary).get("lightning", 0.0)) > 0.0,
+		"matrix166: affinity accrues on the executing copy")
+	# Refusals: wrong class and non-positive damage change nothing.
+	var war = PlayerScene.instantiate()
+	war.set("class_id", "warrior")
+	holder.add_child(war)
+	war.global_position = Vector3(3000, 0, 3000)
+	var hp_a := float(mobs[0].get("hp"))
+	war.request_chain_lightning(50.0)
+	mage.request_chain_lightning(0.0)
+	_assert(float(mobs[0].get("hp")) == hp_a,
+		"matrix166: warrior intent and zero-damage intent are refused")
+	# Host cast unregressed (in-suite the caster IS the server).
+	mage.call("_cast_chain_lightning")
+	_assert(float(mobs[0].get("hp")) < hp_a,
+		"matrix166: host cast still executes directly")
+
+	# --- Parts 2+3 (#162): server-owned tick + clean-replace spawn ---
+	_assert(dsrc.contains("server_tick_holy_light(delta)"),
+		"matrix162: the dungeon's server process ticks all registries")
+	_assert(not _body_of(psrc, "_hl_process").contains("_hl_server_tick("),
+		"matrix162: the tick no longer lives in the caster's process")
+	var stub := HolyDungeonStub.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+	# A beam registered on a NON-host caster node: ticked via the new
+	# server entry, it damages and heals on the server's world.
+	var caster_b = PlayerScene.instantiate()
+	caster_b.set("class_id", "mage")
+	holder.add_child(caster_b)
+	caster_b.global_position = Vector3(2000, 0, 2000)
+	caster_b.spawn_holy_light(Vector3(2000, 0, 2000), 2)
+	var ally = PlayerScene.instantiate()
+	ally.set("class_id", "warrior")
+	holder.add_child(ally)
+	ally.global_position = Vector3(2005, 0, 2000)
+	var ally_max := float(ally.get("max_hp"))
+	ally.set("hp", ally_max * 0.5)
+	var bm = MobScene.instantiate()
+	bm.setup(60, slime_data)
+	holder.add_child(bm)
+	bm.set("max_hp", 10000.0)
+	bm.set("hp", 10000.0)
+	bm.global_position = Vector3(2000, 0, 2000)
+	caster_b.server_tick_holy_light(0.5)
+	_assert(float(bm.get("hp")) < 10000.0,
+		"matrix162: client-cast beam damages via the server tick")
+	_assert(absf(float(ally.get("hp")) - ally_max * 0.65) < 1.0,
+		"matrix162: client-cast beam heals via the server tick")
+	# Heal routing: the tick body routes this peer's own authority
+	# heals through the direct call, never a self-addressed rpc_id.
+	_assert(_body_of(psrc, "func _hl_server_tick(delta: float) -> void:").contains("get_multiplayer_authority()) == int(multiplayer.get_unique_id())"),
+		"matrix162: heal leg direct-calls this peer's own authority")
+	# Clean-replace: recast while beam 1 lingers.
+	var caster_c = PlayerScene.instantiate()
+	caster_c.set("class_id", "mage")
+	holder.add_child(caster_c)
+	caster_c.global_position = Vector3(2100, 0, 2100)
+	caster_c.spawn_holy_light(Vector3(2100, 0, 2100), 7)
+	var beams_c: Dictionary = caster_c.get("_hl_beams")
+	var root1: Node = beams_c[7]["node"]
+	beams_c[7]["lingering"] = true
+	caster_c.spawn_holy_light(Vector3(2105, 0, 2100), 7)
+	beams_c = caster_c.get("_hl_beams")
+	var root2: Node = beams_c[7]["node"]
+	_assert(beams_c.size() == 1 and root2 != root1,
+		"matrix162: recast replaces the registry entry")
+	_assert(root1.is_queued_for_deletion(),
+		"matrix162: the prior beam root is freed on recast (no orphan)")
+	_assert(String(root2.name).begins_with("HolyLightBeam_7_") and root2.name != root1.name,
+		"matrix162: the replacement beam's name is unique")
+	caster_c.spawn_holy_light(Vector3(2110, 0, 2100), 7)
+	beams_c = caster_c.get("_hl_beams")
+	_assert(beams_c.size() == 1 and root2.is_queued_for_deletion(),
+		"matrix162: repeated recasts leave exactly one live beam")
+	caster_c.hl_end_beam(7)
+
+	# --- Part 4 (#169): Reinforce routing ---
+	_assert(psrc.contains("target.apply_reinforce(6.0)"),
+		"matrix169: self-authority targets take the direct call")
+	# The cast measures from the cursor point (origin without a
+	# camera); sweep stray players out of its 3m reach first.
+	for n in get_nodes_in_group("players"):
+		(n as Node3D).global_position = Vector3(5000, 0, 5000)
+	var arch = PlayerScene.instantiate()
+	arch.set("class_id", "architect")
+	holder.add_child(arch)
+	arch.global_position = Vector3(0, 0, 5)
+	var r_ally = PlayerScene.instantiate()
+	r_ally.set("class_id", "warrior")
+	holder.add_child(r_ally)
+	r_ally.global_position = Vector3(2, 0, 0)
+	arch.call("_cast_reinforce")
+	_assert(float(r_ally.get("_reinforce_t")) > 0.0 and float(arch.get("_reinforce_t")) == 0.0,
+		"matrix169: other-target reinforce lands on the ally")
+	r_ally.global_position = Vector3(50, 0, 0)
+	arch.set("ability_cds", {"reinforce": 0.0})
+	arch.call("_cast_reinforce")
+	_assert(float(arch.get("_reinforce_t")) > 0.0,
+		"matrix169: self-target reinforce lands on the caster")
+	print("[Playtest] Ability matrix done")
+	# Immediate frees, not queue_free: beam SpotLights are named
+	# "HolyLight" and a pending-free subtree would leak them into the
+	# heal section's tree-wide light census.
+	caster_b.hl_end_beam(2)
+	stub.remove_from_group("dungeon")
+	stub.free()
+	holder.free()
+
+
 func _test_weapon_model_coverage_113() -> void:
 	print("[Playtest] Weapon model coverage (issue #113 Phase 2)...")
 	# Every weapon resolves a 3D world model. storm_caller + void_blade
