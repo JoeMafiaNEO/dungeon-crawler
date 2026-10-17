@@ -3,10 +3,11 @@ extends Node
 ##
 ## Replaces FishingSpot (deleted): there are no spots, claims, or locks
 ## anymore. A player in rod-out mode casts anywhere; the server (this
-## node's server instance) validates the landing — water only: inside
-## a layout pond disc or on heightmap terrain below its water level —
-## and opens a session keyed by the caster's peer id. Unlimited
-## concurrent fishers per pond.
+## node's server instance) validates the landing — fishable only
+## (issue #157: the theme must have fishing water AND the point must
+## be water — a pond disc, heightmap terrain below its water level,
+## or the docks harbor past the terrain's edge) — and opens a session
+## keyed by the caster's peer id. Unlimited concurrent fishers.
 ##
 ## The session core is the spot's proven one, carried with ALL numbers
 ## unchanged: 3–8s server wait roll, bite broadcast, 1.2s hook window
@@ -96,7 +97,40 @@ func is_water_at(p: Vector3) -> bool:
 	var terrain = d.get("_terrain")
 	if terrain != null and d.ground_height_at(p) < float(terrain.get("water_level")):
 		return true
+	# Issue #157 §4 (Jesse's harbor ruling): on a fishing theme,
+	# a landing beyond the terrain's half-extent is harbor
+	# water. The heightmap clamps at its edge, so the sea past
+	# the island could never validate through the height check.
+	if terrain != null:
+		var t = d.get("theme")
+		if t != null and bool(t.get("has_fishing_water")):
+			var half := float(terrain.call("half_extent"))
+			if absf(p.x) > half or absf(p.z) > half:
+				return true
 	return false
+
+
+## Issue #157 §1: fishable = this dungeon's theme has fishing
+## water AND the point is water. The theme is read from the
+## server's own dungeon — never from the cast request, which
+## carries only a landing point. debug_force_water can force
+## the water half; it can never force the theme half.
+func is_fishable_at(p: Vector3) -> bool:
+	var d := _dungeon()
+	if d == null:
+		# No dungeon in the tree: no theme exists to gate on.
+		# Production directors are built BY their dungeon (see
+		# _build_fishing_director), so this is test-rig context
+		# only; the water check alone decides there.
+		return is_water_at(p)
+	var t = d.get("theme")
+	if t == null:
+		# A dungeon-group node carrying no theme is not a built
+		# dungeon (a test-rig stub): nothing to gate on either.
+		return is_water_at(p)
+	if not bool(t.get("has_fishing_water")):
+		return false
+	return is_water_at(p)
 
 
 ## The water surface height at p (for bobber placement).
@@ -176,8 +210,11 @@ func _handle_cast(peer: int, landing: Vector3) -> void:
 	if landing.distance_to(player.global_position) > MAX_CAST_DIST + CAST_MARGIN:
 		rpc("fx_cast", peer, from, landing, false)
 		return
-	if not is_water_at(landing):
-		# Dirt: the bobber flops, no session, free instant recast.
+	if not is_fishable_at(landing):
+		# Dirt — or water this theme cannot fish (issue #157:
+		# cast and catch are decoupled; the cast always
+		# executes, only the session is gated): the bobber
+		# flops, no session, no bait, free instant recast.
 		var dirt := Vector3(landing.x, _ground_y(landing) + 0.05, landing.z)
 		rpc("fx_cast", peer, from, dirt, false)
 		return
@@ -401,10 +438,12 @@ func _local_player() -> Player:
 # --- Presentation (every peer's instance; server broadcasts drive) ---
 
 ## Client prediction for the fisher's own cast: play the arc at once
-## when the shared validation says water. The fx_cast broadcast
-## reconciles (confirm, or convert to a flop).
+## when the shared validation says FISHABLE (issue #157 §3: the
+## prediction keys on fishable, so a wet-but-dry cast spawns no
+## bobber mirror on any peer). The fx_cast broadcast reconciles
+## (confirm, or convert to a flop).
 func predict_cast(peer: int, from: Vector3, landing: Vector3) -> void:
-	if not is_water_at(landing):
+	if not is_fishable_at(landing):
 		return
 	_predicted[peer] = true
 	_spawn_visual(peer, from, Vector3(landing.x, water_y_at(landing), landing.z), false)

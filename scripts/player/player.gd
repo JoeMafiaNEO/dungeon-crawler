@@ -3879,8 +3879,8 @@ func legend_state() -> String:
 		if _bobber_out:
 			return "fishing_wait"
 		var d := _fishing_director()
-		if d != null and d.has_method("is_water_at") \
-				and bool(d.call("is_water_at", _cast_landing(0.5))):
+		if d != null and d.has_method("is_fishable_at") \
+				and bool(d.call("is_fishable_at", _cast_landing(0.5))):
 			return "fishing_ready"
 		return "fishing_aim"
 	# Issue #113 Phase 3: repair context (wrench equipped + a damaged

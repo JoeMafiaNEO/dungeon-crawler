@@ -197,6 +197,7 @@ func _run() -> void:
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
+	_test_fishing_fishable_157()
 	_test_class_tagging_phase4()
 	_test_111_minor_restore_drops()
 	_test_111_minor_legacy_mp_save()
@@ -14114,6 +14115,227 @@ func _test_fishing_rod_phase3() -> void:
 	pv.queue_free()
 	m.queue_free()
 	print("[Playtest] fishing rod phase 3 done")
+
+
+## Issue #157: cast/catch decoupling + the harbor. Fixtures are
+## REAL baked dungeons (village, then misty_docks, both at their
+## cycle-1 pins) and a real player driving the production cast
+## chain — V's handler (_toggle_rod_out), the charge
+## (_begin_cast_charge), the release (_release_cast) — with the
+## booted dungeon's own FishingDirector as the server. The same
+## landing vector is cast at both servers: the verdict follows
+## the SERVER's theme, never the request (which carries only a
+## landing point).
+func _test_fishing_fishable_157() -> void:
+	print("[Playtest] Fishable gating + harbor (issue #157)...")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
+	var DungeonScript: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	var LevelDataScript: GDScript = load("res://scripts/procgen/level_data.gd")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	# Static-state hygiene: snapshot everything the boots and
+	# casts touch; restored at the end.
+	var cash_before: Dictionary = EconScript._cash.duplicate(true)
+	var stock_before: Dictionary = EconScript._stock.duplicate(true)
+	var seed_before: Dictionary = PlotScript._seed_ledger.duplicate()
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_state: Dictionary = DungeonScript.saved_player_state
+	var prev_scene := current_scene
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	DirectorScript.debug_force_water = -1
+	# The harbor vector, from the SHIPPED docks LevelData: past
+	# the terrain's half-extent, inside the cast band of a stance
+	# 10 m inside the edge.
+	var shipped = (load(str(LevelDataScript.baked_scene_path("misty_docks"))) as PackedScene).instantiate()
+	var sdata = shipped.get_node_or_null("LevelData")
+	var half_d := (float(int(sdata.get("terrain_map_points"))) - 1.0) \
+		* float(sdata.get("terrain_cell_size")) * 0.5
+	shipped.free()
+	var harbor := Vector3(half_d + 4.0, 0.0, 0.0)
+	# The caster fixture.
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	_grant_equipped(p, "fishing_rod")
+	p.set("focused", true)
+	# (Bait is granted after each boot below: a dungeon boot
+	# re-bases the peer's DockEconomy ledger from the saved
+	# state — set_mirrors on spawn — so a pre-boot grant would
+	# be wiped by the fixture itself.)
+	# Incumbent displacement: earlier sections leave stub
+	# dungeons in the "dungeon" group, and the director's
+	# _dungeon() reads the group's first member — move every
+	# incumbent aside so the booted dungeon is the server the
+	# directors see; restored at the end.
+	var displaced: Array = []
+	for n in get_nodes_in_group("dungeon"):
+		displaced.append([n, (n as Node).get_parent()])
+		(n as Node).get_parent().remove_child(n as Node)
+	# Same for directors: earlier rig sections leave directors
+	# (with live sessions/visuals) in the tree, and both the
+	# player's chain and this section resolve the group FIRST
+	# member — displace them all so the booted dungeon's own
+	# director is the only one any consumer can see.
+	for n in get_nodes_in_group("fishing_director"):
+		displaced.append([n, (n as Node).get_parent()])
+		(n as Node).get_parent().remove_child(n as Node)
+	var boot := func(theme_id: String) -> Node:
+		for n in get_nodes_in_group("players"):
+			if n != p:
+				(n as Node).get_parent().remove_child(n as Node)
+		DungeonScript.next_theme_id = theme_id
+		DungeonScript.next_seed = 1
+		DungeonScript.next_level_number = 1
+		DungeonScript.saved_player_state = {}
+		var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+		root.add_child(dgn)
+		return dgn
+	# ============ VILLAGE (server theme: no fishing water) ====
+	var vdgn: Node = boot.call("village")
+	var vdir: Node = get_first_node_in_group("fishing_director")
+	vdir.set("test_players", {1: p})
+	# Fixture truth, probed across seeds and cycles at build
+	# time: the shipped village has NO natural water — no pond
+	# discs in the layout, and its terrain never dips below
+	# the water level (the spec's "village pond" does not exist
+	# in the tree; the theme-blindness is latent, not live —
+	# flagged in the build report). The scan pins that truth;
+	# the wet-but-dry case is driven through the debug seam
+	# below, the only form the shipped content admits.
+	var vhalf := float(vdgn.get("_terrain").call("half_extent"))
+	var wet_found := false
+	var sx := -vhalf
+	while sx <= vhalf and not wet_found:
+		var sz := -vhalf
+		while sz <= vhalf:
+			if bool(vdir.call("is_water_at", Vector3(sx, 0, sz))):
+				wet_found = true
+				break
+			sz += 2.0
+		sx += 2.0
+	_assert(not wet_found,
+		"157: fixture truth — no natural water anywhere on the baked village")
+	var vpond := Vector3(-9.5, 0, 0) # the money pin's landing, from a stance at the origin
+	_assert(not bool(vdir.call("is_fishable_at", vpond)),
+		"157: nothing is fishable on a village server (the server's theme rules)")
+	_assert(not bool(vdir.call("is_water_at", Vector3(vhalf + 25.0, 0, 0))),
+		"157: beyond the terrain edge stays dry on a non-fishing theme (harbor branch inert)")
+	# Legend + prediction key on fishable (§3).
+	p.global_position = Vector3(vpond.x + 9.5, vpond.y, vpond.z)
+	p.rotation.y = PI / 2.0
+	p.set("_yaw", PI / 2.0)
+	p.call("_toggle_rod_out")
+	_assert(bool(p.get("rod_out")), "157: rod-out entered (V)")
+	_assert(str(p.call("legend_state")) == "fishing_aim",
+		"157: legend on a village server reads AIM, never ready (probe keys on fishable)")
+	vdir.call("predict_cast", 1, p.global_position, vpond)
+	_assert((vdir.get("_visuals") as Dictionary).is_empty()
+		and (vdir.get("_predicted") as Dictionary).is_empty(),
+		"157: prediction spawns no bobber mirror for a wet-but-dry cast")
+	# THE MONEY PIN: the real chain executes; nothing opens,
+	# nothing spends, no mirror.
+	EconScript.grant_stock(1, "bait_lure", 3)
+	var bait0 := int(EconScript.stock_count(1, "bait_lure"))
+	p.call("_begin_cast_charge")
+	p.set("_cast_charge", 0.5) # 9.5 m: onto the pond center
+	p.call("_release_cast")
+	_assert(int(vdir.call("session_state_for", 1)) == int(DirectorScript.SessionState.NONE),
+		"157: village cast executes and opens NO session")
+	_assert(int(EconScript.stock_count(1, "bait_lure")) == bait0,
+		"157: village cast spends NO bait")
+	_assert(not bool(p.get("_bobber_out")),
+		"157: village cast sets no bobber mirror")
+	# Forged request: the docks harbor vector, driven at THIS
+	# village server from inside its range band.
+	p.global_position = harbor + Vector3(-10, 0, 0)
+	_assert(not bool(vdir.call("is_fishable_at", harbor)),
+		"157: the harbor vector is not fishable on a village server")
+	vdir.call("_handle_cast", 1, harbor)
+	_assert(int(vdir.call("session_state_for", 1)) == int(DirectorScript.SessionState.NONE)
+		and int(EconScript.stock_count(1, "bait_lure")) == bait0,
+		"157: forged docks-vector cast against a village server opens nothing, spends nothing")
+	# The debug seam forces water, never fishability — the
+	# wet-but-dry case in the only form the shipped content
+	# admits (no natural non-docks water exists; see above).
+	DirectorScript.debug_force_water = 1
+	_assert(bool(vdir.call("is_water_at", vpond))
+		and not bool(vdir.call("is_fishable_at", vpond)),
+		"157: debug_force_water forces water, never fishability")
+	p.global_position = Vector3(vpond.x + 9.5, vpond.y, vpond.z)
+	vdir.call("_handle_cast", 1, vpond)
+	_assert(int(vdir.call("session_state_for", 1)) == int(DirectorScript.SessionState.NONE)
+		and int(EconScript.stock_count(1, "bait_lure")) == bait0,
+		"157: wet-but-dry village cast opens nothing, spends nothing")
+	DirectorScript.debug_force_water = -1
+	root.remove_child(vdgn)
+	# ============ MISTY DOCKS (server theme: fishing) ========
+	var ddgn: Node = boot.call("misty_docks")
+	var ddir: Node = get_first_node_in_group("fishing_director")
+	ddir.set("test_players", {1: p})
+	_assert(bool(ddir.call("is_water_at", harbor)),
+		"157: the harbor landing validates as water (§4 branch)")
+	_assert(bool(ddir.call("is_fishable_at", harbor)),
+		"157: the SAME vector is fishable on a docks server (server authority)")
+	var dponds: Array = ddgn.get("_layout").get("ponds")
+	var dpond: Vector3 = (dponds[0] as Dictionary)["center"]
+	_assert(bool(ddir.call("is_fishable_at", dpond)),
+		"157: the docks pond stays fishable (regression)")
+	p.global_position = Vector3(dpond.x + 9.5, dpond.y, dpond.z)
+	p.rotation.y = PI / 2.0
+	p.set("_yaw", PI / 2.0)
+	_assert(str(p.call("legend_state")) == "fishing_ready",
+		"157: legend over the docks pond reads READY")
+	ddir.call("predict_cast", 1, p.global_position, dpond)
+	_assert(not (ddir.get("_visuals") as Dictionary).is_empty(),
+		"157: prediction mirrors a fishable cast")
+	ddir.call("_clear_visual", 1)
+	(ddir.get("_predicted") as Dictionary).erase(1)
+	# Harbor cast through the real chain: stance 10 m inside
+	# the edge, aim out to sea, charged to the harbor vector.
+	var dhalf := float(ddgn.get("_terrain").call("half_extent"))
+	p.global_position = Vector3(dhalf - 6.0, dpond.y, 0.0)
+	p.rotation.y = -PI / 2.0
+	p.set("_yaw", -PI / 2.0)
+	EconScript.grant_stock(1, "bait_lure", 3)
+	var bait1 := int(EconScript.stock_count(1, "bait_lure"))
+	p.call("_begin_cast_charge")
+	p.set("_cast_charge", 6.0 / 11.0) # 10 m: onto the harbor vector
+	p.call("_release_cast")
+	_assert(int(ddir.call("session_state_for", 1)) == int(DirectorScript.SessionState.WAITING),
+		"157: harbor cast OPENS a session")
+	_assert(int(EconScript.stock_count(1, "bait_lure")) == bait1 - 1,
+		"157: harbor session spends exactly one bait (bait == session-start)")
+	_assert(bool(p.get("_bobber_out")),
+		"157: harbor session sets the bobber mirror (fx in_water = session bobber)")
+	ddir.call("request_reel_in")
+	_assert(not bool(ddir.call("has_bobber", 1)),
+		"157: reel-in cleanup ends the harbor session")
+	# The seam's other face: forced dry on the docks.
+	DirectorScript.debug_force_water = 0
+	_assert(not bool(ddir.call("is_water_at", dpond))
+		and not bool(ddir.call("is_fishable_at", dpond)),
+		"157: debug_force_water = 0 dries the docks pond and its fishability")
+	DirectorScript.debug_force_water = -1
+	root.remove_child(ddgn)
+	for pair in displaced:
+		(pair[1] as Node).add_child(pair[0])
+	# Restore statics.
+	EconScript._cash = cash_before
+	EconScript._stock = stock_before
+	PlotScript._seed_ledger = seed_before
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_state
+	current_scene = prev_scene
+	p.free()
+	holder.free()
+	print("[Playtest] Fishable gating + harbor done")
 
 
 func _test_class_tagging_phase4() -> void:
