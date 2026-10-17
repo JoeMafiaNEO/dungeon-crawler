@@ -80,6 +80,7 @@ func _run() -> void:
 	_test_warlord_player_count_154()
 	_test_bake_cycles_153()
 	_test_dock_goods_drops_155()
+	_test_free_rod_161()
 	_test_bake_integrity()
 	_test_baked_runtime()
 	_test_ai_director()
@@ -4420,6 +4421,72 @@ func _test_dock_goods_drops_155() -> void:
 		PlotScript.grant_seeds(1, saved_seeds)
 	EconScript.debug_reset()
 	print("[Playtest] Dock-goods mob drops + grant credit done")
+
+
+## Issue #161: the fishing rod is FREE at the dock merchant (Jesse's
+## ruling — PRICE_ROD 0, superseding the 9 farm cash settlement). The
+## pins prove the 0-price purchase end-to-end: at a ZERO cash balance
+## the buy succeeds (no can't-afford misfire, no zero edge in #142's
+## pending bookkeeping), the rod grants, equips in the TOOL slot via
+## the real equip path, and the cast validates (Choice B intact).
+func _test_free_rod_161() -> void:
+	print("[Playtest] Free fishing rod (issue #161)...")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	_assert(EconScript.PRICE_ROD == 0, "161: PRICE_ROD is literally 0 (Jesse's ruling)")
+	var rod_row: Dictionary = {}
+	for e in MerchScript.catalog():
+		if str(e.get("id")) == "fishing_rod":
+			rod_row = e
+	_assert(int(rod_row.get("price", -1)) == 0, "161: the catalog rod row prices at 0")
+	_assert(bool(rod_row.get("gear", false)), "161: the rod row stays GEAR")
+	# The merchant UI tells the truth at 0: the dock row renders "Free".
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("\"Free\" if price == 0 else \"%d fc\" % price"),
+		"161: the dock buy row renders Free at price 0")
+	# End-to-end at a zero balance.
+	EconScript.debug_reset()
+	_assert(EconScript.cash_balance(1) == 0, "161: the buyer starts at 0 farm cash")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "warrior")
+	holder.add_child(p)
+	p.global_position = Vector3.ZERO
+	var merch = MerchScript.new()
+	holder.add_child(merch)
+	merch.set("test_player", p)
+	merch.call("request_buy", "fishing_rod")
+	_assert(_farm_inv_count(p, "fishing_rod") == 1, "161: the free buy grants the rod")
+	_assert(EconScript.cash_balance(1) == 0, "161: the balance stays 0 (nothing deducted, never negative)")
+	_assert(EconScript.stock_count(1, "fishing_rod") == 0, "161: the rod is gear, not dock-good stock")
+	# A second free buy of a permanent-stock gear row still resolves
+	# (the #142 pending bookkeeping closes at price 0, nothing hangs).
+	merch.call("request_buy", "fishing_rod")
+	_assert(_farm_inv_count(p, "fishing_rod") == 2, "161: a repeat free buy resolves and grants again")
+	# Equip through the real equip path; the cast validates (Choice B).
+	var rod_idx := -1
+	for i in p.get("inventory").size():
+		var it = p.get("inventory")[i].get("item")
+		if it != null and str(it.get("id")) == "fishing_rod":
+			rod_idx = i
+			break
+	_assert(rod_idx >= 0, "161: the rod is in the bag to equip")
+	p.call("equip_stack", rod_idx)
+	_assert(str(p.call("equipped_tool_id")) == "fishing_rod", "161: the rod equips in the TOOL slot")
+	var director = DirectorScript.new()
+	holder.add_child(director)
+	director.set("test_players", {1: p})
+	DirectorScript.debug_force_water = 1
+	director.call("request_cast", Vector3(0, 0, 4))
+	_assert(int(director.call("session_state_for", 1)) == int(DirectorScript.SessionState.WAITING),
+		"161: the cast validates with the free rod equipped")
+	DirectorScript.debug_force_water = 0
+	EconScript.debug_reset()
+	print("[Playtest] Free fishing rod done")
 
 
 func _test_ai_director() -> void:

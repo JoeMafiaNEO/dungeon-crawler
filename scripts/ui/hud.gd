@@ -790,7 +790,9 @@ func show_dock_vendor() -> void:
 		nl.add_theme_font_size_override("font_size", 14)
 		row.add_child(nl)
 		var pl := Label.new()
-		pl.text = "%d fc" % price
+		# Issue #161: a 0-price row (the free fishing rod) reads "Free",
+		# not a bare "0 fc".
+		pl.text = "Free" if price == 0 else "%d fc" % price
 		pl.custom_minimum_size = Vector2(64, 0)
 		pl.add_theme_font_size_override("font_size", 14)
 		pl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
