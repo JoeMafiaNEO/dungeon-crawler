@@ -1694,7 +1694,7 @@ func _footprint_radius() -> float:
 
 ## Issue #173: build the lazy StatusRings container: six slot
 ## nodes in canonical order. Slot i sits at radius footprint
-## + 0.20 + i*0.22 (the slot node scales the shared unit
+## + 0.32 + i*0.22 (the slot node scales the shared unit
 ## annulus) and height 0.03 + i*0.012. Slots are NEVER
 ## re-slotted: an effect's ring keeps its radius for the
 ## mob's whole life, however its neighbours come and go.
@@ -1709,7 +1709,7 @@ func _ensure_status_rings() -> void:
 	for i in range(6):
 		var slot := Node3D.new()
 		slot.name = "StatusRing_%d" % i
-		var r := footprint + 0.20 + float(i) * 0.22
+		var r := footprint + 0.32 + float(i) * 0.22
 		slot.scale = Vector3(r, 1.0, r)
 		slot.position = Vector3(0, 0.03 + float(i) * 0.012, 0)
 		slot.visible = false

@@ -16387,10 +16387,10 @@ func _test_mob_status_rings_173() -> void:
 		"173: BURN ring is the approved ember orange #FF7A33 (burn is visible on clients at last)")
 	_assert(near_color.call((mat5 as StandardMaterial3D).albedo_color, 139.0 / 255.0, 77.0 / 255.0, 1.0),
 		"173: DOOM ring is the approved deep purple #8B4DFF")
-	_assert(absf(slot_of.call(rep, 0).scale.x - 0.65) < 0.001
-		and absf(slot_of.call(rep, 3).scale.x - 1.31) < 0.001
-		and absf(slot_of.call(rep, 5).scale.x - 1.75) < 0.001,
-		"173: slot radii are footprint 0.45 + 0.20 + i*0.22 (canonical slots)")
+	_assert(absf(slot_of.call(rep, 0).scale.x - 0.77) < 0.001
+		and absf(slot_of.call(rep, 3).scale.x - 1.43) < 0.001
+		and absf(slot_of.call(rep, 5).scale.x - 1.87) < 0.001,
+		"173: slot radii are footprint 0.45 + 0.32 + i*0.22 (canonical slots)")
 	_assert(absf(slot_of.call(rep, 0).position.y - 0.03) < 0.001
 		and absf(slot_of.call(rep, 5).position.y - 0.09) < 0.001,
 		"173: slot heights step +0.012 from 0.03")
@@ -16407,7 +16407,7 @@ func _test_mob_status_rings_173() -> void:
 	rep.call("push_snapshot", Vector3(420, 0, 400), 100.0, true, false, 17) # STUN expired
 	_assert(not slot_of.call(rep, 1).visible and slot_of.call(rep, 4).visible
 		and absf(slot_of.call(rep, 4).scale.x - mark_r) < 0.001
-		and absf(slot_of.call(rep, 0).scale.x - 0.65) < 0.001,
+		and absf(slot_of.call(rep, 0).scale.x - 0.77) < 0.001,
 		"173: expiry never re-slots the survivors (MARK keeps slot 4's radius)")
 	# --- D: death clears --------------------------------------
 	rep.call("push_snapshot", Vector3(420, 0, 400), 0.0, false, false, 0) # the server's death snapshot (mask 0)
