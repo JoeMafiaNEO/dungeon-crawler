@@ -337,6 +337,15 @@ func _credit_dock_mirrors(peer: int, taken_units: int) -> void:
 			DockEconomy.grant_stock(peer, DockEconomy.BAIT_ITEM, taken_units)
 		"farm_cash":
 			DockEconomy.grant_cash(peer, taken_units)
+	# Issue #160 (verification leg): tracked dock stock (fertilizer,
+	# every fish, every crop) credits here too — the catch's world
+	# case defers its credit to this claim (see FishingDirector),
+	# and a disposed stack's debit is answered by this credit, so
+	# dispose -> reclaim nets to the pre-dispose value for every
+	# dock good, not only the three classes above.
+	if item.id == DockEconomy.FERTILIZER_ITEM \
+			or item.id.begins_with("fish_") or item.id.begins_with("crop_"):
+		DockEconomy.grant_stock(peer, item.id, taken_units)
 
 
 ## Issue #142: keep every peer's remaining-count (and label) in step.

@@ -255,7 +255,13 @@ func report_claim(taken: int, tag: int = 0) -> void:
 func _land_catch(peer: int, item_id: String, in_inventory: bool) -> void:
 	# The catch is a server grant — record it in the DockEconomy stock
 	# ledger or the vendor's sell validation rejects the fish.
-	DockEconomy.grant_stock(peer, item_id)
+	# Issue #160 (verification leg): only when the fish lands in the
+	# bag. A world fish takes its credit at its CLAIM instead (the
+	# pickup hook) — crediting here too paid the catcher a sellable
+	# balance for a fish anyone could pick up, and the claim would
+	# have doubled it.
+	if in_inventory:
+		DockEconomy.grant_stock(peer, item_id)
 	if item_id == FISH_LEGENDARY:
 		rpc_id(peer, "record_dock_trophy", DOCK_TROPHY_LEGENDARY_FISH)
 	if in_inventory:

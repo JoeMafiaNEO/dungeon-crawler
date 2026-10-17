@@ -4815,10 +4815,15 @@ func _debit_dock_mirrors(peer: int, item_id: String, count: int) -> void:
 		return
 	if item_id == "seed_packet":
 		FarmPlot.grant_seeds(peer, -mini(count, FarmPlot.seed_count(peer)))
-	elif item_id == DockEconomy.BAIT_ITEM:
-		DockEconomy.debit_stock(peer, DockEconomy.BAIT_ITEM, count)
 	elif item_id == DockEconomy.CASH_ITEM:
 		DockEconomy.debit_cash(peer, count)
+	elif item_id == DockEconomy.BAIT_ITEM or item_id == DockEconomy.FERTILIZER_ITEM \
+			or item_id.begins_with("fish_") or item_id.begins_with("crop_"):
+		# Issue #160 (verification leg): EVERY tracked dock-stock
+		# item debits — the grant legs credit fish/crops/fertilizer
+		# into the same stock mirror, and dispose drops any bag
+		# item, not only the claim classes above.
+		DockEconomy.debit_stock(peer, item_id, count)
 
 
 @rpc("any_peer", "call_local")

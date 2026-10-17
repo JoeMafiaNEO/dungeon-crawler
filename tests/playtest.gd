@@ -11889,10 +11889,26 @@ func _test_makewhole_142() -> void:
 	var fstock0: int = EconScript.stock_count(1, fish)
 	director.call("_resolve_catch", 1, {"wait": 1.0, "baited": false})
 	_assert(_farm_inv_count(p, fish) == 0, "142: a full-inventory catch stays out of the bag")
-	_assert(EconScript.stock_count(1, fish) == fstock0 + 1,
-		"142: a dropped catch still records in the stock ledger")
+	# Issue #160 (verification leg): the dropped catch records in
+	# the stock ledger at its CLAIM now, not at the drop — crediting
+	# at the drop paid a sellable balance for a fish anyone could
+	# pick up (and a claim credit would have doubled it).
+	_assert(EconScript.stock_count(1, fish) == fstock0,
+		"142: a dropped catch records in the stock ledger at its claim (#160)")
 	_assert((director.get("_catch_pending") as Dictionary).is_empty(),
 		"142: the catch outcome is consumed by the report")
+	p.set("inventory", [])
+	var dropped_fish = load("res://scenes/items/item_pickup.tscn").instantiate()
+	dropped_fish.call("setup", root.get_node("ItemDB").get_item(fish))
+	root.add_child(dropped_fish)
+	dropped_fish.set("count", 1)
+	dropped_fish.set("claimed", true)
+	dropped_fish.set("_claimer_peer", 1)
+	dropped_fish.set("_claim_since", 0.0)
+	p.call("receive_item", fish, -1, str(dropped_fish.get_path()), 1)
+	_assert(EconScript.stock_count(1, fish) == fstock0 + 1,
+		"142: claiming the dropped catch records it in the stock ledger (#160)")
+	p.set("inventory", [])
 	p.set("inventory", [])
 	director.call("_resolve_catch", 1, {"wait": 1.0, "baited": false})
 	_assert(_farm_inv_count(p, fish) == 1, "142: a landed catch enters the bag")
@@ -15110,6 +15126,8 @@ func _test_dock_mirror_invariant_160() -> void:
 	print("[Playtest] Dock mirror invariant (#160)...")
 	var EconScript := load("res://scripts/dungeon/dock_economy.gd")
 	var PlotScript := load("res://scripts/dungeon/farm_plot.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
 	var ItemDBNode: Variant = root.get_node("ItemDB")
 	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
 	var PickupScene: PackedScene = load("res://scenes/items/item_pickup.tscn")
@@ -15174,6 +15192,63 @@ func _test_dock_mirror_invariant_160() -> void:
 	p.dispose_item(find_idx.call(p, "farm_cash"))
 	_assert(EconScript.cash_balance(1) == 0,
 		"160: the debit clamps at zero (mirror 2, dropped 6 -> 0, never negative)")
+	# --- Verification leg: tracked stock debits too (fish/crop/
+	# fertilizer enter the stock mirror at the GRANT legs, and
+	# dispose drops any bag item — the debit table must cover them).
+	p.receive_item("fish_minnow")
+	EconScript.grant_stock(1, "fish_minnow", 1)
+	p.dispose_item(find_idx.call(p, "fish_minnow"))
+	_assert(EconScript.stock_count(1, "fish_minnow") == 0,
+		"160L: dispose debits the fish stock (1 -> 0)")
+	var merch = MerchScript.new()
+	holder.add_child(merch)
+	merch.set("test_player", p)
+	merch.call("request_sell", "fish_minnow")
+	_assert(EconScript.cash_balance(1) == 0,
+		"160L: a phantom sell of the disposed fish pays nothing")
+	p.receive_item("crop_sunroot")
+	EconScript.grant_stock(1, "crop_sunroot", 1)
+	p.dispose_item(find_idx.call(p, "crop_sunroot"))
+	_assert(EconScript.stock_count(1, "crop_sunroot") == 0,
+		"160L: dispose debits the crop stock (1 -> 0)")
+	merch.call("request_sell", "crop_sunroot")
+	_assert(EconScript.cash_balance(1) == 0,
+		"160L: a phantom sell of the disposed crop pays nothing")
+	p.receive_item("fertilizer")
+	EconScript.grant_stock(1, "fertilizer", 1)
+	p.dispose_item(find_idx.call(p, "fertilizer"))
+	_assert(EconScript.stock_count(1, "fertilizer") == 0,
+		"160L: dispose debits the fertilizer stock (1 -> 0)")
+	# --- Dispose -> reclaim a fish nets to the pre-dispose value:
+	# the claim hook credits tracked stock, answering the debit.
+	p.receive_item("fish_minnow")
+	EconScript.grant_stock(1, "fish_minnow", 1)
+	p.dispose_item(find_idx.call(p, "fish_minnow"))
+	var pkf = PickupScene.instantiate()
+	pkf.call("setup", ItemDBNode.get_item("fish_minnow"))
+	holder.add_child(pkf)
+	pkf.set("count", 1)
+	pkf.set("claimed", true)
+	pkf.set("_claimer_peer", 1)
+	pkf.set("_claim_since", 0.0)
+	p.call("receive_item", "fish_minnow", -1, str(pkf.get_path()), 1)
+	_assert(EconScript.stock_count(1, "fish_minnow") == 1,
+		"160L: reclaiming a disposed fish restores its stock (exactly 1)")
+	# --- The catch's world case defers its credit to the claim:
+	# _land_catch(false) spawns the world fish but credits nothing;
+	# _land_catch(true) (the fish landed in the bag) credits.
+	var director = DirectorScript.new()
+	holder.add_child(director)
+	director.set("test_players", {1: p})
+	var spawns_before: int = stub.pickups.size()
+	director.call("_land_catch", 1, "fish_riverbass", false)
+	_assert(EconScript.stock_count(1, "fish_riverbass") == 0,
+		"160L: a world catch carries no stock credit until claimed")
+	_assert(stub.pickups.size() == spawns_before + 1,
+		"160L: the world catch still drops its fish in the world")
+	director.call("_land_catch", 1, "fish_riverbass", true)
+	_assert(EconScript.stock_count(1, "fish_riverbass") == 1,
+		"160L: a bagged catch credits its stock")
 	# --- Derive-at-restore: the mapping, from a real dungeon instance.
 	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
 	var entries := [
