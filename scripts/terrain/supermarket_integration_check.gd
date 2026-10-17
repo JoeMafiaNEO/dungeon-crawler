@@ -194,6 +194,71 @@ func _run_checks() -> void:
 	var agg := float(_floor_frames_total) / maxf(1.0, float(_frames_total))
 	_check(agg >= 0.98, "floor contact aggregate %.3f >= 0.98 (%d/%d frames)" % [
 		agg, _floor_frames_total, _frames_total])
+	# --- Checkout sell drive (issue #158 coverage) ---
+	await _check_checkout_sell()
+
+
+## Issue #158: the checkout ring, driven end-to-end — groceries in
+## the bag, a real walk out of and into the ring, the authoritative
+## sell, and the cash + goal readback. Until this leg, no test
+## anywhere drove the ring: the chain hid behind source pins and
+## payout math while the sale feeds the level's cash goal.
+func _check_checkout_sell() -> void:
+	_check(bool(_dungeon.get("is_supermarket")), "checkout: supermarket mode on")
+	var ring := _dungeon.get_node_or_null("Pickups/Checkout") as Area3D
+	_check(ring != null, "checkout: ring spawned")
+	if ring == null:
+		return
+	var rp := ring.global_position
+	# Stage OUTSIDE the ring first: body_entered is an edge, so the
+	# sell leg needs a guaranteed exit before its entry — earlier
+	# legs may have left the walker standing inside the radius.
+	var inward := Vector3(-rp.x, 0.0, -rp.z)
+	var staging := rp + Vector3(9.0, 0.0, 0.0)
+	if inward.length() > 0.5:
+		staging = rp + inward.normalized() * 9.0
+	staging.y = _terrain.get_ground_height(staging)
+	await _walk_leg("checkout staging (exit the ring)", staging, 1.6, 60.0)
+	# Acquire groceries through the production receive path (the
+	# call the loot-claim flow itself makes), plus one non-grocery
+	# item the sell must leave alone.
+	_player.receive_item("cereal_box", -1, "loot", 2)
+	_player.receive_item("health_potion")
+	_check(_grocery_units() == 2, "checkout: 2 grocery units in the bag (%d)" % _grocery_units())
+	var cash0 := int(_player.get("supermarket_cash"))
+	var earned0 := int(_dungeon.get("market_earned_visit"))
+	await _walk_leg("staging->checkout ring", rp, 1.6, 60.0)
+	# The sell resolves on the entry edge; poll for the credit.
+	var sold := false
+	for i in 120:
+		await get_tree().physics_frame
+		if int(_player.get("supermarket_cash")) > cash0:
+			sold = true
+			break
+	_check(sold, "checkout: walking the ring sold the groceries")
+	_check(int(_player.get("supermarket_cash")) - cash0 == 50,
+		"checkout: cash credited exactly 2 x $25 ($%d)" % (int(_player.get("supermarket_cash")) - cash0))
+	_check(int(_dungeon.get("market_earned_visit")) - earned0 == 50,
+		"checkout: market_earned_visit advanced by the payout (goal %d)" % int(_dungeon.get("market_cash_goal")))
+	_check(_grocery_units() == 0, "checkout: groceries left the bag")
+	_check(_has_item("health_potion"), "checkout: non-grocery items kept")
+
+
+func _grocery_units() -> int:
+	var n := 0
+	for e in _player.get("inventory"):
+		var it = e.get("item")
+		if it != null and bool(it.get("supermarket_loot")):
+			n += int(e["count"])
+	return n
+
+
+func _has_item(id: String) -> bool:
+	for e in _player.get("inventory"):
+		var it = e.get("item")
+		if it != null and str(it.get("id")) == id:
+			return true
+	return false
 
 
 func _check_dry() -> void:
