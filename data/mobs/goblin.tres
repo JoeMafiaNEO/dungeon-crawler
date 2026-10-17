@@ -12,6 +12,9 @@
 
 [ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="10"]
 [ext_resource type="Resource" path="res://data/items/upgrade_kit.tres" id="11"]
+[ext_resource type="Resource" path="res://data/items/farm_cash.tres" id="12"]
+[ext_resource type="Resource" path="res://data/items/seed_packet.tres" id="13"]
+[ext_resource type="Resource" path="res://data/items/bait_lure.tres" id="14"]
 
 [sub_resource type="Resource" id="DropEntry_1"]
 script = ExtResource("1")
@@ -48,6 +51,19 @@ script = ExtResource("1")
 item = ExtResource("11")
 weight = 1.0
 
+[sub_resource type="Resource" id="DropEntry_8"]
+script = ExtResource("1")
+item = ExtResource("12")
+weight = 1.0
+[sub_resource type="Resource" id="DropEntry_9"]
+script = ExtResource("1")
+item = ExtResource("13")
+weight = 1.0
+[sub_resource type="Resource" id="DropEntry_10"]
+script = ExtResource("1")
+item = ExtResource("14")
+weight = 1.0
+
 [resource]
 script = ExtResource("2")
 id = "goblin"
@@ -59,7 +75,7 @@ attack_range = 1.8
 attack_cooldown = 1.1
 xp_reward = 18
 drop_chance = 0.4
-drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4"), SubResource("DropEntry_5"), SubResource("DropEntry_6"), SubResource("DropEntry_7")]
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4"), SubResource("DropEntry_5"), SubResource("DropEntry_6"), SubResource("DropEntry_7"), SubResource("DropEntry_8"), SubResource("DropEntry_9"), SubResource("DropEntry_10")]
 frames = [ExtResource("3")]
 loot_luck = 0.5
 bonus_drops = 0

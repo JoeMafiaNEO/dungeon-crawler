@@ -79,6 +79,7 @@ func _run() -> void:
 	_test_cycle_scaling()
 	_test_warlord_player_count_154()
 	_test_bake_cycles_153()
+	_test_dock_goods_drops_155()
 	_test_bake_integrity()
 	_test_baked_runtime()
 	_test_ai_director()
@@ -4252,6 +4253,173 @@ func _test_bake_cycles_153() -> void:
 	DungeonScript.next_level_number = prev_level
 	DungeonScript.saved_player_state = prev_state
 	print("[Playtest] Cycle-aware bake + content hash v2 done")
+
+
+## Issue #155 (i): the three docks mobs drop dock goods (farm_cash /
+## seed_packet / bait_lure at weight 1.0, chances unchanged), and a
+## claimed drop credits the server ledger mirrors (FarmPlot seeds,
+## DockEconomy stock/cash) per unit actually taken — without the
+## credit the items are inert paper. Composition + shares are pinned
+## against the REAL .tres with hand-computed literals; the claim legs
+## drive the real pickup + receive_item -> report_claim chain.
+func _test_dock_goods_drops_155() -> void:
+	print("[Playtest] Dock-goods mob drops + grant credit (issue #155i)...")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var DirectorScript: GDScript = load("res://scripts/fishing/fishing_director.gd")
+	var PickupScene: PackedScene = load("res://scenes/items/item_pickup.tscn")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	# ---- Composition: the real tables, as literal maps ---------------
+	# id -> sorted weights (skeleton lists swift_potion twice).
+	var expected := {
+		"goblin": {"count": 10, "chance": 0.4, "luck": 0.5, "shares": [10, 10, 12],
+			"table": {"worn_dagger": [2.0], "iron_sword": [1.0], "swift_boots": [1.0],
+				"scholar_tome": [1.0], "health_potion": [1.5], "swift_potion": [1.0],
+				"upgrade_kit": [1.0], "farm_cash": [1.0], "seed_packet": [1.0], "bait_lure": [1.0]}},
+		"skeleton": {"count": 12, "chance": 0.5, "luck": 1.0, "shares": [7, 7, 10],
+			"table": {"iron_sword": [2.0], "plate_armor": [2.0], "lucky_charm": [1.0],
+				"ember_amulet": [0.7], "health_potion": [1.0], "swift_potion": [1.0, 1.0],
+				"power_elixir": [0.7], "upgrade_kit": [1.0], "farm_cash": [1.0],
+				"seed_packet": [1.0], "bait_lure": [1.0]}},
+		"bat": {"count": 7, "chance": 0.3, "luck": 0.0, "shares": [20, 20, 20],
+			"table": {"health_potion": [2.0], "swift_potion": [1.0], "lucky_charm": [1.0],
+				"upgrade_kit": [1.0], "farm_cash": [1.0], "seed_packet": [1.0], "bait_lure": [1.0]}},
+	}
+	var potions := ["health_potion", "swift_potion", "power_elixir"]
+	var goods := ["farm_cash", "seed_packet", "bait_lure"]
+	for mob_id in ["goblin", "skeleton", "bat"]:
+		var exp: Dictionary = expected[mob_id]
+		var data: Resource = load("res://data/mobs/%s.tres" % mob_id)
+		_assert(data != null, "155i: %s MobData loads" % mob_id)
+		if data == null:
+			continue
+		var drops: Array = data.get("drops")
+		_assert(drops.size() == int(exp["count"]), "155i: %s table has %d entries" % [mob_id, int(exp["count"])])
+		_assert(is_equal_approx(float(data.get("drop_chance")), float(exp["chance"])),
+			"155i: %s drop_chance unchanged" % mob_id)
+		_assert(is_equal_approx(float(data.get("loot_luck")), float(exp["luck"])),
+			"155i: %s loot_luck as stated" % mob_id)
+		var got_table := {}
+		var total := 0.0
+		var eff := {}
+		for d in drops:
+			var item: Resource = d.get("item")
+			if item == null:
+				continue
+			var iid := str(item.get("id"))
+			var w := float(d.get("weight"))
+			if not got_table.has(iid):
+				got_table[iid] = []
+			(got_table[iid] as Array).append(w)
+			if iid in potions:
+				continue # production rule: no potions outside Village
+			var e := w * (1.0 + float(exp["luck"]) * float(item.get("rarity")) * 0.4)
+			eff[iid] = float(eff.get(iid, 0.0)) + e
+			total += e
+		for iid in got_table:
+			(got_table[iid] as Array).sort()
+		_assert(got_table == (exp["table"] as Dictionary), "155i: %s composition literal" % mob_id)
+		# Effective shares: test-side arithmetic over the table data,
+		# expectations are the hand-computed literals from the issue
+		# header (never the production roll).
+		var shares: Array = exp["shares"]
+		for gi in goods.size():
+			var pct := int(round(100.0 * float(eff.get(goods[gi], 0.0)) / total)) if total > 0.0 else -1
+			_assert(pct == int(shares[gi]), "155i: %s %s effective share == %d%%" % [mob_id, goods[gi], int(shares[gi])])
+	# ---- Behavioral: claim -> mirror credit -> verb spend ------------
+	var saved_seeds: int = PlotScript.seed_count(1)
+	PlotScript.clear_ledger(1)
+	EconScript.debug_reset()
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "warrior")
+	holder.add_child(p)
+	p.global_position = Vector3.ZERO
+	# Drives one real claim: a real pickup (as spawn_pickup builds it),
+	# locked by peer 1, granted through the player's own receive_item —
+	# whose report leg resolves the claim on the pickup server-side.
+	var drive_claim := func(item_id: String, n: int) -> Node:
+		var pk = PickupScene.instantiate()
+		pk.call("setup", ItemDBNode.get_item(item_id))
+		holder.add_child(pk)
+		pk.set("count", n)
+		pk.set("claimed", true)
+		pk.set("_claimer_peer", 1)
+		pk.set("_claim_since", 0.0)
+		p.call("receive_item", item_id, -1, str(pk.get_path()), n)
+		return pk
+	# Seed: claim credits the plantable ledger; a plant succeeds on
+	# drop-sourced seeds alone.
+	_assert(PlotScript.seed_count(1) == 0, "155i: seed ledger starts empty")
+	drive_claim.call("seed_packet", 1)
+	_assert(PlotScript.seed_count(1) == 1, "155i: claimed seed_packet credits the ledger")
+	_assert(_farm_inv_count(p, "seed_packet") == 1, "155i: claimed seed_packet is in the bag")
+	var plot = PlotScript.new()
+	holder.add_child(plot)
+	plot.global_position = Vector3.ZERO
+	plot.set("test_player", p)
+	plot.call("plot_action") # till (free)
+	plot.call("plot_action") # plant: spends the drop-sourced seed
+	_assert(str(plot.get("plot_state")) == "planted", "155i: plant succeeds on drop-sourced seeds alone")
+	_assert(PlotScript.seed_count(1) == 0, "155i: the plant spent the credited seed")
+	_assert(_farm_inv_count(p, "seed_packet") == 0, "155i: the plant consumed the bag packet")
+	# Bait: claim credits the stock mirror; a validated cast spends it.
+	_assert(EconScript.stock_count(1, "bait_lure") == 0, "155i: bait stock starts empty")
+	drive_claim.call("bait_lure", 1)
+	_assert(EconScript.stock_count(1, "bait_lure") == 1, "155i: claimed bait_lure credits the stock")
+	var director = DirectorScript.new()
+	holder.add_child(director)
+	director.set("test_players", {1: p})
+	DirectorScript.debug_force_water = 1
+	_grant_equipped(p, "fishing_rod")
+	director.call("request_cast", Vector3(0, 0, 4))
+	_assert(int(director.call("session_state_for", 1)) == int(DirectorScript.SessionState.WAITING),
+		"155i: the cast validates")
+	_assert(EconScript.stock_count(1, "bait_lure") == 0, "155i: the cast spent the drop-sourced bait")
+	DirectorScript.debug_force_water = 0
+	# Cash: a 3-count claim credits the cash mirror; the merchant
+	# spends exactly that at the counter.
+	_assert(EconScript.cash_balance(1) == 0, "155i: cash mirror starts empty")
+	drive_claim.call("farm_cash", 3)
+	_assert(EconScript.cash_balance(1) == 3, "155i: claimed farm_cash x3 credits the cash mirror")
+	var merch = MerchScript.new()
+	holder.add_child(merch)
+	merch.set("test_player", p)
+	merch.call("request_buy", "bait_lure") # PRICE_BAIT = 3
+	_assert(EconScript.cash_balance(1) == 0, "155i: dropped cash spends at the merchant (3 -> 0)")
+	_assert(EconScript.stock_count(1, "bait_lure") == 1, "155i: the purchase landed in the stock mirror")
+	# Outcome discipline: zero takes and double reports credit nothing;
+	# a partial take credits proportionally (#142 composition).
+	var pk0 = PickupScene.instantiate()
+	pk0.call("setup", ItemDBNode.get_item("seed_packet"))
+	holder.add_child(pk0)
+	pk0.set("count", 1)
+	pk0.set("claimed", true)
+	pk0.set("_claimer_peer", 1)
+	pk0.set("_claim_since", 0.0)
+	pk0.call("report_claim", 0)
+	_assert(PlotScript.seed_count(1) == 0, "155i: a zero take credits nothing")
+	var pk2 = PickupScene.instantiate()
+	pk2.call("setup", ItemDBNode.get_item("seed_packet"))
+	holder.add_child(pk2)
+	pk2.set("count", 3)
+	pk2.set("claimed", true)
+	pk2.set("_claimer_peer", 1)
+	pk2.set("_claim_since", 0.0)
+	pk2.call("report_claim", 2)
+	_assert(PlotScript.seed_count(1) == 2, "155i: a partial take credits proportionally (2 of 3)")
+	pk2.call("report_claim", 1)
+	_assert(PlotScript.seed_count(1) == 2, "155i: a second report for the same claim credits nothing")
+	# Restore peer 1's seed ledger for later sections.
+	PlotScript.clear_ledger(1)
+	if saved_seeds > 0:
+		PlotScript.grant_seeds(1, saved_seeds)
+	EconScript.debug_reset()
+	print("[Playtest] Dock-goods mob drops + grant credit done")
 
 
 func _test_ai_director() -> void:

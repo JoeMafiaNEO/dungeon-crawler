@@ -278,14 +278,38 @@ func report_claim(taken: int, tag: int = 0) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != _claimer_peer:
 		return
+	var claimer := _claimer_peer
 	var got := clampi(taken, 0, count)
 	_claimer_peer = 0
 	_claim_since = -1.0
+	if got > 0:
+		_credit_dock_mirrors(claimer, got)
 	if got >= count:
 		rpc("despawn")
 	else:
 		claimed = false
 		rpc("sync_count", count - got)
+
+
+## Issue #155 (i): dock goods run on server ledger mirrors (FarmPlot's
+## seed ledger, DockEconomy's stock/cash) that the plant/cast/buy verbs
+## read — the bag item alone is inert. A claimed world drop of one of
+## these credits the SAME mirrors through the SAME grant functions the
+## dock merchant uses, per unit actually taken (this report is the
+## server's grant-outcome point — the farm harvest credits its stock
+## ledger here too). A partial or failed take credits proportionally,
+## never the drop's full count, and the guard above (one report per
+## claim) keeps a re-claim of the remainder from double-crediting.
+func _credit_dock_mirrors(peer: int, taken_units: int) -> void:
+	if item == null:
+		return
+	match item.id:
+		"seed_packet":
+			FarmPlot.grant_seeds(peer, taken_units)
+		"bait_lure":
+			DockEconomy.grant_stock(peer, DockEconomy.BAIT_ITEM, taken_units)
+		"farm_cash":
+			DockEconomy.grant_cash(peer, taken_units)
 
 
 ## Issue #142: keep every peer's remaining-count (and label) in step.

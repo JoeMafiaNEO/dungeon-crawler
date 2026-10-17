@@ -7,6 +7,9 @@
 [ext_resource type="Resource" path="res://data/items/swift_potion.tres" id="6"]
 [ext_resource type="Resource" path="res://data/items/lucky_charm.tres" id="7"]
 [ext_resource type="Resource" path="res://data/items/upgrade_kit.tres" id="8"]
+[ext_resource type="Resource" path="res://data/items/farm_cash.tres" id="9"]
+[ext_resource type="Resource" path="res://data/items/seed_packet.tres" id="10"]
+[ext_resource type="Resource" path="res://data/items/bait_lure.tres" id="11"]
 
 [sub_resource type="Resource" id="DropEntry_1"]
 script = ExtResource("1")
@@ -28,6 +31,19 @@ script = ExtResource("1")
 item = ExtResource("8")
 weight = 1.0
 
+[sub_resource type="Resource" id="DropEntry_5"]
+script = ExtResource("1")
+item = ExtResource("9")
+weight = 1.0
+[sub_resource type="Resource" id="DropEntry_6"]
+script = ExtResource("1")
+item = ExtResource("10")
+weight = 1.0
+[sub_resource type="Resource" id="DropEntry_7"]
+script = ExtResource("1")
+item = ExtResource("11")
+weight = 1.0
+
 [resource]
 script = ExtResource("2")
 id = "bat"
@@ -39,7 +55,7 @@ attack_range = 1.6
 attack_cooldown = 1.0
 xp_reward = 12
 drop_chance = 0.3
-drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4")]
+drops = [SubResource("DropEntry_1"), SubResource("DropEntry_2"), SubResource("DropEntry_3"), SubResource("DropEntry_4"), SubResource("DropEntry_5"), SubResource("DropEntry_6"), SubResource("DropEntry_7")]
 frames = [ExtResource("3")]
 loot_luck = 0.0
 bonus_drops = 0
