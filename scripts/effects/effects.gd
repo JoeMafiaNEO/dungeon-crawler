@@ -4,6 +4,50 @@ extends RefCounted
 ## emitters built in code so scenes stay light.
 
 
+## Issue #173: status-ring motes — a tiny continuous emitter
+## for one status ring (5 particles, 0.8s life, rising slowly
+## around the ring's circumference). The process material and
+## draw quad are built once per color and shared by every
+## emitter of that color, world-wide.
+static var _status_mote_cache: Dictionary = {}
+
+
+static func make_status_motes(color: Color) -> GPUParticles3D:
+	var shared: Dictionary = _status_mote_cache.get(color, {})
+	if shared.is_empty():
+		var proc := ParticleProcessMaterial.new()
+		proc.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_RING
+		proc.emission_ring_axis = Vector3(0, 1, 0)
+		proc.emission_ring_radius = 1.0
+		proc.emission_ring_inner_radius = 0.9
+		proc.emission_ring_height = 0.05
+		proc.direction = Vector3(0, 1, 0)
+		proc.spread = 25.0
+		proc.initial_velocity_min = 0.25
+		proc.initial_velocity_max = 0.45
+		proc.gravity = Vector3.ZERO
+		proc.color = Color(color.r, color.g, color.b, 0.85)
+		var quad := QuadMesh.new()
+		quad.size = Vector2(0.12, 0.12)
+		var qmat := StandardMaterial3D.new()
+		qmat.albedo_color = Color(color.r, color.g, color.b, 0.85)
+		qmat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+		qmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		qmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		quad.material = qmat
+		shared = {"proc": proc, "quad": quad}
+		_status_mote_cache[color] = shared
+	var p := GPUParticles3D.new()
+	p.name = "Motes"
+	p.amount = 5
+	p.lifetime = 0.8
+	p.local_coords = true
+	p.process_material = shared["proc"]
+	p.draw_pass_1 = shared["quad"]
+	p.emitting = false
+	return p
+
+
 static func _make_particles(color: Color, amount: int, speed: float, lifetime: float, one_shot: bool, gravity: Vector3) -> GPUParticles3D:
 	var p := GPUParticles3D.new()
 	p.amount = amount

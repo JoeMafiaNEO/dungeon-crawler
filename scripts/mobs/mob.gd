@@ -89,6 +89,37 @@ var _support_dmg_mult := 1.0
 var bulwark_slow_t := 0.0
 ## Doom Totem (Conqueror signature): mob takes +30% damage from all sources.
 var doom_t := 0.0
+## Issue #173: status-effect rings (presentation ONLY — no
+## gameplay state lives here). A server-computed status_mask
+## rides the mob snapshot; each replica renders one ground
+## ring per active effect in a CANONICAL slot (the slot never
+## changes while effects come and go, so radius alone
+## identifies the effect). Bits, in slot order:
+const STATUS_SLOW := 1
+const STATUS_STUN := 2
+const STATUS_BLIND := 4
+const STATUS_BURN := 8
+const STATUS_MARK := 16
+const STATUS_DOOM := 32
+## Jesse-approved colors (2026-10-17), alpha ~0.55: Slow ice
+## cyan #6FD3FF, Stun bright yellow #FFD94A, Blind smoky
+## gray-violet #9A8FB0, Burn ember orange #FF7A33, Mark
+## crimson #FF5A6E, Doom deep purple #8B4DFF.
+const STATUS_COLORS: Array = [
+	Color8(0x6F, 0xD3, 0xFF, 140), Color8(0xFF, 0xD9, 0x4A, 140),
+	Color8(0x9A, 0x8F, 0xB0, 140), Color8(0xFF, 0x7A, 0x33, 140),
+	Color8(0xFF, 0x5A, 0x6E, 140), Color8(0x8B, 0x4D, 0xFF, 140),
+]
+## Shared rendering assets (built once): ONE annulus mesh and
+## SIX materials serve every mob in the world. (The motes'
+## process materials + draw quads are likewise shared per
+## color, cached by their factory in effects.gd.)
+static var _status_mesh: Mesh = null
+static var _status_mats: Array = []
+## The lazy rings container (null until the first non-zero
+## mask) and the mask it currently renders.
+var _status_rings: Node3D = null
+var _status_mask_applied := 0
 # --- Boss state ---
 var _special_cd := 4.0
 var _telegraph := 0.0
@@ -360,7 +391,7 @@ func _physics_process(delta: float) -> void:
 	_snapshot -= delta
 	if _snapshot <= 0.0:
 		_snapshot = 0.15
-		rpc("push_snapshot", global_position, hp, alive, _draw_t > 0.0 or _follow_t > 0.0)
+		rpc("push_snapshot", global_position, hp, alive, _draw_t > 0.0 or _follow_t > 0.0, status_mask())
 
 
 func _process(delta: float) -> void:
@@ -1604,10 +1635,119 @@ func phaseshift_end() -> void:
 		_sprite.modulate.a = 1.0
 
 
+## Issue #173: the server's status truth for this mob, as one
+## int. Shatter folds into SLOW (apply_slow sets it), and so
+## does the bulwark-slow rider. 0 when dead — death clears
+## every ring on every peer with the same snapshot.
+func status_mask() -> int:
+	if not alive:
+		return 0
+	var m := 0
+	if _slow_t > 0.0 or bulwark_slow_t > 0.0:
+		m |= STATUS_SLOW
+	if _stun_t > 0.0:
+		m |= STATUS_STUN
+	if _blind_t > 0.0:
+		m |= STATUS_BLIND
+	if _burn_t > 0.0:
+		m |= STATUS_BURN
+	if _mark_t > 0.0:
+		m |= STATUS_MARK
+	if doom_t > 0.0:
+		m |= STATUS_DOOM
+	return m
+
+
+## Issue #173: build the shared ring assets once (one annulus
+## mesh at radius 1 — slots scale it — and the six materials).
+static func _status_shared() -> void:
+	if _status_mesh != null:
+		return
+	var torus := TorusMesh.new()
+	torus.inner_radius = 0.93
+	torus.outer_radius = 1.07
+	torus.rings = 48
+	torus.ring_segments = 8
+	_status_mesh = torus
+	for i in range(6):
+		var c: Color = STATUS_COLORS[i]
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = c
+		_status_mats.append(mat)
+
+
+## Issue #173: this mob's ground footprint radius (its
+## collision capsule), the base every slot radius builds on.
+func _footprint_radius() -> float:
+	var cs := get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if cs != null:
+		if cs.shape is CapsuleShape3D:
+			return (cs.shape as CapsuleShape3D).radius
+		if cs.shape is SphereShape3D:
+			return (cs.shape as SphereShape3D).radius
+		if cs.shape is CylinderShape3D:
+			return (cs.shape as CylinderShape3D).radius
+	return 0.5
+
+
+## Issue #173: build the lazy StatusRings container: six slot
+## nodes in canonical order. Slot i sits at radius footprint
+## + 0.20 + i*0.22 (the slot node scales the shared unit
+## annulus) and height 0.03 + i*0.012. Slots are NEVER
+## re-slotted: an effect's ring keeps its radius for the
+## mob's whole life, however its neighbours come and go.
+func _ensure_status_rings() -> void:
+	if _status_rings != null:
+		return
+	_status_shared()
+	_status_rings = Node3D.new()
+	_status_rings.name = "StatusRings"
+	add_child(_status_rings)
+	var footprint := _footprint_radius()
+	for i in range(6):
+		var slot := Node3D.new()
+		slot.name = "StatusRing_%d" % i
+		var r := footprint + 0.20 + float(i) * 0.22
+		slot.scale = Vector3(r, 1.0, r)
+		slot.position = Vector3(0, 0.03 + float(i) * 0.012, 0)
+		slot.visible = false
+		var mi := MeshInstance3D.new()
+		mi.name = "Ring"
+		mi.mesh = _status_mesh
+		mi.material_override = _status_mats[i]
+		slot.add_child(mi)
+		slot.add_child(Effects.make_status_motes(STATUS_COLORS[i]))
+		_status_rings.add_child(slot)
+
+
+## Issue #173: reconcile the rings with a snapshot mask. A
+## ring (and its motes) is present exactly while its effect
+## is active; the mask is the ONLY input, so a late joiner's
+## first snapshot renders the full truth.
+func _apply_status_mask(mask_v: int) -> void:
+	if mask_v == _status_mask_applied and _status_rings != null:
+		return
+	if mask_v == 0 and _status_rings == null:
+		_status_mask_applied = 0
+		return
+	_ensure_status_rings()
+	_status_mask_applied = mask_v
+	for i in range(6):
+		var on := (mask_v & (1 << i)) != 0
+		var slot := _status_rings.get_child(i)
+		slot.visible = on
+		(slot.get_node("Motes") as GPUParticles3D).emitting = on
+
+
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, alive_v: bool, shoot_v: bool = false) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, alive_v: bool, shoot_v: bool = false, status_mask_v: int = 0) -> void:
 	_remote_pos = pos
 	_has_remote = true
+	# Issue #173: status rings derive from the snapshot mask —
+	# the only channel, correct from a late joiner's first one.
+	_apply_status_mask(status_mask_v)
 	# Issue #167: redraw the bar when the replicated hp moves —
 	# take_damage (the only other redraw) runs server-side only,
 	# so client bars froze at the spawn fraction. The fraction's

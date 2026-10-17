@@ -106,6 +106,7 @@ func _run() -> void:
 	_test_dock_mirror_invariant_160()
 	_test_client_state_164_167()
 	_test_revive_race_163()
+	_test_mob_status_rings_173()
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
@@ -16217,6 +16218,122 @@ func _test_revive_race_163() -> void:
 		"163P4: switching targets zeroes the bank (0.2s on the new target, not 3.1s)")
 	holder.queue_free()
 	print("[Playtest] Revive race (issue #163) done.")
+
+
+## Issue #173: mob status-effect rings — the server mask, the
+## canonical slots, the approved colors, the shared budget.
+## Literal expectations are written from the approved spec
+## (hexes, slot geometry from the shipped capsule 0.45),
+## never read back out of the implementation.
+func _test_mob_status_rings_173() -> void:
+	print("[Playtest] Mob status rings (issue #173)...")
+	var holder := Node3D.new()
+	holder.name = "StatusRings173Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var slime_data: Resource = load("res://data/mobs/slime.tres")
+	var make_mob := func(pos: Vector3) -> Node:
+		var m = MobScene.instantiate()
+		m.setup(60, slime_data)
+		holder.add_child(m)
+		m.global_position = pos
+		return m
+	var near_color := func(c: Color, r: float, g: float, b: float) -> bool:
+		return absf(c.r - r) < 0.01 and absf(c.g - g) < 0.01 \
+			and absf(c.b - b) < 0.01 and absf(c.a - 0.55) < 0.01
+	var slot_of := func(m: Node, i: int) -> Node:
+		return m.get_node("StatusRings").get_child(i)
+	# --- A: the mask, via the REAL apply_* entry points ------
+	var srv = make_mob.call(Vector3(400, 0, 400))
+	_assert(int(srv.call("status_mask")) == 0, "173: a fresh mob's mask is 0")
+	srv.call("apply_slow", 5.0, 0.5)
+	_assert(int(srv.call("status_mask")) == 1,
+		"173: apply_slow sets SLOW (Shatter folds into it)")
+	srv.set("_slow_t", 0.0)
+	srv.set("_shatter_t", 0.0)
+	srv.call("apply_stun", 5.0)
+	_assert(int(srv.call("status_mask")) == 2, "173: apply_stun sets STUN")
+	srv.set("_stun_t", 0.0)
+	srv.call("apply_blind", 5.0)
+	_assert(int(srv.call("status_mask")) == 4, "173: apply_blind sets BLIND")
+	srv.set("_blind_t", 0.0)
+	srv.call("apply_burn", 5.0, 10.0, 1)
+	_assert(int(srv.call("status_mask")) == 8, "173: apply_burn sets BURN")
+	srv.set("_burn_t", 0.0)
+	srv.call("apply_mark", 5.0)
+	_assert(int(srv.call("status_mask")) == 16,
+		"173: apply_mark sets MARK alone (no slow at the default mult)")
+	srv.set("_mark_t", 0.0)
+	srv.set("doom_t", 5.0) # the Doom Totem's own write (totem.gd)
+	_assert(int(srv.call("status_mask")) == 32, "173: doom_t sets DOOM")
+	srv.set("bulwark_slow_t", 2.0)
+	_assert(int(srv.call("status_mask")) == 33,
+		"173: the bulwark-slow rider folds into SLOW beside DOOM")
+	srv.set("doom_t", 0.0)
+	srv.set("bulwark_slow_t", 0.0)
+	# --- B: a replica fed snapshots ONLY (late-joiner shape) -
+	var rep = make_mob.call(Vector3(420, 0, 400))
+	rep.call("push_snapshot", Vector3(420, 0, 400), 100.0, true, false, 41) # SLOW|BURN|DOOM as its FIRST snapshot
+	var vis: Array = []
+	for i in range(6):
+		vis.append(slot_of.call(rep, i).visible)
+	_assert(vis == [true, false, false, true, false, true],
+		"173: the replica renders exactly the masked slots from its first snapshot")
+	var mat0: Material = (slot_of.call(rep, 0).get_node("Ring") as MeshInstance3D).material_override
+	var mat3: Material = (slot_of.call(rep, 3).get_node("Ring") as MeshInstance3D).material_override
+	var mat5: Material = (slot_of.call(rep, 5).get_node("Ring") as MeshInstance3D).material_override
+	_assert(near_color.call((mat0 as StandardMaterial3D).albedo_color, 111.0 / 255.0, 211.0 / 255.0, 1.0),
+		"173: SLOW ring is the approved ice cyan #6FD3FF at ~0.55 alpha")
+	_assert(near_color.call((mat3 as StandardMaterial3D).albedo_color, 1.0, 122.0 / 255.0, 51.0 / 255.0),
+		"173: BURN ring is the approved ember orange #FF7A33 (burn is visible on clients at last)")
+	_assert(near_color.call((mat5 as StandardMaterial3D).albedo_color, 139.0 / 255.0, 77.0 / 255.0, 1.0),
+		"173: DOOM ring is the approved deep purple #8B4DFF")
+	_assert(absf(slot_of.call(rep, 0).scale.x - 0.65) < 0.001
+		and absf(slot_of.call(rep, 3).scale.x - 1.31) < 0.001
+		and absf(slot_of.call(rep, 5).scale.x - 1.75) < 0.001,
+		"173: slot radii are footprint 0.45 + 0.20 + i*0.22 (canonical slots)")
+	_assert(absf(slot_of.call(rep, 0).position.y - 0.03) < 0.001
+		and absf(slot_of.call(rep, 5).position.y - 0.09) < 0.001,
+		"173: slot heights step +0.012 from 0.03")
+	var motes0: GPUParticles3D = slot_of.call(rep, 0).get_node("Motes")
+	_assert(motes0.emitting and int(motes0.amount) == 5 and absf(motes0.lifetime - 0.8) < 0.001,
+		"173: a visible ring's motes emit (budget: 5 particles, 0.8s life)")
+	_assert(not (slot_of.call(rep, 1).get_node("Motes") as GPUParticles3D).emitting,
+		"173: a hidden ring's motes do not emit")
+	_assert((rep.get("_sprite") as AnimatedSprite3D).modulate == Color.WHITE,
+		"173: rings never write the sprite modulate (tints untouched)")
+	# --- C: no re-slotting when effects expire out of order ---
+	rep.call("push_snapshot", Vector3(420, 0, 400), 100.0, true, false, 19) # SLOW|STUN|MARK
+	var mark_r: float = slot_of.call(rep, 4).scale.x
+	rep.call("push_snapshot", Vector3(420, 0, 400), 100.0, true, false, 17) # STUN expired
+	_assert(not slot_of.call(rep, 1).visible and slot_of.call(rep, 4).visible
+		and absf(slot_of.call(rep, 4).scale.x - mark_r) < 0.001
+		and absf(slot_of.call(rep, 0).scale.x - 0.65) < 0.001,
+		"173: expiry never re-slots the survivors (MARK keeps slot 4's radius)")
+	# --- D: death clears --------------------------------------
+	rep.call("push_snapshot", Vector3(420, 0, 400), 0.0, false, false, 0) # the server's death snapshot (mask 0)
+	var any_vis := false
+	for i in range(6):
+		any_vis = any_vis or slot_of.call(rep, i).visible
+	_assert(not any_vis, "173: death clears every ring")
+	srv.call("apply_slow", 5.0, 0.5)
+	srv.set("alive", false)
+	_assert(int(srv.call("status_mask")) == 0,
+		"173: the server mask is 0 when dead, whatever the timers say")
+	# --- E: the shared budget ---------------------------------
+	srv.set("alive", true)
+	srv.call("push_snapshot", srv.global_position, 100.0, true, false, 1)
+	var mesh_a: Mesh = (slot_of.call(srv, 0).get_node("Ring") as MeshInstance3D).mesh
+	var mesh_b: Mesh = (slot_of.call(rep, 0).get_node("Ring") as MeshInstance3D).mesh
+	_assert(mesh_a != null and mesh_a == mesh_b,
+		"173: ONE shared annulus mesh serves every mob")
+	_assert(mat0 == (slot_of.call(srv, 0).get_node("Ring") as MeshInstance3D).material_override,
+		"173: the six materials are shared instances across mobs")
+	_assert(mat0 != mat3 and mat3 != mat5,
+		"173: slots hold DISTINCT materials (six, one per effect)")
+	holder.free()
+	print("[Playtest] Mob status rings (issue #173) done")
 
 
 class DockStub160 extends Node:
