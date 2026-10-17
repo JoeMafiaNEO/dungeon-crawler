@@ -14,6 +14,11 @@ var _confirm_mode := ""
 var _confirm_slot := 0
 ## Issue #17 settings panel state.
 var _settings_overlay: Control
+## Issue #152: the solo class-choice popup overlay (pad B closes it).
+var _solo_popup: Control = null
+## Issue #152: the confirm modal's Cancel button (its focus primary —
+## the non-destructive choice on a destructive confirm).
+var _confirm_cancel: Button = null
 ## Issue #70: LAN multiplayer UI state.
 var _lan_mode_host := false  # True if HostPhase is in LAN mode.
 var _lan_mode_join := false  # True if JoinPhase is in LAN mode.
@@ -121,6 +126,40 @@ func _show_phase(phase_name: String) -> void:
 		_build_host_lan_ui()
 	elif phase_name == "JoinPhase":
 		_build_join_lan_ui()
+	_apply_phase_focus(phase_name)
+
+
+## Issue #152 (2A-1): chain the phase's controls and seed focus to its
+## primary NON-DESTRUCTIVE control, so a pad user can start navigating
+## the moment a surface appears (previously nothing seeded focus —
+## grab_focus existed exactly once in the whole UI).
+func _apply_phase_focus(phase_name: String) -> void:
+	match phase_name:
+		"TitlePhase":
+			FocusChain.apply(%TitlePhase, %TitleStartButton)
+		"ModePhase":
+			FocusChain.apply(%ModePhase, %MultiButton)
+		"MultiPhase":
+			FocusChain.apply(%MultiPhase, %HostButton)
+		"HostPhase":
+			FocusChain.apply(%HostPhase, _host_tab_container)
+		"JoinPhase":
+			FocusChain.apply(%JoinPhase, _lan_ip_field if _lan_mode_join else %LobbyList)
+		"SoloPhase":
+			FocusChain.apply(%SoloPhase, _solo_primary())
+		"StagingPhase":
+			FocusChain.apply(%StagingPhase, %StartRunButton)
+		"DailyPhase":
+			FocusChain.apply(%DailyPhase, %DailyPlayButton)
+
+
+## Solo's primary: the first focusable slot-card control, else Back.
+func _solo_primary() -> Control:
+	if _solo_slots_list != null:
+		var cards := FocusChain.collect(_solo_slots_list)
+		if not cards.is_empty():
+			return cards[0]
+	return %SoloBackButton
 
 
 func _show_lobby(title: String, can_start: bool) -> void:
@@ -137,6 +176,92 @@ func _show_lobby(title: String, can_start: bool) -> void:
 	_ensure_kick_button()
 	_refresh_members()
 	_refresh_lobby_start()
+	# Issue #152: lobby chain (tree order is the panel's visual order);
+	# primary is Ready, per the spec's per-surface table.
+	var ready_btn := %LobbyPanel.get_node_or_null("ReadyButton") as Control
+	FocusChain.apply(%LobbyPanel, ready_btn)
+
+
+## Issue #152 (2A-1): pad Back + host tab switching. B (ui_cancel on
+## the pad) invokes the SAME handler as the visible surface's
+## on-screen Back/Close — one code path per surface. Keyboard Esc is
+## deliberately NOT routed here: no menu surface consumed it before,
+## and it keeps exactly that behavior; Tab stays focus navigation.
+func _input(event: InputEvent) -> void:
+	# Issue #152: Godot's Range controls adjust only on real key
+	# events — a pad ui_left/right press on a focused slider falls
+	# through to focus navigation and the value never changes
+	# (probed live, 2026-10-16). Bridge it here so "ui_left/right
+	# adjust" holds on pad too: nudge the focused slider by its
+	# step and consume the event. Keyboard arrows land on the same
+	# path with the same net effect as the native adjust.
+	if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_right"):
+		var foc := get_viewport().gui_get_focus_owner()
+		if foc is Range and (foc as Range).editable:
+			var r := foc as Range
+			var dir := 1.0 if event.is_action_pressed("ui_right") else -1.0
+			r.value = clampf(r.value + dir * r.step, r.min_value, r.max_value)
+			get_viewport().set_input_as_handled()
+			return
+	# Host tabs: the TabContainer holds a slot in the host chain;
+	# Left/Right while IT owns focus switch pages (the native tab-bar
+	# keys never reach it from the pad).
+	if _host_tabs_built and _host_tab_container != null and %HostPhase.visible \
+			and get_viewport().gui_get_focus_owner() == _host_tab_container \
+			and (event.is_action_pressed("ui_left") or event.is_action_pressed("ui_right")):
+		var dir := 1 if event.is_action_pressed("ui_right") else -1
+		var count := _host_tab_container.get_tab_count()
+		var t := _host_tab_container.current_tab
+		for i in count:
+			t = (t + dir + count) % count
+			if not _host_tab_container.is_tab_disabled(t):
+				break
+		if t != _host_tab_container.current_tab:
+			_host_tab_container.current_tab = t
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventJoypadButton and event.is_action_pressed("ui_cancel"):
+		_menu_back()
+
+
+func _menu_back() -> void:
+	# Topmost overlays first, then the lobby, then the phase stack.
+	if _solo_popup != null and is_instance_valid(_solo_popup):
+		_close_solo_class_popup()
+	elif _confirm_overlay != null and _confirm_overlay.visible:
+		_on_overwrite_cancelled()
+	elif _settings_overlay != null and _settings_overlay.visible:
+		_close_settings()
+	elif _in_lobby:
+		_on_leave_pressed()
+	elif %ModePhase.visible:
+		_on_mode_back_pressed()
+	elif %MultiPhase.visible:
+		_on_multi_back_pressed()
+	elif %HostPhase.visible:
+		_on_host_tabs_back()
+	elif %JoinPhase.visible:
+		_on_join_back_pressed()
+	elif %SoloPhase.visible:
+		_on_solo_back_pressed()
+	elif %DailyPhase.visible:
+		_on_daily_back_pressed()
+	elif %StagingPhase.visible:
+		_on_staging_back_pressed()
+	else:
+		return # Title: no back.
+	get_viewport().set_input_as_handled()
+
+
+## Issue #152: switching host tabs (mouse, pad, or a refresh forcing
+## off a locked tab) re-chains the phase and re-seeds into the new
+## page when focus didn't survive the switch.
+func _on_host_tab_changed(_tab: int) -> void:
+	if not %HostPhase.visible or _host_tab_container == null:
+		return
+	var page := _host_tab_container.get_current_tab_control()
+	var in_page := FocusChain.collect(page) if page != null else []
+	FocusChain.apply(%HostPhase, in_page[0] if not in_page.is_empty() else null)
 
 
 ## Class selection row in the lobby (hidden if the save locks classes).
@@ -217,6 +342,12 @@ func _refresh_lobby_start() -> void:
 			all_ready = false
 			break
 	%StartButton.disabled = not all_ready
+	# Issue #152: Start's disabled state is part of the lobby chain —
+	# re-chain so an enabled Start becomes reachable (and vice
+	# versa). Primary stays Ready, matching _show_lobby's seed.
+	if _in_lobby:
+		var ready_btn := %LobbyPanel.get_node_or_null("ReadyButton") as Control
+		FocusChain.apply(%LobbyPanel, ready_btn)
 
 
 # --- Title phase ---
@@ -533,6 +664,10 @@ func _on_join_transport_toggled(pressed: bool, lan_mode: bool, other: Button, se
 	if join_row != null:
 		join_row.visible = not lan_mode
 	AudioManager.sfx("ui_click")
+	# Issue #152: the form/list swap changes the focusable set —
+	# re-chain, seeding the mode's primary field/list.
+	if %JoinPhase.visible:
+		FocusChain.apply(%JoinPhase, _lan_ip_field if lan_mode else %LobbyList)
 
 
 func _on_lan_join_pressed() -> void:
@@ -568,6 +703,10 @@ func _build_host_tabs() -> void:
 	tabs.custom_minimum_size = Vector2(560, 360)
 	%HostPhase.add_child(tabs)
 	_host_tab_container = tabs
+	# Issue #152: the tab bar takes a slot in the host focus chain;
+	# _input switches pages on Left/Right while it owns focus.
+	tabs.focus_mode = Control.FOCUS_ALL
+	tabs.tab_changed.connect(_on_host_tab_changed)
 	# --- Tab 1: Connection & Save ---
 	var t1 := VBoxContainer.new()
 	t1.name = "Connection"
@@ -901,6 +1040,10 @@ func _refresh_host_save_list() -> void:
 		_style_one_button(del_btn)
 		hrow.add_child(del_btn)
 		_host_save_list.add_child(hrow)
+	# Issue #152: the save list is dynamic — re-chain the host phase
+	# on every rebuild (a freed focused row re-seeds per apply()).
+	if %HostPhase.visible:
+		FocusChain.apply(%HostPhase, null)
 
 
 func _on_host_save_selected(pressed: bool, slot: int) -> void:
@@ -1367,6 +1510,9 @@ func _refresh_solo_ui() -> void:
 	list.add_child(_build_slot_card(SaveManager.MODE_SOLO, SaveManager.next_free_slot(SaveManager.MODE_SOLO)))
 	_refresh_legacy_rows(%SoloLegacyList, SaveManager.MODE_SOLO)
 	_style_buttons()
+	# Issue #152: the slot cards are dynamic — re-chain on refresh.
+	if %SoloPhase.visible:
+		FocusChain.apply(%SoloPhase, _solo_primary())
 
 
 ## Build one slot card row: slot label + summary (or a clean empty state) +
@@ -1517,16 +1663,26 @@ func _show_solo_class_popup(slot: int) -> void:
 	var cancel := Button.new()
 	cancel.text = "Cancel"
 	cancel.custom_minimum_size = Vector2(220, 44)
-	cancel.pressed.connect(func() -> void: overlay.queue_free())
+	cancel.pressed.connect(_close_solo_class_popup)
 	vb.add_child(cancel)
 	add_child(overlay)
+	_solo_popup = overlay
 	_style_buttons()
+	# Issue #152: chain the popup; primary is the first class button.
+	FocusChain.apply(overlay, null)
+
+
+func _close_solo_class_popup() -> void:
+	if _solo_popup != null and is_instance_valid(_solo_popup):
+		_solo_popup.queue_free()
+	_solo_popup = null
 
 
 func _on_solo_class_chosen(cid: String, slot: int, overlay: Control) -> void:
 	AudioManager.sfx("ui_click")
 	NetworkManager.selected_class_id = cid
 	overlay.queue_free()
+	_solo_popup = null
 	NetworkManager.play_solo(slot)
 
 
@@ -1575,6 +1731,7 @@ func _build_confirm_modal() -> void:
 	no.text = "Cancel"
 	no.pressed.connect(_on_overwrite_cancelled)
 	hb.add_child(no)
+	_confirm_cancel = no
 	add_child(_confirm_overlay)
 	_style_buttons()
 
@@ -1702,7 +1859,7 @@ func _build_settings_panel() -> void:
 	# Language picker removed 2026-10-06: localization disabled, English only.
 	var close := Button.new()
 	close.text = "Close"
-	close.pressed.connect(func() -> void: _settings_overlay.visible = false)
+	close.pressed.connect(_close_settings)
 	vb.add_child(close)
 	add_child(_settings_overlay)
 	_style_buttons()
@@ -1781,6 +1938,13 @@ func _apply_saved_fullscreen() -> void:
 func _on_settings_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	_settings_overlay.visible = true
+	# Issue #152: chain the panel (sliders/toggles ride native focus
+	# behavior — ui_left/right adjust, ui_accept flips).
+	FocusChain.apply(_settings_overlay, null)
+
+
+func _close_settings() -> void:
+	_settings_overlay.visible = false
 
 
 func _show_overwrite_confirm(mode: String, slot: int) -> void:
@@ -1790,6 +1954,8 @@ func _show_overwrite_confirm(mode: String, slot: int) -> void:
 	_confirm_msg.text = "Slot %d already holds a saved run:\n%s\n\nStart a new run and overwrite it?" % [
 		slot + 1, SaveManager.run_summary(run)]
 	_confirm_overlay.visible = true
+	# Issue #152: chain the modal; primary is Cancel (non-destructive).
+	FocusChain.apply(_confirm_overlay, _confirm_cancel)
 
 
 ## Delete confirm: reuses the overwrite modal with a delete action.
@@ -1806,6 +1972,8 @@ func _show_delete_confirm(mode: String, slot: int) -> void:
 	_confirm_msg.text = "Delete this saved run?\nSlot %d: %s\n\nThis cannot be undone." % [
 		slot + 1, SaveManager.run_summary(run)]
 	_confirm_overlay.visible = true
+	# Issue #152: chain the modal; primary is Cancel (non-destructive).
+	FocusChain.apply(_confirm_overlay, _confirm_cancel)
 
 
 func _on_overwrite_confirmed() -> void:
@@ -2018,6 +2186,9 @@ func _refresh_staging_roster() -> void:
 			inv.pressed.connect(_on_invite_player_pressed.bind(sid))
 			row.add_child(inv)
 		%RosterList.add_child(row)
+	# Issue #152: dynamic roster rows — re-chain while staging shows.
+	if %StagingPhase.visible:
+		FocusChain.apply(%StagingPhase, null)
 
 
 ## Jesse 2026-10-10: small live lobby-member strip for the host on the

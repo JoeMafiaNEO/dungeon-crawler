@@ -15,6 +15,9 @@ var is_paused := false
 var inventory_open := false
 ## Issue #133: the session-lost notice dialog (null until shown).
 var _session_lost_dialog: ConfirmationDialog = null
+## Issue #152: the quit-confirm dialog while it is up (pad B presses
+## its Cancel through _pad_back; null otherwise).
+var _quit_dialog: ConfirmationDialog = null
 
 ## The local player. Untyped (Variant) so UI harnesses can drive the bounty
 ## panel/tracker with a lightweight test double (a Dictionary with
@@ -469,6 +472,10 @@ func _on_pause_tab_pressed(idx: int) -> void:
 	var scroll := %PausePanel.get_node("PauseMain/PauseScroll") as ScrollContainer
 	if scroll != null:
 		scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO if idx == 1 else ScrollContainer.SCROLL_MODE_DISABLED
+	# Issue #152: tab visibility changed the focusable set — re-chain;
+	# a focused control on the now-hidden tab re-seeds to Resume.
+	if is_paused:
+		FocusChain.apply(_pause_surface(), _pause_primary())
 
 
 ## Show only the current tab's nodes; action buttons are outside the scroll.
@@ -1068,7 +1075,47 @@ var _cipher_popup: Control = null
 var _cipher_grace := 0.0
 
 
+## Issue #152 (2A-1): pad Back. B (ui_cancel on the pad) invokes the
+## SAME close/back handler as the topmost surface's on-screen
+## Back/Close — one code path per surface. Keyboard input is not
+## routed here at all: E/Esc keep the physical-key paths below,
+## byte-identical to before. Priority is topmost-first: a dialog
+## owns Back while it is up, then the popups, then the class panel,
+## then the character panel, then pause (B = Resume).
+## Returns true when a surface consumed the press.
+func _pad_back() -> bool:
+	if _session_lost_dialog != null and is_instance_valid(_session_lost_dialog):
+		return false # Terminal dialog: acknowledge-only, no way back.
+	if _quit_dialog != null and is_instance_valid(_quit_dialog) and _quit_dialog.visible:
+		# Godot dialogs cancel on Esc natively but never see the pad's
+		# B; press the dialog's own Cancel button — the same handler
+		# the mouse and Esc both reach.
+		(_quit_dialog.get_cancel_button() as Button).pressed.emit()
+		return true
+	if dest_popup_open and _cipher_grace <= 0.0:
+		close_destination_popup()
+		return true
+	if cipher_popup_open and _cipher_grace <= 0.0:
+		close_cipher_popup()
+		return true
+	var class_panel := get_node_or_null("%ClassPanel") as Control
+	if class_panel != null and class_panel.visible:
+		_on_class_cancel()
+		return true
+	if inventory_open:
+		close_inventory()
+		return true
+	if is_paused:
+		_on_resume_pressed()
+		return true
+	return false
+
+
 func _input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton and event.is_action_pressed("ui_cancel"):
+		if _pad_back():
+			get_viewport().set_input_as_handled()
+			return
 	if dest_popup_open and _cipher_grace <= 0.0:
 		if event is InputEventKey:
 			var dk := event as InputEventKey
@@ -1112,6 +1159,10 @@ func _open_cipher_popup(content: Control) -> void:
 	root.add_child(center)
 	_cipher_popup = root
 	add_child(root)
+	# Issue #152: chain the popup's controls and seed its primary
+	# (vendor/dock: first BUY; vault: first enabled card button;
+	# lockbox: the entry field; label-only popups chain empty).
+	FocusChain.apply(root, null)
 
 
 func close_cipher_popup() -> void:
@@ -1187,6 +1238,9 @@ func open_destination_popup(station: Node, destinations: Array, next_level: int)
 	add_child(root)
 	_refresh_destination_list()
 	AudioManager.sfx("ui_click")
+	# Issue #152 (§2.3): the destination rows are chained Buttons and
+	# the first row takes focus — this popup IS the pad route.
+	FocusChain.apply(root, null)
 
 
 func close_destination_popup() -> void:
@@ -1215,7 +1269,9 @@ func _refresh_destination_list(votes: Dictionary = {}, my_vote: String = "") -> 
 		c.queue_free()
 	# Pull live votes from the station if not supplied.
 	if votes.is_empty() and _dest_station != null:
-		votes = _dest_station.get("votes") as Dictionary
+		var sv = _dest_station.get("votes")
+		if sv is Dictionary:
+			votes = sv
 	# Count votes per destination.
 	var tallies := {}
 	for tid in _dest_destinations:
@@ -1261,6 +1317,10 @@ func _refresh_destination_list(votes: Dictionary = {}, my_vote: String = "") -> 
 	ascend_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
 	ascend_btn.pressed.connect(_on_destination_chosen.bind("ASCEND"))
 	_dest_list.add_child(ascend_btn)
+	# Issue #152: rows were just rebuilt (freed + recreated) — re-chain
+	# and re-seed if the focused row died in the rebuild.
+	if dest_popup_open and _dest_popup != null:
+		FocusChain.apply(_dest_popup, null)
 
 
 func _on_destination_chosen(theme_id: String) -> void:
@@ -1400,6 +1460,24 @@ func flash_dash() -> void:
 	tween.tween_property(%DashFlash, "modulate:a", 0.0, 0.25)
 
 
+## Issue #152: the pause surface + its focus primary, resolved
+## null-safely — bare-script harnesses build pause UI without the
+## tscn's unique-name nodes, and FocusChain.apply accepts nulls.
+func _pause_surface() -> Control:
+	return get_node_or_null("%PausePanel")
+
+
+func _pause_primary() -> Control:
+	# ResumeButton carries no unique-name flag in hud.tscn (the pause
+	# builder works from stored refs for the same reason) — resolve
+	# by path: the rebuilt PauseMain layout first, the raw tscn
+	# layout as fallback.
+	var b := get_node_or_null("PausePanel/PauseMain/PauseActions/ResumeButton")
+	if b == null:
+		b = get_node_or_null("PausePanel/PauseScroll/PauseVBox/ResumeButton")
+	return b
+
+
 func show_pause() -> void:
 	is_paused = true
 	refresh_stats()
@@ -1421,6 +1499,8 @@ func show_pause() -> void:
 			_save_quit_btn.text = "Save & Quit (saves run)"
 		else:
 			_save_quit_btn.text = "Disconnect (host holds the save)"
+	# Issue #152: chain the pause surface; primary is Resume.
+	FocusChain.apply(_pause_surface(), _pause_primary())
 
 
 func hide_pause() -> void:
@@ -1628,11 +1708,18 @@ func _show_quit_confirm(message: String, on_confirm: Callable) -> void:
 	dialog.confirmed.connect(on_confirm)
 	dialog.canceled.connect(dialog.queue_free)
 	dialog.confirmed.connect(dialog.queue_free)
+	# Issue #152: track the dialog while it is up so pad B can press
+	# its Cancel (see _pad_back); forget it as soon as it closes.
+	_quit_dialog = dialog
+	dialog.canceled.connect(func() -> void: _quit_dialog = null)
+	dialog.confirmed.connect(func() -> void: _quit_dialog = null)
 	dialog.popup_centered()
 
 
 func _on_class_pressed() -> void:
 	%ClassPanel.visible = true
+	# Issue #152: chain the class panel; primary is the first class.
+	FocusChain.apply(%ClassPanel, %ClassPanel.get_node("ClassVBox/WarriorBtn"))
 
 
 func _on_class_cancel() -> void:
@@ -1705,6 +1792,9 @@ func _refresh_spec_list() -> void:
 				btn.tooltip_text = "Unlocks at level %d" % Player.SPECIALIZATION_UNLOCK_LEVEL
 		row.add_child(btn)
 		%SpecList.add_child(row)
+	# Issue #152: spec rows are dynamic — re-chain while paused.
+	if is_paused:
+		FocusChain.apply(_pause_surface(), _pause_primary())
 
 
 func _on_specialize_pressed(skill_id: String) -> void:
@@ -2231,6 +2321,9 @@ func show_death_screen(stats: Dictionary) -> void:
 	]
 	%DeathPanel.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# Issue #152: chain the death panel; primary is Quick Restart.
+	FocusChain.apply(get_node_or_null("%DeathPanel"),
+		get_node_or_null("%QuickRestartButton"))
 	# Issue #18: hide the wave-start banner + prompt behind the death panel.
 	# A dead player can't start a wave; the normal wave-info refresh restores
 	# them on respawn/continue.
@@ -2531,6 +2624,12 @@ var _slot_boxes: Dictionary = {} # slot name -> {box, icon, item_label}
 var _bag_rows: Array = [] # Array[Button], INVENTORY_MAX entries
 var _bag_group := ButtonGroup.new()
 var _equip_button: Button
+## Issue #152 (§2.1): the character panel's pad selection model. A
+## bag-row selection (the rows' ButtonGroup state) and a slot
+## selection are mutually exclusive; _selected_slot names the slot
+## chosen via focus + ui_accept, "" while the bag owns the selection.
+var _selected_slot := ""
+var _unequip_button: Button = null
 
 
 func _build_character_panel() -> void:
@@ -2556,6 +2655,11 @@ func _build_character_panel() -> void:
 		var box := PanelContainer.new()
 		box.name = "Slot_" + slot_name
 		box.custom_minimum_size = Vector2(188, 66)
+		# Issue #152 (§2.1): the slot box joins the panel's focus
+		# chain. ui_accept on a focused box SELECTS the slot (the
+		# Unequip button performs it); mouse clicks keep their
+		# direct-unequip behavior, unchanged.
+		box.focus_mode = Control.FOCUS_ALL
 		box.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 		var sb := StyleBoxFlat.new()
 		sb.bg_color = Color(0.09, 0.09, 0.12, 0.95)
@@ -2629,7 +2733,7 @@ func _build_character_panel() -> void:
 	# Hint + action row (Equip joins the retained Use/Dispose).
 	var hint := Label.new()
 	hint.name = "CharHint"
-	hint.text = "Only EQUIPPED gear grants bonuses. Double-click a row to equip; click a filled slot to unequip."
+	hint.text = "Only EQUIPPED gear grants bonuses. Double-click a row to equip; click a filled slot to unequip. Pad: focus a slot, A selects it, then use Unequip."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", 12)
@@ -2656,6 +2760,15 @@ func _build_character_panel() -> void:
 	dis_b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dis_b.pressed.connect(_on_dispose_pressed)
 	actions.add_child(dis_b)
+	# Issue #152 (§2.1): the pad route to unequip — enabled only
+	# while an equipped slot is selected (see _refresh_char_actions).
+	_unequip_button = Button.new()
+	_unequip_button.name = "UnequipButton"
+	_unequip_button.text = "Unequip selected slot"
+	_unequip_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_unequip_button.disabled = true
+	_unequip_button.pressed.connect(_on_unequip_pressed)
+	actions.add_child(_unequip_button)
 
 
 func _selected_bag_index() -> int:
@@ -2702,8 +2815,12 @@ func _on_equip_pressed() -> void:
 
 
 func _on_bag_row_pressed(_index: int) -> void:
-	# Selection state lives in the rows' ButtonGroup; nothing else to do.
-	pass
+	# Selection state lives in the rows' ButtonGroup. Issue #152:
+	# a bag selection clears any slot selection (mutually exclusive).
+	if _selected_slot != "":
+		_selected_slot = ""
+		_refresh_slot_highlight()
+	_refresh_char_actions()
 
 
 func _on_bag_row_gui_input(event: InputEvent, index: int) -> void:
@@ -2714,6 +2831,12 @@ func _on_bag_row_gui_input(event: InputEvent, index: int) -> void:
 
 
 func _on_slot_gui_input(event: InputEvent, slot_name: String) -> void:
+	# Issue #152 (§2.1): pad path — ui_accept on a focused slot box
+	# SELECTS the slot; the action row's Unequip button performs
+	# the unequip (bag select→Equip is the template).
+	if event.is_action_pressed("ui_accept"):
+		_select_slot(slot_name)
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
@@ -2732,6 +2855,49 @@ func _on_slot_pressed(slot_name: String) -> void:
 		if _player.inventory[i] == entry:
 			_player.unequip_stack(i)
 			return
+
+
+## Issue #152 (§2.1): select a slot for the action row (pad path).
+func _select_slot(slot_name: String) -> void:
+	_selected_slot = slot_name
+	# Bag and slot selections are mutually exclusive.
+	for row in _bag_rows:
+		(row as Button).set_pressed_no_signal(false)
+	_refresh_slot_highlight()
+	_refresh_char_actions()
+
+
+## The selected slot's box wears a gold border; the rest keep the
+## panel's standard border color.
+func _refresh_slot_highlight() -> void:
+	for slot_name in SLOT_ORDER:
+		var parts: Dictionary = _slot_boxes.get(slot_name, {})
+		if parts.is_empty():
+			continue
+		var box := parts["box"] as PanelContainer
+		var sb := box.get_theme_stylebox("panel") as StyleBoxFlat
+		if sb != null:
+			sb.border_color = Color(1.0, 0.85, 0.4) if slot_name == _selected_slot \
+				else Color(0.45, 0.38, 0.25, 0.9)
+
+
+## Unequip enable rule (issue #152 §2.1): live only while the
+## selection is a slot with something equipped in it.
+func _refresh_char_actions() -> void:
+	if _unequip_button == null:
+		return
+	var live := false
+	if _selected_slot != "" and _player != null:
+		live = not (_player.equipped_entry(_selected_slot) as Dictionary).is_empty()
+	_unequip_button.disabled = not live
+
+
+func _on_unequip_pressed() -> void:
+	if _selected_slot == "":
+		return
+	# The mouse path's unequip, toasts included — one code path.
+	_on_slot_pressed(_selected_slot)
+	_refresh_char_actions()
 
 
 func refresh_inventory(p: Player) -> void:
@@ -2798,6 +2964,13 @@ func refresh_inventory(p: Player) -> void:
 	# Potion quick-slot: refresh from the player's inventory.
 	_potion_player = p
 	refresh_potion_slot()
+	# Issue #152: row/slot contents changed the panel's focusable
+	# set — re-chain while the panel is open (primary-less apply
+	# seeds the first control, the WEAPON slot box, only when focus
+	# is dead), and keep the Unequip enable state honest.
+	if inventory_open:
+		FocusChain.apply(get_node_or_null("%InventoryPanel"), null)
+	_refresh_char_actions()
 
 
 func _on_dispose_pressed() -> void:

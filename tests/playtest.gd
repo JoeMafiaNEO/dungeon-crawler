@@ -181,6 +181,7 @@ func _run() -> void:
 	_test_pad_parity_144()
 	_test_archer_shoot_148()
 	_test_steam_input_150()
+	_test_menu_nav_152()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -12004,6 +12005,346 @@ func _test_steam_input_150() -> void:
 	_assert(not ad.active, "150: adapter left inactive with its real backend")
 	print("[Playtest] Steam Input adapter done")
 
+
+## Issue #152 (2A-1): pad menu navigation — pinned ui_* vocabulary,
+## focus seeding/chaining on the REAL main_menu and hud scenes, pad
+## Back routing, the §2.1 slot-select + Unequip route, the §2.3 board
+## seam, and the InputSource tracker. Expectations are literal (the
+## #150 rule): the ui_* table below is written out here, not read
+## back from the project file it pins.
+func _test_menu_nav_152() -> void:
+	print("[Playtest] Menu pad navigation (issue #152)...")
+	var joy := func(btn: int) -> void:
+		var dn := InputEventJoypadButton.new()
+		dn.button_index = btn
+		dn.pressed = true
+		Input.parse_input_event(dn)
+		Input.flush_buffered_events()
+		var up := InputEventJoypadButton.new()
+		up.button_index = btn
+		up.pressed = false
+		Input.parse_input_event(up)
+		Input.flush_buffered_events()
+		# In the full-suite context a parsed event can land one
+		# flush late (the buffer warms up over the run); pump the
+		# pipeline so every assert below reads settled state.
+		Input.flush_buffered_events()
+		Input.flush_buffered_events()
+	var jb := func(btn: int) -> InputEventJoypadButton:
+		var e := InputEventJoypadButton.new()
+		e.button_index = btn
+		e.pressed = true
+		return e
+	var owner := func() -> Control:
+		return root.gui_get_focus_owner()
+	# --- The pinned ui_* vocabulary (engine defaults + the pad) ---
+	var describe_ui := func(action: String) -> Array:
+		var out: Array = []
+		for ev in InputMap.action_get_events(action):
+			if ev is InputEventKey:
+				var k := ev as InputEventKey
+				var code := k.keycode if k.physical_keycode == 0 else k.physical_keycode
+				out.append("K%d%s" % [code, "S" if k.shift_pressed else ""])
+			elif ev is InputEventJoypadButton:
+				out.append("B%d" % (ev as InputEventJoypadButton).button_index)
+			elif ev is InputEventJoypadMotion:
+				var jm := ev as InputEventJoypadMotion
+				out.append("A%d:%d" % [jm.axis, 1 if jm.axis_value > 0.0 else -1])
+		out.sort()
+		return out
+	var ui_expected := {
+		"ui_accept": ["B0", "K32", "K4194309", "K4194310"],
+		"ui_cancel": ["B1", "K4194305"],
+		"ui_left": ["A0:-1", "B13", "K4194319"],
+		"ui_right": ["A0:1", "B14", "K4194321"],
+		"ui_up": ["A1:-1", "B11", "K4194320"],
+		"ui_down": ["A1:1", "B12", "K4194322"],
+		"ui_focus_next": ["B10", "K4194306"],
+		"ui_focus_prev": ["B9", "K4194306S"],
+	}
+	for action in ui_expected:
+		_assert(InputMap.has_action(action), "152: ui action pinned in project.godot: " + action)
+		var want: Array = ui_expected[action].duplicate()
+		want.sort()
+		_assert(describe_ui.call(action) == want,
+			"152: %s == engine defaults + pad buttons/stick" % action)
+	# --- FocusChain: wrap chaining + seed-only-when-dead ---
+	var FC = load("res://scripts/ui/focus_chain.gd")
+	var fc_holder := Control.new()
+	fc_holder.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(fc_holder)
+	var fb1 := Button.new()
+	var fb2 := Button.new()
+	var fb3 := Button.new()
+	fc_holder.add_child(fb1)
+	fc_holder.add_child(fb2)
+	fc_holder.add_child(fb3)
+	FC.chain_focus([fb1, fb2, fb3])
+	_assert(fb1.focus_next == fb1.get_path_to(fb2) and fb2.focus_next == fb2.get_path_to(fb3)
+		and fb3.focus_next == fb3.get_path_to(fb1), "152: chain_focus links in order and wraps")
+	FC.apply(fc_holder, fb2)
+	_assert(owner.call() == fb2, "152: apply seeds the primary when focus is dead")
+	fb1.grab_focus()
+	FC.apply(fc_holder, fb2)
+	_assert(owner.call() == fb1, "152: apply never steals a live in-surface focus")
+	root.remove_child(fc_holder)
+	fc_holder.free()
+	# --- InputSource tracker (the §2.3 seam, 2A-2's service seed) ---
+	# Handler-level injection (the #144/#149 suite pattern): in the
+	# synchronous suite a parsed joypad event can reach _input one
+	# injection late, so the tracker's own logic is pinned by direct
+	# _input calls; one parse-based key pin proves the live wiring.
+	var src = root.get_node("InputSource")
+	src.call("set_source", 0)
+	_assert(not bool(src.call("is_pad")), "152: tracker starts on keyboard/mouse")
+	src._input(jb.call(JOY_BUTTON_X))
+	_assert(bool(src.call("is_pad")), "152: a pad button press flips the source to PAD")
+	var x_up := InputEventJoypadButton.new()
+	x_up.button_index = JOY_BUTTON_X
+	x_up.pressed = false
+	src.call("set_source", 0)
+	src._input(x_up)
+	_assert(not bool(src.call("is_pad")), "152: a pad button RELEASE does not flip the source")
+	var wk := InputEventKey.new()
+	wk.physical_keycode = KEY_W
+	wk.pressed = true
+	src._input(wk)
+	src.call("set_source", 1)
+	Input.parse_input_event(wk)
+	Input.flush_buffered_events()
+	Input.flush_buffered_events()
+	_assert(not bool(src.call("is_pad")), "152: a key press flips the source back to KB_MOUSE (parse-delivered)")
+	wk.pressed = false
+	Input.parse_input_event(wk)
+	Input.flush_buffered_events()
+	var jm := InputEventJoypadMotion.new()
+	jm.axis = JOY_AXIS_LEFT_Y
+	jm.axis_value = 0.9
+	src._input(jm)
+	_assert(bool(src.call("is_pad")), "152: stick motion beyond the deadzone flips to PAD")
+	src.call("set_source", 0)
+	jm.axis_value = 0.1
+	src._input(jm)
+	_assert(not bool(src.call("is_pad")), "152: stick drift inside the deadzone does not flip")
+	jm.axis_value = 0.0
+	src._input(jm)
+	# --- Main menu: seeding, chaining, activation, Back ---
+	var mm = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(mm)
+	# The suite runs Steam-less, so _ready disabled Multiplayer; in
+	# production (Steam up) it is enabled — restore that state so the
+	# Mode primary under test is the production one.
+	(mm.get_node("%MultiButton") as Button).disabled = false
+	_assert((mm.get_node("%TitlePhase") as Control).visible, "152: menu opens on Title")
+	_assert(owner.call() == mm.get_node("%TitleStartButton"),
+		"152: Title seeds focus to Start Game")
+	joy.call(JOY_BUTTON_DPAD_DOWN)
+	_assert(owner.call() == mm.get_node("%SettingsButton"),
+		"152: d-pad walks the Title chain")
+	joy.call(JOY_BUTTON_RIGHT_SHOULDER)
+	_assert(owner.call() == mm.get_node("%TitleStartButton"),
+		"152: RB (focus_next) wraps the chain back to Start")
+	joy.call(JOY_BUTTON_A)
+	_assert((mm.get_node("%ModePhase") as Control).visible
+		and owner.call() == mm.get_node("%MultiButton"),
+		"152: in-menu A activates Start; Mode seeds Multiplayer")
+	joy.call(JOY_BUTTON_B)
+	_assert((mm.get_node("%TitlePhase") as Control).visible
+		and owner.call() == mm.get_node("%TitleStartButton"),
+		"152: B on Mode invokes the Mode Back handler (Title, re-seeded)")
+	# Settings overlay: chained sliders, native adjust, B closes.
+	joy.call(JOY_BUTTON_DPAD_DOWN)
+	joy.call(JOY_BUTTON_A)
+	var settings_ov = mm.get("_settings_overlay")
+	_assert(bool(settings_ov.get("visible")), "152: Settings opens from Title")
+	_assert(owner.call() is HSlider, "152: Settings seeds its first slider")
+	var master_slider := owner.call() as HSlider
+	if master_slider != null:
+		var master_before := master_slider.value
+		joy.call(JOY_BUTTON_DPAD_LEFT)
+		_assert(master_slider.value < master_before
+			and owner.call() == master_slider,
+			"152: pad ui_left adjusts the focused slider in place (bridged Range behavior)")
+		var after_pad := master_slider.value
+		var lk := InputEventKey.new()
+		lk.keycode = KEY_LEFT
+		lk.physical_keycode = KEY_LEFT
+		lk.pressed = true
+		Input.parse_input_event(lk)
+		Input.flush_buffered_events()
+		lk.pressed = false
+		Input.parse_input_event(lk)
+		Input.flush_buffered_events()
+		_assert(master_slider.value < after_pad,
+			"152: keyboard ui_left adjusts the focused slider too (same net effect)")
+	joy.call(JOY_BUTTON_B)
+	_assert(not bool(settings_ov.get("visible")), "152: B closes Settings via its Close path")
+	# Solo: dynamic slot cards chain; B backs out.
+	mm._show_phase("ModePhase")
+	joy.call(JOY_BUTTON_DPAD_DOWN) # Multi -> Solo
+	_assert(owner.call() == mm.get_node("%SoloButton"), "152: Mode chain reaches Solo")
+	joy.call(JOY_BUTTON_A)
+	_assert((mm.get_node("%SoloPhase") as Control).visible, "152: Solo phase shows")
+	_assert(owner.call() != null and (mm.get("_solo_slots_list") as Node).is_ancestor_of(owner.call()),
+		"152: Solo seeds the first slot card's control")
+	joy.call(JOY_BUTTON_B)
+	_assert((mm.get_node("%ModePhase") as Control).visible, "152: B on Solo = Solo Back (Mode)")
+	# Multi -> Host tabs -> Back. (Solo's B re-seeded Mode's primary,
+	# Multiplayer, on the way back — A goes straight in.)
+	joy.call(JOY_BUTTON_A)
+	_assert((mm.get_node("%MultiPhase") as Control).visible
+		and owner.call() == mm.get_node("%HostButton"),
+		"152: Multi seeds Host Game")
+	joy.call(JOY_BUTTON_A)
+	_assert((mm.get_node("%HostPhase") as Control).visible
+		and mm.get("_host_tab_container") != null
+		and owner.call() != null and (mm.get_node("%HostPhase") as Node).is_ancestor_of(owner.call()),
+		"152: Host phase shows its tabs and seeds focus inside")
+	joy.call(JOY_BUTTON_B)
+	_assert((mm.get_node("%MultiPhase") as Control).visible, "152: B on Host = host Back (Multi)")
+	# Join: the lobby list is the primary; B backs out.
+	joy.call(JOY_BUTTON_DPAD_DOWN) # Host -> Join
+	joy.call(JOY_BUTTON_A)
+	_assert((mm.get_node("%JoinPhase") as Control).visible
+		and owner.call() == mm.get_node("%LobbyList"),
+		"152: Join seeds the lobby list")
+	joy.call(JOY_BUTTON_B)
+	_assert((mm.get_node("%MultiPhase") as Control).visible, "152: B on Join = Join Back (Multi)")
+	# Lobby: primary is Ready; B leaves via the Leave handler.
+	mm._show_lobby("Suite Lobby", true)
+	_assert((mm.get_node("%LobbyPanel") as Control).visible, "152: lobby panel shows")
+	_assert(owner.call() == mm.get_node("%LobbyPanel").get_node("ReadyButton"),
+		"152: Lobby seeds focus to Ready")
+	joy.call(JOY_BUTTON_B)
+	_assert(not bool(mm.get("_in_lobby")) and (mm.get_node("%TitlePhase") as Control).visible,
+		"152: B in the lobby invokes Leave (Title)")
+	root.remove_child(mm)
+	mm.free()
+	# --- HUD rig: coexistence, pause, inventory, popups ---
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var p = PlayerScene.instantiate()
+	p.class_id = "warrior"
+	root.add_child(p)
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	root.add_child(hud)
+	hud.setup(p)
+	root.gui_release_focus()
+	_assert(owner.call() == null, "152: no HUD control holds focus in-world")
+	p._pad_seen = true
+	p._input(jb.call(JOY_BUTTON_A))
+	_assert(p._jump_queued, "152: coexistence — pad A in-world still jumps")
+	p._jump_queued = false
+	_assert(owner.call() == null, "152: coexistence — in-world A accepts nothing")
+	# Pause: seed Resume, RB walks, B resumes.
+	hud.show_pause()
+	_assert(hud.is_paused and owner.call() == hud.get_node("PausePanel/PauseMain/PauseActions/ResumeButton"),
+		"152: Pause seeds focus to Resume")
+	joy.call(JOY_BUTTON_RIGHT_SHOULDER)
+	_assert(owner.call() == hud.get("_class_btn"),
+		"152: RB walks the pause chain (Resume -> Class)")
+	hud._input(jb.call(JOY_BUTTON_B))
+	_assert(not hud.is_paused, "152: pause B = Resume (the on-screen handler)")
+	# Inventory §2.1/§2.2: slot select -> Unequip; bag row -> Equip.
+	_grant_equipped(p, "iron_sword")
+	_assert(not (p.equipped_entry("WEAPON") as Dictionary).is_empty(),
+		"152: fixture sword starts equipped")
+	hud.open_inventory()
+	var weapon_box = (hud.get("_slot_boxes")["WEAPON"] as Dictionary)["box"]
+	_assert(owner.call() == weapon_box, "152: character panel seeds the WEAPON slot box")
+	joy.call(JOY_BUTTON_A)
+	_assert(str(hud.get("_selected_slot")) == "WEAPON",
+		"152: A on a focused slot box selects the slot")
+	_assert(not (hud.get("_unequip_button") as Button).disabled,
+		"152: Unequip enables while an equipped slot is selected")
+	(hud.get("_unequip_button") as Button).grab_focus()
+	joy.call(JOY_BUTTON_A)
+	_assert((p.equipped_entry("WEAPON") as Dictionary).is_empty(),
+		"152: the Unequip button performs the unequip")
+	_assert((hud.get("_unequip_button") as Button).disabled,
+		"152: Unequip disables once the slot is empty")
+	var sword_idx := -1
+	for i in p.inventory.size():
+		var it = p.inventory[i].get("item")
+		if it != null and str(it.get("id")) == "iron_sword":
+			sword_idx = i
+	_assert(sword_idx >= 0, "152: the unequipped sword is still in the bag")
+	var sword_row = (hud.get("_bag_rows") as Array)[sword_idx]
+	(sword_row as Button).grab_focus()
+	joy.call(JOY_BUTTON_A)
+	_assert(hud._selected_bag_index() == sword_idx and str(hud.get("_selected_slot")) == "",
+		"152: bag row A selects the row and clears the slot selection")
+	(hud.get("_equip_button") as Button).grab_focus()
+	joy.call(JOY_BUTTON_A)
+	_assert(not (p.equipped_entry("WEAPON") as Dictionary).is_empty(),
+		"152: §2.2 — focus-row -> Equip is the pad-complete equip route")
+	# Mouse carve-outs unchanged: slot click unequips directly;
+	# bag double-click equips.
+	hud._on_slot_pressed("WEAPON")
+	_assert((p.equipped_entry("WEAPON") as Dictionary).is_empty(),
+		"152: mouse path intact — slot click still unequips directly")
+	var dbl := InputEventMouseButton.new()
+	dbl.button_index = MOUSE_BUTTON_LEFT
+	dbl.pressed = true
+	dbl.double_click = true
+	hud._on_bag_row_gui_input(dbl, sword_idx)
+	_assert(not (p.equipped_entry("WEAPON") as Dictionary).is_empty(),
+		"152: §2.2 carve-out — bag double-click equip stays mouse-only and intact")
+	hud._input(jb.call(JOY_BUTTON_B))
+	_assert(not hud.inventory_open, "152: B closes the character panel")
+	# Popups: destination (the §2.3 surface) and cipher shell.
+	var station_stub := Node.new()
+	station_stub.name = "StationStub152"
+	root.add_child(station_stub)
+	station_stub.add_to_group("station")
+	hud.open_destination_popup(station_stub, ["village", "dungeon"], 2)
+	_assert(hud.dest_popup_open, "152: destination popup opens")
+	var first_dest = (hud.get("_dest_list") as VBoxContainer).get_child(0)
+	_assert(owner.call() == first_dest, "152: destination popup seeds its first row")
+	hud._cipher_grace = 0.0
+	hud._input(jb.call(JOY_BUTTON_B))
+	_assert(not hud.dest_popup_open, "152: B closes the destination popup (shared close path)")
+	hud.show_poem_popup(0)
+	_assert(hud.cipher_popup_open, "152: cipher popup opens")
+	hud._cipher_grace = 0.0
+	var esc := InputEventKey.new()
+	esc.physical_keycode = KEY_ESCAPE
+	esc.pressed = true
+	hud._input(esc)
+	_assert(not hud.cipher_popup_open, "152: Esc still closes the cipher popup (same close path)")
+	# Quit-confirm: B presses the dialog's own Cancel.
+	var confirm_fired := [false]
+	hud._show_quit_confirm("152 pin?", func() -> void: confirm_fired[0] = true)
+	var qd = hud.get("_quit_dialog")
+	_assert(qd != null and bool(qd.get("visible")), "152: quit-confirm dialog is up")
+	hud._input(jb.call(JOY_BUTTON_B))
+	_assert(not confirm_fired[0] and hud.get("_quit_dialog") == null,
+		"152: B on a dialog = its Cancel (confirm never fires)")
+	# §2.3: the board reads the tracker and lands both sources on
+	# the same chained destination popup.
+	var board = load("res://scripts/station/departure_board.gd").new()
+	root.add_child(board)
+	src.call("set_source", 1)
+	board.interact(p)
+	_assert(hud.dest_popup_open, "152: §2.3 — PAD source: board opens the 2D destination popup")
+	_assert(owner.call() == (hud.get("_dest_list") as VBoxContainer).get_child(0),
+		"152: §2.3 — the pad-opened popup is focus-chained (first row focused)")
+	hud.close_destination_popup()
+	src.call("set_source", 0)
+	board.interact(p)
+	_assert(hud.dest_popup_open, "152: §2.3 — KB_MOUSE source: same popup (the #29 path, unchanged)")
+	hud.close_destination_popup()
+	var bsrc := FileAccess.get_file_as_string("res://scripts/station/departure_board.gd")
+	_assert(bsrc.contains("InputSource.current_source()"),
+		"152: §2.3 — the board's interact reads the InputSource tracker (the seam)")
+	root.remove_child(board)
+	board.free()
+	root.remove_child(station_stub)
+	station_stub.free()
+	root.remove_child(hud)
+	hud.free()
+	root.remove_child(p)
+	p.free()
+	print("[Playtest] Menu pad nav done")
 
 
 func _test_host_lobby_prefill_132() -> void:

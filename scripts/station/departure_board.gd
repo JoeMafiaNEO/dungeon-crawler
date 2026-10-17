@@ -26,6 +26,15 @@ func prompt_text() -> String:
 func interact(player: Player) -> void:
 	# Issue #29: 3D reading-mode interaction replaced with a 2D popup menu.
 	# The board model stays as visual dressing; all voting goes through the HUD.
+	# Issue #152 (§2.3): the popup is the PAD route as well as the
+	# kb/mouse route — the old 3D reading mode has had no live
+	# callers since #29, so there is no cursor-raycast path left
+	# to fork away from. The tracker's current source is read HERE,
+	# explicitly: this is the seam a future per-source fork hangs
+	# off, and today both sources land on the same chained 2D popup
+	# (its rows take focus — see hud.open_destination_popup), so
+	# kb/mouse behavior is unchanged.
+	InputSource.current_source()
 	var hud := player.get("hud") as CanvasLayer
 	if hud == null:
 		hud = player.get_tree().get_first_node_in_group("hud")
