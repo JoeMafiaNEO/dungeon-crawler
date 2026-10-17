@@ -120,6 +120,14 @@ static var next_seed: int = 12345
 static var next_level_number: int = 1
 ## Jesse 2026-10-11: wave to resume at when continuing a save.
 static var next_wave: int = 0
+## Issue #154: player count for the next level — host-counted ONCE
+## at departure and carried on the board_train_interior payload
+## (0 = not carried; _warlord_player_count then falls back to the
+## replicated lobby size, then to 1).
+static var next_player_count: int = 0
+## Issue #154 test seam: tooling (suite / scene checks) may simulate
+## a party size. Production code never sets this.
+static var simulated_player_count: int = 0
 static var saved_player_state: Dictionary = {}
 ## Jesse 2026-10-10 fix: host-collected player states (peer_id -> state dict)
 ## for the train transition. The host gathers these in save_multiplayer_run;
@@ -146,6 +154,26 @@ static func is_on_water(pos: Vector3) -> bool:
 ## Used by the HUD and the death screen's run stats.
 func get_cycle_number() -> int:
 	return int((level_number - 1) / THEME_ORDER.size()) + 1
+
+
+## Issue #154: the party size Warlord's Domain scales by, resolved
+## in order — simulated seam (tooling) > the departure handoff value
+## > the replicated lobby size > 1. Solo is 1 by construction (no
+## handoff, empty lobby).
+func _warlord_player_count() -> int:
+	if simulated_player_count > 0:
+		return simulated_player_count
+	if next_player_count > 0:
+		return next_player_count
+	if NetworkManager.lobby_members.size() > 0:
+		return NetworkManager.lobby_members.size()
+	return 1
+
+
+## Issue #154: Jesse's curve — 48 (1P) / 72 (2P) / 96 (3P) /
+## 96 (4P cap): +24 per extra player, counts above 4 clamp to 96.
+func _warlord_grid_size() -> int:
+	return mini(96, 48 + 24 * (maxi(1, _warlord_player_count()) - 1))
 
 
 ## Issue #138 Phase 2: baked-path selection (spec section 5, as
@@ -352,7 +380,16 @@ func _ready() -> void:
 	# Cycle scaling: each full loop (village->dungeon->depths) enlarges the
 	# map and adds keys. Duplicate the theme so the .tres stays pristine.
 	var cycle := (level_number - 1) / THEME_ORDER.size()
-	if cycle > 0:
+	if theme.theme_id == "warlord":
+		# Issue #154: Warlord's Domain scales by PLAYER COUNT at every
+		# cycle (Jesse's ruling) — the grid comes from the player-count
+		# curve, never from cycle enlargement. Puzzle keys still grow
+		# with cycle, exactly like every other theme (+cycle, cap 8).
+		theme = theme.duplicate() as LevelTheme
+		theme.grid_size = _warlord_grid_size()
+		if cycle > 0:
+			theme.puzzle_key_count = mini(8, theme.puzzle_key_count + cycle)
+	elif cycle > 0:
 		theme = theme.duplicate() as LevelTheme
 		# Issue #49: the apex arena is a fixed colosseum layout — exempt it
 		# from endless grid enlargement (96x96 hangs ProcGen for 5+ minutes).
@@ -2717,6 +2754,11 @@ func complete_level_objective() -> void:
 func _try_baked() -> bool:
 	if not select_baked(theme.theme_id, level_number, next_seed):
 		return false
+	# Issue #154 §3: the shipped warlord scene is the 1-player
+	# layout — parties of 2+ on cycle 1 take the procgen path (the
+	# quiet-fallback shape of the #138 seed rule; no loud failure).
+	if theme.theme_id == "warlord" and _warlord_player_count() != 1:
+		return false
 	var path := LevelData.baked_scene_path(theme.theme_id)
 	if path == "" or not ResourceLoader.exists(path):
 		return false
@@ -2908,8 +2950,12 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 				NetworkManager.active_run_slot)
 	# Jesse 2026-10-10 fix: send the collected states with the boarding RPC
 	# so clients don't rely on local capture.
+	# Issue #154: the party size is host-counted ONCE, here at
+	# departure, from the replicated lobby roster, and carried on
+	# the payload — every peer generates the same warlord grid.
+	var player_count := maxi(1, NetworkManager.lobby_members.size())
 	rpc("board_train_interior", theme_id, seed, new_level, peer_classes, saved_player_states,
-		expected_baked_hash(theme_id, new_level, seed))
+		expected_baked_hash(theme_id, new_level, seed), player_count)
 
 
 ## Station annex (issue #2 Phase 4): on an early departure every player
@@ -2996,7 +3042,7 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 ## saved_player_state, so every departure reset progression. The old
 ## go_to_station_net/change_level handoff did capture it.
 @rpc("any_peer", "call_local")
-func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}, baked_hash: String = "") -> void:
+func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}, baked_hash: String = "", player_count: int = 0) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
@@ -3032,6 +3078,8 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	Dungeon.next_theme_id = theme_id
 	Dungeon.next_seed = new_seed
 	Dungeon.next_level_number = new_level
+	# Issue #154: the host-counted party size rides the handoff.
+	Dungeon.next_player_count = player_count
 	# Runtime load: train_interior.gd references the Dungeon class, so a
 	# parse-time TrainInterior reference here would be a cyclic dependency
 	# (same pattern as the station.gd runtime load in _build_station_annex_content).

@@ -77,6 +77,7 @@ func _run() -> void:
 	_test_train_disembark_fallback()
 	_test_train_dressing()
 	_test_cycle_scaling()
+	_test_warlord_player_count_154()
 	_test_bake_integrity()
 	_test_baked_runtime()
 	_test_ai_director()
@@ -4006,6 +4007,119 @@ func _test_cycle_scaling() -> void:
 		# Cycle 0 must leave the theme untouched.
 		_assert(mini(96, base_grid + 0 * 40) == base_grid, "Cycle 0 grid unchanged (%s)" % tid)
 		_assert(mini(8, base_keys + 0) == base_keys, "Cycle 0 keys unchanged (%s)" % tid)
+
+
+func _test_warlord_player_count_154() -> void:
+	print("[Playtest] Warlord player-count scaling (issue #154)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_state: Dictionary = DungeonScript.saved_player_state
+	var nm = root.get_node("NetworkManager")
+	var prev_lobby = nm.lobby_members.duplicate()
+	# --- Resolution order, leg by leg on a bare instance (no
+	# generation): simulated seam > handoff > lobby size > 1.
+	var probe = DungeonScript.new()
+	DungeonScript.simulated_player_count = 3
+	DungeonScript.next_player_count = 2
+	_assert(probe._warlord_player_count() == 3,
+		"154: the simulated seam wins over the handoff value")
+	DungeonScript.simulated_player_count = 0
+	_assert(probe._warlord_player_count() == 2,
+		"154: the handoff value wins over the lobby size")
+	DungeonScript.next_player_count = 0
+	var three: Array[int] = [11, 22, 33]
+	nm.lobby_members = three
+	_assert(probe._warlord_player_count() == 3,
+		"154: the replicated lobby size is the third leg")
+	var none: Array[int] = []
+	nm.lobby_members = none
+	_assert(probe._warlord_player_count() == 1,
+		"154: no seam, no handoff, empty lobby resolves to 1 (solo by construction)")
+	probe.free()
+	# --- Generation through the real dungeon scene. Expectations
+	# are literals from Jesse's curve, never the SUT's formula.
+	var gen := func(theme_id: String, level: int, seed: int, sim: int) -> Dictionary:
+		DungeonScript.simulated_player_count = sim
+		DungeonScript.next_player_count = 0
+		DungeonScript.next_theme_id = theme_id
+		DungeonScript.next_seed = seed
+		DungeonScript.next_level_number = level
+		DungeonScript.saved_player_state = {}
+		for n in get_nodes_in_group("players"):
+			(n as Node).get_parent().remove_child(n as Node)
+		var d = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+		root.add_child(d)
+		var lay = d.get("_layout")
+		var th = d.get("theme")
+		var out := {
+			"grid": int(lay.grid_size) if lay != null else -1,
+			"theme_grid": int(th.get("grid_size")) if th != null else -1,
+			"keys": int(th.get("puzzle_key_count")) if th != null else -1,
+			"baked": str(d.get("_baked_hash")),
+		}
+		root.remove_child(d)
+		d.free()
+		for n in get_nodes_in_group("players"):
+			(n as Node).get_parent().remove_child(n as Node)
+		return out
+	# The curve via the seam (seed 777 is unpinned: every case
+	# generates, so the grid read is the cycle block's own output).
+	var c1: Dictionary = gen.call("warlord", 5, 777, 1)
+	_assert(c1["grid"] == 48 and c1["theme_grid"] == 48,
+		"154: warlord 1P grid is 48")
+	var c2: Dictionary = gen.call("warlord", 5, 777, 2)
+	_assert(c2["grid"] == 72 and c2["theme_grid"] == 72,
+		"154: warlord 2P grid is 72")
+	var c3: Dictionary = gen.call("warlord", 5, 777, 3)
+	_assert(c3["grid"] == 96 and c3["theme_grid"] == 96,
+		"154: warlord 3P grid is 96")
+	var c4: Dictionary = gen.call("warlord", 5, 777, 4)
+	_assert(c4["grid"] == 96,
+		"154: warlord 4P grid is 96 (the cap row)")
+	var c6: Dictionary = gen.call("warlord", 5, 777, 6)
+	_assert(c6["grid"] == 96,
+		"154: counts above 4 clamp to the 96 row")
+	# Every cycle: at count 1 the grid never enlarges, while puzzle
+	# keys still grow with cycle (warlord key base is 0).
+	var cc2: Dictionary = gen.call("warlord", 10, 777, 1)
+	_assert(cc2["grid"] == 48 and cc2["keys"] == 1,
+		"154: cycle-2 count-1 warlord stays 48, keys base+1")
+	var cc3: Dictionary = gen.call("warlord", 15, 777, 1)
+	_assert(cc3["grid"] == 48 and cc3["keys"] == 2,
+		"154: cycle-3 count-1 warlord stays 48, keys base+2")
+	var cc3p3: Dictionary = gen.call("warlord", 15, 777, 3)
+	_assert(cc3p3["grid"] == 96 and cc3p3["keys"] == 2,
+		"154: cycle-3 count-3 warlord is 96 by count (not cycle), keys base+2")
+	# Other themes' cycle scaling is untouched by the count.
+	var v2: Dictionary = gen.call("village", 6, 777, 3)
+	_assert(v2["grid"] == 72 and v2["keys"] == 3,
+		"154: village cycle-2 grid 72 / keys 3 regardless of party size (regression)")
+	# Baked selection both ways at the pinned seed (level 5, seed 1):
+	# the shipped warlord scene is the 1-player layout.
+	var b1: Dictionary = gen.call("warlord", 5, 1, 1)
+	_assert(b1["baked"] != "" and b1["grid"] == 48,
+		"154: count 1 on cycle 1 takes the shipped baked warlord")
+	var b2: Dictionary = gen.call("warlord", 5, 1, 2)
+	_assert(b2["baked"] == "" and b2["grid"] == 72,
+		"154: count 2 on cycle 1 falls back to procgen at grid 72")
+	# Carriage at the RPC boundary (the suite's established treatment
+	# for this handoff family — the payload + receiver assignment
+	# are the contract; resolution itself is pinned above).
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("Dungeon.next_player_count = player_count"),
+		"154: board_train_interior stores the carried count in the next_* family")
+	_assert(dsrc.contains("maxi(1, NetworkManager.lobby_members.size())"),
+		"154: the station departure host-counts the party from the lobby roster")
+	DungeonScript.simulated_player_count = 0
+	DungeonScript.next_player_count = 0
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_state
+	nm.lobby_members = prev_lobby
+	print("[Playtest] Warlord player-count scaling done")
 
 
 func _test_ai_director() -> void:
