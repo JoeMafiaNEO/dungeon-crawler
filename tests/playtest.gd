@@ -107,6 +107,7 @@ func _run() -> void:
 	_test_client_state_164_167()
 	_test_revive_race_163()
 	_test_mob_status_rings_173()
+	_test_seed_tiering_155()
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
@@ -10481,6 +10482,11 @@ func _test_farming_loop_phase3() -> void:
 	_assert(plot3.plot_state == "growing" and plot3.occupied_by == 2, "stranger cannot drive the machine")
 	_assert(plot3.prompt_text() == "Plot in use", "stranger prompt")
 	# --- Rarity weighting (defaults, Jesse's call) ---
+	# Issue #155 (ii): the rarity roll is the QUALITY tier's — a
+	# regular plot harvests sunroot without consulting it. This
+	# block tests the roll itself, so the fixture plot carries
+	# the fine tier.
+	plot.planted_tier = int(PlotScript.get_script_constant_map()["TIER_FINE"])
 	PlotScript.debug_harvest_roll = -1.0
 	var seen := {}
 	for i in 300:
@@ -10519,7 +10525,12 @@ func _test_farming_loop_phase3() -> void:
 	plot2.test_player = p
 	PlotScript.grant_starter_seeds(1)
 	plot2.plot_action() # till
-	plot2.plot_action() # plant
+	# Issue #155 (ii): the golden-crop leg plants the QUALITY
+	# tier — a regular planting harvests sunroot by design now,
+	# and only a fine plot's roll can reach the gourd.
+	PlotScript.grant_seeds(1, 1, int(PlotScript.get_script_constant_map()["TIER_FINE"]))
+	p.receive_item("seed_packet_fine")
+	plot2.plot_action(int(PlotScript.get_script_constant_map()["TIER_FINE"])) # plant quality
 	plot2.on_wave_cleared()
 	plot2.on_wave_cleared()
 	plot2.on_wave_cleared()
@@ -12241,7 +12252,7 @@ func _test_makewhole_142() -> void:
 	var rb := _body_of(msrc2, "func request_buy(")
 	_assert(rb.contains("_pending_dock") and not rb.contains('_tell(peer, "on_dock_bought"'),
 		"142: dock buy defers its success tell to the grant outcome")
-	_assert(_body_of(msrc2, "func _rollback_dock(").contains("grant_seeds(peer, -1)"),
+	_assert(_body_of(msrc2, "func _rollback_dock(").contains("grant_seeds(peer, -1"),
 		"142: dock rollback reverses the seed ledger credit, not just the cash")
 	var fsrc := FileAccess.get_file_as_string("res://scripts/dungeon/farm_plot.gd")
 	_assert(not _body_of(fsrc, "func _harvest(").contains("grant_stock"),
@@ -16336,6 +16347,218 @@ func _test_mob_status_rings_173() -> void:
 	print("[Playtest] Mob status rings (issue #173) done")
 
 
+## Issue #155 (ii): seed tiering — the Quality Seed Packet, the
+## tiered ledger, the harvest gate, and Jesse's tap/hold UX
+## semantics at the plot_action boundary. Literal expectations
+## throughout (price, rarity, prompt strings, crop ids).
+func _test_seed_tiering_155() -> void:
+	print("[Playtest] Seed tiering (issue #155 ii)...")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var EconScript: GDScript = load("res://scripts/dungeon/dock_economy.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var PickupScene: PackedScene = load("res://scenes/items/item_pickup.tscn")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var FC: Dictionary = PlotScript.get_script_constant_map()
+	var TIER_FINE: int = int(FC["TIER_FINE"])
+	# Static hygiene: snapshot the shared ledgers, restore after.
+	var seed_snap: Dictionary = PlotScript._seed_ledger.duplicate(true)
+	var cash_snap: Dictionary = EconScript._cash.duplicate(true)
+	var stock_snap: Dictionary = EconScript._stock.duplicate(true)
+	# The fine plot's gourd harvest below records the golden-crop
+	# dock trophy (a saved profile write) — snapshot the list so
+	# the section leaves the profile exactly as it found it.
+	var SM: Node = root.get_node("SaveManager")
+	var trophy_snap: Array = (SM.call("get_dock_trophies") as Array).duplicate()
+	EconScript.debug_reset()
+	PlotScript.clear_ledger(1)
+	var holder := Node3D.new()
+	holder.name = "SeedTier155Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "warrior")
+	holder.add_child(p)
+	p.global_position = Vector3.ZERO
+	# --- A: the item itself ------------------------------------
+	var fine_item: Resource = ItemDBNode.get_item("seed_packet_fine")
+	_assert(fine_item != null, "155ii: seed_packet_fine resolves in ItemDB")
+	_assert(int(fine_item.get("rarity")) == 2
+		and str(fine_item.get("display_name")) == "Quality Seed Packet",
+		"155ii: the quality packet is RARE, named as specced")
+	_assert(EconScript.sell_value_for("seed_packet_fine") == 0,
+		"155ii: quality packets are NOT sellable")
+	# --- B: starter seeds are REGULAR only ----------------------
+	PlotScript.grant_starter_seeds(1)
+	_assert(PlotScript.seed_count(1) == 3 and PlotScript.seed_count(1, TIER_FINE) == 0,
+		"155ii: starter seeds land in the REGULAR bucket only")
+	PlotScript.clear_ledger(1)
+	# --- C: the merchant row buys into the FINE bucket ----------
+	var merch = MerchScript.new()
+	holder.add_child(merch)
+	merch.set("test_player", p)
+	var fine_price := -1
+	for e in MerchScript.catalog():
+		if str((e as Dictionary).get("id")) == "seed_packet_fine":
+			fine_price = int((e as Dictionary).get("price"))
+	_assert(fine_price == 6,
+		"155ii: the catalog lists the quality packet at the placeholder price 6")
+	EconScript.grant_cash(1, 6)
+	merch.call("request_buy", "seed_packet_fine")
+	_assert(EconScript.cash_balance(1) == 0
+		and PlotScript.seed_count(1, TIER_FINE) == 1
+		and PlotScript.seed_count(1) == 0,
+		"155ii: the purchase spends 6 cash into the FINE bucket (regular untouched)")
+	# The #142 rollback form, driven on the tiered record shape the
+	# buy itself builds: cash back, FINE bucket debited, regular 0.
+	merch.call("_rollback_dock", {"peer": 1, "item_id": "seed_packet_fine",
+		"price": 6, "seed": true, "seed_tier": TIER_FINE, "stock": false})
+	_assert(EconScript.cash_balance(1) == 6
+		and PlotScript.seed_count(1, TIER_FINE) == 0
+		and PlotScript.seed_count(1) == 0,
+		"155ii: a failed quality purchase rolls the FINE bucket back")
+	# --- D: bucket isolation — NO substitution, either way ------
+	PlotScript.clear_ledger(1)
+	EconScript.debug_reset()
+	p.call("receive_item", "seed_packet")
+	p.call("receive_item", "seed_packet_fine")
+	var reg_bag0 := _farm_inv_count(p, "seed_packet")
+	var fine_bag0 := _farm_inv_count(p, "seed_packet_fine")
+	PlotScript.grant_seeds(1, 1) # regular 1, fine 0 in the LEDGER
+	var plotA = PlotScript.new()
+	holder.add_child(plotA)
+	plotA.set("test_player", p)
+	plotA.call("plot_action") # till
+	plotA.call("plot_action", TIER_FINE) # request quality with an EMPTY fine bucket
+	_assert(str(plotA.get("plot_state")) == "tilled"
+		and PlotScript.seed_count(1) == 1 and PlotScript.seed_count(1, TIER_FINE) == 0,
+		"155ii: an empty requested bucket REFUSES — no substitution from regular")
+	plotA.call("plot_action", 0) # plant regular
+	_assert(str(plotA.get("plot_state")) == "planted"
+		and int(plotA.get("planted_tier")) == 0 and PlotScript.seed_count(1) == 0
+		and _farm_inv_count(p, "seed_packet") == reg_bag0 - 1
+		and _farm_inv_count(p, "seed_packet_fine") == fine_bag0,
+		"155ii: the regular plant spends the regular bucket + bag packet only")
+	PlotScript.grant_seeds(1, 1, TIER_FINE) # fine 1, regular 0
+	var plotB = PlotScript.new()
+	holder.add_child(plotB)
+	plotB.set("test_player", p)
+	plotB.call("plot_action") # till
+	plotB.call("plot_action", 0) # request regular with an EMPTY regular bucket
+	_assert(str(plotB.get("plot_state")) == "tilled"
+		and PlotScript.seed_count(1, TIER_FINE) == 1,
+		"155ii: the refusal is symmetric — regular never spends the fine bucket")
+	plotB.call("plot_action", TIER_FINE) # plant quality
+	_assert(str(plotB.get("plot_state")) == "planted"
+		and int(plotB.get("planted_tier")) == TIER_FINE
+		and PlotScript.seed_count(1, TIER_FINE) == 0
+		and _farm_inv_count(p, "seed_packet_fine") == fine_bag0 - 1,
+		"155ii: the quality plant spends the fine bucket + the quality packet")
+	# --- E: tier replication through plot sync ------------------
+	var plotC = PlotScript.new()
+	holder.add_child(plotC)
+	plotC.call("sync_plot", "planted", 0, TIER_FINE)
+	_assert(str(plotC.get("plot_state")) == "planted"
+		and int(plotC.get("planted_tier")) == TIER_FINE,
+		"155ii: a replica learns the growing tier from sync_plot")
+	# --- F: the harvest gate ------------------------------------
+	PlotScript.debug_harvest_roll = 0.01 # squarely in the gourd band
+	var plotR = PlotScript.new()
+	holder.add_child(plotR)
+	_assert(str(plotR.call("_roll_harvest_item")) == "crop_sunroot",
+		"155ii: REGULAR plot + debug roll in the gourd band -> sunroot (roll NOT consulted)")
+	plotR.set("planted_tier", TIER_FINE)
+	_assert(str(plotR.call("_roll_harvest_item")) == "crop_goldengourd",
+		"155ii: FINE plot + roll 0.01 -> Golden Gourd (the 5% band)")
+	PlotScript.debug_harvest_roll = 0.15
+	_assert(str(plotR.call("_roll_harvest_item")) == "crop_moonmelon",
+		"155ii: FINE plot + roll 0.15 -> Moonmelon (the 25% band)")
+	PlotScript.debug_harvest_roll = 0.5
+	_assert(str(plotR.call("_roll_harvest_item")) == "crop_sunroot",
+		"155ii: FINE plot + roll 0.5 -> Sunroot (the 70% band)")
+	# Full loops: grow both planted plots out and harvest under a
+	# gourd-band debug roll — the tiers decide, the roll obeys.
+	PlotScript.debug_harvest_roll = 0.01
+	var gourd_before := _farm_inv_count(p, "crop_goldengourd")
+	var sun_before := _farm_inv_count(p, "crop_sunroot")
+	for i in 3:
+		plotB.call("on_wave_cleared")
+	plotB.call("plot_action") # harvest the FINE plot
+	_assert(_farm_inv_count(p, "crop_goldengourd") == gourd_before + 1
+		and str(plotB.get("plot_state")) == "untilled"
+		and int(plotB.get("planted_tier")) == 0,
+		"155ii: the fine plot's full loop harvests the gourd and resets tier+state")
+	for i in 3:
+		plotA.call("on_wave_cleared")
+	plotA.call("plot_action") # harvest the REGULAR plot
+	_assert(_farm_inv_count(p, "crop_sunroot") == sun_before + 1
+		and _farm_inv_count(p, "crop_goldengourd") == gourd_before + 1,
+		"155ii: the regular plot's full loop harvests SUNROOT under a gourd-band roll")
+	PlotScript.debug_harvest_roll = -1.0
+	# --- G: the three #160 mirror sites, tier-aware --------------
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	dun.call("_derive_dock_mirrors", 7, [
+		{"id": "seed_packet", "count": 2}, {"id": "seed_packet_fine", "count": 3}])
+	_assert(PlotScript.seed_count(7) == 2 and PlotScript.seed_count(7, TIER_FINE) == 3,
+		"155ii: derive-at-restore maps BOTH seed tiers from the bag")
+	dun.call("_derive_dock_mirrors", 7, [{"id": "seed_packet_fine", "count": 1}])
+	_assert(PlotScript.seed_count(7) == 0 and PlotScript.seed_count(7, TIER_FINE) == 1,
+		"155ii: derive SETS each tier independently (no cross-tier carry)")
+	dun.free()
+	PlotScript.grant_seeds(1, 5)
+	PlotScript.grant_seeds(1, 2, TIER_FINE)
+	p.call("_debit_dock_mirrors", 1, "seed_packet_fine", 1)
+	_assert(PlotScript.seed_count(1, TIER_FINE) == 1 and PlotScript.seed_count(1) == 5,
+		"155ii: disposing a quality packet debits the FINE bucket only")
+	var drive_claim := func(item_id: String, n: int) -> void:
+		var pk = PickupScene.instantiate()
+		pk.call("setup", ItemDBNode.get_item(item_id))
+		holder.add_child(pk)
+		pk.set("count", n)
+		pk.set("claimed", true)
+		pk.set("_claimer_peer", 1)
+		pk.set("_claim_since", 0.0)
+		p.call("receive_item", item_id, -1, str(pk.get_path()), n)
+	drive_claim.call("seed_packet_fine", 2)
+	_assert(PlotScript.seed_count(1, TIER_FINE) == 3,
+		"155ii: reclaiming a dropped quality packet credits the FINE bucket")
+	# --- H: Jesse's prompt forms ---------------------------------
+	var incumbents: Array = []
+	for n in get_nodes_in_group("players"):
+		incumbents.append([n, n.get_parent()])
+		n.get_parent().remove_child(n)
+	var p2 = PlayerScene.instantiate()
+	p2.set("class_id", "warrior")
+	holder.add_child(p2)
+	var plotD = PlotScript.new()
+	holder.add_child(plotD)
+	plotD.set("test_player", p2)
+	plotD.call("plot_action") # till (claims for peer 1)
+	_assert(str(plotD.call("prompt_text")) == "Plant seeds ({interact})",
+		"155ii: empty bag keeps the classic plant prompt")
+	p2.call("receive_item", "seed_packet")
+	_assert(str(plotD.call("prompt_text")) == "Plant seeds ({interact})",
+		"155ii: regular-only bag keeps the classic plant prompt")
+	p2.call("receive_item", "seed_packet_fine")
+	_assert(str(plotD.call("prompt_text")) == "E — Plant Seed · Hold E — Plant Quality Seed",
+		"155ii: both tiers held -> Jesse's tap/hold prompt, verbatim")
+	p2.call("consume_seed_item", "seed_packet")
+	_assert(str(plotD.call("prompt_text")) == "E — Plant Quality Seed",
+		"155ii: fine-only bag -> the tap plants quality")
+	p2.free()
+	plotD.free()
+	for pair in incumbents:
+		(pair[1] as Node).add_child(pair[0] as Node)
+	# --- Restore -------------------------------------------------
+	PlotScript._seed_ledger = seed_snap
+	EconScript._cash = cash_snap
+	EconScript._stock = stock_snap
+	(SM.get("_profile") as ConfigFile).set_value("meta", "dock_trophies", trophy_snap)
+	SM.call("save_game")
+	holder.free()
+	print("[Playtest] Seed tiering (issue #155 ii) done")
+
+
 class DockStub160 extends Node:
 	var pickups: Array = []
 
@@ -16544,7 +16767,7 @@ func _test_dock_mirror_invariant_160() -> void:
 		"160: disconnect clears both ledgers")
 	var fsrc: String = FileAccess.get_file_as_string("res://scripts/dungeon/farm_plot.gd")
 	_assert(fsrc.contains("fplayer.consume_dock_good(DockEconomy.FERTILIZER_ITEM)")
-		and fsrc.contains("player.consume_seed_item()"),
+		and fsrc.contains("player.consume_seed_item(item_id)"),
 		"160: farm consumption carries the self-guard")
 	var fisrc: String = FileAccess.get_file_as_string("res://scripts/fishing/fishing_director.gd")
 	_assert(fisrc.contains("player.consume_dock_good(DockEconomy.BAIT_ITEM)"),

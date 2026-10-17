@@ -333,6 +333,10 @@ func _credit_dock_mirrors(peer: int, taken_units: int) -> void:
 	match item.id:
 		"seed_packet":
 			FarmPlot.grant_seeds(peer, taken_units)
+		"seed_packet_fine":
+			# Issue #155 (ii): a reclaimed quality packet credits
+			# the FINE bucket (the dispose debit's mirror image).
+			FarmPlot.grant_seeds(peer, taken_units, FarmPlot.TIER_FINE)
 		"bait_lure":
 			DockEconomy.grant_stock(peer, DockEconomy.BAIT_ITEM, taken_units)
 		"farm_cash":

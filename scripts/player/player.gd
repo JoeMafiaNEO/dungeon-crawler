@@ -103,6 +103,13 @@ var hud: CanvasLayer
 var downed := false
 var _bleedout := 0.0
 var _revive_channel := 0.0
+## Issue #155 (ii): a deferred plant press at a tilled farm plot
+## (tap = the tap tier, hold PLANT_HOLD_SECONDS = quality). The
+## press arms only while the bag holds a quality packet — with
+## none held, E dispatches instantly as it always has.
+var _plant_hold_plot: Node = null
+var _plant_hold_t := 0.0
+var _plant_hold_fired := false
 ## Issue #163 Part 4: the peer the channel bank belongs to
 ## (0 = none); switching targets zeroes the bank.
 var _revive_target_peer := 0
@@ -1393,6 +1400,22 @@ func _input(event: InputEvent) -> void:
 			_command_interact_building()
 			return
 		if focused and (hud == null or not hud.is_paused):
+			# Issue #155 (ii): at a tilled plot (mine or unclaimed)
+			# with a quality packet in the bag, E becomes a
+			# tap/hold plant press, resolved by _tick_plant_hold
+			# (tap on release, quality at the hold threshold).
+			# Every other interact dispatches on press as before.
+			var target := _nearest_interact_node()
+			if target != null and target is FarmPlot \
+					and str(target.get("plot_state")) == "tilled" \
+					and (int(target.get("occupied_by")) == 0 \
+						or int(target.get("occupied_by")) == int(multiplayer.get_unique_id())) \
+					and _bag_count(FarmPlot.SEED_ITEM_FINE) > 0:
+				_plant_hold_plot = target
+				_plant_hold_t = 0.0
+				_plant_hold_fired = false
+				get_viewport().set_input_as_handled()
+				return
 			_try_pickup()
 	if event.is_action_pressed("build_menu"):
 		# Jesse 2026-10-11: build verb in command mode opens the RTS build menu.
@@ -1466,6 +1489,47 @@ func _tick_downed(delta: float) -> void:
 			hud.hide_revive_progress()
 	if _bleedout <= 0.0:
 		_do_death()
+
+
+## This player's bag count of an item (the bag mirrors the
+## server ledgers; client-side reads use it directly).
+func _bag_count(item_id: String) -> int:
+	var total := 0
+	for entry in inventory:
+		var item := (entry as Dictionary).get("item") as ItemData
+		if item != null and item.id == item_id:
+			total += int((entry as Dictionary).get("count", 0))
+	return total
+
+
+## Issue #155 (ii): resolve a deferred plant press (armed in
+## _input at a tilled plot while a quality packet is held).
+## Target binding mirrors the revive channel: if the plot stops
+## being the nearest tilled plot, the press evaporates. Held to
+## the threshold -> plant QUALITY (once); released short of it
+## -> the tap tier: regular when held, quality when it is the
+## only tier in the bag (Jesse's ruling).
+func _tick_plant_hold(delta: float) -> void:
+	if _plant_hold_plot == null:
+		return
+	var plot = _plant_hold_plot
+	var valid: bool = is_instance_valid(plot) and alive and gameplay_focused() \
+		and _nearest_interact_node() == plot \
+		and str(plot.get("plot_state")) == "tilled"
+	if not valid:
+		_plant_hold_plot = null
+		return
+	if Input.is_action_pressed("interact"):
+		_plant_hold_t += delta
+		if not _plant_hold_fired and _plant_hold_t >= FarmPlot.PLANT_HOLD_SECONDS:
+			_plant_hold_fired = true
+			(plot as FarmPlot).interact(self, FarmPlot.TIER_FINE)
+	elif not _plant_hold_fired:
+		var tier := FarmPlot.TIER_REGULAR if _bag_count(FarmPlot.SEED_ITEM) > 0 else FarmPlot.TIER_FINE
+		(plot as FarmPlot).interact(self, tier)
+		_plant_hold_plot = null
+	else:
+		_plant_hold_plot = null
 
 
 ## Teammate revive: hold E near a downed ally to channel a revive.
@@ -3118,6 +3182,7 @@ func _physics_process(delta: float) -> void:
 	if is_multiplayer_authority():
 		_tick_revive_channel(delta)
 		_tick_repair_channel(delta)
+		_tick_plant_hold(delta)
 		var mv := _move_vector()
 		var ix := mv.x
 		var iz := mv.y
@@ -5178,6 +5243,10 @@ func _debit_dock_mirrors(peer: int, item_id: String, count: int) -> void:
 		return
 	if item_id == "seed_packet":
 		FarmPlot.grant_seeds(peer, -mini(count, FarmPlot.seed_count(peer)))
+	elif item_id == "seed_packet_fine":
+		# Issue #155 (ii): disposing a quality packet debits the
+		# FINE bucket (clamped, like every mirror debit).
+		FarmPlot.grant_seeds(peer, -mini(count, FarmPlot.seed_count(peer, FarmPlot.TIER_FINE)), FarmPlot.TIER_FINE)
 	elif item_id == DockEconomy.CASH_ITEM:
 		DockEconomy.debit_cash(peer, count)
 	elif item_id == DockEconomy.BAIT_ITEM or item_id == DockEconomy.FERTILIZER_ITEM \
@@ -5450,16 +5519,17 @@ func _use_upgrade_kit(entry: Dictionary, index: int, item: ItemData) -> void:
 
 ## Issue #102 Phase 3: the server spends one seed when a farm plot is
 ## planted. Inventory is per-peer authoritative, so the server rpc_ids the
-## planter and the client drops one seed_packet from its own stack
-## (mirrors the receive_item grant path).
+## planter and the client drops one packet from its own stack
+## (mirrors the receive_item grant path). Issue #155 (ii): the item
+## is the SPENT TIER's packet (parameterized; default regular).
 @rpc("any_peer", "call_local")
-func consume_seed_item() -> void:
+func consume_seed_item(item_id: String = "seed_packet") -> void:
 	if not is_multiplayer_authority():
 		return
 	for i in range(inventory.size()):
 		var entry: Dictionary = inventory[i]
 		var item := entry["item"] as ItemData
-		if item != null and item.id == "seed_packet":
+		if item != null and item.id == item_id:
 			var had := int(entry["count"])
 			entry["count"] = int(entry["count"]) - 1
 			if int(entry["count"]) <= 0:

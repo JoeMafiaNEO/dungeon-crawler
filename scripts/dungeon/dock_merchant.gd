@@ -29,6 +29,9 @@ var _dock_seq := 0
 static func catalog() -> Array:
 	return [
 		{"id": DockEconomy.SEED_ITEM, "price": DockEconomy.PRICE_SEED},
+		# Issue #155 (ii): the Quality Seed Packet — merchant-only,
+		# never a mob drop; its price is Jesse's placeholder.
+		{"id": DockEconomy.SEED_ITEM_FINE, "price": DockEconomy.PRICE_SEED_FINE},
 		{"id": DockEconomy.BAIT_ITEM, "price": DockEconomy.PRICE_BAIT},
 		{"id": DockEconomy.FERTILIZER_ITEM, "price": DockEconomy.PRICE_FERTILIZER},
 		{"id": DockEconomy.SALVE_ITEM, "price": DockEconomy.PRICE_SALVE},
@@ -110,7 +113,8 @@ func request_buy(item_id: String) -> void:
 	# report_claim — money and goods never vanish silently.
 	_dock_seq += 1
 	_pending_dock[_dock_seq] = {"peer": peer, "item_id": item_id, "price": price,
-		"seed": item_id == DockEconomy.SEED_ITEM,
+		"seed": item_id == DockEconomy.SEED_ITEM or item_id == DockEconomy.SEED_ITEM_FINE,
+		"seed_tier": FarmPlot.TIER_FINE if item_id == DockEconomy.SEED_ITEM_FINE else FarmPlot.TIER_REGULAR,
 		"stock": item_id == DockEconomy.BAIT_ITEM or item_id == DockEconomy.FERTILIZER_ITEM,
 		"since": Time.get_ticks_msec() / 1000.0}
 	match item_id:
@@ -118,6 +122,10 @@ func request_buy(item_id: String) -> void:
 			# Phase 3 flagged seam: vendor seed purchases MUST update the
 			# server seed ledger (closed here).
 			FarmPlot.grant_seeds(peer, 1)
+		DockEconomy.SEED_ITEM_FINE:
+			# Issue #155 (ii): a quality purchase credits the FINE
+			# bucket — never the regular one.
+			FarmPlot.grant_seeds(peer, 1, FarmPlot.TIER_FINE)
 		DockEconomy.BAIT_ITEM, DockEconomy.FERTILIZER_ITEM:
 			DockEconomy.grant_stock(peer, item_id, 1)
 		_:
@@ -152,7 +160,7 @@ func _rollback_dock(rec: Dictionary) -> void:
 	var peer := int(rec.get("peer", 0))
 	DockEconomy.grant_cash(peer, int(rec.get("price", 0)))
 	if bool(rec.get("seed")):
-		FarmPlot.grant_seeds(peer, -1)
+		FarmPlot.grant_seeds(peer, -1, int(rec.get("seed_tier", FarmPlot.TIER_REGULAR)))
 	if bool(rec.get("stock")):
 		DockEconomy.spend_stock(peer, str(rec.get("item_id", "")), 1)
 	_tell(peer, "on_dock_toast", ["Inventory full — purchase refunded."])

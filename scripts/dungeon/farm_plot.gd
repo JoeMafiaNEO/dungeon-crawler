@@ -27,6 +27,18 @@ const HARVEST_LEGENDARY_W := 0.05
 const STARTER_SEED_COUNT := 3 ## Free seeds per misty-docks level entry. Jesse's call.
 
 const SEED_ITEM := "seed_packet"
+## Issue #155 (ii): seed tiers. REGULAR is the default everywhere;
+## the QUALITY (fine) tier is a separate ledger bucket and a
+## separate bag item, and it is the only tier whose harvest
+## consults the rarity roll. The server spends EXACTLY the
+## requested bucket — no substitution (Jesse's ruling,
+## 2026-10-16; better-first auto-spend was rejected).
+const TIER_REGULAR := 0
+const TIER_FINE := 1
+const SEED_ITEM_FINE := "seed_packet_fine"
+## Jesse's planting UX: holding E this long at a tilled plot
+## plants the QUALITY tier; a shorter tap plants the tap tier.
+const PLANT_HOLD_SECONDS := 0.35
 const CROP_COMMON := "crop_sunroot"
 const CROP_RARE := "crop_moonmelon"
 const CROP_LEGENDARY := "crop_goldengourd"
@@ -35,9 +47,12 @@ const DOCK_TROPHY_GOLDEN := "golden_crop"
 ## TEST SEAMS (never set in production): debug_harvest_roll >= 0 forces the
 ## harvest rarity roll; test_player overrides _player_for_peer().
 static var debug_harvest_roll: float = -1.0
-## Server-side seed ledger: peer id -> plantable seed count. Mirrors the
-## seed_packet stacks the server granted. Cleared per peer on disconnect;
-## Phase 4 vendor seed purchases must update this ledger too.
+## Server-side seed ledger: peer id -> {tier -> plantable seed
+## count} (issue #155 (ii): one bucket per tier). Mirrors the
+## seed_packet stacks the server granted. Cleared per peer on
+## disconnect; Phase 4 vendor seed purchases must update this
+## ledger too. Writers replace the per-peer dict (never mutate
+## it in place) so snapshot/restore in tests stays exact.
 static var _seed_ledger: Dictionary = {}
 
 var test_player: Player = null
@@ -52,18 +67,23 @@ var plot_index: int = 0
 var occupied_by: int = 0 ## peer id holding the plot; 0 = free
 var plot_state: String = "untilled" ## Phase 3 state machine state.
 var growth_ticks: int = 0 ## wave ticks since planting.
+var planted_tier: int = TIER_REGULAR ## Issue #155 (ii): the tier growing on this plot; replicated via sync_plot.
 
 
 ## Seed ledger (server-side only). Grant is additive per level entry so
 ## unspent seeds from an earlier misty-docks visit are never wiped.
+## Starter seeds are REGULAR only (issue #155 (ii)).
 static func grant_starter_seeds(peer: int) -> void:
-	_seed_ledger[peer] = seed_count(peer) + STARTER_SEED_COUNT
+	grant_seeds(peer, STARTER_SEED_COUNT)
 
 
 ## Issue #102 Phase 4: vendor seed purchases add to the ledger (the Phase 3
-## flagged seam). Additive like the starter grant.
-static func grant_seeds(peer: int, n: int) -> void:
-	_seed_ledger[peer] = seed_count(peer) + n
+## flagged seam). Additive like the starter grant. Issue #155 (ii): the
+## tier selects the bucket; existing callers default to REGULAR.
+static func grant_seeds(peer: int, n: int, tier: int = TIER_REGULAR) -> void:
+	var tiers: Dictionary = (_seed_ledger.get(peer, {}) as Dictionary).duplicate()
+	tiers[tier] = int(tiers.get(tier, 0)) + n
+	_seed_ledger[peer] = tiers
 
 
 ## Issue #102 Phase 4: death wipes the inventory mirror, so the ledger must
@@ -73,21 +93,29 @@ static func clear_ledger(peer: int) -> void:
 	_seed_ledger.erase(peer)
 
 
-static func seed_count(peer: int) -> int:
-	return int(_seed_ledger.get(peer, 0))
+static func seed_count(peer: int, tier: int = TIER_REGULAR) -> int:
+	var tiers: Dictionary = _seed_ledger.get(peer, {})
+	return int(tiers.get(tier, 0))
 
 
 ## Issue #160: derive-at-restore SETS the seed ledger from the bag
-## (the durable truth) — assignment, never accumulation.
-static func set_seed_count(peer: int, n: int) -> void:
-	_seed_ledger[peer] = n
+## (the durable truth) — assignment, never accumulation. Per tier
+## (issue #155 (ii)): setting one bucket never disturbs the other.
+static func set_seed_count(peer: int, n: int, tier: int = TIER_REGULAR) -> void:
+	var tiers: Dictionary = (_seed_ledger.get(peer, {}) as Dictionary).duplicate()
+	tiers[tier] = n
+	_seed_ledger[peer] = tiers
 
 
-static func _spend_seed(peer: int) -> bool:
-	var left := seed_count(peer)
+## Spend exactly one seed from the REQUESTED tier's bucket —
+## never a substitution from the other tier (Jesse's ruling).
+static func _spend_seed(peer: int, tier: int = TIER_REGULAR) -> bool:
+	var left := seed_count(peer, tier)
 	if left <= 0:
 		return false
-	_seed_ledger[peer] = left - 1
+	var tiers: Dictionary = (_seed_ledger.get(peer, {}) as Dictionary).duplicate()
+	tiers[tier] = left - 1
+	_seed_ledger[peer] = tiers
 	return true
 
 
@@ -104,6 +132,17 @@ func prompt_text() -> String:
 		return "Plot in use"
 	match plot_state:
 		"tilled":
+			# Issue #155 (ii): Jesse's planting prompts, keyed on
+			# what the local player's bag actually holds (the bag
+			# mirrors the server ledger). Both tiers held -> the
+			# tap/hold pair; only quality held -> the tap plants
+			# quality.
+			var reg := _local_bag_count(SEED_ITEM)
+			var fine := _local_bag_count(SEED_ITEM_FINE)
+			if reg > 0 and fine > 0:
+				return "E — Plant Seed · Hold E — Plant Quality Seed"
+			if fine > 0:
+				return "E — Plant Quality Seed"
 			return "Plant seeds ({interact})"
 		"planted", "growing":
 			return "Growing (%d waves left)" % _waves_left()
@@ -112,22 +151,25 @@ func prompt_text() -> String:
 	return "Till soil ({interact})"
 
 
-func interact(player: Player) -> void:
+## The interact entry. Issue #155 (ii): the tier rides the
+## request (default REGULAR — every pre-tier caller is regular);
+## the player's tap/hold plant press passes its resolved tier.
+func interact(player: Player, tier: int = TIER_REGULAR) -> void:
 	var me := int(multiplayer.get_unique_id())
 	if occupied_by != 0 and occupied_by != me:
 		if player.hud != null:
 			player.hud.toast("Someone is already farming this plot.")
 		return
 	if multiplayer.is_server():
-		plot_action()
+		plot_action(tier)
 	else:
-		rpc_id(NetworkManager.server_peer_id, "plot_action")
+		rpc_id(NetworkManager.server_peer_id, "plot_action", tier)
 
 
 ## The E flow, server-side: free plot -> claim + act; claimed plot -> act.
 ## Claim and the state action are one E (mirrors fishing's one-E claim+cast).
 @rpc("any_peer", "call_local")
-func plot_action() -> void:
+func plot_action(tier: int = TIER_REGULAR) -> void:
 	if not multiplayer.is_server():
 		return
 	var peer := _sender_peer()
@@ -141,8 +183,13 @@ func plot_action() -> void:
 		"untilled":
 			_till(peer)
 		"tilled":
-			if _spend_seed(peer):
-				_plant(peer)
+			# Issue #155 (ii): spend EXACTLY the requested tier's
+			# bucket. An empty requested bucket refuses — the
+			# other tier is never substituted.
+			if _spend_seed(peer, tier):
+				_plant(peer, tier)
+			elif tier == TIER_FINE:
+				rpc_id(peer, "on_plot_toast", "Out of quality seeds.")
 			else:
 				rpc_id(peer, "on_plot_toast", "Out of seeds.")
 		"planted", "growing":
@@ -197,15 +244,18 @@ func _till(peer: int) -> void:
 	rpc_id(peer, "on_plot_toast", "Soil tilled — E to plant seeds.")
 
 
-func _plant(peer: int) -> void:
-	# Tell the planter's client to drop one seed_packet from its stack
-	# (inventory is per-peer authoritative; the ledger already decremented).
+func _plant(peer: int, tier: int = TIER_REGULAR) -> void:
+	# Tell the planter's client to drop one packet OF THE SPENT
+	# TIER from its stack (inventory is per-peer authoritative;
+	# the ledger already decremented that tier's bucket).
+	var item_id := SEED_ITEM_FINE if tier == TIER_FINE else SEED_ITEM
 	var player := _player_for_peer(peer)
 	if player != null:
 		if peer == int(multiplayer.get_unique_id()):
-			player.consume_seed_item()
+			player.consume_seed_item(item_id)
 		else:
-			player.rpc_id(peer, "consume_seed_item")
+			player.rpc_id(peer, "consume_seed_item", item_id)
+	planted_tier = tier
 	plot_state = "planted"
 	growth_ticks = 0
 	_sync_plot()
@@ -260,6 +310,7 @@ func report_claim(taken: int, tag: int = 0) -> void:
 		rpc_id(peer, "record_dock_trophy", DOCK_TROPHY_GOLDEN)
 	plot_state = "untilled"
 	growth_ticks = 0
+	planted_tier = TIER_REGULAR
 	occupied_by = 0
 	rpc("sync_occupant", 0)
 	_sync_plot()
@@ -276,7 +327,12 @@ func _process(_delta: float) -> void:
 
 ## Harvest rarity: weighted roll, server-side.
 ## (Numbers are defaults for Jesse to tune; flagged in the report.)
+## Issue #155 (ii): a REGULAR plot never consults the roll — it
+## harvests Sunroot UNCONDITIONALLY, and debug_harvest_roll has
+## NO effect on it BY DESIGN. The roll is the QUALITY tier's.
 func _roll_harvest_item() -> String:
+	if planted_tier == TIER_REGULAR:
+		return CROP_COMMON
 	var roll := debug_harvest_roll if debug_harvest_roll >= 0.0 else randf()
 	if roll < HARVEST_LEGENDARY_W:
 		return CROP_LEGENDARY
@@ -323,15 +379,18 @@ func sync_occupant(peer_id: int) -> void:
 
 
 ## State broadcast, server -> everyone (mirrors sync_occupant; self-heals).
+## Issue #155 (ii): the planted tier rides the same broadcast —
+## a replica knows which tier is growing.
 @rpc("any_peer", "call_local")
-func sync_plot(state: String, ticks: int) -> void:
+func sync_plot(state: String, ticks: int, tier: int = TIER_REGULAR) -> void:
 	plot_state = state
 	growth_ticks = ticks
+	planted_tier = tier
 	_refresh_visual()
 
 
 func _sync_plot() -> void:
-	rpc("sync_plot", plot_state, growth_ticks)
+	rpc("sync_plot", plot_state, growth_ticks, planted_tier)
 	_refresh_visual()
 
 
@@ -375,6 +434,20 @@ func _local_player() -> Player:
 		if n.get_multiplayer_authority() == me:
 			return n as Player
 	return null
+
+
+## The local player's bag count of an item (prompts read the
+## bag — the client-visible mirror of the server ledger).
+func _local_bag_count(item_id: String) -> int:
+	var p := _local_player()
+	if p == null:
+		return 0
+	var total := 0
+	for entry in p.inventory:
+		var item := (entry as Dictionary).get("item") as ItemData
+		if item != null and item.id == item_id:
+			total += int((entry as Dictionary).get("count", 0))
+	return total
 
 
 func _toast_local(msg: String) -> void:

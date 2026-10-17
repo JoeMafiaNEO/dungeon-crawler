@@ -375,10 +375,15 @@ var _spawn_arrived_with_state := false
 ## re-derived (SET, never accumulated) at every state-apply. The
 ## tracked-stock enumeration comes from DockEconomy/FarmPlot's own
 ## grant sites: bait and fertilizer (merchant), every fish (catch),
-## every crop (harvest).
+## every crop (harvest). Issue #155 (ii): BOTH seed tiers derive
+## into their own FarmPlot buckets — the tracked set is written
+## in three places (this derivation, the dispose debit in
+## player.gd, the claim credit in item_pickup.gd) and a new
+## dock good must move all three together.
 func _derive_dock_mirrors(peer_id: int, inv_entries: Array) -> void:
 	var cash := 0
 	var seeds := 0
+	var seeds_fine := 0
 	var stock: Dictionary = {}
 	for e in inv_entries:
 		if not (e is Dictionary):
@@ -389,10 +394,13 @@ func _derive_dock_mirrors(peer_id: int, inv_entries: Array) -> void:
 			cash += n
 		elif item_id == FarmPlot.SEED_ITEM:
 			seeds += n
+		elif item_id == FarmPlot.SEED_ITEM_FINE:
+			seeds_fine += n
 		elif _is_tracked_dock_stock(item_id):
 			stock[item_id] = int(stock.get(item_id, 0)) + n
 	DockEconomy.set_mirrors(peer_id, cash, stock)
 	FarmPlot.set_seed_count(peer_id, seeds)
+	FarmPlot.set_seed_count(peer_id, seeds_fine, FarmPlot.TIER_FINE)
 
 
 func _is_tracked_dock_stock(item_id: String) -> bool:

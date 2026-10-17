@@ -19,6 +19,10 @@ extends RefCounted
 const FISH_SELL := {"fish_minnow": 2, "fish_riverbass": 5, "fish_glimmerfin": 12}
 const CROP_SELL := {"crop_sunroot": 3}
 const PRICE_SEED := 2
+## Issue #155 (ii): the Quality Seed Packet's price — a
+## PLACEHOLDER (6 farm cash per the spec) for Jesse to tune;
+## not a settled number.
+const PRICE_SEED_FINE := 6
 const PRICE_BAIT := 3
 const PRICE_FERTILIZER := 4
 const PRICE_SALVE := 5
@@ -38,6 +42,7 @@ const CASH_ITEM := "farm_cash"
 const BAIT_ITEM := "bait_lure"
 const FERTILIZER_ITEM := "fertilizer"
 const SEED_ITEM := "seed_packet"
+const SEED_ITEM_FINE := "seed_packet_fine"
 const SALVE_ITEM := "dock_salve"
 const DRAUGHT_ITEM := "harbor_draught"
 const CURRENT_ITEM := "swift_current"
