@@ -5806,11 +5806,65 @@ func _test_cipher_unlock() -> void:
 	_assert(mgr2.is_architect_unlocked(), "architect unlock persists")
 	mgr.free()
 	mgr2.free()
+	# Issue #168: drive the REAL lockbox popup through its Unlock
+	# BUTTON's pressed signal — never a direct handler call. The
+	# pressed+bind arity break shipped because existence asserts
+	# can't see a dead click; only the signal can.
+	var savemgr = root.get_node("SaveManager")
+	_assert(not savemgr.is_architect_unlocked(),
+		"168: architect locked before the button drive")
+	var HudScene2: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud2 = HudScene2.instantiate()
+	root.add_child(hud2)
+	hud2.show_lockbox_popup()
+	var popup2 = hud2.get("_cipher_popup")
+	_assert(popup2 != null, "168: lockbox popup opens")
+	var entries2: Array = popup2.find_children("", "LineEdit", true, false)
+	_assert(entries2.size() == 1, "168: lockbox popup builds one entry field")
+	var entry2 = entries2[0]
+	var submit2: Button = null
+	for b in popup2.find_children("", "Button", true, false):
+		if b.text == "Unlock":
+			submit2 = b
+	_assert(submit2 != null, "168: lockbox popup builds the Unlock button")
+	var feedback2 = entry2.get_parent().get_child(entry2.get_index() + 1) as Label
+	_assert(feedback2 != null, "168: lockbox popup builds the feedback label")
+	# Enter with a wrong phrase: the working path fires feedback.
+	entry2.text = "THE LOUD PEBBLE FORGETS NOTHING"
+	entry2.text_submitted.emit(entry2.text)
+	_assert(feedback2.text.begins_with("The lockbox clicks shut."),
+		"168: Enter with a wrong phrase fires the refusal feedback")
+	feedback2.text = ""
+	# The button with the same wrong phrase: the same feedback (the
+	# #168 regression — this click used to die silently at emit).
+	submit2.pressed.emit()
+	_assert(feedback2.text.begins_with("The lockbox clicks shut."),
+		"168: Unlock button with a wrong phrase fires the refusal feedback")
+	_assert(not savemgr.is_architect_unlocked(),
+		"168: wrong phrase via the button does not unlock")
+	_assert(bool(hud2.get("cipher_popup_open")),
+		"168: popup stays open after a wrong button submit")
+	# The button with the mason's key: unlocks and closes.
+	entry2.text = "THE QUIET STONE REMEMBERS EVERY HAND THAT BUILDS"
+	submit2.pressed.emit()
+	_assert(savemgr.is_architect_unlocked(),
+		"168: Unlock button with the correct phrase unlocks the Architect")
+	_assert(not bool(hud2.get("cipher_popup_open")),
+		"168: popup closes after a correct button submit")
+	# Immediate free, not queue_free: the success toast's tween is
+	# still live, and a deferred free lets it reach engine teardown.
+	hud2.free()
 	if backup.is_empty():
 		DirAccess.remove_absolute(cfg_path)
 	else:
 		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
 		f.store_buffer(backup)
+	# The button drive ran against the real SaveManager autoload:
+	# resync its in-memory profile with the restored file so the
+	# unlock above cannot leak into later sections.
+	savemgr.load_game()
+	_assert(not savemgr.is_architect_unlocked(),
+		"168: autoload profile restored after the button drive")
 	# Wiring: spawns, HUD popups, picker gating.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	_assert(dsrc.contains("func spawn_cipher_plaque"), "spawn_cipher_plaque RPC exists")

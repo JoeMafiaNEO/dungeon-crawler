@@ -1457,7 +1457,10 @@ func show_lockbox_popup() -> void:
 	vb.add_child(feedback)
 	var submit := Button.new()
 	submit.text = "Unlock"
-	submit.pressed.connect(_on_lockbox_submit.bind(entry, feedback))
+	# Issue #168: pressed emits no arguments, so binding the 3-param
+	# handler directly starved it (2 of 3 args) and the click died at
+	# emit. Submit the field's current text, exactly like Enter does.
+	submit.pressed.connect(func() -> void: _on_lockbox_submit(entry.text, entry, feedback))
 	vb.add_child(submit)
 	var close_hint := Label.new()
 	close_hint.text = PromptText.resolve(CLOSE_HINT_TEMPLATE)
