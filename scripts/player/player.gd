@@ -2959,6 +2959,13 @@ func switch_class(new_class: String) -> void:
 	_affinity_enemy_cd.clear()
 	# Issue #104 Phase 1: gear the new class may not equip comes off.
 	var unequipped := _unequip_class_restricted()
+	# Issue #113: switching INTO the architect grants the class
+	# tools with fresh-start semantics (equip_wrench=true) — the
+	# wrench lands equipped, the hammer bagged. Idempotent:
+	# tools kept bagged through a switch-away are revived, never
+	# doubled; switching away confiscates nothing.
+	if class_id == "architect":
+		ensure_architect_tools(true)
 	_recalc_stats()
 	hp = max_hp
 	health_changed.emit(hp, max_hp)

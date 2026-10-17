@@ -100,6 +100,7 @@ func _run() -> void:
 	_test_warlord_rebind_m1()
 	_test_station_roster_carry_forward()
 	_test_architect_tools_repair()
+	_test_switch_in_tool_grant_113()
 	_test_hammer_smash()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -15507,6 +15508,91 @@ func _test_architect_tools_repair() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] architect tools + repair done")
+
+
+## Issue #113 (switch-in grant): switch_class into the architect
+## grants the class tools with fresh-start semantics — exactly
+## one wrench stack (equipped WEAPON) and one hammer stack
+## (bagged); the machinery is idempotent, switch-away confiscates
+## nothing, and non-architect switches grant nothing.
+func _test_switch_in_tool_grant_113() -> void:
+	print("[Playtest] Switch-in tool grant (issue #113)...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	# [wrench stacks, wrench units, wrench slot, hammer stacks,
+	# hammer units, hammer slot] for one player's inventory.
+	var tool_state := func(pl) -> Array:
+		var ws := 0
+		var wu := 0
+		var wslot := "x"
+		var hs := 0
+		var hu := 0
+		var hslot := "x"
+		for e in pl.inventory:
+			var iid := str((e["item"] as Object).get("id"))
+			if iid == "field_wrench":
+				ws += 1
+				wu += int(e["count"])
+				wslot = str(e.get("equipped_slot", ""))
+			elif iid == "forge_hammer":
+				hs += 1
+				hu += int(e["count"])
+				hslot = str(e.get("equipped_slot", ""))
+		return [ws, wu, wslot, hs, hu, hslot]
+	var granted := [1, 1, "WEAPON", 1, 1, ""]
+	# --- Switch-in from each other class ------------------------
+	for from_class in ["warrior", "mage", "rogue"]:
+		var pl = PlayerScene.instantiate()
+		pl.class_id = from_class
+		root.add_child(pl)
+		pl.switch_class("architect")
+		_assert(tool_state.call(pl) == granted,
+			"113: %s->architect grants exactly one wrench (equipped) + one hammer (bagged)" % from_class)
+		pl.free()
+	# --- Round trip: never doubled, wrench re-equips ------------
+	var rt = PlayerScene.instantiate()
+	rt.class_id = "warrior"
+	root.add_child(rt)
+	rt.switch_class("architect")
+	rt.switch_class("warrior")
+	_assert(tool_state.call(rt) == [1, 1, "", 1, 1, ""],
+		"113: architect->warrior confiscates nothing (both tools bagged at 1/1)")
+	rt.switch_class("architect")
+	_assert(tool_state.call(rt) == granted,
+		"113: architect->warrior->architect keeps counts 1/1, wrench equipped again")
+	rt.free()
+	# --- Pre-held hammer: only the wrench is appended -----------
+	var pre = PlayerScene.instantiate()
+	pre.class_id = "warrior"
+	root.add_child(pre)
+	pre.receive_item("forge_hammer")
+	_assert(tool_state.call(pre) == [0, 0, "x", 1, 1, ""],
+		"113: fixture — the warrior pre-holds a bagged hammer")
+	pre.switch_class("architect")
+	_assert(tool_state.call(pre) == granted,
+		"113: a pre-held hammer gains ONLY the wrench (hammer count stays 1)")
+	pre.free()
+	# --- architect->mage: both tools stay bagged at 1/1 ---------
+	var am = PlayerScene.instantiate()
+	am.class_id = "architect"
+	root.add_child(am)
+	am.switch_class("mage")
+	_assert(tool_state.call(am) == [1, 1, "", 1, 1, ""],
+		"113: architect->mage leaves both tools bagged/unequipped at 1/1")
+	am.free()
+	# --- warrior->mage: nothing granted --------------------------
+	var wm = PlayerScene.instantiate()
+	wm.class_id = "warrior"
+	root.add_child(wm)
+	wm.switch_class("mage")
+	_assert(tool_state.call(wm) == [0, 0, "x", 0, 0, "x"],
+		"113: warrior->mage grants nothing")
+	wm.free()
+	current_scene = null
+	holder.free()
+	print("[Playtest] Switch-in tool grant (issue #113) done")
 
 
 func _test_hammer_smash() -> void:
