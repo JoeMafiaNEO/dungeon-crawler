@@ -33,6 +33,7 @@ func _run() -> void:
 	_test_legacy_migration()
 	_test_mp_slots()
 	_test_saves_ui()
+	_test_save_scroll_affordance_145()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -2293,6 +2294,46 @@ func _test_saves_ui() -> void:
 		pf.close()
 	elif FileAccess.file_exists(prof_path):
 		DirAccess.remove_absolute(prof_path)
+
+
+## Issue #145: the host save list's scrollbar affordance —
+## always shown, 14px wide, dressed in the menu's own palette.
+## Structural pins on the BUILT menu (behavior is the existing
+## save-list sections' to guard; this section guards the cue).
+func _test_save_scroll_affordance_145() -> void:
+	print("[Playtest] Save-scroll affordance (issue #145)...")
+	var mm = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(mm)
+	# The host tabs build lazily (host flow entry); build them
+	# through the menu's own builder, as navigation would.
+	if mm.get("_host_save_list") == null:
+		mm.call("_build_host_tabs")
+	var scroll := (mm.get("_host_save_list") as Container).get_parent() as ScrollContainer
+	_assert(scroll.vertical_scroll_mode == ScrollContainer.SCROLL_MODE_SHOW_ALWAYS,
+		"145: the host save list's vertical bar is SHOW_ALWAYS")
+	var vbar := scroll.get_v_scroll_bar()
+	_assert(absf(vbar.custom_minimum_size.x - 14.0) < 0.01,
+		"145: the bar is 14px wide")
+	_assert(vbar.has_theme_stylebox_override("scroll")
+		and vbar.has_theme_stylebox_override("grabber")
+		and vbar.has_theme_stylebox_override("grabber_highlight")
+		and vbar.has_theme_stylebox_override("grabber_pressed"),
+		"145: track + all three grabber state styleboxes are present")
+	var grab := vbar.get_theme_stylebox("grabber") as StyleBoxFlat
+	_assert(grab != null and grab.bg_color == Color(0.85, 0.70, 0.30),
+		"145: the grabber wears the menu's accent gold (no new color)")
+	var grab_hi := vbar.get_theme_stylebox("grabber_highlight") as StyleBoxFlat
+	var grab_press := vbar.get_theme_stylebox("grabber_pressed") as StyleBoxFlat
+	_assert(grab_hi != null and grab_press != null
+		and grab_hi.bg_color.get_luminance() > grab.bg_color.get_luminance()
+		and grab_press.bg_color.get_luminance() > grab_hi.bg_color.get_luminance(),
+		"145: highlight is brighter than the grabber, pressed is brightest")
+	var track := vbar.get_theme_stylebox("scroll") as StyleBoxFlat
+	_assert(track != null and track.border_width_left == 1 and track.border_width_top == 1
+		and track.bg_color == Color(0.08, 0.07, 0.10, 0.98),
+		"145: the track is the menu's dark inset with a 1px frame border")
+	mm.free()
+	print("[Playtest] Save-scroll affordance (issue #145) done")
 
 
 func _test_station_phase4() -> void:

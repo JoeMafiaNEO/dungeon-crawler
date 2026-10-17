@@ -743,6 +743,35 @@ func _build_host_tabs() -> void:
 	t1.add_child(save_label)
 	var save_scroll := ScrollContainer.new()
 	save_scroll.custom_minimum_size = Vector2(540, 130)
+	# Issue #145: the scrollbar is ALWAYS present and dressed in
+	# the menu's own palette (the framed panels' dark inset +
+	# accent gold), so "more saves below the fold" reads at a
+	# glance — Jesse missed a save in this list because the bar
+	# gave no cue. Affordance only: the scroll behavior itself
+	# (his approved exception on this surface) does not change;
+	# a full-length thumb honestly says the list fits.
+	save_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
+	var vbar := save_scroll.get_v_scroll_bar()
+	vbar.custom_minimum_size.x = 14
+	var gold := Color(0.85, 0.70, 0.30)
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(0.08, 0.07, 0.10, 0.98)
+	track.border_color = Color(gold, 0.55)
+	track.set_border_width_all(1)
+	track.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("scroll", track)
+	var grab := StyleBoxFlat.new()
+	grab.bg_color = gold
+	grab.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("grabber", grab)
+	var grab_hi := StyleBoxFlat.new()
+	grab_hi.bg_color = gold.lightened(0.25)
+	grab_hi.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("grabber_highlight", grab_hi)
+	var grab_press := StyleBoxFlat.new()
+	grab_press.bg_color = gold.lightened(0.45)
+	grab_press.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("grabber_pressed", grab_press)
 	t1.add_child(save_scroll)
 	_host_save_list = VBoxContainer.new()
 	_host_save_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
