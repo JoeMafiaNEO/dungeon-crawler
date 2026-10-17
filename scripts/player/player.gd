@@ -103,6 +103,13 @@ var hud: CanvasLayer
 var downed := false
 var _bleedout := 0.0
 var _revive_channel := 0.0
+## Issue #163 Part 4: the peer the channel bank belongs to
+## (0 = none); switching targets zeroes the bank.
+var _revive_target_peer := 0
+## Issue #163 Part 3: the server's revive-channel record for THIS
+## node's player (target peer + elapsed), validated like repair's.
+var _srv_revive_target := 0
+var _srv_revive_t := 0.0
 ## World-space downed marker (Label3D "!"), visible to teammates.
 var _downed_marker: Label3D = null
 const REVIVE_WINDOW := 30.0
@@ -1427,8 +1434,19 @@ func _tick_downed(delta: float) -> void:
 
 
 ## Teammate revive: hold E near a downed ally to channel a revive.
+## Issue #163: the channel is server-witnessed (start/complete go
+## through the server's validated record, mirroring the repair
+## channel) and its progress binds to one target (Part 4).
 func _tick_revive_channel(delta: float) -> void:
 	var mate := _nearest_downed_teammate()
+	var mate_peer := int(mate.get_multiplayer_authority()) if mate != null else 0
+	if mate_peer != _revive_target_peer:
+		if _revive_target_peer != 0:
+			_send_revive_stop()
+		_revive_channel = 0.0
+		_revive_target_peer = mate_peer
+		if mate_peer != 0:
+			_send_revive_start(mate_peer)
 	if mate != null and Input.is_action_pressed("interact") and (hud == null or not hud.is_paused):
 		_revive_channel += delta
 		if hud != null:
@@ -1437,11 +1455,138 @@ func _tick_revive_channel(delta: float) -> void:
 			_revive_channel = 0.0
 			if hud != null:
 				hud.hide_revive_progress()
-			mate.rpc_id(mate.get_multiplayer_authority(), "revive")
+			_send_revive_complete(mate_peer)
 	else:
 		if _revive_channel > 0.0 and hud != null:
 			hud.hide_revive_progress()
 		_revive_channel = 0.0
+		if _revive_target_peer != 0:
+			_send_revive_stop()
+			_revive_target_peer = 0
+
+
+func _send_revive_start(target_peer: int) -> void:
+	if multiplayer.is_server():
+		revive_start(target_peer)
+	else:
+		rpc_id(NetworkManager.server_peer_id, "revive_start", target_peer)
+
+
+func _send_revive_stop() -> void:
+	if multiplayer.is_server():
+		revive_stop()
+	else:
+		rpc_id(NetworkManager.server_peer_id, "revive_stop")
+
+
+func _send_revive_complete(target_peer: int) -> void:
+	if multiplayer.is_server():
+		revive_complete(target_peer)
+	else:
+		rpc_id(NetworkManager.server_peer_id, "revive_complete", target_peer)
+
+
+func _player_node_for_peer(peer: int) -> Node3D:
+	for n in get_tree().get_nodes_in_group("players"):
+		if int(n.get_multiplayer_authority()) == peer:
+			return n as Node3D
+	return null
+
+
+## Server intent endpoint (issue #163 Part 3): a channel-start is
+## recorded only if everything re-validates here — the reviver
+## alive and standing, the target downed, in range.
+@rpc("any_peer", "call_local")
+func revive_start(target_peer: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	if not alive or downed:
+		return
+	var target := _player_node_for_peer(target_peer)
+	if target == null or not bool(target.get("downed")):
+		return
+	if target.global_position.distance_to(global_position) > REVIVE_RANGE + 1.0:
+		return
+	_srv_revive_target = target_peer
+	_srv_revive_t = 0.0
+
+
+@rpc("any_peer", "call_local")
+func revive_stop() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	_srv_revive_target = 0
+	_srv_revive_t = 0.0
+
+
+## Server completion endpoint (issue #163 Part 3): accepted only
+## against the live record, for the recorded target, after a
+## plausible channel elapsed. The completion itself still lands
+## on the target's authority (revive()), from the server only.
+@rpc("any_peer", "call_local")
+func revive_complete(target_peer: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	if _srv_revive_target == 0 or target_peer != _srv_revive_target:
+		return
+	if _srv_revive_t < REVIVE_CHANNEL * 0.8:
+		return
+	_srv_revive_target = 0
+	_srv_revive_t = 0.0
+	if not alive or downed:
+		return
+	var target := _player_node_for_peer(target_peer)
+	if target == null or not bool(target.get("downed")):
+		return
+	if target.global_position.distance_to(global_position) > REVIVE_RANGE + 1.0:
+		return
+	if target_peer == multiplayer.get_unique_id():
+		target.call("revive")
+	else:
+		target.rpc_id(target_peer, "revive")
+
+
+## Server notice: the record ended server-side (target left the
+## downed state, out of range, reviver down). The client clears
+## its channel state so the loser ends cleanly and promptly.
+@rpc("any_peer", "call_local")
+func revive_channel_ended() -> void:
+	if int(get_multiplayer_authority()) != multiplayer.get_unique_id():
+		return
+	_revive_channel = 0.0
+	_revive_target_peer = 0
+	if hud != null:
+		hud.hide_revive_progress()
+
+
+## Server tick for revive records: re-validates continuously and
+## ends the record the moment the world leaves the channel's
+## premises (issue #163: the loser's channel ends when the target
+## leaves the downed state for ANY reason).
+func _server_revive_tick(delta: float) -> void:
+	if _srv_revive_target == 0:
+		return
+	_srv_revive_t += delta
+	var target := _player_node_for_peer(_srv_revive_target)
+	var valid := alive and not downed and target != null \
+		and bool(target.get("downed")) \
+		and target.global_position.distance_to(global_position) <= REVIVE_RANGE + 1.0
+	if not valid:
+		_srv_revive_target = 0
+		_srv_revive_t = 0.0
+		if int(get_multiplayer_authority()) != multiplayer.get_unique_id():
+			rpc_id(int(get_multiplayer_authority()), "revive_channel_ended")
+		else:
+			revive_channel_ended()
 
 
 func _nearest_downed_teammate() -> Node3D:
@@ -2870,13 +3015,20 @@ func _physics_process(delta: float) -> void:
 	# Issue #113 Phase 4: the server Smash cooldown ticks here too.
 	if multiplayer.is_server():
 		_server_repair_tick(delta)
+		_server_revive_tick(delta)
 		if _srv_smash_cd > 0.0:
 			_srv_smash_cd = maxf(0.0, _srv_smash_cd - delta)
 	if downed:
 		if is_multiplayer_authority():
 			_tick_downed(delta)
+			# Issue #163: keep the snapshot stream alive while downed —
+			# downed/alive ride it, and a stream that stops at the down
+			# strands every replica's flags at the fall (R1).
+			_emit_snapshot(delta)
 		return
 	if not alive:
+		if is_multiplayer_authority():
+			_emit_snapshot(delta)
 		return
 	if is_multiplayer_authority():
 		_tick_revive_channel(delta)
@@ -3007,18 +3159,7 @@ func _physics_process(delta: float) -> void:
 			if hud != null and hud.has_method("set_charge_meter"):
 				hud.set_charge_meter(_dagger_charge, true)
 		_update_pickup_prompt()
-		_snapshot -= delta
-		if _snapshot <= 0.0:
-			_snapshot = SNAPSHOT_INTERVAL
-			# Issue #72 Phase 1: include look yaw in the snapshot.
-			# Issue #104 Phase 3: equipped_ids ride the same push so peers
-			# (and the server, for the fishing gate) see held gear.
-			# Issue #126 Phase 1: rod_out rides along so peers render
-			# the rod-out held prop.
-			# Issue #133: never fire into a dead peer (the Oct 14 spam
-			# site — 10 Hz of not-connected errors after the host died).
-			if _mp_peer_connected():
-				rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp)
+		_emit_snapshot(delta)
 	else:
 		_refresh_puppet_presentation()
 		if _has_remote:
@@ -5324,10 +5465,18 @@ func _hide_downed_marker() -> void:
 		_downed_marker.visible = false
 
 
-## Called on the downed player's authority by a teammate's revive channel.
+## Called on the downed player's authority by the server, against
+## its validated channel record (issue #163 Part 3).
 @rpc("any_peer", "call_local")
 func revive() -> void:
 	if not is_multiplayer_authority():
+		return
+	# Issue #163 Part 3: the only road in is the server's validated
+	# completion (or a direct local call on this instance) — a
+	# bare client rpc is refused, so the channel record is the
+	# sole path and R3's unvalidated endpoint is closed.
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
 	if not downed:
 		return
@@ -5900,6 +6049,19 @@ func apply_forfeit_net() -> void:
 	apply_forfeit_local()
 
 
+## Issue #72/#104/#126/#133/#163: the 10 Hz state push. Extracted
+## (issue #163) so the downed and dead authority paths emit too —
+## downed/alive ride this stream, and replicas converge from it.
+func _emit_snapshot(delta: float) -> void:
+	_snapshot -= delta
+	if _snapshot <= 0.0:
+		_snapshot = SNAPSHOT_INTERVAL
+		# Issue #133: never fire into a dead peer (the Oct 14 spam
+		# site — 10 Hz of not-connected errors after the host died).
+		if _mp_peer_connected():
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed)
+
+
 ## Issue #164 (parts A + C): a puppet's presentation follows its
 ## CURRENT authority and identity, re-derived every tick. _ready
 ## hides the sprite/label and writes the name ONCE — if authority
@@ -5921,7 +6083,7 @@ func _refresh_puppet_presentation() -> void:
 
 
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false, max_hp_v: float = 0.0) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false, max_hp_v: float = 0.0, downed_v: bool = false) -> void:
 	if is_multiplayer_authority():
 		return
 	_remote_pos = pos
@@ -5934,6 +6096,16 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: fl
 	# no such ride: their max is fixed at spawn.)
 	if max_hp_v > 0.0:
 		max_hp = max_hp_v
+	# Issue #163 Part 1: downed rides the snapshot too — the
+	# continuously-applied truth channel. A replica whose flag
+	# went stale (the death path sent no clear) converges within
+	# one interval, marker included.
+	if downed_v != downed:
+		downed = downed_v
+		if downed:
+			_show_downed_marker()
+		else:
+			_hide_downed_marker()
 	level = lvl
 	alive = alive_v
 	if eq_ids != equipped_ids:

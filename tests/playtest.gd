@@ -102,6 +102,7 @@ func _run() -> void:
 	_test_ability_matrix_162()
 	_test_dock_mirror_invariant_160()
 	_test_client_state_164_167()
+	_test_revive_race_163()
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
@@ -9297,8 +9298,8 @@ func _test_snapshot_yaw() -> void:
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
 	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids;
 	# since issue #126 Phase 1, rod_out too).
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp)'),
-		"caller passes _yaw (and, since #167, max_hp)")
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed)'),
+		"caller passes _yaw (and, since #167, max_hp; since #163, downed)")
 	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
 	_assert(src.contains("rod_out_v: bool = false"), "push_snapshot takes rod_out_v (#126 P1)")
 	# _remote_yaw stored and interpolated with lerp_angle.
@@ -15242,6 +15243,132 @@ func _test_client_state_164_167() -> void:
 	print("[Playtest] Client-state repairs (issues #164/#167) done.")
 
 
+## Issue #163: the revive race — downed rides the snapshot (Part 1),
+## the wipe's inputs are authority-true (Part 2), completions are
+## accepted only against the server's validated channel record
+## (Part 3), and channel progress binds to its target (Part 4).
+func _test_revive_race_163() -> void:
+	print("[Playtest] Revive race (issue #163)...")
+	var holder := Node3D.new()
+	holder.name = "Revive163Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	# The target on its own authority (peer 1: completions land
+	# by direct call, as the server's self-target path does).
+	var t = PlayerScene.instantiate()
+	t.class_id = "warrior"
+	holder.add_child(t)
+	# Two revivers' SERVER copies (their request endpoints run here).
+	var srv_a = PlayerScene.instantiate()
+	srv_a.class_id = "cleric"
+	srv_a.set_multiplayer_authority(2)
+	holder.add_child(srv_a)
+	var srv_b = PlayerScene.instantiate()
+	srv_b.class_id = "cleric"
+	srv_b.set_multiplayer_authority(3)
+	holder.add_child(srv_b)
+	# A puppet as replicas (and the server) see a player.
+	var p = PlayerScene.instantiate()
+	p.class_id = "mage"
+	p.set_multiplayer_authority(5)
+	holder.add_child(p)
+	# --- Part 1: the snapshot carries downed; replicas apply it,
+	# marker included, and converge back when it clears.
+	p.call("push_snapshot", p.global_position, 0.0, 1, false, 0.0, {}, false, 100.0, true)
+	_assert(bool(p.get("downed")) and not bool(p.get("alive")),
+		"163P1: a downed snapshot flags the replica downed + not alive")
+	var marker = p.get_node_or_null("DownedMarker")
+	_assert(marker != null and marker.visible,
+		"163P1: the replica shows the downed marker from the snapshot")
+	_assert(not bool(p.get("alive")),
+		"163P2: the server's view of a downed player reads not-alive (the wipe's input)")
+	p.call("push_snapshot", p.global_position, 100.0, 1, true, 0.0, {}, false, 100.0, false)
+	_assert(not bool(p.get("downed")) and bool(p.get("alive")) and not marker.visible,
+		"163P1: the replica converges when the snapshot clears (self-heals within an interval)")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(_body_of(psrc, "func revive(").contains("NetworkManager.server_peer_id"),
+		"163P3: revive() itself refuses non-server senders (the record is the only road in)")
+	_assert(psrc.contains("_emit_snapshot(delta)"),
+		"163P1: the downed/dead authority paths keep emitting snapshots")
+	# --- Part 3: completions are refused without a live record.
+	t.set("downed", true)
+	t.set("alive", false)
+	t.set("hp", 0.0)
+	srv_a.call("revive_complete", 1)
+	_assert(bool(t.get("downed")),
+		"163P3: a bare completion RPC is refused (no record)")
+	srv_a.call("revive_start", 1)
+	_assert(int(srv_a.get("_srv_revive_target")) == 1,
+		"163P3: a validated channel-start creates the server record")
+	srv_a.set("_srv_revive_t", 3.0)
+	srv_a.call("revive_complete", 999)
+	_assert(bool(t.get("downed")) and int(srv_a.get("_srv_revive_target")) == 1,
+		"163P3: a completion against a different target is refused, record intact")
+	srv_a.set("_srv_revive_t", 0.5)
+	srv_a.call("revive_complete", 1)
+	_assert(bool(t.get("downed")),
+		"163P3: a completion with implausible elapsed time is refused")
+	srv_a.set("_srv_revive_t", 3.0)
+	srv_a.call("revive_complete", 1)
+	_assert(not bool(t.get("downed")) and bool(t.get("alive"))
+		and is_equal_approx(float(t.get("hp")), float(t.get("max_hp")) * 0.5)
+		and int(srv_a.get("_srv_revive_target")) == 0,
+		"163P3: a recorded, plausible completion revives the target and consumes the record")
+	# --- Part 3: the two-reviver race, through the new path —
+	# first completion wins, the second is a clean no-op.
+	t.set("downed", true)
+	t.set("alive", false)
+	t.set("hp", 0.0)
+	srv_a.call("revive_start", 1)
+	srv_b.call("revive_start", 1)
+	srv_a.set("_srv_revive_t", 3.0)
+	srv_b.set("_srv_revive_t", 3.0)
+	srv_a.call("revive_complete", 1)
+	var hp_won: float = t.get("hp")
+	srv_b.call("revive_complete", 1)
+	_assert(is_equal_approx(float(t.get("hp")), hp_won) and not bool(t.get("downed")),
+		"163P3: the second reviver's completion is a clean no-op (first wins)")
+	# --- Part 3: the server record ends the moment the target
+	# leaves the downed state for any reason (the loser's clean end).
+	t.set("downed", true)
+	t.set("alive", false)
+	srv_a.call("revive_start", 1)
+	_assert(int(srv_a.get("_srv_revive_target")) == 1, "163P3: the loser's record is live mid-channel")
+	t.set("downed", false) # the other channel's revive landed (or death resolved it)
+	srv_a.call("_server_revive_tick", 0.1)
+	_assert(int(srv_a.get("_srv_revive_target")) == 0,
+		"163P3: the record ends when the target leaves the downed state")
+	# --- Part 4: channel progress binds to its target.
+	var r = PlayerScene.instantiate()
+	r.class_id = "cleric"
+	r.set_multiplayer_authority(6)
+	holder.add_child(r)
+	var m1 = PlayerScene.instantiate()
+	m1.class_id = "mage"
+	m1.set_multiplayer_authority(7)
+	holder.add_child(m1)
+	m1.global_position = Vector3(1, 0, 0)
+	m1.set("downed", true)
+	var m2 = PlayerScene.instantiate()
+	m2.class_id = "rogue"
+	m2.set_multiplayer_authority(8)
+	holder.add_child(m2)
+	m2.global_position = Vector3(50, 0, 0)
+	m2.set("downed", true)
+	r.set("_revive_target_peer", 7)
+	r.set("_revive_channel", 2.9) # banked against m1
+	m1.global_position = Vector3(100, 0, 0)
+	m2.global_position = Vector3(1, 0, 0)
+	Input.action_press("interact")
+	r.call("_tick_revive_channel", 0.2)
+	Input.action_release("interact")
+	_assert(float(r.get("_revive_channel")) < 1.0 and int(r.get("_revive_target_peer")) == 8,
+		"163P4: switching targets zeroes the bank (0.2s on the new target, not 3.1s)")
+	holder.queue_free()
+	print("[Playtest] Revive race (issue #163) done.")
+
+
 class DockStub160 extends Node:
 	var pickups: Array = []
 
@@ -15662,7 +15789,9 @@ func _test_session_lost_133() -> void:
 	# --- Spam-guard pins: all three periodic send sites gated ---
 	_assert(psrc.contains("func _mp_peer_connected()"), "#133: player has the peer-connected gate")
 	var phys_body := _bughunt_body(psrc, "_physics_process")
-	_assert(phys_body.contains("if _mp_peer_connected():\n\t\t\t\trpc(\"push_snapshot\""),
+	# Issue #163: the send moved into _emit_snapshot (so the downed
+	# path emits too); the gate moved with it, invariant intact.
+	_assert(_body_of(psrc, "func _emit_snapshot(").contains("if _mp_peer_connected():\n\t\t\trpc(\"push_snapshot\""),
 		"#133: push_snapshot (the Oct 14 spam site) is gated")
 	_assert(phys_body.contains("if _mp_peer_connected():\n\t\t\t\t\trpc(\"set_stealthed\", false)"),
 		"#133: stealth-expiry RPC is gated")
