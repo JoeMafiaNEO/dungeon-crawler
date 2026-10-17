@@ -35,6 +35,7 @@ func _run() -> void:
 	_test_saves_ui()
 	_test_save_scroll_affordance_145()
 	_test_theme_lighting_readability()
+	_test_continued_reselect()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -2386,6 +2387,295 @@ func _test_theme_lighting_readability() -> void:
 		and ceq.call(apx.get("terrain_tint_high"), Color(0.78, 0.68, 0.52)),
 		"lighting apex: tint ramp untouched")
 	print("[Playtest] Theme lighting readability done")
+
+
+## Continued-run reselect (Jesse's walkthrough ruling): a roster
+## guest who picks their saved class restores verbatim; an off-class
+## pick behind a delivered saved-class notice spawns FRESH (the
+## saved character is replaced at the run's next save, never at
+## commit); with no notice on record the server restores regardless
+## of pick. Fixtures use the REAL roster save shape — entry keys as
+## _roster_entry writes them, player_state in get_state's key set
+## (the #137 discipline).
+func _test_continued_reselect() -> void:
+	print("[Playtest] Continued-run reselect...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var NMScript := load("res://scripts/autoload/network_manager.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var nsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
+	var NM: Node = root.get_node("NetworkManager")
+	var SM: Node = root.get_node("SaveManager")
+	var STM: Node = root.get_node("SteamManager")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+
+	# --- Fixture states (get_state's exact key set) ---
+	var mage_state := {
+		"level": 4, "xp": 70, "xp_next": 74, "stat_points": 3,
+		"bonus_damage": 2.0, "bonus_health": 5.0, "bonus_speed": 0.0, "bonus_aura": 0.0,
+		"inventory": [{"id": "apprentice_staff", "count": 1, "slot": "WEAPON", "upgrade_level": 0},
+			{"id": "health_potion", "count": 2, "slot": "", "upgrade_level": 0}],
+		"run_start_msec": 0, "run_kills": 9, "run_damage_dealt": 123.0,
+		"supermarket_cash": 0, "bounty_progress": {}, "totem_charges": 2,
+		"specialization": "pyro", "affinity": {"fire": 3}, "family_collection": {},
+		"equipped_special": "", "no_death_streak": 0,
+		"second_wind_armed": false, "second_wind_used": false}
+	var rogue_state := mage_state.duplicate(true)
+	rogue_state["level"] = 3
+	rogue_state["xp"] = 10
+	rogue_state["specialization"] = ""
+	rogue_state["affinity"] = {}
+	rogue_state["inventory"] = [{"id": "worn_dagger", "count": 1, "slot": "WEAPON", "upgrade_level": 0},
+		{"id": "swift_potion", "count": 1, "slot": "", "upgrade_level": 0}]
+	var warrior_state := mage_state.duplicate(true)
+	warrior_state["level"] = 6
+	warrior_state["xp"] = 5
+	warrior_state["specialization"] = ""
+	warrior_state["affinity"] = {}
+	warrior_state["inventory"] = [{"id": "rusty_sword", "count": 1, "slot": "WEAPON", "upgrade_level": 0},
+		{"id": "iron_sword", "count": 1, "slot": "", "upgrade_level": 0}]
+	var host_state := mage_state.duplicate(true)
+	host_state["level"] = 5
+	host_state["inventory"] = [{"id": "rusty_sword", "count": 1, "slot": "WEAPON", "upgrade_level": 0}]
+	var roster_fixture: Array = [
+		{"steam_id": 111, "player_name": "Host", "class_id": "warrior",
+			"player_state": host_state, "rts_faction": 0, "is_host": true},
+		{"steam_id": 222, "player_name": "MageGuest", "class_id": "mage",
+			"player_state": mage_state, "rts_faction": 2, "is_host": false},
+		{"steam_id": 333, "player_name": "RogueGuest", "class_id": "rogue",
+			"player_state": rogue_state, "rts_faction": 3, "is_host": false},
+		{"steam_id": 444, "player_name": "WarGuest", "class_id": "warrior",
+			"player_state": warrior_state, "rts_faction": 1, "is_host": false}]
+	var run_fixture := {"save_version": load("res://scripts/autoload/save_manager.gd").get_script_constant_map().get("SAVE_VERSION", 0),
+		"is_multiplayer": true, "theme_id": "village", "level_number": 1,
+		"seed": 1, "class_id": "warrior", "player_state": host_state,
+		"roster": roster_fixture}
+
+	# --- Snapshot everything the drives touch ---
+	var prev_notices: Dictionary = NM.get("saved_class_notices")
+	var prev_nm_roster: Array = NM.get("continued_session_roster")
+	var prev_sel: String = str(NM.get("selected_class_id"))
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_dstate: Dictionary = DungeonScript.saved_player_state
+	var prev_steam: int = int(STM.get("steam_id"))
+	var seed_ledger_before: Dictionary = PlotScript._seed_ledger.duplicate()
+	var slot_prior: Dictionary = SM.call("load_run", "mp", 7)
+
+	# The fixture goes on disk BEFORE any drive: pin (6) reads it
+	# back after the reselect to prove no write happened at commit.
+	SM.call("save_run", run_fixture, "mp", 7)
+
+	# --- Boot a real server dungeon on the fixture roster (the
+	# production capture: _ready takes the NM session store) ---
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	NM.set("continued_session_roster", roster_fixture.duplicate(true))
+	NM.set("saved_class_notices", {})
+	DungeonScript.next_theme_id = "village"
+	DungeonScript.next_seed = 1
+	DungeonScript.next_level_number = 1
+	DungeonScript.saved_player_state = {}
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dun)
+	dun.set("is_warlord", true)  # exercise the faction-reclaim path
+	_assert((dun.get("_session_roster") as Array).size() == 4,
+		"reselect: the dungeon captured the fixture roster")
+
+	# (1) Saved-class register -> restore verbatim.
+	dun.call("_register_class_as", 7, "mage", 222)
+	var node7 = dun.call("get_player_node", 7)
+	_assert(node7 != null, "reselect(1): restore peer spawned")
+	if node7 != null:
+		var st7: Dictionary = node7.call("get_state")
+		_assert(str(node7.get("class_id")) == "mage" and int(st7.get("level", 0)) == 4
+			and int(st7.get("xp", 0)) == 70 and int(st7.get("stat_points", 0)) == 3,
+			"reselect(1): saved state applied intact (class/level/xp/points)")
+		var ids7 := {}
+		for e in st7.get("inventory", []):
+			ids7[str(e.get("id", ""))] = int(e.get("count", 0))
+		_assert(int(ids7.get("health_potion", 0)) == 2 and ids7.has("apprentice_staff"),
+			"reselect(1): saved inventory applied intact")
+	_assert(int((dun.get("_continued_state_by_peer") as Dictionary).get(7, {}).get("level", 0)) == 4,
+		"reselect(1): the state is stashed for the continued-state pull")
+	_assert(not (dun.get("_reselected_peers") as Dictionary).has(7),
+		"reselect(1): a restore is not marked reselected")
+	_assert(int((dun.get("_pending_reclaims") as Dictionary).get(7, -1)) == 2,
+		"reselect(1): faction seat reclaimed from the roster entry")
+
+	# (4, server half) Off-class pick with NO notice on record ->
+	# restore regardless of pick (the race default).
+	dun.call("_register_class_as", 8, "warrior", 333)
+	var node8 = dun.call("get_player_node", 8)
+	_assert(node8 != null and str(node8.get("class_id")) == "rogue",
+		"reselect(4): no notice — the saved class is restored over the pick")
+	if node8 != null:
+		_assert(int((node8.call("get_state") as Dictionary).get("level", 0)) == 3,
+			"reselect(4): no notice — the saved state is applied")
+	_assert(not (dun.get("_reselected_peers") as Dictionary).has(8),
+		"reselect(4): no notice — not marked reselected")
+
+	# (2) Off-class pick BEHIND a delivered notice -> fresh spawn.
+	NM.set("saved_class_notices", {444: {"class_id": "warrior", "level": 6}})
+	dun.call("_register_class_as", 9, "mage", 444)
+	var node9 = dun.call("get_player_node", 9)
+	_assert(node9 != null and str(node9.get("class_id")) == "mage",
+		"reselect(2): the chosen class spawns")
+	if node9 != null:
+		var st9: Dictionary = node9.call("get_state")
+		_assert(int(st9.get("level", 0)) == 1 and int(st9.get("xp", -1)) == 0
+			and int(st9.get("xp_next", 0)) == 25 and int(st9.get("stat_points", -1)) == 0,
+			"reselect(2): fresh level/xp/xp_next/stat points")
+		_assert(float(st9.get("bonus_damage", -1.0)) == 0.0 and float(st9.get("bonus_health", -1.0)) == 0.0
+			and float(st9.get("bonus_speed", -1.0)) == 0.0 and float(st9.get("bonus_aura", -1.0)) == 0.0
+			and str(st9.get("specialization", "?")) == "" and (st9.get("affinity", {}) as Dictionary).is_empty(),
+			"reselect(2): fresh bonuses/specialization/affinity")
+		_assert(int(st9.get("totem_charges", -1)) == 0
+			and (node9.get("ability_cds") as Dictionary).is_empty()
+			and int(node9.get("selected_ability")) == 0,
+			"reselect(2): fresh totem charges (per class — a mage holds none), empty cooldowns, ability 0")
+		var ids9: Array = []
+		for e in st9.get("inventory", []):
+			ids9.append(str(e.get("id", "")))
+		_assert(ids9 == ["apprentice_staff"],
+			"reselect(2): starter-only inventory — no saved items bleed through")
+	_assert((dun.get("_reselected_peers") as Dictionary).has(9),
+		"reselect(2): marked reselected (the farm gate reads fresh)")
+	_assert((dun.get("_continued_state_by_peer") as Dictionary).get(9, {}).is_empty(),
+		"reselect(2): nothing stashed — the pull answers the definitive empty")
+	_assert(int((dun.get("_pending_reclaims") as Dictionary).get(9, -1)) == 1,
+		"reselect(2): faction seat reclaimed identically")
+
+	# (6) Save integrity: no write at commit; the new character is
+	# what the next save point collects.
+	var disk1: Dictionary = SM.call("load_run", "mp", 7)
+	var disk_entry1 := {}
+	for e in disk1.get("roster", []):
+		if int(e.get("steam_id", 0)) == 444:
+			disk_entry1 = e
+	_assert(str(disk_entry1.get("class_id", "")) == "warrior"
+		and int((disk_entry1.get("player_state", {}) as Dictionary).get("level", 0)) == 6,
+		"reselect(6): after a reselect with no save point, the disk roster is untouched")
+	if node9 != null:
+		var collected: Dictionary = dun.call("_roster_entry", 444, 9, node9)
+		_assert(str(collected.get("class_id", "")) == "mage"
+			and int((collected.get("player_state", {}) as Dictionary).get("level", 0)) == 1,
+			"reselect(6): the save seam collects the NEW character")
+		dun.set("_save_roster", [collected])
+		dun.set("_save_base", run_fixture.duplicate(true))
+		dun.set("_save_slot", 7)
+		dun.call("_write_multiplayer_save")
+		var disk2: Dictionary = SM.call("load_run", "mp", 7)
+		var seen := {}
+		for e in disk2.get("roster", []):
+			seen[int(e.get("steam_id", 0))] = e
+		_assert(str((seen.get(444, {}) as Dictionary).get("class_id", "")) == "mage",
+			"reselect(6): after a save point, the disk roster holds the new class")
+		_assert(str((seen.get(111, {}) as Dictionary).get("class_id", "")) == "warrior"
+			and int(((seen.get(111, {}) as Dictionary).get("player_state", {}) as Dictionary).get("level", 0)) == 5,
+			"reselect(6): an absent member's entry carries forward verbatim")
+
+	# (5) Host plan (the identical rule, factored pure).
+	var plan_a: Dictionary = NMScript.host_continue_plan(run_fixture, "warrior",
+		{111: {"class_id": "warrior", "level": 5}}, 111)
+	_assert(str(plan_a.get("class_id", "")) == "warrior"
+		and int((plan_a.get("player_state", {}) as Dictionary).get("level", 0)) == 5,
+		"reselect(5): host saved-class pick restores")
+	var plan_b: Dictionary = NMScript.host_continue_plan(run_fixture, "mage",
+		{111: {"class_id": "warrior", "level": 5}}, 111)
+	_assert(str(plan_b.get("class_id", "")) == "mage"
+		and (plan_b.get("player_state", {}) as Dictionary).is_empty(),
+		"reselect(5): host off-class pick behind their notice spawns fresh")
+	var plan_c: Dictionary = NMScript.host_continue_plan(run_fixture, "mage", {}, 111)
+	_assert(str(plan_c.get("class_id", "")) == "warrior"
+		and int((plan_c.get("player_state", {}) as Dictionary).get("level", 0)) == 5,
+		"reselect(5): host off-class pick with NO notice restores (race default)")
+	var plan_d: Dictionary = NMScript.host_continue_plan(run_fixture, "mage",
+		{111: {"class_id": "rogue", "level": 5}}, 111)
+	_assert(str(plan_d.get("class_id", "")) == "warrior",
+		"reselect(5): a notice for a different class does not arm a reset")
+
+	# --- Teardown of the dungeon drives ---
+	root.remove_child(dun)
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+
+	# (3)+(4, client half) The lobby picker behind a real menu.
+	STM.set("steam_id", 4242)
+	NM.set("saved_class_notices", {4242: {"class_id": "mage", "level": 4}})
+	NM.set("selected_class_id", "warrior")
+	var mm = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(mm)
+	mm.call("_build_lobby_class_row")
+	var panel = mm.get_node("%LobbyPanel")
+	var row = panel.get_node_or_null("LobbyClassRow") if panel != null else null
+	_assert(row != null, "reselect(3): the lobby class row builds in a continued lobby")
+	_assert(str(NM.get("selected_class_id")) == "mage",
+		"reselect(3): the notice presents the saved class as the pick")
+	if row != null:
+		var pressed_text := ""
+		for b in row.get_children():
+			if b is Button and (b as Button).button_pressed:
+				pressed_text = (b as Button).text
+		_assert(pressed_text == "Mage", "reselect(3): the saved class button is the pressed one")
+	mm.call("_on_lobby_class", true, "rogue")
+	_assert(str(NM.get("selected_class_id")) == "mage",
+		"reselect(3): an off-class pick does NOT commit before the warning")
+	_assert(str(mm.get("_pending_reselect_class")) == "rogue",
+		"reselect(3): the pick waits on the warning decision")
+	var dlg = mm.get("_reselect_dialog")
+	_assert(dlg != null and str(dlg.get("dialog_text")) == "Leave your saved Mage (Level 4) behind and start this run as a Level 1 Rogue? Your saved character is replaced when the run next saves.",
+		"reselect(3): the warning carries the gate's exact consequence text")
+	mm.call("_on_reselect_confirmed")
+	_assert(str(NM.get("selected_class_id")) == "rogue",
+		"reselect(3): confirm commits the new class")
+	# Cancel: pick a third class off the SAVED one, then cancel.
+	mm.call("_on_lobby_class", true, "warrior")
+	_assert(str(mm.get("_pending_reselect_class")) == "warrior",
+		"reselect(3): a further off-class pick warns again")
+	mm.call("_on_reselect_canceled")
+	_assert(str(NM.get("selected_class_id")) == "mage",
+		"reselect(3): cancel reverts the pick to the saved class")
+	# (4, client half) No notice: picks commit immediately, no dialog.
+	NM.set("saved_class_notices", {})
+	mm.call("_on_lobby_class", true, "warrior")
+	_assert(str(NM.get("selected_class_id")) == "warrior"
+		and str(mm.get("_pending_reselect_class")) == "",
+		"reselect(4): no notice — the picker behaves exactly as before")
+	root.remove_child(mm)
+	mm.free()
+
+	# --- Source pins: the wiring the drives stand on ---
+	var reg_body := _body_of(dsrc, "func _register_class_as(")
+	_assert(reg_body.contains("NetworkManager.saved_class_notices.has") and reg_body.contains("_reselected_peers[sender] = true"),
+		"reselect: the register rule gates the reset on the delivery record")
+	_assert(reg_body.contains("apply_continued_state\", {})"),
+		"reselect: the reselect branch pushes the definitive empty answer")
+	_assert(_body_of(nsrc, "func _continue_load_level(").contains("host_continue_plan(run, selected_class_id"),
+		"reselect: the host's continued load consumes the plan")
+	_assert(nsrc.contains("saved_class_notices[sid] = payload") and nsrc.contains("func receive_saved_class_notice("),
+		"reselect: the host records delivery when it pushes a notice")
+	_assert(msrc.contains("Your saved character is replaced when the run next saves."),
+		"reselect: the warning text lives in the menu")
+	_assert(_body_of(dsrc, "func _send_handshake(").contains("NetworkManager.selected_class_id"),
+		"reselect: the handshake sends the committed pick (the warning is structurally pre-commit)")
+
+	# --- Restore every snapshot ---
+	NM.set("saved_class_notices", prev_notices)
+	NM.set("continued_session_roster", prev_nm_roster)
+	NM.set("selected_class_id", prev_sel)
+	STM.set("steam_id", prev_steam)
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_dstate
+	PlotScript._seed_ledger = seed_ledger_before
+	if slot_prior.is_empty():
+		SM.call("clear_run", "mp", 7)
+	else:
+		SM.call("save_run", slot_prior, "mp", 7)
+	print("[Playtest] Continued-run reselect done")
 
 
 func _test_station_phase4() -> void:
@@ -11948,7 +12238,7 @@ func _test_session_roster_140() -> void:
 
 	# Source pins: register matches on the capture (never the bare
 	# static), _ready captures, NM holds the store.
-	var reg := dsrc.find("func register_class(")
+	var reg := dsrc.find("func _register_class_as(")
 	var reg_end := dsrc.find("\nfunc ", reg + 1)
 	var reg_body := dsrc.substr(reg, reg_end - reg)
 	_assert(reg_body.contains("_active_roster()"),
@@ -11997,7 +12287,7 @@ func _test_continued_pull_140() -> void:
 	early.free()
 
 	# Source pins.
-	var reg := dsrc.find("func register_class(")
+	var reg := dsrc.find("func _register_class_as(")
 	var reg_end := dsrc.find("\nfunc ", reg + 1)
 	_assert(dsrc.substr(reg, reg_end - reg).contains("_continued_state_by_peer[sender] = ps"),
 		"140L2: register_class stashes the matched state")
@@ -16193,11 +16483,11 @@ func _test_client_state_164_167() -> void:
 	_assert(not mn.contains("getFriendPersonaName(peer_id)"),
 		"164C: the raw peer id never reaches the persona API")
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(_body_of(dsrc, "func register_class(").contains("NetworkManager.peer_steam_ids[sender] = steam_id"),
+	_assert(_body_of(dsrc, "func _register_class_as(").contains("NetworkManager.peer_steam_ids[sender] = steam_id"),
 		"164C: register records the peer -> steam mapping for member_name")
 	_assert(not _body_of(dsrc, "func _send_handshake(").contains("get_unique_id()"),
 		"164C: the handshake never advertises a peer id as a steam id")
-	_assert(_body_of(dsrc, "func register_class(").contains("_find_roster_entry(sender)"),
+	_assert(_body_of(dsrc, "func _register_class_as(").contains("_find_roster_entry(sender)"),
 		"164C: a corrected register re-runs the roster match (the key repairs)")
 	# --- B: the roster re-offer (real dungeon; the #138 fixture).
 	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")

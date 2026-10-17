@@ -60,6 +60,16 @@ var lobby_open_roster: bool = false
 ## _ready; this store is set when a continued run launches and cleared
 ## when a session ends or a fresh one begins — never mid-session.
 var continued_session_roster: Array = []
+## Continued-run reselect: saved-class notices, keyed by Steam ID.
+## The host records an entry when it delivers a roster member's
+## notice (and its own at arm time); a guest records only its own on
+## receipt. An entry's presence is the session's proof the member
+## was told their saved class — the dungeon's register rule and the
+## host's own continued load consult it: no notice, no reset (the
+## race default — a session can never reset by a timing accident).
+## Cleared wherever continued_session_roster is cleared.
+var saved_class_notices: Dictionary = {}
+signal saved_class_notice_received
 ## Save file hosting: -1 = fresh run, else the slot index.
 var host_save_slot: int = -1
 ## Ready states for the lobby (Jesse 2026-10-11): peer_id -> bool.
@@ -168,6 +178,7 @@ func host_lobby(slot: int = 0) -> void:
 		connection_failed.emit("Steam isn't running. Open Steam, then try again.")
 		return
 	continued_session_roster = []  # Issue #140: a fresh lobby owns no roster.
+	saved_class_notices = {}
 	active_run_mode = SaveManager.MODE_MP
 	active_run_slot = slot
 	_reset_peer()
@@ -223,6 +234,7 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 ## Host a LAN game via ENet. No Steam lobby, no saves.
 func host_lan(port: int = LAN_PORT) -> void:
 	continued_session_roster = []  # Issue #140: fresh session owns no roster.
+	saved_class_notices = {}
 	transport = Transport.LAN
 	active_run_mode = "lan"
 	active_run_slot = 0
@@ -324,6 +336,50 @@ func lan_sync_roster(names: Dictionary) -> void:
 	lan_names = names.duplicate()
 	_refresh_members()
 	lobby_members_changed.emit()
+
+
+## Host -> all (addressed): a continued roster member's saved class.
+## Broadcast-shaped like the other lobby relays — every client hears
+## every notice but records only its own. Carries the saved class_id
+## and level the lobby warning presents.
+@rpc("authority", "call_remote", "reliable")
+func receive_saved_class_notice(for_steam_id: int, class_id: String, level: int) -> void:
+	if for_steam_id != 0 and for_steam_id == SteamManager.steam_id:
+		saved_class_notices[for_steam_id] = {"class_id": class_id, "level": level}
+		saved_class_notice_received.emit()
+
+
+## This peer's own saved-class notice ({} when none arrived).
+func my_saved_class_notice() -> Dictionary:
+	return saved_class_notices.get(SteamManager.steam_id, {})
+
+
+## Host-side: deliver saved-class notices for the armed continued
+## run — the host's own is computed locally from the save it armed;
+## each roster-matched member now in the lobby gets theirs pushed
+## (and the delivery recorded here, which is what the register rule
+## and the host's continued load consult). Idempotent per member;
+## called when the continued lobby is created and on every
+## membership change while the run is armed.
+func _push_saved_class_notices() -> void:
+	if not is_host or _continued_run.is_empty():
+		return
+	var my_id := SteamManager.steam_id if SteamManager.initialized else 0
+	for entry in _continued_run.get("roster", []):
+		if not (entry is Dictionary):
+			continue
+		var sid := int(entry.get("steam_id", 0))
+		if sid == 0 or saved_class_notices.has(sid):
+			continue
+		if sid != my_id and not lobby_members.has(sid):
+			continue
+		var ps: Dictionary = entry.get("player_state", {})
+		var payload := {"class_id": str(entry.get("class_id", "")),
+			"level": int(ps.get("level", 1))}
+		saved_class_notices[sid] = payload
+		if sid != my_id:
+			rpc("receive_saved_class_notice", sid,
+				str(payload["class_id"]), int(payload["level"]))
 
 
 ## Host-side: push the current LAN roster to every connected client.
@@ -428,6 +484,7 @@ func join_lobby(id: int) -> void:
 		connection_failed.emit("Steam isn't running. Open Steam, then try again.")
 		return
 	continued_session_roster = []  # Issue #140: a joiner owns no roster.
+	saved_class_notices = {}
 	_join_timeout = JOIN_TIMEOUT_S
 	Steam.joinLobby(id)
 
@@ -519,6 +576,7 @@ func _on_peer_connected(id: int) -> void:
 		_on_lan_peer_connected(id)
 	_refresh_members()
 	lobby_members_changed.emit()
+	_push_saved_class_notices()
 
 
 func _on_peer_disconnected(id: int) -> void:
@@ -543,6 +601,7 @@ func _on_peer_disconnected(id: int) -> void:
 func _on_lobby_chat_update(_lobby: int, _changed: int, _maker: int, _state: int) -> void:
 	_refresh_members()
 	lobby_members_changed.emit()
+	_push_saved_class_notices()
 
 
 func _refresh_members() -> void:
@@ -613,6 +672,7 @@ func leave_lobby() -> void:
 		transport = Transport.STEAM  # Reset to default.
 		Dungeon.continued_roster = []
 		continued_session_roster = []  # Issue #140: session store ends too.
+		saved_class_notices = {}
 		_reset_peer()
 		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		server_id = 1
@@ -626,6 +686,7 @@ func leave_lobby() -> void:
 	# session's rejoin matching (wrong slot's seats, phantom roster-lock).
 	Dungeon.continued_roster = []
 	continued_session_roster = []  # Issue #140: session store ends too.
+	saved_class_notices = {}
 	_reset_peer()
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	server_id = 1
@@ -748,6 +809,9 @@ func _on_continue_lobby_created() -> void:
 	Steam.setLobbyData(lobby_id, "loot_mult", str(host_loot_mult))
 	Steam.setLobbyJoinable(lobby_id, true)
 	_refresh_members()
+	# Continued-run reselect: the run is armed — record the host's
+	# own saved-class notice (and any already-present member's).
+	_push_saved_class_notices()
 	# Show the staging UI; the host starts the run from there.
 	continue_staging_ready.emit()
 
@@ -785,21 +849,40 @@ func start_continued_run() -> void:
 	_continue_load_level()
 
 
+## Continued-run reselect: the host's own load plan — the class to
+## spawn as and the saved state to apply ({} = a fresh reselect
+## spawn). The host's committed lobby pick stands when it differs
+## from the saved class AND the host's saved-class notice stands
+## recorded for THIS save's class (their warning fired in the lobby
+## picker, the identical rule every guest is under). Otherwise the
+## restore: saved class, saved state. Pure so tests can drive it.
+static func host_continue_plan(run: Dictionary, chosen_class: String,
+		notices: Dictionary, my_id: int) -> Dictionary:
+	var host_state := {}
+	var host_class := "warrior"
+	for entry in run.get("roster", []):
+		if entry is Dictionary and int(entry.get("steam_id", 0)) == my_id:
+			host_state = entry.get("player_state", {})
+			host_class = str(entry.get("class_id", "warrior"))
+			break
+	var notice: Dictionary = notices.get(my_id, {})
+	if chosen_class != host_class and not notice.is_empty() \
+			and str(notice.get("class_id", "")) == host_class:
+		return {"class_id": chosen_class, "player_state": {}}
+	return {"class_id": host_class, "player_state": host_state}
+
+
 ## Load the saved level for a continued multiplayer run.
 func _continue_load_level() -> void:
 	var run := _continued_run
 	_continued_run = {}
-	# Find the host's roster entry for their saved state.
-	var host_state := {}
-	var host_class := "warrior"
-	var my_id := SteamManager.steam_id
-	for entry in run.get("roster", []):
-		if int(entry.get("steam_id", 0)) == my_id:
-			host_state = entry.get("player_state", {})
-			host_class = str(entry.get("class_id", "warrior"))
-			break
-	selected_class_id = host_class
-	Dungeon.saved_player_state = host_state
+	# Find the host's roster entry for their saved state — behind a
+	# recorded notice, an off-class lobby pick reseeds them fresh
+	# (host_continue_plan carries the rule).
+	var plan := host_continue_plan(run, selected_class_id,
+		saved_class_notices, SteamManager.steam_id)
+	selected_class_id = str(plan.get("class_id", "warrior"))
+	Dungeon.saved_player_state = plan.get("player_state", {})
 	Dungeon.next_theme_id = str(run.get("theme_id", "village"))
 	Dungeon.next_seed = int(run.get("seed", randi()))
 	Dungeon.next_level_number = int(run.get("level_number", 1))

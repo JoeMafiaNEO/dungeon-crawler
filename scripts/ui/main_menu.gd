@@ -69,6 +69,7 @@ func _ready() -> void:
 	NetworkManager.session_lost.connect(_on_session_lost)
 	NetworkManager.baked_version_mismatch.connect(_on_baked_version_mismatch)
 	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
+	NetworkManager.saved_class_notice_received.connect(_on_saved_class_notice)
 	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
 	NetworkManager.lobby_members_changed.connect(_refresh_lobby_strip)
 	# Issue #9 Phase 1: refresh the leaderboard rows when downloads land.
@@ -164,6 +165,10 @@ func _solo_primary() -> Control:
 
 func _show_lobby(title: String, can_start: bool) -> void:
 	_in_lobby = true
+	# A fresh lobby showing starts the reselect interaction clean:
+	# no pick made yet, nothing awaiting a warning decision.
+	_lobby_class_touched = false
+	_pending_reselect_class = ""
 	for p in _phases:
 		p.visible = false
 	%LobbyPanel.visible = true
@@ -264,6 +269,14 @@ func _on_host_tab_changed(_tab: int) -> void:
 	FocusChain.apply(%HostPhase, in_page[0] if not in_page.is_empty() else null)
 
 
+## Continued-run reselect (lobby picker): whether the player has
+## deliberately picked a class in this lobby showing, the off-class
+## pick awaiting its warning decision, and the warning dialog.
+var _lobby_class_touched := false
+var _pending_reselect_class := ""
+var _reselect_dialog: ConfirmationDialog = null
+
+
 ## Class selection row in the lobby (hidden if the save locks classes).
 func _build_lobby_class_row() -> void:
 	var existing := %LobbyPanel.get_node_or_null("LobbyClassRow")
@@ -271,6 +284,12 @@ func _build_lobby_class_row() -> void:
 		existing.queue_free()
 	if NetworkManager.lobby_class_locked:
 		return
+	# Reselect: with a saved-class notice on record and no deliberate
+	# pick yet, the saved class is the presented pick — the restore
+	# choice the row's pressed state then follows.
+	var my_notice := NetworkManager.my_saved_class_notice()
+	if not my_notice.is_empty() and not _lobby_class_touched:
+		NetworkManager.selected_class_id = str(my_notice.get("class_id", NetworkManager.selected_class_id))
 	var row := HBoxContainer.new()
 	row.name = "LobbyClassRow"
 	row.add_theme_constant_override("separation", 8)
@@ -293,8 +312,58 @@ func _build_lobby_class_row() -> void:
 
 func _on_lobby_class(pressed: bool, cid: String) -> void:
 	AudioManager.sfx("ui_click")
-	if pressed:
-		NetworkManager.selected_class_id = cid
+	if not pressed:
+		return
+	_lobby_class_touched = true
+	# Reselect: an off-class pick behind a saved-class notice warns
+	# BEFORE the pick commits — selected_class_id (what the dungeon
+	# handshake will send) does not move until the player confirms.
+	var notice := NetworkManager.my_saved_class_notice()
+	if not notice.is_empty() and cid != str(notice.get("class_id", "")):
+		_pending_reselect_class = cid
+		_show_reselect_warning(notice, cid)
+		return
+	NetworkManager.selected_class_id = cid
+
+
+## The reselect warning: leaving the saved character behind is a
+## one-way door at the run's next save — say so before it commits.
+func _show_reselect_warning(notice: Dictionary, cid: String) -> void:
+	if _reselect_dialog == null:
+		_reselect_dialog = ConfirmationDialog.new()
+		_reselect_dialog.title = "Change Class?"
+		_reselect_dialog.ok_button_text = "Confirm"
+		_reselect_dialog.confirmed.connect(_on_reselect_confirmed)
+		_reselect_dialog.canceled.connect(_on_reselect_canceled)
+		add_child(_reselect_dialog)
+	_reselect_dialog.dialog_text = "Leave your saved %s (Level %d) behind and start this run as a Level 1 %s? Your saved character is replaced when the run next saves." % [
+		str(notice.get("class_id", "")).capitalize(),
+		int(notice.get("level", 1)), cid.capitalize()]
+	_reselect_dialog.popup_centered()
+
+
+func _on_reselect_confirmed() -> void:
+	if _pending_reselect_class != "":
+		NetworkManager.selected_class_id = _pending_reselect_class
+	_pending_reselect_class = ""
+
+
+func _on_reselect_canceled() -> void:
+	_pending_reselect_class = ""
+	# Revert the pick to the saved class (the restore choice) and
+	# re-present the row so the pressed button tells the truth.
+	var notice := NetworkManager.my_saved_class_notice()
+	if not notice.is_empty():
+		NetworkManager.selected_class_id = str(notice.get("class_id", NetworkManager.selected_class_id))
+	_build_lobby_class_row()
+
+
+## A saved-class notice landed while the lobby is up: re-present
+## the saved class as the restore pick — unless the player has
+## already made a deliberate pick this showing.
+func _on_saved_class_notice() -> void:
+	if _in_lobby and not _lobby_class_touched:
+		_build_lobby_class_row()
 
 
 ## Ready button for all players including the host; Start Dungeon (host only)
@@ -1312,8 +1381,10 @@ func _on_host_create_pressed() -> void:
 		if int(total) != 100:
 			AudioManager.sfx("ui_error")
 			return
-	# Lock class selection if hosting from a save.
-	NetworkManager.lobby_class_locked = (NetworkManager.host_save_slot >= 0)
+	# Continued-run reselect: hosting from a save no longer locks the
+	# lobby class row — picks are real now, governed by the saved-
+	# class notice + warning (Jesse's ruling: guests may reselect).
+	NetworkManager.lobby_class_locked = false
 	NetworkManager.lobby_ready.clear()
 	if _lan_mode_host:
 		var lan_slot := NetworkManager.host_save_slot

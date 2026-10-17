@@ -365,6 +365,11 @@ var _continued_state_by_peer: Dictionary = {}
 ## session — their next farm-theme entry takes the starter grant
 ## again (a death reset is a fresh start, not a continued arrival).
 var _death_reset_peers: Dictionary = {}
+## Continued-run reselect: peers the register rule treated as fresh
+## arrivals (off-class pick behind a delivered saved-class notice).
+## Consulted by _do_spawn's farm gate so the fresh build takes its
+## starter grant like any fresh joiner; cleared on disconnect.
+var _reselected_peers: Dictionary = {}
 ## Issue #160: set inside _do_spawn when the local player's spawn
 ## consumed a restored state; read by the same call's server block.
 var _spawn_arrived_with_state := false
@@ -619,7 +624,12 @@ func _reoffer_roster() -> void:
 func register_class(class_id: String, steam_id: int = 0) -> void:
 	if not multiplayer.is_server():
 		return
-	var sender := multiplayer.get_remote_sender_id()
+	_register_class_as(multiplayer.get_remote_sender_id(), class_id, steam_id)
+
+
+## The register treatment, split from its RPC shell so tests can
+## drive it with an explicit sender (the #135 pattern).
+func _register_class_as(sender: int, class_id: String, steam_id: int = 0) -> void:
 	# Jesse 2026-10-10 fix: record the peer -> Steam ID mapping, then match
 	# the joiner against the saved roster by Steam ID (not peer ID).
 	if steam_id != 0:
@@ -634,8 +644,18 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 			rpc_id(sender, "reject_join", "This lobby is continuing a saved run (roster-locked).")
 			return
 		if not roster_entry.is_empty():
-			# Returning player: restore their saved class and state.
-			class_id = str(roster_entry.get("class_id", class_id))
+			# Returning player. Continued-run reselect: an off-class
+			# pick stands ONLY behind a delivered saved-class notice
+			# (NetworkManager.saved_class_notices is the host's
+			# delivery record) — the guest saw the warning and
+			# confirmed in the lobby. No notice on record: the saved
+			# class is restored regardless of pick, exactly as before
+			# — a session can never reset by a timing accident.
+			var saved_class := str(roster_entry.get("class_id", class_id))
+			if class_id != saved_class and NetworkManager.saved_class_notices.has(int(roster_entry.get("steam_id", 0))):
+				_reselected_peers[sender] = true
+			else:
+				class_id = saved_class
 	peer_classes[sender] = class_id
 	_do_spawn(sender, class_id, _next_spawn_point(), int(peer_steam_ids.get(sender, 0)))
 	var node := get_player_node(sender)
@@ -643,8 +663,18 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 		rpc("spawn_player", sender, class_id, node.position, int(peer_steam_ids.get(sender, 0)))
 	# Send the saved state to the rejoiner (server also applies locally).
 	if not roster_entry.is_empty():
-		var ps: Dictionary = roster_entry.get("player_state", {})
-		if not ps.is_empty():
+		if _reselected_peers.has(sender):
+			# Reselect: a fresh character of the chosen class (the
+			# spawn above already built it). NO stash — the
+			# continued-state pull answers the definitive empty and
+			# the #140 latch closes on it; push that empty answer
+			# now as well. Dock mirrors derive from the FRESH bag
+			# through the same #160 derive the restore path uses.
+			rpc_id(sender, "apply_continued_state", {})
+			if node != null:
+				_derive_dock_mirrors(sender, node.get_state().get("inventory", []))
+		elif not (roster_entry.get("player_state", {}) as Dictionary).is_empty():
+			var ps: Dictionary = roster_entry.get("player_state", {})
 			# Issue #140 leg 2: stash it — the push below is one-shot
 			# and can drop across the guest's readiness gap; the pull
 			# (request_continued_state) answers from this stash.
@@ -1014,7 +1044,8 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 			else:
 				var roster_entry := _find_roster_entry(peer_id)
 				arrived = not roster_entry.is_empty() and not (
-					roster_entry.get("player_state", {}) as Dictionary).is_empty()
+					roster_entry.get("player_state", {}) as Dictionary).is_empty() \
+					and not _reselected_peers.has(peer_id)
 			if not arrived or _death_reset_peers.has(peer_id):
 				FarmPlot.grant_starter_seeds(peer_id)
 				if pnode != null:
@@ -1058,6 +1089,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	DockEconomy.reset_peer(peer_id)
 	FarmPlot.clear_ledger(peer_id)
 	_death_reset_peers.erase(peer_id)  # Issue #140 leg 2 stash hygiene.
+	_reselected_peers.erase(peer_id)  # Reselect marks die with the peer.
 	rpc("despawn_player", peer_id)
 	# Jesse 2026-10-10: clean up the leaver's Holy Light beams (including
 	# lingering heal zones) so they don't orphan.
