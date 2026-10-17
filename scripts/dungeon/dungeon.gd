@@ -249,6 +249,11 @@ var _warlord_late_join_tick := 0.0
 var _construction_check_tick := 0.0
 ## Issue #86 Bug 2: handshake retry timer. -1.0 = inactive.
 var _handshake_timer := -1.0
+## Issue #164: the steam id our last register_class carried (0 =
+## none yet); a late Steam init re-registers once with the real id.
+var _sent_sid := 0
+## Issue #164: cadence for the periodic roster re-offer.
+var _roster_reoffer_t := 0.0
 var market_cash_goal := 500
 ## Per-visit supermarket earnings (server). The gate unlocks on earnings, not
 ## held cash, so spending at vendors can never re-lock it (Phase 4: cash is
@@ -498,6 +503,7 @@ func _ready() -> void:
 		var host_id := multiplayer.get_unique_id()
 		peer_classes[host_id] = NetworkManager.selected_class_id
 		peer_steam_ids[host_id] = SteamManager.steam_id
+		NetworkManager.peer_steam_ids[host_id] = SteamManager.steam_id
 		_do_spawn(host_id, NetworkManager.selected_class_id, spawn_points[0], SteamManager.steam_id)
 	else:
 		# Pull-based: the server pushes new arrivals to everyone already in
@@ -572,9 +578,33 @@ func _send_handshake() -> void:
 		return
 	# Jesse 2026-10-10 fix: include our Steam ID so the server can match us
 	# against the saved roster (peer IDs change every session).
-	var my_sid := SteamManager.steam_id if SteamManager.initialized else multiplayer.get_unique_id()
+	# Issue #164: advertise NO id until Steam has initialized — the
+	# old fallback sent our PEER id as a steam id, and the bogus
+	# value keyed the roster match and every nameplate downstream.
+	var my_sid := SteamManager.steam_id if SteamManager.initialized else 0
+	_sent_sid = my_sid
 	rpc_id(NetworkManager.server_peer_id, "register_class", NetworkManager.selected_class_id, my_sid)
 	rpc_id(NetworkManager.server_peer_id, "request_state")
+
+
+## Issue #164: the register broadcast (spawn_player) is one-shot
+## and unacknowledged — a peer whose dungeon didn't exist at that
+## instant (mid scene-transition) never hears it, and the roster
+## pull only runs during the handshake window, so the puppet is
+## missing until the next scene change. Re-offer the whole roster
+## periodically from the server; spawn is idempotent (an existing
+## node just adopts any corrected steam id in _do_spawn).
+func _reoffer_roster() -> void:
+	if not multiplayer.is_server():
+		return
+	for pid in peer_classes:
+		# Unconditional: the server HAS every registered peer's
+		# node — the puppet a re-offer exists for is missing on a
+		# RECEIVING peer, which spawns what it lacks and ignores
+		# (adopts identity on) what it has.
+		var node := get_player_node(pid)
+		var pos: Vector3 = node.position if node != null else _next_spawn_point()
+		rpc("spawn_player", pid, peer_classes[pid], pos, int(peer_steam_ids.get(pid, 0)))
 
 
 @rpc("any_peer", "call_local")
@@ -586,6 +616,9 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 	# the joiner against the saved roster by Steam ID (not peer ID).
 	if steam_id != 0:
 		peer_steam_ids[sender] = steam_id
+		# Issue #164: NetworkManager.member_name translates through
+		# the same mapping (its callers pass peer ids).
+		NetworkManager.peer_steam_ids[sender] = steam_id
 	var roster_entry := _find_roster_entry(sender)
 	if not _active_roster().is_empty():
 		if roster_entry.is_empty() and not continued_open_lobby:
@@ -900,7 +933,13 @@ func _maybe_spawn_echo_ghost() -> void:
 
 
 func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) -> void:
-	if get_player_node(peer_id) != null:
+	var existing := get_player_node(peer_id)
+	if existing != null:
+		# Issue #164: a re-offer repairs identity on the live node —
+		# the corrected steam id lands here, and the puppet's
+		# nameplate re-resolves from it on its tick.
+		if steam_id != 0 and int(existing.get("steam_id")) != steam_id:
+			existing.set("steam_id", steam_id)
 		return
 	var p := PlayerScene.instantiate() as Player
 	p.name = "Player_%d" % peer_id
@@ -1088,6 +1127,15 @@ func _process(delta: float) -> void:
 					me_found = true
 					break
 			if me_found:
+				# Issue #164: if Steam finished initializing after
+				# our first register went out (which therefore
+				# carried no steam id), re-register ONCE with the
+				# real id — the server re-keys its peer->steam map
+				# and re-runs the roster match, repairing the key
+				# the first write couldn't carry.
+				if SteamManager.initialized and _sent_sid != SteamManager.steam_id:
+					_sent_sid = SteamManager.steam_id
+					rpc_id(NetworkManager.server_peer_id, "register_class", NetworkManager.selected_class_id, _sent_sid)
 				# Issue #140 leg 2: the node exists — the handshake is
 				# done, but keep pulling the continued state until the
 				# server's answer latches it (bounded tries).
@@ -1136,6 +1184,11 @@ func _process(delta: float) -> void:
 				var pp := pn as Player
 				if pp != null:
 					pp.server_tick_holy_light(delta)
+		# Issue #164: periodic roster re-offer (see _reoffer_roster).
+		_roster_reoffer_t -= delta
+		if _roster_reoffer_t <= 0.0:
+			_roster_reoffer_t = 5.0
+			_reoffer_roster()
 		if is_supermarket:
 			_process_supermarket(delta)
 		else:

@@ -1608,7 +1608,14 @@ func phaseshift_end() -> void:
 func push_snapshot(pos: Vector3, hp_v: float, alive_v: bool, shoot_v: bool = false) -> void:
 	_remote_pos = pos
 	_has_remote = true
-	hp = hp_v
+	# Issue #167: redraw the bar when the replicated hp moves —
+	# take_damage (the only other redraw) runs server-side only,
+	# so client bars froze at the spawn fraction. The fraction's
+	# max source is this replica's own max_hp, fixed at spawn
+	# (data x hp_scale in the spawn rpc) for the mob's whole life.
+	if hp_v != hp:
+		hp = hp_v
+		_update_health_bar()
 	if alive and not alive_v:
 		_shoot_playing = false
 		_play_death()

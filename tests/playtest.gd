@@ -101,6 +101,7 @@ func _run() -> void:
 	_test_hammer_smash()
 	_test_ability_matrix_162()
 	_test_dock_mirror_invariant_160()
+	_test_client_state_164_167()
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
@@ -9296,8 +9297,8 @@ func _test_snapshot_yaw() -> void:
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
 	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids;
 	# since issue #126 Phase 1, rod_out too).
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out)'),
-		"caller passes _yaw")
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp)'),
+		"caller passes _yaw (and, since #167, max_hp)")
 	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
 	_assert(src.contains("rod_out_v: bool = false"), "push_snapshot takes rod_out_v (#126 P1)")
 	# _remote_yaw stored and interpolated with lerp_angle.
@@ -15114,6 +15115,133 @@ func _test_ability_matrix_162() -> void:
 
 
 ## Issue #160 stub: records world drops spawned through the door.
+## Issues #164/#167: client-state repairs — puppet presentation
+## follows current authority (A), the roster is re-offered (B),
+## names resolve through the right id and re-resolve (C), and mob
+## bars redraw from the snapshot with max_hp riding it (D).
+func _test_client_state_164_167() -> void:
+	print("[Playtest] Client-state repairs (issues #164/#167)...")
+	var holder := Node3D.new()
+	holder.name = "ClientState164Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var NM: Variant = root.get_node("NetworkManager")
+	var fill_of := func(img: Image) -> int:
+		if img == null:
+			return -1
+		var y := img.get_height() / 2
+		var n := 0
+		for x in img.get_width():
+			var px := img.get_pixel(x, y)
+			if px.r > 0.4 and px.g < 0.45:
+				n += 1
+		return n
+	# --- A: a puppet readied under the wrong authority un-hides
+	# once authority corrects (the one-way latch is gone).
+	var p_wrong = PlayerScene.instantiate()
+	p_wrong.class_id = "warrior"
+	holder.add_child(p_wrong) # authority still the engine default
+	var spr_w = p_wrong.get("_sprite") as Node3D
+	var lbl_w = p_wrong.get_node_or_null("Label3D") as Label3D
+	_assert(spr_w != null and not spr_w.visible and lbl_w != null and not lbl_w.visible,
+		"164A: at the wrong authority the puppet readies hidden (the latch setup)")
+	p_wrong.set_multiplayer_authority(2)
+	p_wrong.call("_physics_process", 0.016)
+	_assert(spr_w.visible and lbl_w.visible,
+		"164A: the puppet becomes visible once its authority corrects")
+	# --- A/C: a correctly-spawned puppet never flickers, and its
+	# nameplate re-resolves when the advertised identity corrects.
+	var p_ok = PlayerScene.instantiate()
+	p_ok.class_id = "warrior"
+	p_ok.set_multiplayer_authority(2)
+	holder.add_child(p_ok)
+	var spr_o = p_ok.get("_sprite") as Node3D
+	var lbl_o = p_ok.get_node_or_null("Label3D") as Label3D
+	_assert(spr_o.visible and lbl_o.text == "Player 2",
+		"164A: a correctly-spawned puppet is visible with its fallback name")
+	NM.set("transport", 1) # Transport.LAN
+	var ln: Dictionary = NM.get("lan_names")
+	ln[2] = "Jesse"
+	p_ok.call("_physics_process", 0.016)
+	_assert(spr_o.visible, "164A: the correct puppet's presentation never flickers")
+	_assert(lbl_o.text == "Jesse",
+		"164C: the nameplate re-resolves when the advertised identity corrects")
+	ln.erase(2)
+	NM.set("transport", 0) # Transport.STEAM
+	# --- D (player side): max_hp rides the snapshot; the bar's
+	# fraction follows the NEW max, not the spawn max.
+	var wide0: int = fill_of.call(p_ok.get("_phb_image"))
+	p_ok.call("push_snapshot", p_ok.global_position, 50.0, 3, true, 0.0, {}, false, 200.0)
+	_assert(is_equal_approx(float(p_ok.get("max_hp")), 200.0) and is_equal_approx(float(p_ok.get("hp")), 50.0),
+		"167D: the snapshot's max_hp lands on the puppet")
+	var wide1: int = fill_of.call(p_ok.get("_phb_image"))
+	_assert(wide0 > 150 and wide1 > 20 and wide1 < 80,
+		"167D: the puppet bar reads 50/200 (a quarter), not 50/spawn-max")
+	# --- D (mob side): the snapshot handler redraws on hp change.
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var boar = MobScene.instantiate()
+	boar.setup(1, load("res://data/mobs/apex_boar.tres"), 1.0, 1.0, false, 1.0)
+	holder.add_child(boar)
+	var mwide0: int = fill_of.call(boar.get("_hb_image"))
+	boar.call("push_snapshot", boar.global_position, float(boar.get("max_hp")) * 0.5, true)
+	var mwide1: int = fill_of.call(boar.get("_hb_image"))
+	_assert(mwide0 > 150 and mwide1 < mwide0 - 50,
+		"167D: the mob bar redraws when the snapshot's hp moves")
+	boar.call("push_snapshot", boar.global_position, float(boar.get("max_hp")) * 0.5, true)
+	_assert(fill_of.call(boar.get("_hb_image")) == mwide1,
+		"167D: an unchanged snapshot leaves the mob bar as drawn")
+	# --- C (source): the persona lookup takes a Steam64, the
+	# handshake never advertises a peer id as one, and the dungeon
+	# records the mapping NetworkManager translates through.
+	var nmsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	var mn := _body_of(nmsrc, "func member_name(")
+	_assert(mn.contains("peer_steam_ids.get") and mn.contains("getFriendPersonaName(sid)"),
+		"164C: member_name translates peer -> Steam64 before the persona lookup")
+	_assert(not mn.contains("getFriendPersonaName(peer_id)"),
+		"164C: the raw peer id never reaches the persona API")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(_body_of(dsrc, "func register_class(").contains("NetworkManager.peer_steam_ids[sender] = steam_id"),
+		"164C: register records the peer -> steam mapping for member_name")
+	_assert(not _body_of(dsrc, "func _send_handshake(").contains("get_unique_id()"),
+		"164C: the handshake never advertises a peer id as a steam id")
+	_assert(_body_of(dsrc, "func register_class(").contains("_find_roster_entry(sender)"),
+		"164C: a corrected register re-runs the roster match (the key repairs)")
+	# --- B: the roster re-offer (real dungeon; the #138 fixture).
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	DungeonScript.next_theme_id = "village"
+	DungeonScript.next_seed = 1
+	DungeonScript.next_level_number = 1
+	DungeonScript.saved_player_state = {}
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	var pc: Dictionary = dgn.get("peer_classes")
+	pc[2] = "mage"
+	var psm: Dictionary = dgn.get("peer_steam_ids")
+	psm[2] = 777
+	dgn.call("_reoffer_roster")
+	var n2 = dgn.call("get_player_node", 2)
+	_assert(n2 != null, "164B: a peer that missed the broadcast gains its puppet on re-offer")
+	_assert(n2 != null and int(n2.get("steam_id")) == 777,
+		"164B: the re-offered puppet carries the recorded steam id")
+	psm[2] = 888
+	dgn.call("_reoffer_roster")
+	var count2 := 0
+	for c in dgn.get_node("Players").get_children():
+		if c.name == "Player_2":
+			count2 += 1
+	_assert(count2 == 1, "164B: a re-offer against a complete roster creates no duplicates")
+	var n2b = dgn.call("get_player_node", 2)
+	_assert(n2b != null and int(n2b.get("steam_id")) == 888,
+		"164B/C: the re-offer repairs the live node's steam id")
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	root.remove_child(dgn)
+	dgn.free()
+	holder.queue_free()
+	print("[Playtest] Client-state repairs (issues #164/#167) done.")
+
+
 class DockStub160 extends Node:
 	var pickups: Array = []
 

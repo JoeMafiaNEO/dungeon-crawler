@@ -572,11 +572,26 @@ func _refresh_members() -> void:
 				lobby_members.append(sid)
 
 
+## Issue #164: peer -> Steam64 mapping, recorded by the dungeon's
+## register handshake (the only place both ids meet). Some
+## member_name callers pass a peer id, others a Steam64.
+var peer_steam_ids: Dictionary = {}
+
+
 func member_name(peer_id: int) -> String:
 	if transport == Transport.LAN:
 		return str(lan_names.get(peer_id, "Player %d" % peer_id))
 	if SteamManager.initialized:
-		return Steam.getFriendPersonaName(peer_id)
+		# Issue #164: Steam.getFriendPersonaName takes a Steam64 —
+		# translate a peer id through the recorded mapping first;
+		# an unmapped value is treated as a Steam64 (the roster /
+		# bounty callers pass one directly).
+		var sid := int(peer_steam_ids.get(peer_id, 0))
+		if sid == 0:
+			sid = peer_id
+		var n := Steam.getFriendPersonaName(sid)
+		if n != "":
+			return n
 	return "Player %d" % peer_id
 
 

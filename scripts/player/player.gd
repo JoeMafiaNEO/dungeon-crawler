@@ -3018,8 +3018,9 @@ func _physics_process(delta: float) -> void:
 			# Issue #133: never fire into a dead peer (the Oct 14 spam
 			# site — 10 Hz of not-connected errors after the host died).
 			if _mp_peer_connected():
-				rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out)
+				rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp)
 	else:
+		_refresh_puppet_presentation()
 		if _has_remote:
 			global_position = global_position.lerp(_remote_pos, clampf(delta * 10.0, 0.0, 1.0))
 			# Issue #72 Phase 1: interpolate yaw (short-way, no snapping).
@@ -5899,14 +5900,40 @@ func apply_forfeit_net() -> void:
 	apply_forfeit_local()
 
 
+## Issue #164 (parts A + C): a puppet's presentation follows its
+## CURRENT authority and identity, re-derived every tick. _ready
+## hides the sprite/label and writes the name ONCE — if authority
+## or the advertised steam id was wrong at that instant (the
+## engine-default authority at _ready, a Steam layer that had
+## not initialized when the handshake went out), the wrong state
+## latched forever. Re-asserting here removes the permanence
+## instead of hunting the trigger.
+func _refresh_puppet_presentation() -> void:
+	if _sprite != null and not _sprite.visible:
+		_sprite.visible = true
+	var lbl := get_node_or_null("Label3D") as Label3D
+	if lbl != null:
+		if not lbl.visible:
+			lbl.visible = true
+		var nm := _display_name()
+		if lbl.text != nm:
+			lbl.text = nm
+
+
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false, max_hp_v: float = 0.0) -> void:
 	if is_multiplayer_authority():
 		return
 	_remote_pos = pos
 	_remote_yaw = yaw_v
 	_has_remote = true
 	hp = hp_v
+	# Issue #167 (gate condition): max_hp rides the snapshot — a
+	# leveled puppet's max moves during the run, and a bar drawn
+	# against the spawn max reads the wrong fraction. (Mobs need
+	# no such ride: their max is fixed at spawn.)
+	if max_hp_v > 0.0:
+		max_hp = max_hp_v
 	level = lvl
 	alive = alive_v
 	if eq_ids != equipped_ids:
