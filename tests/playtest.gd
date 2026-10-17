@@ -25,6 +25,7 @@ func _run() -> void:
 	_test_rts_squads()
 	_test_rts_squad_reorder_no_leak()
 	_test_rts_command_part_a_165()
+	_test_rts_hardening_part_b_165()
 	_test_save_roundtrip()
 	_test_save_profile()
 	_test_save_collections()
@@ -683,7 +684,7 @@ func _test_rts_command_part_a_165() -> void:
 	# (d, suite half) PickArea exists on the pick layer.
 	var pick = villager.get_node_or_null("PickArea")
 	_assert(pick != null and int(pick.get("collision_layer")) == 4,
-		"165A: PickArea rides the dedicated pick layer (17)")
+		"165A: PickArea rides the dedicated pick layer (4)")
 	# (e) D5: selection replicates — the rpc executes, the ring
 	# shows and clears; death clears it too.
 	var fresh = mk_unit.call(501, 0, "spearman", Vector3(370, 0, 370))
@@ -724,6 +725,185 @@ func _test_rts_command_part_a_165() -> void:
 		if is_instance_valid(n):
 			n.add_to_group("rts_manager")
 	print("[Playtest] RTS command Part A (issue #165) done.")
+
+
+func _test_rts_hardening_part_b_165() -> void:
+	print("[Playtest] RTS hardening Part B (issues #165/#170)...")
+	# Fixtures staged far from the origin arenas like Part A;
+	# sender players carry unique fixture authorities (77xx)
+	# no real peer or earlier section uses.
+	var holder := Node3D.new()
+	holder.name = "RTS165BHolder"
+	root.add_child(holder)
+	current_scene = holder
+	var UnitScript: GDScript = load("res://scripts/rts/unit.gd")
+	var BuildingScript: GDScript = load("res://scripts/rts/building.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var mk_unit := func(id: int, faction: int, utype: String, pos: Vector3) -> Node3D:
+		var u = UnitScript.new()
+		u.name = "RTSUnitB_%d" % id
+		holder.add_child(u)
+		u.setup(faction, utype, null)
+		u.set("unit_id", id)
+		u.global_position = pos
+		return u
+	var mk_player := func(peer: int, faction: int, pos: Vector3) -> Node3D:
+		var p = PlayerScene.instantiate()
+		p.name = "SenderB_%d" % peer
+		holder.add_child(p)
+		p.set_multiplayer_authority(peer)
+		p.set("rts_faction", faction)
+		p.set("damage", 10.0)
+		p.global_position = pos
+		return p
+	# §B1 targets: faction-1 unit pair + barracks.
+	var unit_t = mk_unit.call(601, 1, "spearman", Vector3(500, 0, 500))
+	var unit_t2 = mk_unit.call(602, 1, "spearman", Vector3(505, 0, 500))
+	var bldg_t = BuildingScript.new()
+	bldg_t.name = "BldgB_1"
+	holder.add_child(bldg_t)
+	bldg_t.setup(1, "barracks", null)
+	bldg_t.global_position = Vector3(530, 0, 500)
+	# Senders.
+	var p_dead = mk_player.call(7705, 0, Vector3(501, 0, 500))
+	p_dead.set("alive", false)
+	var p1 = mk_player.call(7701, 1, Vector3(501, 0, 500))
+	_assert(float(unit_t.call("_srv_validate_hit", 10.0, 7999)) < 0.0,
+		"165B: damage claim from a non-player sender refused")
+	_assert(float(unit_t.call("_srv_validate_hit", 10.0, 7705)) < 0.0,
+		"165B: damage claim from a dead player refused")
+	_assert(float(unit_t.call("_srv_validate_hit", 10.0, 7701)) < 0.0,
+		"165B: same-faction damage claim refused")
+	p1.set("rts_faction", 0)
+	p1.global_position = Vector3(560, 0, 500)
+	_assert(float(unit_t.call("_srv_validate_hit", 10.0, 7701)) < 0.0,
+		"165B: out-of-range damage claim refused")
+	p1.global_position = Vector3(501, 0, 500)
+	_assert(is_equal_approx(float(unit_t.call("_srv_validate_hit", 15.0, 7701)), 15.0),
+		"165B: honest in-range claim passes at full amount")
+	var p2 = mk_player.call(7702, 0, Vector3(501, 0, 500))
+	_assert(is_equal_approx(float(unit_t.call("_srv_validate_hit", 1000000.0, 7702)),
+		minf(1000.0, float(unit_t.get("max_hp")))),
+		"165B: over-amount claim clamped to exactly min(ceiling 1000, target max_hp)")
+	_assert(float(unit_t.call("_srv_validate_hit", 5.0, 7702)) < 0.0,
+		"165B: sub-interval repeat hit on the same target dropped")
+	var stamps: Dictionary = unit_t.get("_hit_last_by")
+	stamps[7702] = Time.get_ticks_msec() / 1000.0 - 0.1
+	_assert(float(unit_t.call("_srv_validate_hit", 5.0, 7702)) < 0.0,
+		"165B: repeat hit at +0.1 s still refused (0.25 s floor)")
+	stamps[7702] = Time.get_ticks_msec() / 1000.0 - 0.3
+	_assert(is_equal_approx(float(unit_t.call("_srv_validate_hit", 5.0, 7702)), 5.0),
+		"165B: repeat hit at +0.3 s accepted (floor elapsed)")
+	var uconsts: Dictionary = UnitScript.get_script_constant_map()
+	_assert(is_equal_approx(float(uconsts.get("MIN_HIT_INTERVAL", 0.0)), 0.25)
+		and is_equal_approx(float(uconsts.get("RTS_DAMAGE_CEILING", 0.0)), 1000.0),
+		"165B: floor is 0.25 s and the damage ceiling is 1000")
+	_assert(float(unit_t2.call("_srv_validate_hit", 5.0, 7702)) > 0.0,
+		"165B: same sender, second target in the same tick still lands")
+	var p3 = mk_player.call(7703, 0, Vector3(501, 0, 500))
+	_assert(float(unit_t.call("_srv_validate_hit", 5.0, 7703)) > 0.0,
+		"165B: distinct sender on the same target unaffected by the floor")
+	var p4 = mk_player.call(7704, -1, Vector3(506, 0, 500))
+	_assert(float(unit_t2.call("_srv_validate_hit", 5.0, 7704)) > 0.0,
+		"165B: factionless (AI-seat) sender is a valid attacker")
+	var hp0 := float(unit_t.get("hp"))
+	unit_t.call("rpc_take_damage", 25.0, 424242)
+	_assert(is_equal_approx(float(unit_t.get("hp")), hp0 - 25.0),
+		"165B: host local damage path unchanged (claimed id disregarded)")
+	# Building endpoint: identical shape, spot-checked.
+	_assert(float(bldg_t.call("_srv_validate_hit", 10.0, 7705)) < 0.0,
+		"165B: building refuses a dead sender")
+	p1.global_position = Vector3(531, 0, 500)
+	_assert(is_equal_approx(float(bldg_t.call("_srv_validate_hit", 1000000.0, 7701)),
+		minf(1000.0, float(bldg_t.get("max_hp")))),
+		"165B: building clamps over-amount to exactly min(ceiling 1000, target max_hp)")
+	var bhp0 := float(bldg_t.get("hp"))
+	bldg_t.call("rpc_take_damage", 30.0, 0)
+	_assert(is_equal_approx(float(bldg_t.get("hp")), bhp0 - 30.0),
+		"165B: building host local damage path unchanged")
+	# M1 sync guards: the local (server-origin) sync still
+	# applies on both classes; the sender terms are source-pinned
+	# (a forged-sender drive cannot execute single-peer — the
+	# same stated cost as the endpoint reject branches).
+	unit_t.call("sync_unit_hp", 42.0)
+	_assert(is_equal_approx(float(unit_t.get("hp")), 42.0),
+		"165B: local hp sync still applies on units (server-origin path)")
+	bldg_t.call("sync_hp", 43.0)
+	_assert(is_equal_approx(float(bldg_t.get("hp")), 43.0),
+		"165B: local hp sync still applies on buildings (server-origin path)")
+	var unit_src := FileAccess.get_file_as_string("res://scripts/rts/unit.gd")
+	var bldg_src := FileAccess.get_file_as_string("res://scripts/rts/building.gd")
+	var td_u := _body_of(unit_src, "func rpc_take_damage")
+	var td_b := _body_of(bldg_src, "func rpc_take_damage")
+	_assert(td_u.contains("get_remote_sender_id") and td_u.contains("_srv_validate_hit"),
+		"165B: unit endpoint validates by wire identity")
+	_assert(td_b.contains("get_remote_sender_id") and td_b.contains("_srv_validate_hit"),
+		"165B: building endpoint validates by wire identity")
+	var sy_u := _body_of(unit_src, "func sync_unit_hp")
+	var sy_b := _body_of(bldg_src, "func sync_hp")
+	_assert(sy_u.contains("get_remote_sender_id") and sy_u.contains("server_peer_id"),
+		"165B: unit hp sync carries the server-origin guard")
+	_assert(sy_b.contains("get_remote_sender_id") and sy_b.contains("server_peer_id"),
+		"165B: building hp sync carries the server-origin guard")
+	# §B2: the convert gate — the honest (owner/local) path still
+	# converts, and the gate line matches its siblings verbatim.
+	# (A remote non-owner refusal needs a second peer by
+	# construction: _owns_me passes local calls, as it does for
+	# all five sibling handlers.)
+	var monk = mk_unit.call(603, 0, "monk", Vector3(410, 0, 430))
+	var foe = mk_unit.call(604, 1, "spearman", Vector3(414, 0, 430))
+	monk.call("order_convert", monk.get_path_to(foe))
+	_assert(monk.get("_convert_target") == foe,
+		"165B: owner's convert order still converts (gate passes the honest path)")
+	var conv_body := _body_of(unit_src, "func order_convert")
+	_assert(conv_body.contains("if not _owns_me():\n\t\treturn"),
+		"165B: order_convert carries the ownership gate")
+	var move_body := _body_of(unit_src, "func rpc_order_move")
+	_assert(move_body.contains("if not _owns_me():\n\t\treturn"),
+		"165B: sibling gate shape unchanged (verbatim reference)")
+	# §B3 (#170): the lightning cooldown gates the endpoint.
+	var mage = PlayerScene.instantiate()
+	mage.name = "MageB"
+	holder.add_child(mage)
+	mage.set("class_id", "mage")
+	mage.global_position = Vector3(600, 0, 620)
+	var seq0 := int(mage.get("_cast_seq"))
+	mage.call("request_chain_lightning", 10.0)
+	_assert(int(mage.get("_cast_seq")) == seq0 + 1,
+		"170: first lightning request executes")
+	_assert(is_equal_approx(float(mage.get("_srv_lightning_cd")), 0.6),
+		"170: cast starts the 0.6 s server cooldown")
+	mage.call("request_chain_lightning", 10.0)
+	_assert(int(mage.get("_cast_seq")) == seq0 + 1,
+		"170: back-to-back request inside 0.6 s rejected (executes once)")
+	mage.set("_srv_lightning_cd", 0.0)
+	mage.call("request_chain_lightning", 10.0)
+	_assert(int(mage.get("_cast_seq")) == seq0 + 2,
+		"170: request at honest cadence executes after the cooldown")
+	var pconsts: Dictionary = load("res://scripts/player/player.gd").get_script_constant_map()
+	_assert(is_equal_approx(float(pconsts.get("LIGHTNING_COOLDOWN", 0.0)), 0.6)
+		and float(pconsts.get("LIGHTNING_COOLDOWN", 0.0)) < 0.77,
+		"170: cooldown 0.6 s stays under the buffed honest cadence (0.77 s)")
+	var player_src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var phys := _body_of(player_src, "func _physics_process")
+	_assert(phys.contains("_srv_lightning_cd = maxf(0.0, _srv_lightning_cd - delta)")
+		and phys.contains("_srv_smash_cd = maxf(0.0, _srv_smash_cd - delta)"),
+		"170: lightning cooldown ticks server-side beside the smash cooldown")
+	# I6 host path: the real cast routes through the endpoint,
+	# so the server gate binds host casts too — and this drive
+	# executes the gate itself (the host branch is the local
+	# path; the one §B3 case where that is possible).
+	mage.set("_srv_lightning_cd", 0.0)
+	var seq_h := int(mage.get("_cast_seq"))
+	mage.call("_cast_chain_lightning")
+	_assert(int(mage.get("_cast_seq")) == seq_h + 1
+		and is_equal_approx(float(mage.get("_srv_lightning_cd")), 0.6),
+		"170: host cast executes through the endpoint and starts the cooldown")
+	mage.call("_cast_chain_lightning")
+	_assert(int(mage.get("_cast_seq")) == seq_h + 1,
+		"170: second host cast inside 0.6 s refused by the server gate")
+	holder.free()
+	print("[Playtest] RTS hardening Part B (issues #165/#170) done.")
 
 
 func _test_village_terrain_118() -> void:
@@ -15236,9 +15416,13 @@ func _test_ability_matrix_162() -> void:
 	_assert(float(mobs[0].get("hp")) == hp_a,
 		"matrix166: warrior intent and zero-damage intent are refused")
 	# Host cast unregressed (in-suite the caster IS the server).
+	# Since #170 (I6) the host cast routes through the validated
+	# endpoint, so the fixture's server cooldown from the casts
+	# above is first allowed to elapse.
+	mage.set("_srv_lightning_cd", 0.0)
 	mage.call("_cast_chain_lightning")
 	_assert(float(mobs[0].get("hp")) < hp_a,
-		"matrix166: host cast still executes directly")
+		"matrix166: host cast executes (through the validated endpoint since #170)")
 
 	# --- Parts 2+3 (#162): server-owned tick + clean-replace spawn ---
 	_assert(dsrc.contains("server_tick_holy_light(delta)"),

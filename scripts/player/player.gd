@@ -133,6 +133,11 @@ const SMASH_COOLDOWN := 10.0
 ## Server-side Smash cooldown on this node (the client's ability_cds
 ## entry is a HUD mirror; this is the validated truth).
 var _srv_smash_cd := 0.0
+## Issue #170: server-side Chain Lightning cooldown (mage base
+## attack CD 0.85 x ~0.7 — an honest War Drums-buffed cadence of
+## ~0.77 s must never false-reject; this gates spam, not play).
+const LIGHTNING_COOLDOWN := 0.6
+var _srv_lightning_cd := 0.0
 ## Wrench repair channel (placeholders — Jesse's tuning): free, limited
 ## only by the channel itself. Server ticks on its own timer; clients
 ## send start/stop intents only.
@@ -3024,6 +3029,8 @@ func _physics_process(delta: float) -> void:
 		_server_revive_tick(delta)
 		if _srv_smash_cd > 0.0:
 			_srv_smash_cd = maxf(0.0, _srv_smash_cd - delta)
+		if _srv_lightning_cd > 0.0:
+			_srv_lightning_cd = maxf(0.0, _srv_lightning_cd - delta)
 	if downed:
 		if is_multiplayer_authority():
 			_tick_downed(delta)
@@ -4245,7 +4252,10 @@ func _cast_chain_lightning() -> void:
 	# exactly like Fan of Knives / Hammer Smash.
 	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.8 * trait_damage_mult("lightning")
 	if multiplayer.is_server():
-		_execute_chain_lightning(dmg)
+		# Issue #170 (I6): the host cast routes through the
+		# validated endpoint — the Hammer Smash template's
+		# shape — so the server cooldown gates host casts too.
+		request_chain_lightning(dmg)
 	else:
 		# Client predicts the visual; the server does damage via the
 		# validated intent endpoint below. (Before #166 this branch
@@ -4269,6 +4279,11 @@ func request_chain_lightning(claimed_damage: float) -> void:
 		return
 	if not alive or downed or class_id != "mage" or claimed_damage <= 0.0:
 		return
+	# Issue #170: the server cooldown is the only new gate; the
+	# claimed-damage trust model is unchanged from #166.
+	if _srv_lightning_cd > 0.0:
+		return
+	_srv_lightning_cd = LIGHTNING_COOLDOWN
 	_execute_chain_lightning(claimed_damage)
 
 

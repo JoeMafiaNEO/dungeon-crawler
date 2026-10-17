@@ -278,7 +278,73 @@ func take_damage(amount: float, attacker: Node3D = null) -> void:
 func rpc_take_damage(amount: float, attacker_peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
-	_apply_damage(amount)
+	# Issue #165 Part B (D7): the claimed attacker_peer_id is
+	# disregarded — the wire sender is the only identity.
+	# Sender 0 is the trusted local path and applies unchanged.
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		_apply_damage(amount)
+		return
+	var applied := _srv_validate_hit(amount, sender)
+	if applied < 0.0:
+		return
+	_apply_damage(applied)
+
+
+## Issue #165 Part B (D7): validation bounds for remote damage
+## claims — bounds, not balance numbers.
+const MIN_HIT_INTERVAL := 0.25
+const HIT_RANGE_SLACK := 3.0
+## Absolute per-hit ceiling (the amendment's route (b)): the
+## audited max legitimate hit is ~500 (damage x buff product
+## in _damage_rts_targets; damage/buffs do not replicate
+## server-side, so no sender-side referent exists to key to).
+const RTS_DAMAGE_CEILING := 1000.0
+
+## Last accepted remote hit per sender peer (seconds), for the
+## MIN_HIT_INTERVAL rate floor. Server-side state only.
+var _hit_last_by: Dictionary = {}
+
+
+## Server-side validation of one remote damage claim. Returns
+## the amount to apply, or -1.0 to refuse the hit outright.
+## Identical shape on RTSUnit.
+func _srv_validate_hit(amount: float, sender: int) -> float:
+	if amount <= 0.0:
+		return -1.0
+	# The sender must be a live player on this server.
+	var sp: Node3D = null
+	for p in get_tree().get_nodes_in_group("players"):
+		if p.get_multiplayer_authority() == sender:
+			sp = p as Node3D
+			break
+	if sp == null or not bool(sp.get("alive")):
+		return -1.0
+	# Faction hostility: a factionless sender (rts_faction -1,
+	# the AI/unassigned seat) is a valid attacker for all.
+	var sf := int(sp.get("rts_faction"))
+	if sf != -1 and sf == faction:
+		return -1.0
+	# Range: the sender's server-side position must be within
+	# this target's attack reach + slack.
+	if sp.global_position.distance_to(global_position) > _tower_range() + HIT_RANGE_SLACK:
+		return -1.0
+	# Rate floor: one sender cannot hit the same target more
+	# often than MIN_HIT_INTERVAL; distinct targets unaffected.
+	var now := Time.get_ticks_msec() / 1000.0
+	if float(_hit_last_by.get(sender, -10.0)) + MIN_HIT_INTERVAL > now:
+		return -1.0
+	# Clamp-and-log at min(ceiling, this target's max_hp) —
+	# server-known quantities only (the amendment's route (b));
+	# the max_hp term caps any single call at one full bar,
+	# and a legit hit at the ceiling is clamped, never refused.
+	var applied := amount
+	var cap := minf(RTS_DAMAGE_CEILING, max_hp)
+	if applied > cap:
+		push_warning("[D7] clamped damage %.1f -> %.1f on building %s from peer %d" % [amount, cap, name, sender])
+		applied = cap
+	_hit_last_by[sender] = now
+	return applied
 
 
 func _apply_damage(amount: float) -> void:
@@ -722,6 +788,14 @@ func _update_hp_bar() -> void:
 
 @rpc("any_peer", "call_local")
 func sync_hp(new_hp: float) -> void:
+	# Issue #165 Part B (M1): HP syncs are server-originated.
+	# The write applies only when the sender is the local path
+	# (0) or the server peer; anything else is a forged write —
+	# refuse and log.
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		push_warning("[D7] refused forged hp sync on building %s from peer %d" % [name, sender])
+		return
 	hp = new_hp
 	_update_hp_bar()
 
