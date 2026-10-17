@@ -102,6 +102,7 @@ func _run() -> void:
 	_test_architect_tools_repair()
 	_test_hammer_smash()
 	_test_ability_matrix_162()
+	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
 	_test_client_state_164_167()
 	_test_revive_race_163()
@@ -15693,7 +15694,7 @@ func _test_ability_matrix_162() -> void:
 	caster_b.set("class_id", "mage")
 	holder.add_child(caster_b)
 	caster_b.global_position = Vector3(2000, 0, 2000)
-	caster_b.spawn_holy_light(Vector3(2000, 0, 2000), 2)
+	caster_b.spawn_holy_light(Vector3(2000, 0, 2000), 2, 1)
 	var ally = PlayerScene.instantiate()
 	ally.set("class_id", "warrior")
 	holder.add_child(ally)
@@ -15715,29 +15716,32 @@ func _test_ability_matrix_162() -> void:
 	# heals through the direct call, never a self-addressed rpc_id.
 	_assert(_body_of(psrc, "func _hl_server_tick(delta: float) -> void:").contains("get_multiplayer_authority()) == int(multiplayer.get_unique_id())"),
 		"matrix162: heal leg direct-calls this peer's own authority")
-	# Clean-replace: recast while beam 1 lingers.
+	# Issue #171 (was #162 clean-replace): recast while beam 1
+	# lingers — the beams now COEXIST; Holy Light stacks.
 	var caster_c = PlayerScene.instantiate()
 	caster_c.set("class_id", "mage")
 	holder.add_child(caster_c)
 	caster_c.global_position = Vector3(2100, 0, 2100)
-	caster_c.spawn_holy_light(Vector3(2100, 0, 2100), 7)
+	caster_c.spawn_holy_light(Vector3(2100, 0, 2100), 7, 1)
 	var beams_c: Dictionary = caster_c.get("_hl_beams")
-	var root1: Node = beams_c[7]["node"]
-	beams_c[7]["lingering"] = true
-	caster_c.spawn_holy_light(Vector3(2105, 0, 2100), 7)
+	var list_c: Array = beams_c[7]
+	var root1: Node = list_c[0]["node"]
+	caster_c.hl_linger_beam(7, 1)
+	caster_c.spawn_holy_light(Vector3(2105, 0, 2100), 7, 2)
 	beams_c = caster_c.get("_hl_beams")
-	var root2: Node = beams_c[7]["node"]
-	_assert(beams_c.size() == 1 and root2 != root1,
-		"matrix162: recast replaces the registry entry")
-	_assert(root1.is_queued_for_deletion(),
-		"matrix162: the prior beam root is freed on recast (no orphan)")
-	_assert(String(root2.name).begins_with("HolyLightBeam_7_") and root2.name != root1.name,
-		"matrix162: the replacement beam's name is unique")
-	caster_c.spawn_holy_light(Vector3(2110, 0, 2100), 7)
+	list_c = beams_c[7]
+	var root2: Node = list_c[1]["node"]
+	_assert(list_c.size() == 2 and root2 != root1,
+		"171: recast appends a second per-cast entry (no replacement)")
+	_assert(not root1.is_queued_for_deletion(),
+		"171: the lingering prior beam is NOT freed on recast (it coexists)")
+	_assert(str(root1.name) == "HolyLightBeam_7_1" and str(root2.name) == "HolyLightBeam_7_2",
+		"171: beam roots carry the deterministic HolyLightBeam_<owner>_<seq> names")
+	caster_c.spawn_holy_light(Vector3(2110, 0, 2100), 7, 3)
 	beams_c = caster_c.get("_hl_beams")
-	_assert(beams_c.size() == 1 and root2.is_queued_for_deletion(),
-		"matrix162: repeated recasts leave exactly one live beam")
-	caster_c.hl_end_beam(7)
+	_assert((beams_c[7] as Array).size() == 3 and not root2.is_queued_for_deletion(),
+		"171: a third cast leaves three live beams")
+	caster_c.hl_end_beam(7, 0)
 
 	# --- Part 4 (#169): Reinforce routing ---
 	_assert(psrc.contains("target.apply_reinforce(6.0)"),
@@ -15766,10 +15770,148 @@ func _test_ability_matrix_162() -> void:
 	# Immediate frees, not queue_free: beam SpotLights are named
 	# "HolyLight" and a pending-free subtree would leak them into the
 	# heal section's tree-wide light census.
-	caster_b.hl_end_beam(2)
+	caster_b.hl_end_beam(2, 0)
 	stub.remove_from_group("dungeon")
 	stub.free()
 	holder.free()
+
+
+## Issue #171: Holy Light stacking — per-cast beams coexist.
+## Linger + recast both tick (the lingerer heal-only); two
+## casters' beams SUM on one mob with literal expectations;
+## three beams expire independently with zero residue; a
+## stale seq is a no-op; ending a lingerer never cancels the
+## live cast.
+func _test_holy_light_stacking_171() -> void:
+	print("[Playtest] Holy Light stacking (issue #171)...")
+	var holder := Node3D.new()
+	holder.name = "HLStack171Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var slime_data: Resource = load("res://data/mobs/slime.tres")
+	var PlayerScript: GDScript = load("res://scripts/player/player.gd")
+	var stub := HolyDungeonStub.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+	var mob_at := func(pos: Vector3) -> Node:
+		var m = MobScene.instantiate()
+		m.setup(60, slime_data)
+		holder.add_child(m)
+		m.set("max_hp", 10000.0)
+		m.set("hp", 10000.0)
+		m.global_position = pos
+		return m
+	# --- Linger + recast: two entries, both ticking ----------
+	var caster = PlayerScene.instantiate()
+	caster.set("class_id", "mage")
+	holder.add_child(caster)
+	caster.global_position = Vector3(3000, 0, 3000)
+	caster.set("damage", 20.0)
+	caster.spawn_holy_light(Vector3(3000, 0, 3000), 5, 1)
+	caster.hl_linger_beam(5, 1)
+	caster.spawn_holy_light(Vector3(3010, 0, 3000), 5, 2)
+	var reg: Dictionary = caster.get("_hl_beams")
+	_assert((reg[5] as Array).size() == 2,
+		"171: linger + recast leaves a 2-entry registry")
+	var mob_active = mob_at.call(Vector3(3010, 0, 3000))
+	var mob_linger = mob_at.call(Vector3(3000, 0, 3000))
+	var ally = PlayerScene.instantiate()
+	ally.set("class_id", "warrior")
+	holder.add_child(ally)
+	ally.global_position = Vector3(2988, 0, 3000) # in the lingerer's heal radius, outside the active one's
+	var ally_max := float(ally.get("max_hp"))
+	ally.set("hp", ally_max * 0.5)
+	caster.server_tick_holy_light(0.5)
+	_assert(absf(float(mob_active.get("hp")) - (10000.0 - 20.0)) < 0.01,
+		"171: the active beam ticks damage at the literal caster damage")
+	_assert(float(mob_linger.get("hp")) == 10000.0,
+		"171: the lingering beam deals NO damage (heal-only)")
+	_assert(absf(float(ally.get("hp")) - ally_max * 0.65) < 1.0,
+		"171: the lingering beam still heals (both entries tick)")
+	caster.hl_end_beam(5, 0)
+	# --- Two casters: damage SUMS on one mob ------------------
+	var ca = PlayerScene.instantiate()
+	ca.set("class_id", "mage")
+	holder.add_child(ca)
+	ca.global_position = Vector3(3200, 0, 3200)
+	ca.set("damage", 10.0)
+	var cb = PlayerScene.instantiate()
+	cb.set("class_id", "mage")
+	holder.add_child(cb)
+	cb.global_position = Vector3(3200, 0, 3210)
+	cb.set("damage", 14.0)
+	ca.spawn_holy_light(Vector3(3200, 0, 3200), 6, 1)
+	cb.spawn_holy_light(Vector3(3200, 0, 3200), 7, 1)
+	var mob_sum = mob_at.call(Vector3(3200, 0, 3200))
+	ca.server_tick_holy_light(0.5)
+	cb.server_tick_holy_light(0.5)
+	_assert(absf(float(mob_sum.get("hp")) - (10000.0 - 24.0)) < 0.01,
+		"171: two casters' beams SUM on one mob (10 + 14 = 24 per tick)")
+	ca.hl_end_beam(6, 0)
+	cb.hl_end_beam(7, 0)
+	# --- Three beams: independent expiry, zero residue --------
+	var cc = PlayerScene.instantiate()
+	cc.set("class_id", "mage")
+	holder.add_child(cc)
+	cc.global_position = Vector3(3400, 0, 3400)
+	cc.spawn_holy_light(Vector3(3400, 0, 3400), 1, 1)
+	cc.spawn_holy_light(Vector3(3410, 0, 3400), 1, 2)
+	cc.spawn_holy_light(Vector3(3420, 0, 3400), 1, 3)
+	cc.hl_linger_beam(1, 1)
+	cc.hl_linger_beam(1, 2)
+	var reg3: Dictionary = cc.get("_hl_beams")
+	var list3: Array = reg3[1]
+	var roots3: Array = [list3[0]["node"], list3[1]["node"], list3[2]["node"]]
+	# Stage seq 1 at the edge of expiry; seq 2's fade is fresh.
+	list3[0]["linger_t"] = 14.9
+	cc.call("_hl_process_linger", 0.2)
+	reg3 = cc.get("_hl_beams")
+	_assert(reg3.has(1) and (reg3[1] as Array).size() == 2,
+		"171: only the expired beam ends (independent expiry)")
+	_assert((roots3[0] as Node).is_queued_for_deletion()
+		and not (roots3[1] as Node).is_queued_for_deletion()
+		and not (roots3[2] as Node).is_queued_for_deletion(),
+		"171: expiry frees exactly the expired beam's root")
+	# Stale seqs are no-ops.
+	cc.hl_beam_aim(1, Vector3.ZERO, 999)
+	cc.hl_linger_beam(1, 999)
+	cc.hl_end_beam(1, 999)
+	reg3 = cc.get("_hl_beams")
+	_assert(reg3.has(1) and (reg3[1] as Array).size() == 2,
+		"171: a stale seq ends/marks nothing (no-op)")
+	cc.hl_end_beam(1, 0)
+	_assert(not (cc.get("_hl_beams") as Dictionary).has(1),
+		"171: the seq-0 end clears the whole registry (zero residue)")
+	_assert((roots3[1] as Node).is_queued_for_deletion()
+		and (roots3[2] as Node).is_queued_for_deletion(),
+		"171: every beam root is freed with its entry (zero residue)")
+	# --- Ending a lingerer never cancels the live cast --------
+	var cd = PlayerScene.instantiate()
+	cd.set("class_id", "mage")
+	holder.add_child(cd)
+	cd.global_position = Vector3(3600, 0, 3600)
+	cd.spawn_holy_light(Vector3(3600, 0, 3600), 1, 1)
+	cd.hl_linger_beam(1, 1)
+	cd.spawn_holy_light(Vector3(3610, 0, 3600), 1, 2)
+	# Stage the strike's outputs for the live cast (seq 2).
+	cd.set("_hl_active_seq", 2)
+	cd.set("_hl_state", PlayerScript.HLState.ACTIVE)
+	cd.hl_end_beam(1, 1)
+	var reg4: Dictionary = cd.get("_hl_beams")
+	_assert(reg4.has(1) and (reg4[1] as Array).size() == 1
+		and int((reg4[1] as Array)[0].get("seq", 0)) == 2,
+		"171: ending the lingering beam leaves the live beam registered")
+	_assert(int(cd.get("_hl_state")) == PlayerScript.HLState.ACTIVE,
+		"171: ending a lingering beam does NOT cancel the live cast")
+	cd.hl_end_beam(1, 0)
+	_assert(int(cd.get("_hl_state")) == PlayerScript.HLState.IDLE,
+		"171: the all-beams end (death form) does reset the cast state")
+	stub.remove_from_group("dungeon")
+	stub.free()
+	holder.free()
+	print("[Playtest] Holy Light stacking (issue #171) done")
 
 
 ## Issue #160 stub: records world drops spawned through the door.

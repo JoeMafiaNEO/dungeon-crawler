@@ -3663,11 +3663,38 @@ var _hl_charge_t := 0.0
 var _hl_active_t := 0.0
 var _hl_reticle: MeshInstance3D = null
 var _hl_beam_root: Node3D = null
-## Issue #91 Phase 2: active beams by owner peer ID. Each entry:
-## {node, aim, target_aim, beam_mesh, light, rings, tick_t, owner}
+## Issue #91 Phase 2: active beams by owner peer ID. Issue #171:
+## beams are PER-CAST — each owner's value is a LIST of beam
+## entries, one per cast: {node, aim, target_aim, beam_mesh,
+## light, rings, tick_t, owner, seq}. Overlapping beams coexist
+## (Holy Light stacks); every lookup addresses an entry by its
+## spawn sequence, and a stale seq is a no-op.
 var _hl_beams := {}
-## Issue #162: per-instance spawn sequence for unique beam-root names.
+## Issue #162: per-instance spawn sequence for unique beam-root
+## names. Issue #171: allocated by the striker at strike time
+## and passed through the spawn RPC, so the sequence — and
+## therefore the beam root name HolyLightBeam_<owner>_<seq> —
+## is identical on every peer by construction.
 var _hl_spawn_seq := 0
+## Issue #171: the seq of this peer's currently ACTIVE beam
+## (steering and wind-down address it; lingering beams carry
+## their own seqs and are never the steering target).
+var _hl_active_seq := 0
+
+
+## Issue #171: find one beam entry by (owner, seq); an empty
+## dictionary when absent.
+func _hl_find_beam(owner_id: int, seq: int) -> Dictionary:
+	var list: Array = _hl_beams.get(owner_id, [])
+	for b in list:
+		if int((b as Dictionary).get("seq", 0)) == seq:
+			return b
+	return {}
+
+
+## Issue #171: this peer's ACTIVE beam entry ({} when none).
+func _hl_active_beam() -> Dictionary:
+	return _hl_find_beam(int(multiplayer.get_unique_id()), _hl_active_seq)
 ## Issue #91 Phase 2: 10Hz aim update timer (owner -> server, unreliable).
 var _hl_aim_send_t := 0.0
 
@@ -3700,10 +3727,11 @@ func _hl_process(delta: float) -> void:
 	elif _hl_state == HLState.ACTIVE:
 		_hl_active_t += delta
 		# Issue #91 Phase 2: owner steers the beam; aim tracks cursor live.
+		# Issue #171: steering addresses the ACTIVE seq only — a
+		# lingering beam from an earlier cast is never steered.
 		_hl_aim = _hl_ground_aim()
-		var my_id := int(multiplayer.get_unique_id())
-		if _hl_beams.has(my_id):
-			var beam = _hl_beams[my_id]
+		var beam := _hl_active_beam()
+		if not beam.is_empty():
 			var node: Node3D = beam.get("node")
 			if node != null and is_instance_valid(node):
 				node.global_position = _hl_aim
@@ -3714,11 +3742,11 @@ func _hl_process(delta: float) -> void:
 		if _hl_aim_send_t >= 0.1:
 			_hl_aim_send_t = 0.0
 			if multiplayer.is_server():
-				hl_aim_update(_hl_aim)
+				hl_aim_update(_hl_aim, _hl_active_seq)
 			elif _mp_peer_connected():
 				# Issue #133: same dead-peer class as push_snapshot —
 				# 10 Hz aim updates must not fire into a dead peer.
-				rpc_id(NetworkManager.server_peer_id, "hl_aim_update", _hl_aim)
+				rpc_id(NetworkManager.server_peer_id, "hl_aim_update", _hl_aim, _hl_active_seq)
 		# Wind-down: beam narrows and dims.
 		if _hl_active_t >= HL_HOLD_TIME:
 			_hl_winddown(delta)
@@ -3739,20 +3767,19 @@ func _hl_update_beam_visuals(delta: float) -> void:
 	for owner_id in _hl_beams.keys():
 		if owner_id == my_id:
 			continue  # Owner moves directly.
-		var beam = _hl_beams[owner_id]
-		var node: Node3D = beam.get("node")
-		if node == null or not is_instance_valid(node):
-			continue
-		var target: Vector3 = beam.get("target_aim", beam.get("aim"))
-		node.global_position = node.global_position.lerp(target, clampf(delta * 8.0, 0.0, 1.0))
+		for beam in _hl_beams[owner_id]:
+			var node: Node3D = beam.get("node")
+			if node == null or not is_instance_valid(node):
+				continue
+			var target: Vector3 = beam.get("target_aim", beam.get("aim"))
+			node.global_position = node.global_position.lerp(target, clampf(delta * 8.0, 0.0, 1.0))
 
 
 ## Issue #91 Phase 2: wind-down — beam narrows and dims, decay SFX.
 func _hl_winddown(delta: float) -> void:
-	var my_id := int(multiplayer.get_unique_id())
-	if not _hl_beams.has(my_id):
+	var beam := _hl_active_beam()
+	if beam.is_empty():
 		return
-	var beam = _hl_beams[my_id]
 	# Play decay SFX once at wind-down start.
 	if not bool(beam.get("winddown_sfx", false)):
 		beam["winddown_sfx"] = true
@@ -3801,42 +3828,45 @@ func server_tick_holy_light(delta: float) -> void:
 ## Jesse 2026-10-10: lingering beams (post-ability heal zone) heal but no
 ## longer damage.
 func _hl_server_tick(delta: float) -> void:
+	# Issue #171: EVERY live entry ticks — overlapping beams
+	# stack their damage/heal per tick by design; there is no
+	# stacking code, the iteration is the stacking.
 	for owner_id in _hl_beams.keys():
-		var beam = _hl_beams[owner_id]
-		var tick_t := float(beam.get("tick_t", 0.0)) + delta
-		if tick_t < 0.5:
-			beam["tick_t"] = tick_t
-			continue
-		beam["tick_t"] = 0.0
-		var aim: Vector3 = beam.get("aim", Vector3.ZERO)
-		var lingering := bool(beam.get("lingering", false))
-		if not lingering:
-			# Damage: 1.0x mage base per tick in the 4m beam column.
-			var dmg := _hl_beam_damage()
-			for n in get_tree().get_nodes_in_group("mobs"):
-				var mob := n as Mob
-				if mob == null or not bool(mob.get("alive")):
-					continue
-				var flat := Vector2(mob.global_position.x - aim.x, mob.global_position.z - aim.z)
-				if flat.length() <= 4.0:
-					mob.take_damage(dmg, owner_id, aim)
-		# Heal: 15% max HP to allies within 15m of the beam point.
-		for n in get_tree().get_nodes_in_group("players"):
-			var p := n as Player
-			if p == null or not bool(p.get("alive")):
+		for beam in _hl_beams[owner_id]:
+			var tick_t := float(beam.get("tick_t", 0.0)) + delta
+			if tick_t < 0.5:
+				beam["tick_t"] = tick_t
 				continue
-			if p.global_position.distance_to(aim) <= HOLY_LIGHT_HEAL_RADIUS:
-				var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC
-				# Issue #162 routing audit: when the heal target's
-				# authority is THIS peer (the host healing himself),
-				# rpc_id would be self-addressed — a Steam peer cannot
-				# rpc_id its own id (the #165 D1 family), so the heal
-				# silently never landed. Call directly on this peer,
-				# exactly like the no-peer case.
-				if multiplayer.multiplayer_peer == null or int(p.get_multiplayer_authority()) == int(multiplayer.get_unique_id()):
-					p.call("heal", heal_amount)
-				else:
-					p.rpc_id(int(p.get_multiplayer_authority()), "heal", heal_amount)
+			beam["tick_t"] = 0.0
+			var aim: Vector3 = beam.get("aim", Vector3.ZERO)
+			var lingering := bool(beam.get("lingering", false))
+			if not lingering:
+				# Damage: 1.0x mage base per tick in the 4m beam column.
+				var dmg := _hl_beam_damage()
+				for n in get_tree().get_nodes_in_group("mobs"):
+					var mob := n as Mob
+					if mob == null or not bool(mob.get("alive")):
+						continue
+					var flat := Vector2(mob.global_position.x - aim.x, mob.global_position.z - aim.z)
+					if flat.length() <= 4.0:
+						mob.take_damage(dmg, owner_id, aim)
+			# Heal: 15% max HP to allies within 15m of the beam point.
+			for n in get_tree().get_nodes_in_group("players"):
+				var p := n as Player
+				if p == null or not bool(p.get("alive")):
+					continue
+				if p.global_position.distance_to(aim) <= HOLY_LIGHT_HEAL_RADIUS:
+					var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC
+					# Issue #162 routing audit: when the heal target's
+					# authority is THIS peer (the host healing himself),
+					# rpc_id would be self-addressed — a Steam peer cannot
+					# rpc_id its own id (the #165 D1 family), so the heal
+					# silently never landed. Call directly on this peer,
+					# exactly like the no-peer case.
+					if multiplayer.multiplayer_peer == null or int(p.get_multiplayer_authority()) == int(multiplayer.get_unique_id()):
+						p.call("heal", heal_amount)
+					else:
+						p.rpc_id(int(p.get_multiplayer_authority()), "heal", heal_amount)
 
 
 ## Issue #91 Phase 2: beam damage per 0.5s tick (1.0x mage base).
@@ -3983,109 +4013,139 @@ func _hl_strike() -> void:
 	if _hl_reticle != null and is_instance_valid(_hl_reticle):
 		_hl_reticle.queue_free()
 	_hl_reticle = null
-	rpc("spawn_holy_light", _hl_aim, int(multiplayer.get_unique_id()))
+	# Issue #171: the spawn sequence is allocated HERE, at
+	# strike, and passed through the spawn RPC — every peer
+	# keys the beam by the same seq (and names its root from
+	# it) by construction.
+	_hl_spawn_seq += 1
+	_hl_active_seq = _hl_spawn_seq
+	rpc("spawn_holy_light", _hl_aim, int(multiplayer.get_unique_id()), _hl_active_seq)
 	AudioManager.sfx("holy_light_impact", _hl_aim)
 
 
 ## Issue #91 Phase 2: owner sends aim updates to server at 10Hz (unreliable).
+## Issue #171: the update carries the ACTIVE seq; a stale seq
+## (the beam already ended) is a no-op on the server.
 @rpc("any_peer", "unreliable")
-func hl_aim_update(aim: Vector3) -> void:
+func hl_aim_update(aim: Vector3, seq: int) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
 	if sender == 0:
 		sender = multiplayer.get_unique_id()
-	if _hl_beams.has(sender):
-		_hl_beams[sender]["aim"] = aim
-		_hl_beams[sender]["target_aim"] = aim
-		# Rebroadcast to all peers for remote lerp.
-		rpc("hl_beam_aim", sender, aim)
+	var beam := _hl_find_beam(sender, seq)
+	if beam.is_empty():
+		return
+	beam["aim"] = aim
+	beam["target_aim"] = aim
+	# Rebroadcast to all peers for remote lerp.
+	rpc("hl_beam_aim", sender, aim, seq)
 
 
 ## Issue #91 Phase 2: server rebroadcasts beam aim; remotes lerp toward it.
 @rpc("any_peer", "unreliable")
-func hl_beam_aim(owner_id: int, aim: Vector3) -> void:
-	if _hl_beams.has(owner_id):
-		_hl_beams[owner_id]["target_aim"] = aim
+func hl_beam_aim(owner_id: int, aim: Vector3, seq: int) -> void:
+	var beam := _hl_find_beam(owner_id, seq)
+	if not beam.is_empty():
+		beam["target_aim"] = aim
 
 
 ## Issue #91 Phase 2: end a beam early (death/disconnect/manual).
+## Issue #171: the end carries the seq — seq 0 ends EVERY beam
+## of the owner (the death/disconnect cleanup form). Ending a
+## lingering beam never touches the owner's live cast: the
+## state resets only when the ACTIVE beam (or all beams) end.
 @rpc("any_peer", "call_local", "reliable")
-func hl_end_beam(owner_id: int) -> void:
+func hl_end_beam(owner_id: int, seq: int) -> void:
 	if _hl_beams.has(owner_id):
-		var beam = _hl_beams[owner_id]
-		var node: Node = beam.get("node")
-		if node != null and is_instance_valid(node):
-			node.queue_free()
-		_hl_beams.erase(owner_id)
-	if owner_id == int(multiplayer.get_unique_id()):
+		var list: Array = _hl_beams[owner_id]
+		var kept: Array = []
+		for beam in list:
+			if seq == 0 or int(beam.get("seq", 0)) == seq:
+				var node: Node = beam.get("node")
+				if node != null and is_instance_valid(node):
+					node.queue_free()
+			else:
+				kept.append(beam)
+		if kept.is_empty():
+			_hl_beams.erase(owner_id)
+		else:
+			_hl_beams[owner_id] = kept
+	if owner_id == int(multiplayer.get_unique_id()) \
+			and (seq == 0 or seq == _hl_active_seq):
 		_hl_state = HLState.IDLE
 		_hl_active_t = 0.0
 
 
 ## Jesse 2026-10-10: owner starts the linger phase when the ability ends.
 ## Marks the beam lingering locally and tells all peers.
+## Issue #171: the linger carries the ACTIVE beam's seq — only
+## that entry lingers; any older lingering entries are untouched.
 func _hl_start_linger() -> void:
 	var my_id := int(multiplayer.get_unique_id())
-	if not _hl_beams.has(my_id):
+	var beam := _hl_active_beam()
+	if beam.is_empty():
 		return
-	_hl_beams[my_id]["lingering"] = true
-	_hl_beams[my_id]["linger_t"] = 0.0
-	rpc("hl_linger_beam", my_id)
+	beam["lingering"] = true
+	beam["linger_t"] = 0.0
+	rpc("hl_linger_beam", my_id, _hl_active_seq)
 
 
 ## Jesse 2026-10-10: all peers mark the beam as lingering (heal zone).
 @rpc("any_peer", "call_local")
-func hl_linger_beam(owner_id: int) -> void:
-	if _hl_beams.has(owner_id):
-		_hl_beams[owner_id]["lingering"] = true
-		_hl_beams[owner_id]["linger_t"] = 0.0
+func hl_linger_beam(owner_id: int, seq: int) -> void:
+	var beam := _hl_find_beam(owner_id, seq)
+	if not beam.is_empty():
+		beam["lingering"] = true
+		beam["linger_t"] = 0.0
 
 
 ## Jesse 2026-10-10: lingering beams fade over HL_LINGER_TIME, then the
 ## owner cleans them up everywhere via hl_end_beam.
 func _hl_process_linger(delta: float) -> void:
 	var my_id := int(multiplayer.get_unique_id())
-	var done: Array[int] = []
+	var done: Array = [] # [owner_id, seq] pairs whose fade completed
 	for owner_id in _hl_beams.keys():
-		var beam = _hl_beams[owner_id]
-		if not bool(beam.get("lingering", false)):
-			continue
-		var t := float(beam.get("linger_t", 0.0)) + delta
-		beam["linger_t"] = t
-		var frac := clampf(t / HL_LINGER_TIME, 0.0, 1.0)
-		# Fade the beam core.
-		var beam_mesh: MeshInstance3D = beam.get("beam_mesh")
-		if beam_mesh != null and is_instance_valid(beam_mesh):
-			var bmat := beam_mesh.material_override as StandardMaterial3D
-			if bmat != null:
-				var bc := bmat.albedo_color
-				bc.a = 0.85 * (1.0 - frac)
-				bmat.albedo_color = bc
-				bmat.emission_energy_multiplier = 2.0 * (1.0 - frac)
-		# Fade the light.
-		var light: SpotLight3D = beam.get("light")
-		if light != null and is_instance_valid(light):
-			light.light_energy = 12.0 * (1.0 - frac)
-		# Fade the rings.
-		var rings: Array = beam.get("rings", [])
-		for ring in rings:
-			var rm := ring as MeshInstance3D
-			if rm != null and is_instance_valid(rm):
-				var rmat := rm.material_override as StandardMaterial3D
-				if rmat != null:
-					var rc := rmat.albedo_color
-					rc.a = 0.7 * (1.0 - frac)
-					rmat.albedo_color = rc
-		# Owner cleans up everywhere when the fade completes.
-		if frac >= 1.0 and owner_id == my_id:
-			done.append(owner_id)
-	for owner_id in done:
-		rpc("hl_end_beam", owner_id)
+		for beam in _hl_beams[owner_id]:
+			if not bool(beam.get("lingering", false)):
+				continue
+			var t := float(beam.get("linger_t", 0.0)) + delta
+			beam["linger_t"] = t
+			var frac := clampf(t / HL_LINGER_TIME, 0.0, 1.0)
+			# Fade the beam core.
+			var beam_mesh: MeshInstance3D = beam.get("beam_mesh")
+			if beam_mesh != null and is_instance_valid(beam_mesh):
+				var bmat := beam_mesh.material_override as StandardMaterial3D
+				if bmat != null:
+					var bc := bmat.albedo_color
+					bc.a = 0.85 * (1.0 - frac)
+					bmat.albedo_color = bc
+					bmat.emission_energy_multiplier = 2.0 * (1.0 - frac)
+			# Fade the light.
+			var light: SpotLight3D = beam.get("light")
+			if light != null and is_instance_valid(light):
+				light.light_energy = 12.0 * (1.0 - frac)
+			# Fade the rings.
+			var rings: Array = beam.get("rings", [])
+			for ring in rings:
+				var rm := ring as MeshInstance3D
+				if rm != null and is_instance_valid(rm):
+					var rmat := rm.material_override as StandardMaterial3D
+					if rmat != null:
+						var rc := rmat.albedo_color
+						rc.a = 0.7 * (1.0 - frac)
+						rmat.albedo_color = rc
+			# Owner cleans up everywhere when the fade completes —
+			# per entry (issue #171): one beam's expiry never ends
+			# another.
+			if frac >= 1.0 and owner_id == my_id:
+				done.append([owner_id, int(beam.get("seq", 0))])
+	for pair in done:
+		rpc("hl_end_beam", int(pair[0]), int(pair[1]))
 
 
 @rpc("any_peer", "call_local")
-func spawn_holy_light(aim_point: Vector3, owner_id: int = 0) -> void:
+func spawn_holy_light(aim_point: Vector3, owner_id: int = 0, seq: int = 0) -> void:
 	var dungeons := get_tree().get_nodes_in_group("dungeon")
 	if dungeons.is_empty():
 		return
@@ -4097,28 +4157,30 @@ func spawn_holy_light(aim_point: Vector3, owner_id: int = 0) -> void:
 		map_size = float(layout.grid_size) * layout.cell_size
 	if owner_id == 0:
 		owner_id = int(multiplayer.get_unique_id())
-	# Issue #162 clean-replace: a recast while the prior beam is still
-	# lingering frees the old beam outright — its root leaves with the
-	# entry, so nothing is orphaned. (The old spawn replaced the
-	# registry entry and left the prior root in the dungeon forever,
-	# its name colliding with the new beam's.)
-	if _hl_beams.has(owner_id):
-		var old_beam: Dictionary = _hl_beams[owner_id]
-		var old_node: Variant = old_beam.get("node")
-		if old_node != null and is_instance_valid(old_node):
-			(old_node as Node).queue_free()
-		_hl_beams.erase(owner_id)
+	if seq <= 0:
+		# No sequence from the striker (a direct/local spawn):
+		# allocate from this instance's counter.
+		_hl_spawn_seq += 1
+		seq = _hl_spawn_seq
+	# Issue #171: NO clean-replace (the #162 block is deleted) —
+	# a recast APPENDS a per-cast entry; the prior beam keeps
+	# living (and ticking) alongside the new one. Holy Light
+	# stacks.
 	# Issue #91 Phase 2: beam container for steering. All visuals are
-	# children; moving the container moves the beam. The name carries
-	# a per-spawn sequence so two beams of one owner can never
-	# collide on it (the collision was the corruption vector).
-	_hl_spawn_seq += 1
+	# children; moving the container moves the beam. The name is
+	# deterministic — HolyLightBeam_<owner>_<seq> with the seq
+	# allocated at strike — so it is identical on every peer
+	# and two beams can never collide on it.
 	var beam_root := Node3D.new()
-	beam_root.name = "HolyLightBeam_%d_%d" % [owner_id, _hl_spawn_seq]
+	beam_root.name = "HolyLightBeam_%d_%d" % [owner_id, seq]
 	beam_root.position = center
 	dungeon.add_child(beam_root)
 	# Track for steering (owner moves directly, remotes lerp).
-	_hl_beams[owner_id] = {"node": beam_root, "aim": center, "target_aim": center}
+	var entry := {"node": beam_root, "aim": center, "target_aim": center,
+		"owner": owner_id, "seq": seq}
+	if not _hl_beams.has(owner_id):
+		_hl_beams[owner_id] = []
+	(_hl_beams[owner_id] as Array).append(entry)
 	# Issue #91 Phase 2: central beam cylinder (emissive gold, r=1.2m).
 	var cyl := CylinderMesh.new()
 	cyl.top_radius = 1.2
@@ -4171,10 +4233,11 @@ func spawn_holy_light(aim_point: Vector3, owner_id: int = 0) -> void:
 		ring.scale = Vector3.ONE * (1.0 + float(i) * 0.3)
 		beam_root.add_child(ring)
 		rings.append(ring)
-	# Store beam parts for wind-down narrowing.
-	_hl_beams[owner_id]["beam_mesh"] = beam_mesh
-	_hl_beams[owner_id]["light"] = light
-	_hl_beams[owner_id]["rings"] = rings
+	# Store beam parts for wind-down narrowing (on THIS cast's
+	# entry — issue #171).
+	entry["beam_mesh"] = beam_mesh
+	entry["light"] = light
+	entry["rings"] = rings
 	AudioManager.sfx("holy_light", center)
 	if hud != null:
 		hud.toast("HOLY LIGHT!")
@@ -5611,7 +5674,7 @@ func die() -> void:
 	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
 		_hl_disarm()
 	if _hl_state == HLState.ACTIVE:
-		rpc("hl_end_beam", int(multiplayer.get_unique_id()))
+		rpc("hl_end_beam", int(multiplayer.get_unique_id()), 0) # issue #171: seq 0 = all my beams (death cleanup)
 	# Bounty Board (issue #7): a death fails this player's no_death bounty.
 	# Server-authoritative: clients route through the server.
 	var bdgn := get_tree().get_first_node_in_group("dungeon")

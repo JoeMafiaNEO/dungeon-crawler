@@ -1056,7 +1056,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	for n in get_tree().get_nodes_in_group("players"):
 		var p := n as Player
 		if p != null:
-			p.rpc("hl_end_beam", peer_id)
+			p.rpc("hl_end_beam", peer_id, 0) # issue #171: seq 0 = all of the leaver's beams
 			break
 	# Warlord: hand the leaver's faction to an AI so the FFA doesn't soft-lock.
 	if is_warlord and _rts_manager != null:
