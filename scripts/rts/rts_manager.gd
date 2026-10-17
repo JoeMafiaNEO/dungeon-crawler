@@ -253,9 +253,33 @@ func _broadcast_army_sync() -> void:
 		rpc("client_sync_army", f, by_faction[f])
 
 
+## Runtime NetworkManager lookup (the unit.gd pattern — this
+## script sits in compile chains where the autoload
+## identifier does not resolve at compile time).
+func _network_manager() -> Node:
+	var loop := Engine.get_main_loop() as SceneTree
+	if loop != null:
+		return loop.root.get_node_or_null("NetworkManager")
+	return null
+
+
 @rpc("any_peer", "unreliable")
 func client_sync_army(faction_id: int, data: Dictionary) -> void:
 	if multiplayer.is_server():
+		return
+	# Issue #165 Part B (D7): server-origin guard — replica-
+	# consistency hygiene, not an authoritative-state guard
+	# (the server returns above before any write, so this
+	# writer reaches client replicas only). Only the server's
+	# own sync tick may write them; any other sender is
+	# refused and logged. The server peer is resolved through
+	# the runtime lookup (this script sits in early compile
+	# chains where the autoload identifier does not resolve).
+	var sender := multiplayer.get_remote_sender_id()
+	var nm := _network_manager()
+	var server_peer := int(nm.get("server_peer_id")) if nm != null else 1
+	if sender != 0 and sender != server_peer:
+		push_warning("[D7] refused army sync from non-server peer %d" % sender)
 		return
 	# Build a quick id->unit map for this faction.
 	var units := {}

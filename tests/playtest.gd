@@ -902,6 +902,39 @@ func _test_rts_hardening_part_b_165() -> void:
 	mage.call("_cast_chain_lightning")
 	_assert(int(mage.get("_cast_seq")) == seq_h + 1,
 		"170: second host cast inside 0.6 s refused by the server gate")
+
+	# Fold-in guard (final terms): client_sync_army — the
+	# server early-out is untouched; beneath it, clients admit
+	# the server peer only (hygiene: replica consistency, not
+	# authoritative state). In-suite the local peer IS the
+	# server, so the client branch cannot execute here — what
+	# drives is the server regression (early-out intact, the
+	# sync tick's origin unregressed); the guard's sender
+	# terms ride a source pin, labeled class (3).
+	var mgr_src := FileAccess.get_file_as_string("res://scripts/rts/rts_manager.gd")
+	var army := _body_of(mgr_src, "func client_sync_army")
+	_assert(army.contains("if multiplayer.is_server():")
+		and army.contains("get_remote_sender_id()")
+		and army.contains("_network_manager()")
+		and army.contains("server_peer_id"),
+		"165B: client_sync_army guard — server early-out intact, clients admit the server peer only")
+	var MgrScript: GDScript = load("res://scripts/rts/rts_manager.gd")
+	var mgr: Node = MgrScript.new()
+	holder.add_child(mgr)
+	var fu = UnitScript.new()
+	holder.add_child(fu)
+	fu.setup(0, &"footman", null)
+	fu.set("unit_id", 913)
+	fu.add_to_group("rts_units")
+	fu.global_position = Vector3(640, 0, 640)
+	fu.set("hp", 44.0)
+	mgr.call("client_sync_army", 0, {"ids": PackedInt32Array([913]),
+		"pos": PackedVector3Array([Vector3(1, 0, 1)]),
+		"rot": PackedFloat32Array([0.5]), "hp": PackedFloat32Array([1.0])})
+	_assert(is_equal_approx(float(fu.get("hp")), 44.0)
+		and fu.global_position == Vector3(640, 0, 640),
+		"165B: server-side client_sync_army call still early-outs (sync tick origin unregressed)")
+	fu.free()
 	holder.free()
 	print("[Playtest] RTS hardening Part B (issues #165/#170) done.")
 
