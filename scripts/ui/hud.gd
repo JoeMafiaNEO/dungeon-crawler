@@ -70,8 +70,44 @@ var _class_btn: Button
 var _save_quit_btn: Button
 
 
+## Issue #152 (2A-2): prompt labels that carry PromptText tokens,
+## tracked as [label, template] pairs so a live input-source switch
+## re-renders them in place. Entries are pruned when their label is
+## freed (popups rebuild their labels on every open).
+var _tracked_prompts: Array = []
+var _legend_player: Object = null
+var _pickup_name := ""
+var _pickup_shown := false
+var _pause_hint_label: Label = null
+
+const PAUSE_HINT_TEMPLATE := "{move} move · {attack} attack · {dash} dash · {cycle_ability} ability · {ping} ping · {start_wave} start wave"
+const CLOSE_HINT_TEMPLATE := "{close_keys} — close"
+const DEST_HINT_TEMPLATE := "{choose} a destination to vote. Unanimous vote departs the train.  ({close_keys_tight} closes)"
+
+
+func _track_prompt_label(l: Label, template: String) -> void:
+	_tracked_prompts.append([l, template])
+
+
+func _on_input_source_changed(_source: int) -> void:
+	var live: Array = []
+	for entry in _tracked_prompts:
+		if is_instance_valid(entry[0]):
+			(entry[0] as Label).text = PromptText.resolve(str(entry[1]))
+			live.append(entry)
+	_tracked_prompts = live
+	if _pickup_shown:
+		%PickupPrompt.text = PromptText.resolve("[{interact}]  " + _pickup_name)
+	if _pause_hint_label != null and is_instance_valid(_pause_hint_label):
+		_pause_hint_label.text = PromptText.resolve(PAUSE_HINT_TEMPLATE)
+	if _legend_player != null and is_instance_valid(_legend_player):
+		refresh_mouse_legend(_legend_player)
+
+
 func _ready() -> void:
 	add_to_group("hud")
+	# Issue #152 (2A-2): live prompt re-render on input-source flips.
+	InputSource.changed.connect(_on_input_source_changed)
 	# Issue #133: a guest whose host vanished gets the session-lost
 	# notice (NetworkManager detects; the HUD presents).
 	NetworkManager.session_lost.connect(_on_session_lost)
@@ -422,11 +458,15 @@ func _compact_stats_tab(vbox: VBoxContainer) -> void:
 	if div != null:
 		div.custom_minimum_size = Vector2(0, 16)
 	# Shorter controls hint, smaller font — one line at panel width.
+	# Issue #152 (2A-2): token template rendered through PromptText
+	# (KB rendering is the pre-token string byte-for-byte); the
+	# label is kept so source flips re-render it live.
 	var hint := vbox.get_node_or_null("HintLabel") as Label
 	if hint != null:
 		hint.add_theme_font_size_override("font_size", 12)
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		hint.text = "WASD move · Click attack · Shift dash · Q ability · G ping · R start wave"
+		hint.text = PromptText.resolve(PAUSE_HINT_TEMPLATE)
+		_pause_hint_label = hint
 	# Slimmer stat labels so two columns fit the 480px panel.
 	for pn in ["StatPair1", "StatPair2"]:
 		var pair := vbox.get_node_or_null(pn) as HBoxContainer
@@ -672,7 +712,8 @@ func show_vendor() -> void:
 		row.add_child(buy)
 		vb.add_child(row)
 	var close_hint := Label.new()
-	close_hint.text = "E / Esc — close"
+	close_hint.text = PromptText.resolve(CLOSE_HINT_TEMPLATE)
+	_track_prompt_label(close_hint, CLOSE_HINT_TEMPLATE)
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -800,7 +841,8 @@ func show_dock_vendor() -> void:
 		none.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
 		vb.add_child(none)
 	var close_hint := Label.new()
-	close_hint.text = "E / Esc — close"
+	close_hint.text = PromptText.resolve(CLOSE_HINT_TEMPLATE)
+	_track_prompt_label(close_hint, CLOSE_HINT_TEMPLATE)
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -976,7 +1018,8 @@ func _build_vault_panel() -> void:
 		trow.add_child(t)
 	vb.add_child(trow)
 	var close_hint := Label.new()
-	close_hint.text = "E / Esc — close"
+	close_hint.text = PromptText.resolve(CLOSE_HINT_TEMPLATE)
+	_track_prompt_label(close_hint, CLOSE_HINT_TEMPLATE)
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -1224,7 +1267,8 @@ func open_destination_popup(station: Node, destinations: Array, next_level: int)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	vb.add_child(title)
 	var hint := Label.new()
-	hint.text = "Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes)"
+	hint.text = PromptText.resolve(DEST_HINT_TEMPLATE)
+	_track_prompt_label(hint, DEST_HINT_TEMPLATE)
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 13)
 	hint.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
@@ -1374,7 +1418,8 @@ func show_poem_popup(idx: int) -> void:
 	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
 	vb.add_child(hint)
 	var close_hint := Label.new()
-	close_hint.text = "E / Esc — close"
+	close_hint.text = PromptText.resolve(CLOSE_HINT_TEMPLATE)
+	_track_prompt_label(close_hint, CLOSE_HINT_TEMPLATE)
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -1413,7 +1458,8 @@ func show_lockbox_popup() -> void:
 	submit.pressed.connect(_on_lockbox_submit.bind(entry, feedback))
 	vb.add_child(submit)
 	var close_hint := Label.new()
-	close_hint.text = "E / Esc — close"
+	close_hint.text = PromptText.resolve(CLOSE_HINT_TEMPLATE)
+	_track_prompt_label(close_hint, CLOSE_HINT_TEMPLATE)
 	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_hint.add_theme_font_size_override("font_size", 12)
 	close_hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
@@ -2543,8 +2589,14 @@ func hide_boss() -> void:
 
 func set_pickup_prompt(visible: bool, item_name: String) -> void:
 	%PickupPrompt.visible = visible
+	_pickup_shown = visible
+	_pickup_name = item_name
 	if visible:
-		%PickupPrompt.text = "[E]  " + item_name
+		# Issue #152 (2A-2): the interact-prompt renderer — every
+		# prompt_text() string and loot name lands here, so resolving
+		# the assembled line renders tokens embedded by the source
+		# (e.g. "({interact})") as well as the "[{interact}]" prefix.
+		%PickupPrompt.text = PromptText.resolve("[{interact}]  " + item_name)
 
 
 func toggle_inventory() -> void:
@@ -3140,15 +3192,21 @@ func _legend_row(parent: Control, btn: String) -> Label:
 func refresh_mouse_legend(p) -> void:
 	if _legend_left == null:
 		_build_mouse_legend()
+	if p != null:
+		_legend_player = p
 	var cid := str(p.get("class_id")) if p != null else ""
 	var state := "standard"
 	if p != null and p is Object and (p as Object).has_method("legend_state"):
 		state = str(p.legend_state())
 	var row: Dictionary = MouseLegend.actions_for(cid, state)
+	# Issue #152 (2A-2): slots are action slots — captions render
+	# the slot action's glyph for the current source and the verb
+	# labels resolve their tokens, all through PromptText.
+	var slots: Dictionary = MouseLegend.slot_actions_for(state)
 	var lmb := str(row["left"])
 	_legend_left.visible = lmb != ""
-	_legend_left.text = "LMB  %s" % lmb
+	_legend_left.text = "%s  %s" % [PromptText.glyph(str(slots["left"])), PromptText.resolve(lmb)]
 	var rmb := str(row["right"])
 	_legend_right.visible = rmb != ""
-	_legend_right.text = "RMB  %s" % rmb
-	_legend_mid.text = "MMB  %s" % str(row["middle"])
+	_legend_right.text = "%s  %s" % [PromptText.glyph(str(slots["right"])), PromptText.resolve(rmb)]
+	_legend_mid.text = "%s  %s" % [PromptText.glyph(str(slots["middle"])), PromptText.resolve(str(row["middle"]))]

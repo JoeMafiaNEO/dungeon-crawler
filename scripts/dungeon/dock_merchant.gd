@@ -55,7 +55,7 @@ func _ready() -> void:
 
 
 func prompt_text() -> String:
-	return "Browse dock merchant (E)"
+	return "Browse dock merchant ({interact})"
 
 
 func interact(player: Player) -> void:

@@ -59,9 +59,26 @@ const REGISTRY := {
 	# The right slot carries the hold-E context line, same pattern as the
 	# fishing rows.
 	"repair_ready": {
-		"architect": {"left": "Cast selected ability", "right": "Hold E — Repair", "middle": "Ping"},
+		"architect": {"left": "Cast selected ability", "right": "Hold {interact} — Repair", "middle": "Ping"},
 	},
 }
+
+## Issue #152 (2A-2): the slots are ACTION slots — the renderer
+## (hud.refresh_mouse_legend) captions each slot with the current
+## source's label for its action via PromptText.glyph(). Every state
+## uses the default mapping (left = attack, right = alt_attack,
+## middle = ping) except repair_ready, whose right slot is the
+## interact hold, not alt_attack.
+const DEFAULT_SLOT_ACTIONS := {"left": "attack", "right": "alt_attack", "middle": "ping"}
+const SLOT_ACTIONS := {
+	"repair_ready": {"left": "attack", "right": "interact", "middle": "ping"},
+}
+
+
+## The {left, right, middle} action names for a state's slots.
+static func slot_actions_for(state: String = "standard") -> Dictionary:
+	var table: Dictionary = SLOT_ACTIONS
+	return table.get(state, DEFAULT_SLOT_ACTIONS)
 
 ## Fallback row for unknown classes (and unknown states fall back to standard).
 const FALLBACK := {"left": "Attack", "right": "", "middle": "Ping"}

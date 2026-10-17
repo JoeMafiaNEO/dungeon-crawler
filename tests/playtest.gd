@@ -182,6 +182,7 @@ func _run() -> void:
 	_test_archer_shoot_148()
 	_test_steam_input_150()
 	_test_menu_nav_152()
+	_test_prompt_text_152()
 	_test_host_lobby_prefill_132()
 	_test_inventory_pause_screen()
 	_test_fishing_rod_phase3()
@@ -9273,7 +9274,7 @@ func _test_fishing_farming_phase1() -> void:
 	var plot = PlotScript.new()
 	root.add_child(plot)
 	_assert(plot.is_in_group("farm_plots"), "plot joins farm_plots group")
-	_assert(plot.prompt_text() == "Till soil (E)", "free plot prompt")
+	_assert(plot.prompt_text() == "Till soil ({interact})", "free plot prompt")
 	plot.claim_plot()
 	_assert(plot.occupied_by == 1, "plot claim attributes to sender")
 	plot.claim_plot()
@@ -9467,7 +9468,7 @@ func _test_farming_loop_phase3() -> void:
 	_assert(plot.occupied_by == 1, "till: plot claimed")
 	_assert(plot.plot_state == "tilled", "till: state tilled")
 	_assert(PlotScript.seed_count(1) == PlotScript.STARTER_SEED_COUNT, "till is free: seeds untouched")
-	_assert(plot.prompt_text() == "Plant seeds (E)", "tilled prompt")
+	_assert(plot.prompt_text() == "Plant seeds ({interact})", "tilled prompt")
 	plot.plot_action() # E on tilled with seeds: plant
 	_assert(plot.plot_state == "planted", "plant: state planted")
 	_assert(PlotScript.seed_count(1) == PlotScript.STARTER_SEED_COUNT - 1, "plant: ledger spent 1 seed")
@@ -9479,14 +9480,14 @@ func _test_farming_loop_phase3() -> void:
 	_assert(plot.prompt_text() == "Growing (1 waves left)", "growing prompt counts down")
 	plot.on_wave_cleared() # wave tick 3 -> mature
 	_assert(plot.plot_state == "harvestable", "wave 3: harvestable")
-	_assert(plot.prompt_text() == "Harvest! (E)", "harvestable prompt")
+	_assert(plot.prompt_text() == "Harvest! ({interact})", "harvestable prompt")
 	PlotScript.debug_harvest_roll = 0.5 # force a common crop
 	plot.plot_action() # E on harvestable: harvest
 	_assert(plot.plot_state == "untilled", "harvest: resets to untilled")
 	_assert(plot.growth_ticks == 0, "harvest: ticks reset")
 	_assert(plot.occupied_by == 0, "harvest: claim released")
 	_assert(_farm_inv_count(p, "crop_sunroot") == 1, "harvest: common crop granted")
-	_assert(plot.prompt_text() == "Till soil (E)", "prompt resets after harvest")
+	_assert(plot.prompt_text() == "Till soil ({interact})", "prompt resets after harvest")
 	# --- Seed-less and growing-state prompts ---
 	var plot3 = PlotScript.new()
 	root.add_child(plot3)
@@ -9498,7 +9499,7 @@ func _test_farming_loop_phase3() -> void:
 	plot3.plot_action() # plant attempt with no seeds
 	_assert(plot3.plot_state == "tilled", "seedless: stays tilled")
 	_assert(PlotScript.seed_count(1) == 0, "seedless: ledger untouched")
-	_assert(plot3.prompt_text() == "Plant seeds (E)", "seedless: prompt unchanged")
+	_assert(plot3.prompt_text() == "Plant seeds ({interact})", "seedless: prompt unchanged")
 	plot3.occupied_by = 2 # simulate another peer's claim
 	plot3.plot_state = "growing"
 	plot3.growth_ticks = 1
@@ -12347,6 +12348,193 @@ func _test_menu_nav_152() -> void:
 	print("[Playtest] Menu pad nav done")
 
 
+func _test_prompt_text_152() -> void:
+	print("[Playtest] Input-aware prompts (issue #152 2A-2)...")
+	# PromptText is load()ed, never statically referenced: its
+	# script names the InputSource autoload, and autoload-naming
+	# statics in this file are the hollow-green poison (AGENTS.md).
+	var pt = load("res://scripts/ui/prompt_text.gd")
+	var ml = load("res://scripts/ui/mouse_legend.gd")
+	var src = root.get_node("InputSource")
+	src.set_source(0)
+	# --- The resolver's labels, pinned literally from the Phase 1
+	# binding record (expectations never read the SUT's own tables).
+	# Source args: 0 = KB_MOUSE, 1 = PAD (InputSource.Source order).
+	var expect := {
+		"interact": ["E", "X"],
+		"attack": ["Click", "RT"],
+		"alt_attack": ["Right Click", "LT"],
+		"jump": ["Space", "A"],
+		"dash": ["Shift", "LS Click"],
+		"ability": ["T", "Y"],
+		"cycle_ability": ["Q", "LB/RB"],
+		"start_wave": ["R", "D-Pad Up"],
+		"potion": ["H", "D-Pad Down"],
+		"inventory": ["I", "View"],
+		"pause": ["Esc", "Menu"],
+		"ping": ["G", "RS Click"],
+		"toggle_rod": ["V", "D-Pad Left"],
+		"build_menu": ["B", "D-Pad Right"],
+		"close": ["Esc", "B"],
+		"move": ["WASD", "Left Stick"],
+		"close_keys": ["E / Esc", "B"],
+	}
+	for tok in expect:
+		_assert(pt.resolve("{" + tok + "}", 0) == expect[tok][0],
+			"152-2: {%s} renders %s on keyboard" % [tok, expect[tok][0]])
+		_assert(pt.resolve("{" + tok + "}", 1) == expect[tok][1],
+			"152-2: {%s} renders %s on pad" % [tok, expect[tok][1]])
+	_assert(pt.glyph("attack", 0) == "LMB" and pt.glyph("attack", 1) == "RT",
+		"152-2: attack captions as LMB / RT")
+	_assert(pt.glyph("alt_attack", 0) == "RMB" and pt.glyph("alt_attack", 1) == "LT",
+		"152-2: alt_attack captions as RMB / LT")
+	_assert(pt.glyph("ping", 0) == "MMB" and pt.glyph("ping", 1) == "RS Click",
+		"152-2: ping captions as MMB / RS Click")
+	_assert(pt.glyph("interact", 0) == "E" and pt.glyph("interact", 1) == "X",
+		"152-2: glyph falls back to the sentence label when no override exists")
+	_assert(pt.resolve("no tokens here", 1) == "no tokens here",
+		"152-2: token-free text passes through unchanged")
+	_assert(pt.resolve("{bogus} stays", 0) == "{bogus} stays",
+		"152-2: unknown tokens stay visible, never silently dropped")
+	_assert(pt.resolve("{ability_1} {signature_ability}", 1) == "{ability_1} {signature_ability}",
+		"152-2: Q6 — no direct-select tokens exist for a pad prompt to render")
+	_assert(pt.resolve("Level up! +3 stat points ({pause} to spend).", 0)
+		== "Level up! +3 stat points (Esc to spend).",
+		"152-2: level-up toast template renders the legacy KB string")
+	_assert(pt.resolve("Level up! +3 stat points ({pause} to spend).", 1)
+		== "Level up! +3 stat points (Menu to spend).",
+		"152-2: level-up toast names the pad pause button")
+	# Live source: resolve() with no source arg reads the tracker.
+	_assert(pt.resolve("{interact}") == "E", "152-2: live resolve follows the tracker (KB)")
+	src.set_source(1)
+	_assert(pt.resolve("{interact}") == "X", "152-2: live resolve follows the tracker (PAD)")
+	src.set_source(0)
+	# --- Tutorial HINTS registry: KB byte-identical, PAD rendered.
+	var tut = load("res://scripts/systems/tutorial.gd")
+	var hints: Array = tut.get_script_constant_map()["HINTS"]
+	var by_id := {}
+	for h in hints:
+		by_id[h["id"]] = str(h["text"])
+	var tut_expect := {
+		"move": ["WASD to move, mouse to look. Left click to attack.",
+			"Left Stick to move, right stick to look. RT to attack."],
+		"pickup": ["Press E near glowing loot to pick it up.",
+			"Press X near glowing loot to pick it up."],
+		"inventory": ["Press I to open inventory. Click items to use them.",
+			"Press View to open inventory. Select items to use them."],
+		"dash": ["Press Shift to dash (brief invincibility).",
+			"Press LS Click to dash (brief invincibility)."],
+		"ping": ["Press G to ping a location for your team.",
+			"Press RS Click to ping a location for your team."],
+	}
+	for id in tut_expect:
+		_assert(pt.resolve(by_id[id], 0) == tut_expect[id][0],
+			"152-2: tutorial '%s' KB rendering is byte-identical" % id)
+		_assert(pt.resolve(by_id[id], 1) == tut_expect[id][1],
+			"152-2: tutorial '%s' PAD rendering" % id)
+	_assert(pt.resolve(by_id["wave"], 1) == by_id["wave"],
+		"152-2: binding-free tutorial hints render unchanged on pad")
+	# --- prompt_text() implementations through the resolver.
+	var dm = load("res://scripts/dungeon/dock_merchant.gd").new()
+	_assert(pt.resolve(dm.prompt_text(), 0) == "Browse dock merchant (E)",
+		"152-2: dock merchant prompt renders (E) on KB")
+	_assert(pt.resolve(dm.prompt_text(), 1) == "Browse dock merchant (X)",
+		"152-2: dock merchant prompt renders (X) on pad")
+	dm.free()
+	var vs = load("res://scripts/station/vendor_stall.gd").new()
+	_assert(vs.prompt_text() == "Browse vendor",
+		"152-2: bare-verb prompts carry no binding text (the renderer adds it)")
+	vs.free()
+	# --- Real HUD fixture: every converted surface, live flips.
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	root.add_child(hud)
+	var pause_hints = hud.find_children("HintLabel", "Label", true, false)
+	var pause_hint: Label = pause_hints[0] if pause_hints.size() == 1 else null
+	_assert(pause_hint != null and pause_hint.text == "WASD move · Click attack · Shift dash · Q ability · G ping · R start wave",
+		"152-2: pause controls hint renders the legacy string on KB")
+	src.set_source(1)
+	_assert(pause_hint != null and pause_hint.text == "Left Stick move · RT attack · LS Click dash · LB/RB ability · RS Click ping · D-Pad Up start wave",
+		"152-2: pause controls hint re-renders live on a source flip")
+	src.set_source(0)
+	_assert(pause_hint != null and pause_hint.text == "WASD move · Click attack · Shift dash · Q ability · G ping · R start wave",
+		"152-2: pause controls hint flips back with the source")
+	hud.set_pickup_prompt(true, "Copper Key")
+	var pp := hud.get_node("%PickupPrompt") as Label
+	_assert(pp.text == "[E]  Copper Key", "152-2: loot prompt renders [E] on KB")
+	src.set_source(1)
+	_assert(pp.text == "[X]  Copper Key", "152-2: loot prompt re-renders [X] live on pad")
+	hud.set_pickup_prompt(true, "Browse vendor")
+	_assert(pp.text == "[X]  Browse vendor",
+		"152-2: interact prompts take the same resolved renderer on pad")
+	src.set_source(0)
+	hud.set_pickup_prompt(false, "")
+	hud.show_poem_popup(0)
+	var close_lbl: Label = null
+	for l in hud.find_children("", "Label", true, false):
+		if (l as Label).text.ends_with("— close"):
+			close_lbl = l
+	_assert(close_lbl != null and close_lbl.text == "E / Esc — close",
+		"152-2: popup close hint renders the legacy string on KB")
+	src.set_source(1)
+	_assert(close_lbl != null and close_lbl.text == "B — close",
+		"152-2: popup close hint re-renders truthfully on pad (B is the pad close)")
+	src.set_source(0)
+	var station_stub := Node.new()
+	station_stub.add_to_group("station")
+	root.add_child(station_stub)
+	hud.open_destination_popup(station_stub, ["village", "dungeon"], 2)
+	var dest_hint: Label = null
+	for l in hud.find_children("", "Label", true, false):
+		if (l as Label).text.contains("destination to vote"):
+			dest_hint = l
+	_assert(dest_hint != null and dest_hint.text
+		== "Click a destination to vote. Unanimous vote departs the train.  (E/Esc closes)",
+		"152-2: destination hint renders the legacy string on KB")
+	src.set_source(1)
+	_assert(dest_hint != null and dest_hint.text
+		== "Select a destination to vote. Unanimous vote departs the train.  (B closes)",
+		"152-2: destination hint re-renders on pad")
+	src.set_source(0)
+	# --- Mouse legend: action-slot captions, live.
+	var stub_p := Node.new()
+	root.add_child(stub_p)
+	hud.refresh_mouse_legend(stub_p)
+	var ll = hud.get("_legend_left")
+	var lm = hud.get("_legend_mid")
+	_assert(ll.text == "LMB  Attack" and lm.text == "MMB  Ping",
+		"152-2: legend renders mouse captions + verbs on KB")
+	src.set_source(1)
+	_assert(ll.text == "RT  Attack" and lm.text == "RS Click  Ping",
+		"152-2: legend re-renders pad captions on a source flip")
+	src.set_source(0)
+	_assert(ml.slot_actions_for("repair_ready")["right"] == "interact",
+		"152-2: the repair slot is the interact action slot")
+	_assert(ml.slot_actions_for("standard")["right"] == "alt_attack",
+		"152-2: the standard right slot is alt_attack")
+	_assert(str(ml.actions_for("architect", "repair_ready")["right"]) == "Hold {interact} — Repair",
+		"152-2: repair legend text carries the interact token")
+	_assert(pt.resolve(str(ml.actions_for("architect", "repair_ready")["right"]), 1) == "Hold X — Repair",
+		"152-2: repair legend renders the pad hold on pad")
+	_assert(pt.resolve(str(ml.actions_for("architect", "repair_ready")["right"]), 0) == "Hold E — Repair",
+		"152-2: repair legend renders the legacy KB string")
+	root.remove_child(stub_p)
+	stub_p.free()
+	root.remove_child(station_stub)
+	station_stub.free()
+	root.remove_child(hud)
+	hud.free()
+	# --- Farm plot prompts (in-tree: prompt_text reads multiplayer).
+	var plot = load("res://scripts/dungeon/farm_plot.gd").new()
+	root.add_child(plot)
+	_assert(pt.resolve(plot.prompt_text(), 0) == "Till soil (E)",
+		"152-2: farm plot prompt renders (E) on KB")
+	_assert(pt.resolve(plot.prompt_text(), 1) == "Till soil (X)",
+		"152-2: farm plot prompt renders (X) on pad")
+	root.remove_child(plot)
+	plot.free()
+	print("[Playtest] Input-aware prompts done")
+
+
 func _test_host_lobby_prefill_132() -> void:
 	print("[Playtest] Host lobby prefill (issue #132)...")
 	var MenuScript := load("res://scripts/ui/main_menu.gd")
@@ -13955,7 +14143,9 @@ func _test_architect_tools_repair() -> void:
 	_assert(str(legend_std.get("left", "")) == "Cast selected ability",
 		"tools113: the architect keeps NO basic attack (LMB casts abilities)")
 	var legend_rep: Dictionary = LegendScript.actions_for("architect", "repair_ready")
-	_assert(str(legend_rep.get("right", "")) == "Hold E — Repair",
+	var PTScript = load("res://scripts/ui/prompt_text.gd")
+	_assert(str(legend_rep.get("right", "")) == "Hold {interact} — Repair"
+		and PTScript.resolve(str(legend_rep.get("right", "")), 0) == "Hold E — Repair",
 		"tools113: the mouse legend shows the repair line in repair context")
 	_assert(not _bughunt_body(psrc, "_server_repair_tick").contains("take_damage"),
 		"tools113: the repair tick path never deals damage")

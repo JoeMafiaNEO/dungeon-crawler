@@ -5376,7 +5376,7 @@ func gain_xp(amount: int, track_kill: bool = true) -> void:
 		_push_aura()
 		_check_milestone()
 		if hud != null:
-			hud.toast("Level up! +3 stat points (Esc to spend).")
+			hud.toast(PromptText.resolve("Level up! +3 stat points ({pause} to spend)."))
 			if not new_ability.is_empty():
 				hud.toast("New ability unlocked: %s!" % [String(new_ability["name"])])
 				AudioManager.sfx("ability_unlock")

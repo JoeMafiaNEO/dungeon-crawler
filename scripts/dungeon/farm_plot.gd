@@ -93,17 +93,17 @@ func _ready() -> void:
 func prompt_text() -> String:
 	var me := int(multiplayer.get_unique_id())
 	if occupied_by == 0:
-		return "Till soil (E)"
+		return "Till soil ({interact})"
 	if occupied_by != me:
 		return "Plot in use"
 	match plot_state:
 		"tilled":
-			return "Plant seeds (E)"
+			return "Plant seeds ({interact})"
 		"planted", "growing":
 			return "Growing (%d waves left)" % _waves_left()
 		"harvestable":
-			return "Harvest! (E)"
-	return "Till soil (E)"
+			return "Harvest! ({interact})"
+	return "Till soil ({interact})"
 
 
 func interact(player: Player) -> void:
