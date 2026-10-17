@@ -4791,6 +4791,36 @@ func on_buy_refunded(price: int) -> void:
 			hud.refresh_vendor_cash()
 
 
+## Issue #160: a dispose drop debits the DROPPER's dock mirrors on
+## the server — the exact inverse of the #155 claim credit, same
+## discipline (server-only, sender must own this node). Without it
+## the mirror kept the disposed goods: reclaiming the drop then
+## double-credited, and the stale balance stayed sellable.
+@rpc("any_peer", "call_local")
+func report_dispose(item_id: String, count: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var peer := multiplayer.get_remote_sender_id()
+	if peer == 0:
+		peer = int(multiplayer.get_unique_id())
+	if peer != get_multiplayer_authority():
+		return
+	_debit_dock_mirrors(peer, item_id, count)
+
+
+## The debit table — the #155 claim hook's mirror image (clamped:
+## a mirror never goes below zero on a drop).
+func _debit_dock_mirrors(peer: int, item_id: String, count: int) -> void:
+	if count <= 0:
+		return
+	if item_id == "seed_packet":
+		FarmPlot.grant_seeds(peer, -mini(count, FarmPlot.seed_count(peer)))
+	elif item_id == DockEconomy.BAIT_ITEM:
+		DockEconomy.debit_stock(peer, DockEconomy.BAIT_ITEM, count)
+	elif item_id == DockEconomy.CASH_ITEM:
+		DockEconomy.debit_cash(peer, count)
+
+
 @rpc("any_peer", "call_local")
 func receive_item(item_id: String, sell_value: int = -1, claim_from: String = "", claim_count: int = 0, claim_tag: int = 0) -> void:
 	if not is_multiplayer_authority():
@@ -4943,6 +4973,14 @@ func dispose_item(index: int) -> void:
 		mult = float(item.sell_value) / float(base.sell_value)
 	var drop_pos := global_position - global_transform.basis.z * 0.9
 	dungeon.spawn_pickup_allocated(item.id, drop_pos, mult, int(entry["count"]))
+	# Issue #160: the drop debits this peer's dock mirrors on the
+	# server (report_dispose) — bag and mirror leave together, so a
+	# later claim (by anyone, including the dropper) re-credits from
+	# zero instead of doubling.
+	if multiplayer.is_server():
+		report_dispose(item.id, int(entry["count"]))
+	else:
+		rpc_id(NetworkManager.server_peer_id, "report_dispose", item.id, int(entry["count"]))
 	inventory.remove_at(index)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)

@@ -100,6 +100,7 @@ func _run() -> void:
 	_test_architect_tools_repair()
 	_test_hammer_smash()
 	_test_ability_matrix_162()
+	_test_dock_mirror_invariant_160()
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
@@ -15093,6 +15094,178 @@ func _test_ability_matrix_162() -> void:
 	caster_b.hl_end_beam(2)
 	stub.remove_from_group("dungeon")
 	stub.free()
+	holder.free()
+
+
+## Issue #160 stub: records world drops spawned through the door.
+class DockStub160 extends Node:
+	var pickups: Array = []
+
+	@rpc("any_peer", "call_local")
+	func spawn_pickup_allocated(item_id: String, pos: Vector3, value_mult: float = 1.0, count: int = 1) -> void:
+		pickups.append([item_id, count])
+
+
+func _test_dock_mirror_invariant_160() -> void:
+	print("[Playtest] Dock mirror invariant (#160)...")
+	var EconScript := load("res://scripts/dungeon/dock_economy.gd")
+	var PlotScript := load("res://scripts/dungeon/farm_plot.gd")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var PickupScene: PackedScene = load("res://scenes/items/item_pickup.tscn")
+	var saved_seeds: int = PlotScript.seed_count(1)
+	PlotScript.clear_ledger(1)
+	EconScript.debug_reset()
+	for n in get_nodes_in_group("dungeon"):
+		n.remove_from_group("dungeon")
+	var stub := DockStub160.new()
+	root.add_child(stub)
+	stub.add_to_group("dungeon")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "warrior")
+	holder.add_child(p)
+	var find_idx := func(pl, item_id: String) -> int:
+		for i in pl.inventory.size():
+			if (pl.inventory[i]["item"] as ItemData).id == item_id:
+				return i
+		return -1
+	# --- Dispose debits the dropper's mirrors (the #155 hook inverse).
+	for i in 6:
+		p.receive_item("farm_cash")
+	EconScript.grant_cash(1, 6)
+	p.dispose_item(find_idx.call(p, "farm_cash"))
+	_assert(_farm_inv_count(p, "farm_cash") == 0,
+		"160: dispose empties the bag stack")
+	_assert(stub.pickups.size() == 1 and int(stub.pickups[0][1]) == 6,
+		"160: the drop spawned in the world x6")
+	_assert(EconScript.cash_balance(1) == 0,
+		"160: dispose debits the cash mirror (6 -> 0)")
+	# --- Reclaim nets to the pre-dispose value, never above it.
+	var pk = PickupScene.instantiate()
+	pk.call("setup", ItemDBNode.get_item("farm_cash"))
+	holder.add_child(pk)
+	pk.set("count", 6)
+	pk.set("claimed", true)
+	pk.set("_claimer_peer", 1)
+	pk.set("_claim_since", 0.0)
+	p.call("receive_item", "farm_cash", -1, str(pk.get_path()), 6)
+	_assert(EconScript.cash_balance(1) == 6,
+		"160: reclaim re-credits to the pre-dispose value (6, never 12)")
+	_assert(_farm_inv_count(p, "farm_cash") == 6,
+		"160: reclaimed cash is back in the bag")
+	# --- Seeds and bait debit the same way.
+	for i in 5:
+		p.receive_item("seed_packet")
+	PlotScript.grant_seeds(1, 5)
+	p.dispose_item(find_idx.call(p, "seed_packet"))
+	_assert(PlotScript.seed_count(1) == 0,
+		"160: dispose debits the seed ledger (5 -> 0)")
+	p.receive_item("bait_lure")
+	EconScript.grant_stock(1, "bait_lure", 1)
+	p.dispose_item(find_idx.call(p, "bait_lure"))
+	_assert(EconScript.stock_count(1, "bait_lure") == 0,
+		"160: dispose debits the bait stock (1 -> 0)")
+	# --- The debit clamps at zero (mirror below the bag: legacy drift).
+	EconScript.debug_reset()
+	EconScript.grant_cash(1, 2)
+	p.dispose_item(find_idx.call(p, "farm_cash"))
+	_assert(EconScript.cash_balance(1) == 0,
+		"160: the debit clamps at zero (mirror 2, dropped 6 -> 0, never negative)")
+	# --- Derive-at-restore: the mapping, from a real dungeon instance.
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	var entries := [
+		{"id": "farm_cash", "count": 4}, {"id": "seed_packet", "count": 7},
+		{"id": "fish_minnow", "count": 2}, {"id": "bait_lure", "count": 1},
+		{"id": "crop_sunroot", "count": 5}, {"id": "dock_salve", "count": 3},
+	]
+	dun.call("_derive_dock_mirrors", 7, entries)
+	_assert(EconScript.cash_balance(7) == 4, "160: derive maps bag cash")
+	_assert(PlotScript.seed_count(7) == 7, "160: derive maps bag seed packets")
+	_assert(EconScript.stock_count(7, "fish_minnow") == 2,
+		"160: derive maps bag fish to stock")
+	_assert(EconScript.stock_count(7, "bait_lure") == 1,
+		"160: derive maps bag bait to stock")
+	_assert(EconScript.stock_count(7, "crop_sunroot") == 5,
+		"160: derive maps bag crops to stock")
+	_assert(EconScript.stock_count(7, "dock_salve") == 0,
+		"160: derive leaves untracked consumables out of the stock")
+	EconScript.grant_cash(7, 99)
+	PlotScript.grant_seeds(7, 99)
+	dun.call("_derive_dock_mirrors", 7, entries)
+	_assert(EconScript.cash_balance(7) == 4 and PlotScript.seed_count(7) == 7,
+		"160: derive SETS the mirrors (no accumulation across restores)")
+	# --- Ordering: fresh derives 0 then takes the starter grant;
+	# continued derives N and takes no second grant (the gate itself
+	# is source-pinned below).
+	dun.call("_derive_dock_mirrors", 8, [])
+	PlotScript.grant_starter_seeds(8)
+	_assert(PlotScript.seed_count(8) == 3,
+		"160: fresh arrival derives 0, then the starter grant lands (3)")
+	dun.call("_derive_dock_mirrors", 8, [{"id": "seed_packet", "count": 7}])
+	_assert(PlotScript.seed_count(8) == 7,
+		"160: continued arrival derives its bag (7, no second starter grant)")
+	# --- Jesse's sequence: earn -> continue -> the continued run can
+	# buy, sell, and plant what its bag shows.
+	EconScript.debug_reset()
+	PlotScript.clear_ledger(1)
+	for i in 10:
+		p.receive_item("farm_cash")
+	p.receive_item("fish_minnow")
+	p.receive_item("fish_minnow")
+	for i in 5:
+		p.receive_item("seed_packet")
+	var st: Dictionary = p.get_state()
+	EconScript.debug_reset()
+	PlotScript.clear_ledger(1)
+	var p2 = PlayerScene.instantiate()
+	holder.add_child(p2)
+	p2.apply_state(st)
+	dun.call("_derive_dock_mirrors", 1, st.get("inventory", []))
+	_assert(EconScript.cash_balance(1) == 10,
+		"160: the continued run derives its cash (10)")
+	_assert(EconScript.spend_cash(1, 1),
+		"160: the continued run can BUY")
+	_assert(EconScript.spend_stock(1, "fish_minnow", 1),
+		"160: the continued run can SELL")
+	_assert(PlotScript.seed_count(1) == 5,
+		"160: the continued run can PLANT what its bag shows (5)")
+	p2.free()
+	dun.free()
+	# --- Sites: derive at both apply points, the grant gate, the
+	# disconnect clear, the self-guards, the dispose report.
+	var dsrc: String = FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("_derive_dock_mirrors(sender, ps.get(\"inventory\""),
+		"160: the register apply point derives remote mirrors")
+	_assert(dsrc.contains("if not arrived or _death_reset_peers.has(peer_id):"),
+		"160: the starter grant is gated on arrived-with-state")
+	var disc := _body_of(dsrc, "func _on_peer_disconnected(peer_id: int) -> void:")
+	_assert(disc.contains("DockEconomy.reset_peer(peer_id)")
+		and disc.contains("FarmPlot.clear_ledger(peer_id)"),
+		"160: disconnect clears both ledgers")
+	var fsrc: String = FileAccess.get_file_as_string("res://scripts/dungeon/farm_plot.gd")
+	_assert(fsrc.contains("fplayer.consume_dock_good(DockEconomy.FERTILIZER_ITEM)")
+		and fsrc.contains("player.consume_seed_item()"),
+		"160: farm consumption carries the self-guard")
+	var fisrc: String = FileAccess.get_file_as_string("res://scripts/fishing/fishing_director.gd")
+	_assert(fisrc.contains("player.consume_dock_good(DockEconomy.BAIT_ITEM)"),
+		"160: fishing consumption carries the self-guard")
+	var psrc: String = FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("func report_dispose(")
+		and psrc.contains("report_dispose(item.id"),
+		"160: dispose reports its mirror debit")
+	print("[Playtest] Dock mirror invariant done")
+	PlotScript.clear_ledger(1)
+	PlotScript.clear_ledger(7)
+	PlotScript.clear_ledger(8)
+	if saved_seeds > 0:
+		PlotScript.grant_seeds(1, saved_seeds)
+	EconScript.debug_reset()
+	stub.remove_from_group("dungeon")
+	stub.free()
+	p.free()
 	holder.free()
 
 

@@ -85,6 +85,27 @@ static func grant_stock(peer: int, item_id: String, n: int = 1) -> void:
 	_stock[peer] = goods
 
 
+## Issue #160: clamped debits — the drop-side inverse of the grants.
+## A mirror never goes below zero: legacy drift (a bag that shrank
+## while its mirror was stale) debits to the floor, not into debt.
+static func debit_cash(peer: int, n: int) -> void:
+	_cash[peer] = maxi(0, cash_balance(peer) - n)
+
+
+static func debit_stock(peer: int, item_id: String, n: int = 1) -> void:
+	var goods: Dictionary = _stock.get(peer, {})
+	goods[item_id] = maxi(0, int(goods.get(item_id, 0)) - n)
+	_stock[peer] = goods
+
+
+## Issue #160: derive-at-restore SETS both mirrors from the bag (the
+## durable truth) in one call — assignment, never accumulation, so a
+## restore can neither double nor carry a stale balance forward.
+static func set_mirrors(peer: int, cash: int, stock: Dictionary) -> void:
+	_cash[peer] = cash
+	_stock[peer] = stock.duplicate()
+
+
 static func stock_count(peer: int, item_id: String) -> int:
 	var goods: Dictionary = _stock.get(peer, {})
 	return int(goods.get(item_id, 0))

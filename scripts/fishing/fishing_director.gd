@@ -186,7 +186,11 @@ func _handle_cast(peer: int, landing: Vector3) -> void:
 	var baited := false
 	if DockEconomy.spend_stock(peer, DockEconomy.BAIT_ITEM):
 		baited = true
-		player.rpc_id(peer, "consume_dock_good", DockEconomy.BAIT_ITEM)
+		# Issue #160: the merchant's self-guard (see farm_plot).
+		if peer == int(multiplayer.get_unique_id()):
+			player.consume_dock_good(DockEconomy.BAIT_ITEM)
+		else:
+			player.rpc_id(peer, "consume_dock_good", DockEconomy.BAIT_ITEM)
 	var wait := _roll_wait()
 	_sessions[peer] = {
 		"state": SessionState.WAITING,
@@ -222,7 +226,10 @@ func _resolve_catch(peer: int, s: Dictionary) -> void:
 		"since": Time.get_ticks_msec() / 1000.0}
 	var player := _player_for_peer(peer)
 	if player != null:
-		player.rpc_id(peer, "receive_item", item_id, -1, str(get_path()), 1, peer)
+		if peer == int(multiplayer.get_unique_id()):
+			player.receive_item(item_id, -1, str(get_path()), 1, peer)
+		else:
+			player.rpc_id(peer, "receive_item", item_id, -1, str(get_path()), 1, peer)
 	rpc("fx_catch", peer, item_id)
 
 

@@ -77,6 +77,12 @@ static func seed_count(peer: int) -> int:
 	return int(_seed_ledger.get(peer, 0))
 
 
+## Issue #160: derive-at-restore SETS the seed ledger from the bag
+## (the durable truth) — assignment, never accumulation.
+static func set_seed_count(peer: int, n: int) -> void:
+	_seed_ledger[peer] = n
+
+
 static func _spend_seed(peer: int) -> bool:
 	var left := seed_count(peer)
 	if left <= 0:
@@ -147,7 +153,13 @@ func plot_action() -> void:
 			if DockEconomy.spend_stock(peer, DockEconomy.FERTILIZER_ITEM):
 				var fplayer := _player_for_peer(peer)
 				if fplayer != null:
-					fplayer.rpc_id(peer, "consume_dock_good", DockEconomy.FERTILIZER_ITEM)
+					# Issue #160: the merchant's self-guard — for the
+					# server's own player the consume executes locally
+					# (rpc_id to own peer id is undeliverable on Steam).
+					if peer == int(multiplayer.get_unique_id()):
+						fplayer.consume_dock_good(DockEconomy.FERTILIZER_ITEM)
+					else:
+						fplayer.rpc_id(peer, "consume_dock_good", DockEconomy.FERTILIZER_ITEM)
 				growth_ticks += 1
 				plot_state = "harvestable" if growth_ticks >= GROWTH_TICKS else "growing"
 				_sync_plot()
@@ -190,7 +202,10 @@ func _plant(peer: int) -> void:
 	# (inventory is per-peer authoritative; the ledger already decremented).
 	var player := _player_for_peer(peer)
 	if player != null:
-		player.rpc_id(peer, "consume_seed_item")
+		if peer == int(multiplayer.get_unique_id()):
+			player.consume_seed_item()
+		else:
+			player.rpc_id(peer, "consume_seed_item")
 	plot_state = "planted"
 	growth_ticks = 0
 	_sync_plot()
@@ -212,7 +227,10 @@ func _harvest(peer: int) -> void:
 	# vanished crop is exactly the silent loss this issue kills.
 	_harvest_pending = {"peer": peer, "item_id": item_id,
 		"since": Time.get_ticks_msec() / 1000.0}
-	player.rpc_id(peer, "receive_item", item_id, -1, str(get_path()), 1, peer)
+	if peer == int(multiplayer.get_unique_id()):
+		player.receive_item(item_id, -1, str(get_path()), 1, peer)
+	else:
+		player.rpc_id(peer, "receive_item", item_id, -1, str(get_path()), 1, peer)
 
 
 ## Issue #142: the harvest grant's outcome (called by the

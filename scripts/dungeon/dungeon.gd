@@ -356,6 +356,45 @@ var _session_roster: Array = []
 ## (the one-shot push raced the guest's scene readiness and dropped).
 ## Instance state — dies with the scene, like the session it serves.
 var _continued_state_by_peer: Dictionary = {}
+## Issue #160: peers whose mirrors were wiped by a death this
+## session — their next farm-theme entry takes the starter grant
+## again (a death reset is a fresh start, not a continued arrival).
+var _death_reset_peers: Dictionary = {}
+## Issue #160: set inside _do_spawn when the local player's spawn
+## consumed a restored state; read by the same call's server block.
+var _spawn_arrived_with_state := false
+
+
+## Issue #160: rebuild a peer's dock mirrors from a bag — the bag
+## is the durable truth, the mirrors are a server cache of it,
+## re-derived (SET, never accumulated) at every state-apply. The
+## tracked-stock enumeration comes from DockEconomy/FarmPlot's own
+## grant sites: bait and fertilizer (merchant), every fish (catch),
+## every crop (harvest).
+func _derive_dock_mirrors(peer_id: int, inv_entries: Array) -> void:
+	var cash := 0
+	var seeds := 0
+	var stock: Dictionary = {}
+	for e in inv_entries:
+		if not (e is Dictionary):
+			continue
+		var item_id := str((e as Dictionary).get("id", ""))
+		var n := int((e as Dictionary).get("count", 0))
+		if item_id == DockEconomy.CASH_ITEM:
+			cash += n
+		elif item_id == FarmPlot.SEED_ITEM:
+			seeds += n
+		elif _is_tracked_dock_stock(item_id):
+			stock[item_id] = int(stock.get(item_id, 0)) + n
+	DockEconomy.set_mirrors(peer_id, cash, stock)
+	FarmPlot.set_seed_count(peer_id, seeds)
+
+
+func _is_tracked_dock_stock(item_id: String) -> bool:
+	return item_id == DockEconomy.BAIT_ITEM \
+		or item_id == DockEconomy.FERTILIZER_ITEM \
+		or item_id.begins_with("fish_") \
+		or item_id.begins_with("crop_")
 ## Issue #140 leg 2 (client side): latched when the server answers the
 ## continued-state pull — with the state, or with an empty dict (its
 ## definitive "none for you"). The register-time push sets it too.
@@ -570,6 +609,10 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 			# (request_continued_state) answers from this stash.
 			_continued_state_by_peer[sender] = ps
 			node.apply_state(ps)
+			# Issue #160: derive the rejoiner's dock mirrors from the
+			# restored bag on the server (their spawn-time grant was
+			# already gated on this roster entry in _do_spawn).
+			_derive_dock_mirrors(sender, ps.get("inventory", []))
 			# Bounty Board (issue #7): the continued level runs fresh
 			# bounties — progress from the saved level does not carry over.
 			if _bounty != null:
@@ -875,6 +918,7 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 		if _rec != null and _daily != null and next_seed == int(_daily.call("get_today_seed")):
 			_rec.call("start_recording", p, _daily.call("get_today_string"), next_seed)
 			_maybe_spawn_echo_ghost()
+		_spawn_arrived_with_state = not saved_player_state.is_empty()
 		if not saved_player_state.is_empty():
 			p.apply_state(saved_player_state)
 			saved_player_state = {}
@@ -906,11 +950,33 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 		# entry so the farming loop boots even without fishing. The server
 		# tracks the seed ledger; each seed also lands in the player's own
 		# inventory stack (receive_item executes on the peer as authority).
+		# Issue #160: the peer's mirrors are first DERIVED from the bag
+		# (the durable truth) — for the local player here, where the
+		# state apply just ran; for remote peers at the register_class
+		# apply point, theirs lands after this call. The starter grant
+		# then fires only for arrivals WITHOUT a restored state (a
+		# continued run derives N and takes no second grant) — or after
+		# a death reset, which is a fresh start.
 		if theme != null and theme.has_farm_plots:
-			FarmPlot.grant_starter_seeds(peer_id)
-			if pnode != null:
-				for s in FarmPlot.STARTER_SEED_COUNT:
-					pnode.rpc_id(peer_id, "receive_item", FarmPlot.SEED_ITEM)
+			var arrived := false
+			if peer_id == int(multiplayer.get_unique_id()):
+				arrived = _spawn_arrived_with_state
+				if pnode != null:
+					_derive_dock_mirrors(peer_id,
+						pnode.get_state().get("inventory", []))
+			else:
+				var roster_entry := _find_roster_entry(peer_id)
+				arrived = not roster_entry.is_empty() and not (
+					roster_entry.get("player_state", {}) as Dictionary).is_empty()
+			if not arrived or _death_reset_peers.has(peer_id):
+				FarmPlot.grant_starter_seeds(peer_id)
+				if pnode != null:
+					for s in FarmPlot.STARTER_SEED_COUNT:
+						if peer_id == int(multiplayer.get_unique_id()):
+							pnode.receive_item(FarmPlot.SEED_ITEM)
+						else:
+							pnode.rpc_id(peer_id, "receive_item", FarmPlot.SEED_ITEM)
+				_death_reset_peers.erase(peer_id)
 	# Issue #134: the OWNING peer captures its own entry snapshot, here
 	# at the end of spawn — after the continue-state restore above, so
 	# "entry" means what the player arrived with. (The server used to
@@ -938,7 +1004,13 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
 	peer_classes.erase(peer_id)
-	_continued_state_by_peer.erase(peer_id)  # Issue #140 leg 2 stash hygiene.
+	_continued_state_by_peer.erase(peer_id)
+	# Issue #160: ledgers clear on disconnect — what DockEconomy's
+	# header has always advertised. Peer ids get reused; a stale
+	# ledger inherited by a fresh bag is a phantom balance.
+	DockEconomy.reset_peer(peer_id)
+	FarmPlot.clear_ledger(peer_id)
+	_death_reset_peers.erase(peer_id)  # Issue #140 leg 2 stash hygiene.
 	rpc("despawn_player", peer_id)
 	# Jesse 2026-10-10: clean up the leaver's Holy Light beams (including
 	# lingering heal zones) so they don't orphan.
@@ -3743,6 +3815,7 @@ func notify_player_died() -> void:
 		dead_peer = multiplayer.get_unique_id()
 	DockEconomy.reset_peer(dead_peer)
 	FarmPlot.clear_ledger(dead_peer)
+	_death_reset_peers[dead_peer] = true
 	# Defer one frame so the death flag settles.
 	await get_tree().process_frame
 	check_party_wipe()
