@@ -5480,6 +5480,16 @@ func use_item(index: int) -> void:
 	if int(entry["count"]) <= 0:
 		_audit_inventory("use_item", item.id, 1, index, _entry_equipped_slot(entry))
 		inventory.remove_at(index)
+	# Rare-fish buff build (dock-mirror integrity): consuming a
+	# tracked dock good debits the server mirror through the same
+	# validated report_dispose path as a dispose drop — bag and
+	# mirror leave together. The debit table in _debit_dock_mirrors
+	# decides what is tracked, so an eaten fish or crop can never
+	# stay sellable from the mirror (the #160 phantom).
+	if multiplayer.is_server():
+		report_dispose(item.id, 1)
+	else:
+		rpc_id(NetworkManager.server_peer_id, "report_dispose", item.id, 1)
 	_recalc_stats()
 	health_changed.emit(hp, max_hp)
 	AudioManager.sfx("drink")

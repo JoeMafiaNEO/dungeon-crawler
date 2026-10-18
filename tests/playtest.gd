@@ -36,6 +36,7 @@ func _run() -> void:
 	_test_save_scroll_affordance_145()
 	_test_theme_lighting_readability()
 	_test_continued_reselect()
+	_test_glimmerfin_buff()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -2676,6 +2677,120 @@ func _test_continued_reselect() -> void:
 	else:
 		SM.call("save_run", slot_prior, "mp", 7)
 	print("[Playtest] Continued-run reselect done")
+
+
+## Rare-fish buff (Jesse's walkthrough ruling): the Glimmerfin is
+## consumable through the existing data-driven buff system AND stays
+## sellable — never both. Eating one must debit the server dock
+## mirror through the report_dispose discipline, or the merchant
+## would still buy the eaten fish (the #160 phantom). Starleaper is
+## fork-excluded and untouched by this build.
+func _test_glimmerfin_buff() -> void:
+	print("[Playtest] Glimmerfin buff + dock-mirror consumption hook...")
+	var EconScript := load("res://scripts/dungeon/dock_economy.gd")
+	var MerchScript: GDScript = load("res://scripts/dungeon/dock_merchant.gd")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var prev_scene = current_scene
+	EconScript.debug_reset()
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "warrior")
+	holder.add_child(p)
+	var find_idx := func(pl, item_id: String) -> int:
+		for i in pl.inventory.size():
+			if (pl.inventory[i]["item"] as ItemData).id == item_id:
+				return i
+		return -1
+
+	# (1) Data literal: consumable buff on the existing fields,
+	# selling untouched.
+	var gf = ItemDBNode.get_item("fish_glimmerfin")
+	_assert(gf != null and gf.consumable and gf.buff_stat == "damage"
+		and absf(gf.buff_mult - 1.25) < 0.0001 and absf(gf.buff_duration - 90.0) < 0.0001,
+		"fish: Glimmerfin data — consumable, +25% damage, 90s")
+	_assert(gf.sell_value == 12 and gf.dock_good and gf.rarity == 2,
+		"fish: Glimmerfin data — sell value 12, dock good, rarity 2 unchanged")
+	_assert(gf.description.contains("Use: +25% damage for 90s."),
+		"fish: Glimmerfin description carries the use line")
+
+	# (2) Eating applies the timed buff; a second eat refreshes the
+	# duration and does NOT stack the multiplier.
+	p.receive_item("fish_glimmerfin")
+	p.receive_item("fish_glimmerfin")
+	EconScript.grant_stock(1, "fish_glimmerfin", 2)
+	var now0 := Time.get_ticks_msec() / 1000.0
+	p.use_item(find_idx.call(p, "fish_glimmerfin"))
+	_assert(_farm_inv_count(p, "fish_glimmerfin") == 1,
+		"fish: one eat consumes exactly one fish")
+	var buffs: Dictionary = p.get("_buffs")
+	var dmg: Dictionary = buffs.get("damage", {})
+	_assert(absf(float(dmg.get("mult", 0.0)) - 1.25) < 0.0001
+		and float(dmg.get("until", 0.0)) > now0 + 80.0
+		and float(dmg.get("until", 0.0)) <= now0 + 91.0,
+		"fish: the buff lands at 1.25x for ~90s")
+	_assert(absf(float(p.call("_buff_mult", "damage")) - 1.25) < 0.0001,
+		"fish: _buff_mult('damage') is live at 1.25 after the eat")
+	# (3a) The mirror already debited for the eaten fish.
+	_assert(EconScript.stock_count(1, "fish_glimmerfin") == 1,
+		"fish: eating debits the dock stock mirror (2 -> 1)")
+	# Age the buff, then eat the second: duration refreshes in full,
+	# the multiplier stays 1.25.
+	dmg["until"] = Time.get_ticks_msec() / 1000.0 + 5.0
+	p.use_item(find_idx.call(p, "fish_glimmerfin"))
+	var dmg2: Dictionary = (p.get("_buffs") as Dictionary).get("damage", {})
+	_assert(absf(float(dmg2.get("mult", 0.0)) - 1.25) < 0.0001
+		and float(dmg2.get("until", 0.0)) > Time.get_ticks_msec() / 1000.0 + 80.0,
+		"fish: second eat refreshes the duration, multiplier unchanged at 1.25")
+	_assert(EconScript.stock_count(1, "fish_glimmerfin") == 0,
+		"fish: the second eat debits the mirror again (1 -> 0)")
+
+	# (3b) The phantom is dead: a bag copy with NO mirror behind it
+	# (the state a missing hook would leave) sells for nothing.
+	p.receive_item("fish_glimmerfin")
+	var merch = MerchScript.new()
+	holder.add_child(merch)
+	merch.set("test_player", p)
+	merch.call("request_sell", "fish_glimmerfin")
+	_assert(EconScript.cash_balance(1) == 0 and _farm_inv_count(p, "fish_glimmerfin") == 1,
+		"fish: a fish with no mirror stock sells for nothing (no phantom)")
+
+	# (4) Sell regression: a mirrored Glimmerfin sells for exactly
+	# 12 farm cash through the merchant flow.
+	EconScript.debug_reset()
+	EconScript.grant_stock(1, "fish_glimmerfin", 1)
+	merch.call("request_sell", "fish_glimmerfin")
+	_assert(EconScript.cash_balance(1) == 12,
+		"fish: selling a Glimmerfin credits exactly 12 farm cash")
+	_assert(_farm_inv_count(p, "fish_glimmerfin") == 0
+		and EconScript.stock_count(1, "fish_glimmerfin") == 0,
+		"fish: the sale takes the bag copy and the mirror together")
+
+	# (5) Non-consumable fish still refuse: no consumption, no buff.
+	var p2 = PlayerScene.instantiate()
+	p2.set("class_id", "warrior")
+	holder.add_child(p2)
+	p2.receive_item("fish_minnow")
+	p2.receive_item("fish_riverbass")
+	p2.use_item(find_idx.call(p2, "fish_minnow"))
+	p2.use_item(find_idx.call(p2, "fish_riverbass"))
+	_assert(_farm_inv_count(p2, "fish_minnow") == 1 and _farm_inv_count(p2, "fish_riverbass") == 1,
+		"fish: Minnow and River Bass uses refuse (nothing consumed)")
+	_assert(float(((p2.get("_buffs") as Dictionary).get("damage", {}) as Dictionary).get("until", -1.0)) == 0.0,
+		"fish: refused uses grant no buff")
+
+	# Source pin: the consumption hook rides the validated path.
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(_body_of(psrc, "func use_item(").contains("report_dispose(item.id, 1)"),
+		"fish: use_item debits tracked consumption through report_dispose")
+
+	EconScript.debug_reset()
+	current_scene = prev_scene
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] Glimmerfin buff done")
 
 
 func _test_station_phase4() -> void:

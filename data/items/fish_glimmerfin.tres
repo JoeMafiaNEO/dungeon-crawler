@@ -6,8 +6,12 @@
 script = ExtResource("1")
 id = "fish_glimmerfin"
 display_name = "Glimmerfin"
-description = "Its scales catch light that isn't there. The dock merchant pays top farm cash for one."
+description = "Its scales catch light that isn't there. The dock merchant pays top farm cash for one. Use: +25% damage for 90s."
 slot = 2
 rarity = 2
 sell_value = 12
 dock_good = true
+consumable = true
+buff_stat = "damage"
+buff_mult = 1.25
+buff_duration = 90.0
