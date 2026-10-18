@@ -39,6 +39,7 @@ func _run() -> void:
 	_test_glimmerfin_buff()
 	_test_no_ai_mp_rts()
 	_test_plague_damage_175()
+	_test_raid_replication_174()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3042,6 +3043,169 @@ func _test_plague_damage_175() -> void:
 	DungeonScript.saved_player_state = prev_dstate
 	PlotScript._seed_ledger = seed_ledger_before
 	print("[Playtest] Plague damage done")
+
+
+## Issue #174: mercenary raiders were constructed server-locally, so
+## guests never received them while their damage synced — an
+## invisible army. Route (ii) (gate-passed; Jesse ruled raids are
+## event content and stay in MP): the raid loop now broadcasts
+## client_spawn_unit per raider with the deterministic tuple, and
+## faction -99 is deliberately NEVER registered (an event, not a
+## seat — registration would pull it into elimination/winner/pop).
+## Drives run on the host instance, the only place the raid fires.
+func _test_raid_replication_174() -> void:
+	print("[Playtest] Mercenary raid replication (#174)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var SeasonScript := load("res://scripts/rts/season_manager.gd")
+	var RTSMgrScript := load("res://scripts/rts/rts_manager.gd")
+	var UnitScript := load("res://scripts/rts/unit.gd")
+	var BuildingScript := load("res://scripts/rts/building.gd")
+	var ssrc := FileAccess.get_file_as_string("res://scripts/rts/season_manager.gd")
+	var msrc := FileAccess.get_file_as_string("res://scripts/rts/rts_manager.gd")
+	var NM: Node = root.get_node("NetworkManager")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var prev_mode: String = str(NM.get("active_run_mode"))
+	var prev_nm_roster: Array = NM.get("continued_session_roster")
+	var prev_sel: String = str(NM.get("selected_class_id"))
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_dstate: Dictionary = DungeonScript.saved_player_state
+	var seed_ledger_before: Dictionary = PlotScript._seed_ledger.duplicate()
+	NM.set("active_run_mode", "solo")
+	NM.set("continued_session_roster", [])
+	NM.set("selected_class_id", "warrior")
+	DungeonScript.next_theme_id = "warlord"
+	DungeonScript.next_seed = 1
+	DungeonScript.next_level_number = 1
+	DungeonScript.saved_player_state = {}
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dun)
+	dun.set("seasons_enabled", false)
+	dun.call("_setup_warlord")
+	var mgr = dun.get("_rts_manager")
+	var sm = SeasonScript.new()
+	dun.add_child(sm)
+	sm.call("setup", mgr, dun)
+	sm.call("_do_mercenary_raid")
+	var rts_node = dun.get_node("RTS")
+	var raiders: Array = []
+	for c in rts_node.get_children():
+		if c.get_script() == UnitScript and int(c.get("faction")) == -99:
+			raiders.append(c)
+	# (1) The raid exists server-side, fully formed, exactly 8.
+	_assert(raiders.size() == 8,
+		"174(1): the raid spawns exactly 8 raiders server-side (found %d)" % raiders.size())
+	var ids := {}
+	var formed := true
+	for r in raiders:
+		var uid := int(r.get("unit_id"))
+		ids[uid] = true
+		if r.name != "RTSUnit_%d" % uid or str(r.get("unit_type")) != "spearman" \
+				or str((r.get("civ") as Resource).get("civ_id")) != "iron_vanguard":
+			formed = false
+	_assert(formed and ids.size() == 8,
+		"174(1): every raider is RTSUnit_<allocated id>, a spearman of the iron_vanguard")
+	# (5) Solo-equivalence: the call_local broadcast already executed
+	# client_spawn_unit on this server manager during the drive —
+	# exactly 8 raiders (not 16) proves its server early-return; a
+	# direct call with a fresh id creates nothing either.
+	mgr.call("client_spawn_unit", "spearman", -99, Vector3.ZERO, "iron_vanguard", 9999)
+	_assert(rts_node.get_node_or_null("RTSUnit_9999") == null,
+		"174(5): client_spawn_unit creates nothing in a server context")
+	# The broadcast line itself is the wiring contract (labelled
+	# source pin — transport confirmation is the held two-seat item).
+	_assert(_body_of(ssrc, "func _do_mercenary_raid(").contains(
+		"_rts.rpc(\"client_spawn_unit\", unit_type, -99, pos, civ.civ_id, muid)"),
+		"174(1): the raid loop broadcasts the deterministic tuple per raider")
+	# (2) Every raider's attack order landed on the centermost
+	# faction (the first alive faction: 0, the host's).
+	var ordered := true
+	for r in raiders:
+		var t = r.get("_attack_target")
+		if t == null or int(t.get("faction")) != 0:
+			ordered = false
+	_assert(ordered,
+		"174(2): every raider holds an attack order against faction 0")
+	# (3) The army-sync leg covers them: the broadcast's exact input
+	# set (group membership, alive, faction) carries all 8, and the
+	# broadcast itself runs clean and registry-blind.
+	var in_group := 0
+	for r in raiders:
+		if r.is_in_group("rts_units") and bool(r.get("alive")):
+			in_group += 1
+	_assert(in_group == 8,
+		"174(3): all 8 living raiders stand in the rts_units sync input set")
+	mgr.call("_broadcast_army_sync")
+	var sync_body := _body_of(msrc, "func _broadcast_army_sync(")
+	_assert(not sync_body.contains("factions.get(") and not sync_body.contains("factions.has(")
+		and not sync_body.contains("factions["),
+		"174(3): the army sync groups by faction without consulting the registry")
+	# (4) Anti-registration guardrail: no -99 seat exists, and a
+	# winner is declared with the raid still standing in the world.
+	_assert(not (mgr.get("factions") as Dictionary).has(-99),
+		"174(4): faction -99 is NOT registered after the raid")
+	var winners: Array = []
+	mgr.connect("winner_declared", func(fid: int) -> void: winners.append(fid))
+	var doomed: Array = []
+	for c in rts_node.get_children():
+		# Script-first: resource-node children carry no faction
+		# (null) — reading it unfiltered aborts the section.
+		if (c.get_script() == UnitScript or c.get_script() == BuildingScript) \
+				and int(c.get("faction")) == 1:
+			doomed.append(c)
+	for c in doomed:
+		rts_node.remove_child(c)
+		c.free()
+	mgr.call("check_elimination")
+	_assert(winners == [0],
+		"174(4): the winner is declared while 8 raiders still stand (the raid never blocks it)")
+	_assert(raiders.size() == 8 and bool(raiders[0].get("alive")),
+		"174(4): the raiders themselves are untouched by the elimination")
+	# (1, replica half) The client construction path builds the
+	# replica from the broadcast tuple: a client-shaped holder takes
+	# the "dungeon" group, and _spawn_unit_local builds from the
+	# first raider's exact tuple.
+	var r0 = raiders[0]
+	var tuple := {"unit_type": str(r0.get("unit_type")), "faction": int(r0.get("faction")),
+		"pos": (r0 as Node3D).position, "civ_id": str((r0.get("civ") as Resource).get("civ_id")),
+		"unit_id": int(r0.get("unit_id"))}
+	dun.remove_from_group("dungeon")
+	var holder2 := Node3D.new()
+	holder2.name = "ClientRig174"
+	root.add_child(holder2)
+	holder2.add_to_group("dungeon")
+	var rts2 := Node3D.new()
+	rts2.name = "RTS"
+	holder2.add_child(rts2)
+	var mgr2 = RTSMgrScript.new()
+	holder2.add_child(mgr2)
+	mgr2.call("_spawn_unit_local", tuple["unit_type"], tuple["faction"], tuple["pos"],
+		tuple["civ_id"], tuple["unit_id"])
+	var replica = rts2.get_node_or_null("RTSUnit_%d" % int(tuple["unit_id"]))
+	_assert(replica != null and int(replica.get("faction")) == -99
+		and str(replica.get("unit_type")) == "spearman"
+		and str((replica.get("civ") as Resource).get("civ_id")) == "iron_vanguard",
+		"174(1): the client path builds an equal replica from the tuple (id/name/faction/type/civ)")
+	root.remove_child(holder2)
+	holder2.free()
+	dun.add_to_group("dungeon")
+	# Teardown + restore.
+	root.remove_child(dun)
+	dun.free()
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	NM.set("active_run_mode", prev_mode)
+	NM.set("continued_session_roster", prev_nm_roster)
+	NM.set("selected_class_id", prev_sel)
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_dstate
+	PlotScript._seed_ledger = seed_ledger_before
+	print("[Playtest] Mercenary raid replication done")
 
 
 func _test_station_phase4() -> void:

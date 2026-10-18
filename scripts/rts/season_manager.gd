@@ -204,6 +204,15 @@ func _do_mercenary_raid() -> void:
 		u.name = "RTSUnit_%d" % muid
 		u.position = pos
 		rts_node.add_child(u)
+		# Issue #174: replicate the raider to clients — the local
+		# construction above is server-only, so guests never saw the
+		# raid (an invisible army whose damage still synced). Mirror
+		# spawn_unit's local-then-broadcast split with the same
+		# deterministic ingredients (allocated id, RTSUnit_<id> name).
+		# Faction -99 is deliberately NOT registered: the raid is an
+		# event, not a seat — registration would pull it into
+		# elimination/winner checks, pop counts and HUD surfaces.
+		_rts.rpc("client_spawn_unit", unit_type, -99, pos, civ.civ_id, muid)
 		_order_raid_attack(u, target_faction)
 
 
