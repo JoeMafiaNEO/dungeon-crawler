@@ -41,6 +41,7 @@ func _run() -> void:
 	_test_plague_damage_175()
 	_test_raid_replication_174()
 	_test_fishing_actions_176()
+	_test_rod_prop_invariant_177()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3268,6 +3269,124 @@ func _test_fishing_actions_176() -> void:
 	root.remove_child(holder)
 	holder.free()
 	print("[Playtest] Fishing actions done")
+
+
+class _HudStub177:
+	extends CanvasLayer
+	var toasts: Array = []
+
+	func toast(msg) -> void:
+		toasts.append(str(msg))
+
+	func refresh_inventory(_p) -> void:
+		pass
+
+	func refresh_loadout(_p) -> void:
+		pass
+
+
+## Issue #177: the rod prop exists in a player's hands iff rod_out
+## (Jesse's invariant) — the viewmodel builder's tail added a rod
+## whenever the rod was merely EQUIPPED in TOOL (deleted: the early
+## rod-out branch owns that case), and the held-props tail did the
+## same for peers (now gated on rod_out). rod_out already rides the
+## player snapshot, so replicas follow from the same gates. Plus
+## the V teaching: the rod's tooltip sentence and the equip toast.
+func _test_rod_prop_invariant_177() -> void:
+	print("[Playtest] Rod prop invariant + V tooltip (#177)...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var prev_scene = current_scene
+	var holder := Node3D.new()
+	holder.name = "RodProp177Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var has_named := func(parent: Node, nm: String) -> bool:
+		for c in parent.get_children():
+			if c.name == nm:
+				return true
+		return false
+	# Authority fixture: rod in TOOL + iron sword in WEAPON.
+	var p = PlayerScene.instantiate()
+	holder.add_child(p)
+	var rod_item: Variant = ItemDBNode.call("get_item", "fishing_rod")
+	var sword_item: Variant = ItemDBNode.call("get_item", "iron_sword")
+	p.set("inventory", [
+		{"item": rod_item, "count": 1, "equipped_slot": ""},
+		{"item": sword_item, "count": 1, "equipped_slot": ""}])
+	_assert(bool(p.call("equip_stack", 1)), "177: the sword equips")
+	_assert(bool(p.call("equip_stack", 0)), "177: the rod equips into TOOL")
+	var vm: Node = p.get("_viewmodel")
+	var hp_node: Node = p.get("_held_prop")
+	# rod_out = false: weapon only, in both views.
+	p.call("_refresh_viewmodel")
+	p.call("_refresh_held_props")
+	hp_node = p.get("_held_prop")
+	_assert(vm != null and vm.get_child_count() >= 1 and not has_named.call(vm, "RodProp"),
+		"177: rod-in viewmodel shows a weapon model and NO RodProp")
+	_assert(hp_node != null and has_named.call(hp_node, "WeaponProp") and not has_named.call(hp_node, "RodProp"),
+		"177: rod-in held props show WeaponProp and NO RodProp")
+	# The real toggle drive: rod out — both builders swap.
+	p.call("_toggle_rod_out")
+	_assert(bool(p.get("rod_out")), "177: the toggle raises rod_out")
+	_assert(has_named.call(vm, "RodProp") and vm.get_child_count() == 1 and p.get("_vm_rod_prop") != null,
+		"177: rod-out viewmodel holds the RodProp alone (_vm_rod_prop set)")
+	_assert(has_named.call(hp_node, "RodProp") and not has_named.call(hp_node, "WeaponProp"),
+		"177: rod-out held props show RodProp and no WeaponProp")
+	p.call("_toggle_rod_out")
+	_assert(not bool(p.get("rod_out")) and not has_named.call(vm, "RodProp"),
+		"177: toggling back restores the weapon-only viewmodel")
+	_assert(has_named.call(hp_node, "WeaponProp") and not has_named.call(hp_node, "RodProp"),
+		"177: toggling back restores WeaponProp and no RodProp")
+	# Replication leg: the real receive path on a non-authority
+	# replica fixture — rod_out_v rides push_snapshot into the same
+	# gated builders.
+	var p2 = PlayerScene.instantiate()
+	holder.add_child(p2)
+	p2.set_multiplayer_authority(777)
+	var eq := {"WEAPON": "iron_sword", "TOOL": "fishing_rod"}
+	p2.call("push_snapshot", p2.global_position, 100.0, 1, true, 0.0, eq, true, 100.0, false, 0.0)
+	var hp2: Node = p2.get("_held_prop")
+	_assert(bool(p2.get("rod_out")), "177: the replica's rod_out follows the snapshot")
+	_assert(hp2 != null and has_named.call(hp2, "RodProp") and not has_named.call(hp2, "WeaponProp"),
+		"177: the replica shows RodProp without WeaponProp at rod_out_v=true")
+	p2.call("push_snapshot", p2.global_position, 100.0, 1, true, 0.0, eq, false, 100.0, false, 0.0)
+	_assert(not bool(p2.get("rod_out")) and has_named.call(hp2, "WeaponProp") and not has_named.call(hp2, "RodProp"),
+		"177: the replica reverts to WeaponProp alone at rod_out_v=false")
+	# Tooltip (a): the item description carries the sentence, and
+	# the pre-existing wording is untouched.
+	var rod_res: Resource = load("res://data/items/fishing_rod.tres")
+	var desc := str(rod_res.get("description"))
+	_assert(desc.contains("Press V to ready your rod."),
+		"177: the rod tooltip teaches V (exact sentence)")
+	_assert(desc.contains("to fish at marked spots"),
+		"177: the existing description wording is untouched")
+	# Tooltip (b): equipping the rod toasts the teaching line on an
+	# authority fixture; equipping a non-rod tool does not.
+	var stub := _HudStub177.new()
+	holder.add_child(stub)
+	var p3 = PlayerScene.instantiate()
+	holder.add_child(p3)
+	p3.set("hud", stub)
+	p3.set("inventory", [{"item": rod_item, "count": 1, "equipped_slot": ""}])
+	_assert(bool(p3.call("equip_stack", 0)), "177: the rod equips (toast fixture)")
+	_assert(stub.toasts == ["Press V to ready your rod"],
+		"177: equipping the rod records the exact V toast")
+	var stub2 := _HudStub177.new()
+	holder.add_child(stub2)
+	var p4 = PlayerScene.instantiate()
+	p4.set("class_id", "architect")
+	holder.add_child(p4)
+	p4.set("hud", stub2)
+	var wrench_item: Variant = ItemDBNode.call("get_item", "field_wrench")
+	p4.set("inventory", [{"item": wrench_item, "count": 1, "equipped_slot": ""}])
+	_assert(bool(p4.call("equip_stack", 0)), "177: the wrench equips (negative fixture)")
+	_assert(not stub2.toasts.has("Press V to ready your rod"),
+		"177: equipping a non-rod tool records no V toast")
+	current_scene = prev_scene
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] Rod prop invariant done")
 
 
 func _test_station_phase4() -> void:
@@ -15037,8 +15156,10 @@ func _test_fishing_rod_phase3() -> void:
 	_assert(g2.has_rod_equipped(), "persist: restored player has the rod equipped")
 
 	# --- Held visuals: own viewmodel + peer prop via push_snapshot.
-	_assert(g.find_child("RodProp", true, false) != null,
-		"visuals: rod prop in the local viewmodel when equipped")
+	# Issue #177 retarget: equipped is not out — while rod-in the
+	# viewmodel carries NO rod prop (rod prop iff rod_out).
+	_assert(g.find_child("RodProp", true, false) == null,
+		"visuals: no rod prop in the local viewmodel while rod-in (#177)")
 	var pv = PlayerScene.instantiate()
 	pv.class_id = "mage"
 	pv.set_multiplayer_authority(2)
@@ -15049,8 +15170,8 @@ func _test_fishing_rod_phase3() -> void:
 		"visuals: snapshot carries equipped_ids to the peer replica")
 	var held = pv.get_node_or_null("HeldProp")
 	_assert(held != null and held.visible, "visuals: peer HeldProp visible")
-	_assert(held != null and held.get_node_or_null("RodProp") != null,
-		"visuals: peer sees the held rod")
+	_assert(held != null and held.get_node_or_null("RodProp") == null,
+		"visuals: peer sees NO held rod while rod-in (#177; the rod appears in the rod-out leg below)")
 	_assert(held != null and held.get_node_or_null("WeaponProp") != null,
 		"visuals: peer sees the equipped weapon's world_model")
 	# Issue #126 Phase 1: rod_out rides the snapshot; in rod-out the
@@ -18380,13 +18501,14 @@ func _test_held_prop_yaw_141() -> void:
 	_assert(absf(angle_difference(held.rotation.y, -PI / 2.0)) < 0.01,
 		"141: holder tracks yaw -pi/2 (short way, correct sign)")
 	peer.free()
-	# --- Rod leg: same holder, same tracking (one mechanism). ---
+	# --- Rod leg: same holder, same tracking (one mechanism).
+	# Rod OUT (the #177 invariant: the prop exists only then). ---
 	var peer2 = PlayerScene.instantiate()
 	peer2.class_id = "mage"
 	peer2.set_multiplayer_authority(3)
 	holder.add_child(peer2)
 	peer2.push_snapshot(Vector3.ZERO, 100.0, 1, true, PI / 2.0,
-		{"TOOL": "fishing_rod"}, false)
+		{"TOOL": "fishing_rod"}, true)
 	var held2 = peer2.get_node_or_null("HeldProp")
 	var rod = peer2.get_node_or_null("HeldProp/RodProp")
 	_assert(rod != null, "141: RodProp builds under the same holder")

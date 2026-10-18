@@ -6,6 +6,6 @@
 script = ExtResource("1")
 id = "fishing_rod"
 display_name = "Fishing Rod"
-description = "A trusty dock rod. Equip it in the TOOL slot to fish at marked spots."
+description = "A trusty dock rod. Equip it in the TOOL slot to fish at marked spots. Press V to ready your rod."
 slot = 3
 rarity = 1

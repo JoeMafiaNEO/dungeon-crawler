@@ -829,6 +829,11 @@ func equip_stack(index: int) -> bool:
 	if hud != null:
 		hud.refresh_inventory(self)
 		hud.refresh_loadout(self)
+	# Issue #177: teach the rod's V toggle at the moment of
+	# equipping — the rod readies on V, not on equip.
+	if item.id == "fishing_rod" and target == "TOOL" and not rod_out:
+		if hud != null:
+			hud.toast("Press V to ready your rod")
 	return true
 
 
@@ -929,9 +934,11 @@ func _build_viewmodel() -> void:
 
 
 ## Issue #104 Phase 3: the viewmodel shows the EQUIPPED weapon's
-## world_model when it has one, else the class default; the fishing rod
-## joins as a held prop whenever it is equipped in TOOL (at fishing
-## spots the #102 session visual takes over the cast itself).
+## world_model when it has one, else the class default. Issue #177:
+## the fishing rod appears ONLY in rod-out mode (the early branch
+## below owns that case) — rod prop iff rod_out, weapon prop iff
+## not (at fishing spots the #102 session visual takes over the
+## cast itself).
 func _refresh_viewmodel() -> void:
 	if _viewmodel == null:
 		return
@@ -986,12 +993,9 @@ func _refresh_viewmodel() -> void:
 				_build_dagger()
 			_:
 				_build_sword()
-	if equipped_tool_id() == "fishing_rod":
-		var rod := FishingVisual.build_rod_prop()
-		rod.name = "RodProp"
-		rod.position = Vector3(-0.3, -0.24, -0.1)
-		rod.rotation = Vector3(0.45, 0.0, 0.3)
-		_viewmodel.add_child(rod)
+	# Issue #177: no rod tail here — this point is reachable only
+	# when NOT rod_out (the early branch returned), and the
+	# invariant is no rod prop exists then.
 
 
 ## Own viewmodel + the third-person held prop peers see. The TP prop is
@@ -1033,7 +1037,10 @@ func _refresh_held_props() -> void:
 		prop.position = Vector3(0.05, -0.55, 0.05)
 		prop.rotation_degrees = Vector3(0, 0, -14)
 		_held_prop.add_child(prop)
-	if equipped_tool_id() == "fishing_rod":
+	# Issue #177: the rod is this builder's only rod source and it
+	# is gated on rod_out like the weapon branches above — rod
+	# alone when out, weapon alone when in.
+	if rod_out and equipped_tool_id() == "fishing_rod":
 		var rod := FishingVisual.build_rod_prop()
 		rod.name = "RodProp"
 		rod.position = Vector3(0.0, -0.15, 0.3)
