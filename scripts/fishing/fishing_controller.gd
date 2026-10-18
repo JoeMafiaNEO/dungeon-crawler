@@ -38,8 +38,15 @@ func get_charge() -> float:
 
 
 func _process(delta: float) -> void:
-	var lmb := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-	var rmb := Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+	# Issue #176: poll the InputMap actions, not raw mouse state —
+	# a gamepad produces no mouse-button state, so cast/reel could
+	# never fire on pad. attack / alt_attack each carry exactly one
+	# mouse event (LMB/RMB) plus one joypad-motion event (RT/LT), so
+	# mouse play is unchanged and pad play works through the same
+	# action layer as everything else. (lmb/rmb below now read as
+	# "cast button" / "reel button"; the edge pattern is unchanged.)
+	var lmb := Input.is_action_pressed("attack")
+	var rmb := Input.is_action_pressed("alt_attack")
 	var lmb_pressed := lmb and not _was_lmb
 	var lmb_released := _was_lmb and not lmb
 	var rmb_pressed := rmb and not _was_rmb

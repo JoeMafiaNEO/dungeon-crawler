@@ -40,6 +40,7 @@ func _run() -> void:
 	_test_no_ai_mp_rts()
 	_test_plague_damage_175()
 	_test_raid_replication_174()
+	_test_fishing_actions_176()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3206,6 +3207,67 @@ func _test_raid_replication_174() -> void:
 	DungeonScript.saved_player_state = prev_dstate
 	PlotScript._seed_ledger = seed_ledger_before
 	print("[Playtest] Mercenary raid replication done")
+
+
+## Issue #176: the fishing controller polled raw mouse buttons, so
+## on a gamepad cast and reel could never fire (a pad produces no
+## mouse-button state). The poll now reads the InputMap actions —
+## attack (cast/charge) and alt_attack (reel), each bound to exactly
+## one mouse event + one joypad-motion event, so mouse play is
+## unchanged and pad play works through the action layer. This
+## drive uses Input.action_press/release ONLY — no mouse state
+## exists anywhere in it, so on the unfixed poll the state machine
+## can never leave IDLE (red by construction).
+## States: IDLE 0, CASTING 1, WAITING 2, REELING 3 (enum order).
+func _test_fishing_actions_176() -> void:
+	print("[Playtest] Fishing cast/reel poll the InputMap actions (#176)...")
+	var FCScript := load("res://scripts/fishing/fishing_controller.gd")
+	var prev_scene = current_scene
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var fc = FCScript.new()
+	holder.add_child(fc)
+	Input.action_release("attack")
+	Input.action_release("alt_attack")
+	_assert(int(fc.call("get_state")) == 0, "176: the controller starts IDLE")
+	Input.action_press("attack")
+	fc.call("_process", 0.016)
+	_assert(int(fc.call("get_state")) == 1,
+		"176: attack press moves IDLE -> CASTING (no mouse involved)")
+	fc.call("_process", 0.75)
+	_assert(absf(float(fc.call("get_charge")) - 0.5) < 0.001,
+		"176: charge accrues while attack is held (0.75s of 1.5s = 0.5)")
+	fc.call("_process", 0.75)
+	fc.call("_process", 0.75)
+	_assert(absf(float(fc.call("get_charge")) - 1.0) < 0.001,
+		"176: charge caps at 1.0")
+	Input.action_release("attack")
+	fc.call("_process", 0.016)
+	_assert(int(fc.call("get_state")) == 2,
+		"176: attack release fires the cast (CASTING -> WAITING)")
+	Input.action_press("alt_attack")
+	fc.call("_process", 0.016)
+	_assert(int(fc.call("get_state")) == 3,
+		"176: alt_attack press engages the reel (WAITING -> REELING)")
+	Input.action_release("alt_attack")
+	fc.call("_process", 0.016)
+	_assert(int(fc.call("get_state")) == 2,
+		"176: alt_attack release returns to WAITING")
+	# Source pins: the poll reads the actions, never raw mouse state.
+	var fsrc := FileAccess.get_file_as_string("res://scripts/fishing/fishing_controller.gd")
+	var proc := _body_of(fsrc, "func _process(")
+	_assert(proc.contains("Input.is_action_pressed(\"attack\")")
+		and proc.contains("Input.is_action_pressed(\"alt_attack\")"),
+		"176: _process polls the attack / alt_attack actions")
+	_assert(not proc.contains("is_mouse_button_pressed"),
+		"176: _process no longer reads raw mouse-button state")
+	Input.action_release("attack")
+	Input.action_release("alt_attack")
+	current_scene = prev_scene
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] Fishing actions done")
 
 
 func _test_station_phase4() -> void:
