@@ -37,6 +37,7 @@ func _run() -> void:
 	_test_theme_lighting_readability()
 	_test_continued_reselect()
 	_test_glimmerfin_buff()
+	_test_no_ai_mp_rts()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -2791,6 +2792,162 @@ func _test_glimmerfin_buff() -> void:
 	root.remove_child(holder)
 	holder.free()
 	print("[Playtest] Glimmerfin buff done")
+
+
+## No AI in multiplayer RTS (Jesse 2026-10-17): _warlord_wants_ai is
+## mode-only (solo true, any MP false at any headcount), and an MP
+## disconnect leaves the faction LEADERLESS under the leaver's own
+## peer id — never AI-driven, never reassigned to -1 (_owns_me passes
+## owner -1 for ANY sender). Solo is unchanged in every particular.
+## Mercenary raids are fork-excluded and untouched by this build.
+func _test_no_ai_mp_rts() -> void:
+	print("[Playtest] No AI in multiplayer RTS...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var AIScript := load("res://scripts/rts/ai_warlord.gd")
+	var BuildingScript := load("res://scripts/rts/building.gd")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var NM: Node = root.get_node("NetworkManager")
+	var STM: Node = root.get_node("SteamManager")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	# Snapshots.
+	var prev_mode: String = str(NM.get("active_run_mode"))
+	var prev_nm_roster: Array = NM.get("continued_session_roster")
+	var prev_sel: String = str(NM.get("selected_class_id"))
+	var prev_steam: int = int(STM.get("steam_id"))
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_dstate: Dictionary = DungeonScript.saved_player_state
+	var seed_ledger_before: Dictionary = PlotScript._seed_ledger.duplicate()
+	NM.set("selected_class_id", "warrior")
+	var ai_count := func(d) -> int:
+		var n := 0
+		for c in d.get_children():
+			if c.get_script() == AIScript:
+				n += 1
+		return n
+	var boot := func(mode: String, roster: Array, steam_id: int):
+		NM.set("active_run_mode", mode)
+		NM.set("continued_session_roster", roster)
+		STM.set("steam_id", steam_id)
+		DungeonScript.next_theme_id = "warlord"
+		DungeonScript.next_seed = 1
+		DungeonScript.next_level_number = 1
+		DungeonScript.saved_player_state = {}
+		for n in get_nodes_in_group("players"):
+			(n as Node).get_parent().remove_child(n as Node)
+		var d = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+		root.add_child(d)
+		d.set("seasons_enabled", false)
+		return d
+	var teardown := func(d) -> void:
+		root.remove_child(d)
+		d.free()
+		for n in get_nodes_in_group("players"):
+			(n as Node).get_parent().remove_child(n as Node)
+
+	# (1) The predicate through its real inputs (mode + roster).
+	var probe = DungeonScript.new()
+	probe.set("_session_roster", [{"steam_id": 1}])
+	NM.set("active_run_mode", "solo")
+	_assert(bool(probe.call("_warlord_wants_ai")),
+		"noai(1): SOLO wants AI")
+	NM.set("active_run_mode", "mp")
+	_assert(not bool(probe.call("_warlord_wants_ai")),
+		"noai(1): MP with ONE expected player does NOT want AI (the closed door)")
+	probe.set("_session_roster", [{"steam_id": 1}, {"steam_id": 2}, {"steam_id": 3}, {"steam_id": 4}])
+	_assert(not bool(probe.call("_warlord_wants_ai")),
+		"noai(1): MP with FOUR expected players does not want AI")
+	NM.set("active_run_mode", "lan")
+	probe.set("_session_roster", [{"steam_id": 1}])
+	_assert(not bool(probe.call("_warlord_wants_ai")),
+		"noai(1): LAN (an MP session type) does not want AI")
+	probe.free()
+
+	# (2) MP setup, one human: only the human faction exists.
+	var dun_mp = boot.call("mp", [], 0)
+	_assert(bool(dun_mp.get("is_warlord")), "noai(2): the boot is a warlord level")
+	dun_mp.call("_setup_warlord")
+	var mgr_mp = dun_mp.get("_rts_manager")
+	_assert(mgr_mp != null and (mgr_mp.get("factions") as Dictionary).size() == 1,
+		"noai(2): exactly the human faction is registered")
+	_assert(int((mgr_mp.get("faction_peers") as Dictionary).get(0, -99)) == 1,
+		"noai(2): the human faction is owned by peer 1")
+	var any_ai_owner := false
+	for fid in (mgr_mp.get("faction_peers") as Dictionary):
+		if int(mgr_mp.get("faction_peers")[fid]) == -1:
+			any_ai_owner = true
+	_assert(not any_ai_owner, "noai(2): NO faction is owned by -1 (no AI seat)")
+	_assert(int(ai_count.call(dun_mp)) == 0,
+		"noai(2): NO AIWarlord exists in the tree after MP setup")
+
+	# (4) MP disconnect: leaderless, never AI, never -1.
+	dun_mp.call("_do_spawn", 7, "mage", dun_mp.call("_next_spawn_point"), 0)
+	mgr_mp.call("register_faction", 1, 7, "mage")
+	dun_mp.call("_on_peer_disconnected", 7)
+	_assert(int((mgr_mp.get("faction_peers") as Dictionary).get(1, -99)) == 7,
+		"noai(4): the leaver's faction KEEPS the leaver's peer id as owner")
+	_assert(int(ai_count.call(dun_mp)) == 0,
+		"noai(4): no AIWarlord is created on disconnect")
+	dun_mp.call("_reclaim_faction", 9, 1)
+	_assert(int((mgr_mp.get("faction_peers") as Dictionary).get(1, -99)) == 9,
+		"noai(4): a rejoin reclaim restores ownership of the leaderless faction")
+	teardown.call(dun_mp)
+	var disc_body := _body_of(dsrc, "func _on_peer_disconnected(")
+	_assert(disc_body.contains("has left — their faction stands leaderless."),
+		"noai(4): the announcement carries the leaderless wording")
+	_assert(not disc_body.contains("AIWarlord.new()") and not disc_body.contains("faction_peers[fi] = -1"),
+		"noai(4): the disconnect block creates no AI and assigns no -1")
+	_assert(not dsrc.contains("is now AI-controlled"),
+		"noai(4): the AI-handoff announcement is gone from the game")
+
+	# (3) Solo regression: AI opponent + driver, exactly as today.
+	var dun_solo = boot.call("solo", [], 0)
+	dun_solo.call("_setup_warlord")
+	var mgr_solo = dun_solo.get("_rts_manager")
+	_assert((mgr_solo.get("factions") as Dictionary).size() == 2,
+		"noai(3): solo registers the human + one AI opponent faction")
+	_assert(int((mgr_solo.get("faction_peers") as Dictionary).get(1, -99)) == -1,
+		"noai(3): the solo AI faction is owned by -1 as today")
+	_assert(int(ai_count.call(dun_solo)) == 1,
+		"noai(3): exactly one AIWarlord driver exists in solo")
+	teardown.call(dun_solo)
+
+	# (5) Continued MP no-show: registered, based, driverless.
+	var roster5: Array = [
+		{"steam_id": 111, "player_name": "Host", "class_id": "warrior",
+			"player_state": {}, "rts_faction": 0, "is_host": true},
+		{"steam_id": 222, "player_name": "Ghost", "class_id": "mage",
+			"player_state": {}, "rts_faction": 1, "is_host": false}]
+	var dun_ns = boot.call("mp", roster5, 111)
+	dun_ns.call("_setup_warlord")
+	var mgr_ns = dun_ns.get("_rts_manager")
+	_assert((mgr_ns.get("factions") as Dictionary).size() == 2,
+		"noai(5): the no-show faction is registered beside the host's")
+	_assert(int((mgr_ns.get("faction_peers") as Dictionary).get(0, -99)) == 1,
+		"noai(5): the present host binds to their saved faction")
+	_assert(int(ai_count.call(dun_ns)) == 0,
+		"noai(5): NO AIWarlord drives the no-show seat in MP")
+	var halls := 0
+	var rts_node = dun_ns.get_node("RTS")
+	for c in rts_node.get_children():
+		if c.get_script() == BuildingScript and int(c.get("faction")) == 1 \
+				and str(c.get("building_type")) == "town_hall":
+			halls += 1
+	_assert(halls == 1, "noai(5): the no-show faction's base (town hall) is spawned")
+	teardown.call(dun_ns)
+
+	# Restore every snapshot.
+	NM.set("active_run_mode", prev_mode)
+	NM.set("continued_session_roster", prev_nm_roster)
+	NM.set("selected_class_id", prev_sel)
+	STM.set("steam_id", prev_steam)
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_dstate
+	PlotScript._seed_ledger = seed_ledger_before
+	print("[Playtest] No AI in MP RTS done")
 
 
 func _test_station_phase4() -> void:

@@ -1098,16 +1098,19 @@ func _on_peer_disconnected(peer_id: int) -> void:
 		if p != null:
 			p.rpc("hl_end_beam", peer_id, 0) # issue #171: seq 0 = all of the leaver's beams
 			break
-	# Warlord: hand the leaver's faction to an AI so the FFA doesn't soft-lock.
+	# Warlord: NO AI in multiplayer (Jesse 2026-10-17) — the leaver's
+	# faction stands LEADERLESS. It keeps the leaver's peer id as its
+	# owner (no live peer matches it), so nothing drives it and no
+	# one else can command it: _owns_me passes owner -1 for ANY
+	# sender, so -1 must never be the inert marker here. No soft-lock:
+	# the winner is decided by destruction, and a leaderless faction
+	# is eliminable — it auto-defends but never rebuilds or
+	# retaliates. A rejoiner reclaims the seat by Steam ID as before.
 	if is_warlord and _rts_manager != null:
 		for fid in _rts_manager.faction_peers:
 			if int(_rts_manager.faction_peers[fid]) == peer_id:
 				var fi := int(fid)
-				_rts_manager.faction_peers[fi] = -1  # mark as AI-controlled
-				var ai := AIWarlord.new()
-				ai.faction_id = fi
-				add_child(ai)
-				rpc("announce_text", "%s's faction is now AI-controlled." % [_rts_manager.get_civ(fi).display_name])
+				rpc("announce_text", "%s has left — their faction stands leaderless." % [_rts_manager.get_civ(fi).display_name])
 				break
 
 
@@ -1312,12 +1315,13 @@ func _warlord_expected_players() -> int:
 	return maxi(1, multiplayer.get_peers().size() + 1)
 
 
-## Jesse 2026-10-10: no AI warlords in multiplayer with 2+ players.
-## Solo runs always get AI opponents; a lone multiplayer host does too.
+## Jesse 2026-10-17: NO AI in multiplayer RTS at all — multiplayer
+## is a session type, not a headcount, so a lone MP host plays a
+## humans-only map with the other seats empty. Solo always gets AI
+## opponents. (Supersedes the 2026-10-10 line, which barred AI only
+## at 2+ expected players and let a 1-human MP session have one.)
 func _warlord_wants_ai() -> bool:
-	if NetworkManager.active_run_mode == SaveManager.MODE_SOLO:
-		return true
-	return _warlord_expected_players() < 2
+	return NetworkManager.active_run_mode == SaveManager.MODE_SOLO
 
 
 ## Map scale factor for the warlord level: keeps area-per-faction constant
@@ -1356,7 +1360,7 @@ func _setup_warlord() -> void:
 
 	# Register player factions.
 	var faction_id := 0
-	# Jesse 2026-10-10: no AI warlords in multiplayer with 2+ players.
+	# Jesse 2026-10-17: AI warlords exist in SOLO only (mode-only).
 	var want_ai := _warlord_wants_ai()
 	if not _active_roster().is_empty():
 		# Continued run: pre-register ALL roster factions by saved ID.
@@ -1387,7 +1391,9 @@ func _setup_warlord() -> void:
 				connected[sid].set("rts_faction", fid)
 			else:
 				# No-show: faction stays registered (reclaimable on rejoin);
-				# AI driver only when AI is wanted (Jesse 2026-10-10).
+				# AI driver only when AI is wanted — solo only since
+				# Jesse's 2026-10-17 no-AI-in-MP ruling, so an MP no-show
+				# seat stands driverless at any count.
 				_rts_manager.register_faction(fid, -1, cls)
 				if want_ai:
 					var ai := AIWarlord.new()
@@ -1406,8 +1412,8 @@ func _setup_warlord() -> void:
 			_spawn_faction_base(faction_id, _faction_spawn_pos(faction_id))
 			faction_id += 1
 
-	# AI warlord opponent(s): solo, or multiplayer with fewer than 2 players
-	# (Jesse 2026-10-10: no AI in multiplayer with 2+ players).
+	# AI warlord opponent(s): solo only (Jesse 2026-10-17: no AI in
+	# multiplayer RTS at any headcount).
 	if want_ai and faction_id == 1:
 		var ai_count := 1
 		var cycle := (level_number - 1) / THEME_ORDER.size()
