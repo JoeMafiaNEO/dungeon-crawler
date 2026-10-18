@@ -166,7 +166,13 @@ func _apply_plague_damage(amount: float) -> void:
 			# Skip structures: they don't have the unit "alive" in the same way,
 			# or check if it's a building. Units are in rts_units; buildings are not.
 			if unit.has_method("take_damage"):
-				unit.take_damage(amount, -1)
+				# Issue #175: NO attacker argument — take_damage's
+				# attacker is a Node3D (default null); passing -1 here
+				# made the dynamic call raise a type SCRIPT ERROR and
+				# abort this loop on the first unit, so Plague never
+				# dealt any damage. Plague has no attacker; null is
+				# the honest value (the server branch ignores it).
+				unit.take_damage(amount)
 
 # --- Mercenary Raid ---
 

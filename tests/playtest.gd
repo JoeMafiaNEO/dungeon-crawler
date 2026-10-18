@@ -38,6 +38,7 @@ func _run() -> void:
 	_test_continued_reselect()
 	_test_glimmerfin_buff()
 	_test_no_ai_mp_rts()
+	_test_plague_damage_175()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -2948,6 +2949,99 @@ func _test_no_ai_mp_rts() -> void:
 	DungeonScript.saved_player_state = prev_dstate
 	PlotScript._seed_ledger = seed_ledger_before
 	print("[Playtest] No AI in MP RTS done")
+
+
+## Issue #175: Plague has never dealt damage — season_manager called
+## unit.take_damage(amount, -1) against a Node3D-typed parameter, so
+## the call raised a SCRIPT ERROR and _apply_plague_damage aborted on
+## the FIRST unit. This section drives the REAL plague path (event
+## start + tick on a booted warlord dungeon) against every spawned
+## villager: EVERY unit's HP must drop by the tuned tick amount
+## (rts_tuning.cfg [seasons]: plague_dps 5.0 x plague_tick 1.0) —
+## one assertion shape kills the type refusal and the abort together.
+## On the unfixed code this drive prints the SCRIPT ERROR and every
+## HP assert fails (red by construction).
+func _test_plague_damage_175() -> void:
+	print("[Playtest] Plague damage (#175)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var SeasonScript := load("res://scripts/rts/season_manager.gd")
+	var BuildingScript := load("res://scripts/rts/building.gd")
+	var NM: Node = root.get_node("NetworkManager")
+	var PlotScript: GDScript = load("res://scripts/dungeon/farm_plot.gd")
+	var prev_mode: String = str(NM.get("active_run_mode"))
+	var prev_nm_roster: Array = NM.get("continued_session_roster")
+	var prev_sel: String = str(NM.get("selected_class_id"))
+	var prev_theme: String = DungeonScript.next_theme_id
+	var prev_seed: int = DungeonScript.next_seed
+	var prev_level: int = DungeonScript.next_level_number
+	var prev_dstate: Dictionary = DungeonScript.saved_player_state
+	var seed_ledger_before: Dictionary = PlotScript._seed_ledger.duplicate()
+	NM.set("active_run_mode", "solo")
+	NM.set("continued_session_roster", [])
+	NM.set("selected_class_id", "warrior")
+	DungeonScript.next_theme_id = "warlord"
+	DungeonScript.next_seed = 1
+	DungeonScript.next_level_number = 1
+	DungeonScript.saved_player_state = {}
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dun)
+	dun.set("seasons_enabled", false)
+	dun.call("_setup_warlord")
+	var mgr = dun.get("_rts_manager")
+	# Every real RTSUnit this dungeon spawned (both factions'
+	# villagers), with its HP before the plague tick.
+	var units: Array = []
+	var hp_before := {}
+	for u in get_nodes_in_group("rts_units"):
+		if dun.is_ancestor_of(u):
+			units.append(u)
+			hp_before[u] = float(u.get("hp"))
+	_assert(units.size() >= 2,
+		"175: the drive has at least two real RTSUnits (found %d)" % units.size())
+	var halls: Array = []
+	for c in dun.get_node("RTS").get_children():
+		if c.get_script() == BuildingScript and str(c.get("building_type")) == "town_hall":
+			halls.append(c)
+	var hall_hp := {}
+	for h in halls:
+		hall_hp[h] = float(h.get("hp"))
+	# The real plague path: event start, then one tick of 1.0s.
+	var sm = SeasonScript.new()
+	dun.add_child(sm)
+	sm.call("setup", mgr, dun)
+	sm.call("_start_event", "plague")
+	sm.call("_tick_active_event", 1.0)
+	var all_dropped := true
+	for u in units:
+		if float(u.get("hp")) != hp_before[u] - 5.0:
+			all_dropped = false
+	_assert(all_dropped,
+		"175: EVERY unit lost exactly the tuned 5.0 HP to one plague tick")
+	var halls_safe := true
+	for h in halls:
+		if float(h.get("hp")) != hall_hp[h]:
+			halls_safe = false
+	_assert(halls_safe and halls.size() >= 1,
+		"175: structures take no plague damage (units only, as designed)")
+	# Source pin: the call site passes no attacker (the null default).
+	var ssrc := FileAccess.get_file_as_string("res://scripts/rts/season_manager.gd")
+	_assert(_body_of(ssrc, "func _apply_plague_damage(").contains("unit.take_damage(amount)"),
+		"175: the plague call passes no attacker argument")
+	root.remove_child(dun)
+	dun.free()
+	for n in get_nodes_in_group("players"):
+		(n as Node).get_parent().remove_child(n as Node)
+	NM.set("active_run_mode", prev_mode)
+	NM.set("continued_session_roster", prev_nm_roster)
+	NM.set("selected_class_id", prev_sel)
+	DungeonScript.next_theme_id = prev_theme
+	DungeonScript.next_seed = prev_seed
+	DungeonScript.next_level_number = prev_level
+	DungeonScript.saved_player_state = prev_dstate
+	PlotScript._seed_ledger = seed_ledger_before
+	print("[Playtest] Plague damage done")
 
 
 func _test_station_phase4() -> void:
