@@ -121,6 +121,7 @@ func _run() -> void:
 	_test_switch_in_tool_grant_113()
 	_test_hammer_smash()
 	_test_smash_cooldown_honesty_188()
+	_test_atk_spd_184()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -12242,8 +12243,8 @@ func _test_snapshot_yaw() -> void:
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
 	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids;
 	# since issue #126 Phase 1, rod_out too).
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac)'),
-		"caller passes _yaw (and, since #167, max_hp; since #163, downed; since #172, the revive pool fraction)")
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd)'),
+		"caller passes _yaw (and, since #167, max_hp; since #163, downed; since #172, the revive pool fraction; since #184, the ATK SPD investment)")
 	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
 	_assert(src.contains("rod_out_v: bool = false"), "push_snapshot takes rod_out_v (#126 P1)")
 	# _remote_yaw stored and interpolated with lerp_angle.
@@ -18307,6 +18308,342 @@ func _test_smash_cooldown_honesty_188() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] Smash cooldown honesty (F1) done")
+
+
+## Issue #184 — ATK SPD: a fifth stat-point stat (+0.1% per
+## point, no cap, no class gate) applied as a DIVISOR at the
+## attack cooldown set/reset sites on the owning peer — never
+## inside cooldown_mult(). Section 7's pin set: literal-
+## arithmetic drives at the REAL sites; the five non-attack
+## set sites pinned byte-identical (the non-bleed pin is
+## first-class); the F5 snapshot channel carries the
+## investment to replicas so server gates divide by the true
+## value. Two-seat legs are HELD under the machine-testing
+## prohibition (flagged, not attempted).
+func _test_atk_spd_184() -> void:
+	print("[Playtest] ATK SPD (issue #184)...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var PlayerScript := load("res://scripts/player/player.gd")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	for n in get_nodes_in_group("dungeon"):
+		n.remove_from_group("dungeon")
+	var mult_of := func(p) -> float:
+		return float(p.call("atk_spd_mult")) if p.has_method("atk_spd_mult") else -999.0
+	var num_of := func(o, prop: String) -> float:
+		var v = o.get(prop)
+		return float(v) if v != null else -999.0
+	var bonus_of := func(p) -> float:
+		var v = p.get("bonus_atk_spd")
+		return float(v) if v != null else -999.0
+	# --- Section 0: the stat itself (aura-shaped plumbing).
+	var w = PlayerScene.instantiate()
+	w.class_id = "warrior"
+	root.add_child(w)
+	w.set("stat_points", 3)
+	_assert(w.call("spend_point", "atk_spd"),
+		"184(s0): atk_spd is spendable (no class gate — a warrior spends it)")
+	_assert(absf(bonus_of.call(w) - 0.001) < 0.00001,
+		"184(s0): one point invests +0.001 (0.1%)")
+	_assert(absf(mult_of.call(w) - 1.001) < 0.00001,
+		"184(s0): atk_spd_mult() computes on read (1.0 + fraction)")
+	w.set("stat_points", 249)
+	for i in 249:
+		w.call("spend_point", "atk_spd")
+	_assert(absf(bonus_of.call(w) - 0.25) < 0.0001 and absf(mult_of.call(w) - 1.25) < 0.0001,
+		"184(s0): 250 points invest 0.25 — mult 1.25, NO cap")
+	var keys: Array = PlayerScript.get_script_constant_map().get("STATE_KEYS", [])
+	_assert(keys.has("bonus_atk_spd"), "184(s0): bonus_atk_spd joins STATE_KEYS")
+	var st: Dictionary = w.call("get_state")
+	_assert(absf(float(st.get("bonus_atk_spd", -999.0)) - 0.25) < 0.0001,
+		"184(s0): get_state carries the investment")
+	var w2 = PlayerScene.instantiate()
+	w2.class_id = "rogue"
+	root.add_child(w2)
+	w2.call("apply_state", st)
+	_assert(absf(bonus_of.call(w2) - 0.25) < 0.0001,
+		"184(s0): apply_state restores the investment (save round trip)")
+	w.call("switch_class", "mage")
+	_assert(bonus_of.call(w) == 0.0,
+		"184(s0): class-switch reset zeroes the investment")
+	# --- Section 1: the swing (Family A), literal drive.
+	w.call("switch_class", "warrior")
+	w.set("bonus_atk_spd", 0.25)
+	w.set("attack_cooldown", 1.0)
+	w.call("_do_attack")
+	_assert(absf(float(w.get("_cooldown")) - 0.8) < 0.001,
+		"184(s1): swing reset divides at the site — 1.0 / 1.25 = 0.8 (literal)")
+	# --- Family C exemplar: Fan of Knives, both factors live.
+	var rg = PlayerScene.instantiate()
+	rg.class_id = "rogue"
+	root.add_child(rg)
+	rg.set("equipped_special", "apex_warden_sigil")
+	rg.call("_apply_equipped_special")
+	rg.set("bonus_atk_spd", 0.25)
+	rg.call("_activate_fan")
+	_assert(absf(float(rg.ability_cds.get("fan", 0.0)) - 13.6) < 0.01,
+		"184(s1): Fan set = 20.0 x 0.85 / 1.25 = 13.6 — divided at the set site")
+	# --- The remaining divided family + the honest sites,
+	# --- labeled source pins (the set-site forms themselves).
+	for frag in [
+			"ability_cds[\"mark\"] = (25.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"inferno\"] = (60.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"glacial_prison\"] = (60.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"tempest\"] = (90.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"assassinate\"] = (45.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"execution\"] = (60.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"demolish\"] = (45.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"holy_light\"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult()",
+			"_srv_lightning_cd = LIGHTNING_COOLDOWN / atk_spd_mult()",
+			"_dagger_catch_cd = DAGGER_CATCH_COOLDOWN / atk_spd_mult()"]:
+		_assert(psrc.contains(frag), "184(s1): divided set site present: " + frag.left(52))
+	# --- NON-BLEED: the five non-attack set sites byte-
+	# --- identical (first-class pin, section 1).
+	for frag in [
+			"ability_cds[\"smoke_veil\"] = (30.0) * cooldown_mult()\n",
+			"ability_cds[\"shadow_step\"] = (15.0) * cooldown_mult()\n",
+			"ability_cds[\"reinforce\"] = (25.0) * cooldown_mult()\n",
+			"ability_cds[cd_key] = (cd) * cooldown_mult()\n",
+			"ability_cds[structure_id] = (cd) * cooldown_mult()\n"]:
+		_assert(psrc.contains(frag),
+			"184(s1): NON-BLEED set site byte-identical: " + frag.left(52).strip_edges())
+	# --- Dagger: charge rate + catch lockout (rogue drives).
+	rg.set("bonus_atk_spd", 0.25)
+	rg.set("_charging", true)
+	rg.set("_dagger_charge", 0.0)
+	rg.call("_physics_process", 0.4)
+	_assert(absf(float(rg.get("_dagger_charge")) - 0.625) < 0.01,
+		"184(s1): dagger charge grows at rate x mult — 0.4 x 1.25 / 0.8 = 0.625 (the power curve untouched)")
+	rg.set("_charging", false)
+	rg.call("_on_dagger_caught")
+	_assert(absf(float(rg.get("_dagger_catch_cd")) - 0.96) < 0.01,
+		"184(s1): dagger catch lockout divides at its set site — 1.2 / 1.25 = 0.96")
+	w.free()
+	w2.free()
+	rg.free()
+	# --- Section 3 (as amended): the Smash pair equality at
+	# --- BOTH real set sites — sigil + 250 points: 6.8 exactly.
+	var arch = PlayerScene.instantiate()
+	arch.class_id = "architect"
+	root.add_child(arch)
+	var hi := -1
+	for i in arch.inventory.size():
+		if str((arch.inventory[i]["item"] as Object).get("id")) == "forge_hammer":
+			hi = i
+	_assert(hi >= 0 and arch.equip_stack(hi), "184(s3): the Forge Hammer equips")
+	arch.set("equipped_special", "apex_warden_sigil")
+	arch.call("_apply_equipped_special")
+	arch.set("bonus_atk_spd", 0.25)
+	arch.call("_cast_hammer_smash")
+	_assert(absf(float(arch.ability_cds.get("hammer_smash", 0.0)) - 6.8) < 0.01,
+		"184(s3): Smash MIRROR = 10.0 x 0.85 / 1.25 = 6.8 exactly")
+	_assert(absf(float(arch.get("_srv_smash_cd")) - 6.8) < 0.01,
+		"184(s3): Smash SERVER site = 6.8 — the pair stands equal on #188's repaired base")
+	arch.free()
+	# --- Section 2: the F5 snapshot channel, end to end.
+	var rep = PlayerScene.instantiate()
+	rep.class_id = "architect"
+	root.add_child(rep)
+	rep.set_multiplayer_authority(7709)
+	_assert(absf(mult_of.call(rep) - 1.0) < 0.001,
+		"184(s2): a fresh replica reads mult 1.0 (no mirror yet)")
+	if rep.has_method("atk_spd_mult"):
+		rep.call("push_snapshot", Vector3.ZERO, 100.0, 1, true, 0.0, {}, false, 100.0, false, 0.0, 0.25)
+	_assert(absf(num_of.call(rep, "net_bonus_atk_spd") - 0.25) < 0.0001,
+		"184(s2): the snapshot writes the mirror var net_bonus_atk_spd")
+	_assert(absf(mult_of.call(rep) - 1.25) < 0.001,
+		"184(s2): atk_spd_mult() off the replica reads the mirror (1.25)")
+	_assert(psrc.contains("downed, _revive_pool_frac, bonus_atk_spd)"),
+		"184(s2): the emit call site carries the sender's bonus_atk_spd (labeled source pin)")
+	# The divided SERVER gate at the mirror value: this replica
+	# is the server's copy of its player — its equipped state
+	# set as replication leaves it (equipped_ids; equip_stack
+	# is authority-only by design); the gate must divide by
+	# the MIRROR's 1.25.
+	rep.set("equipped_special", "apex_warden_sigil")
+	rep.call("_apply_equipped_special")
+	# (equipped_ids set AFTER the special application — its
+	# refresh chain rebuilds the ids from real equipment.)
+	rep.set("equipped_ids", {"WEAPON": "forge_hammer"})
+	_assert(bool(rep.call("has_hammer_equipped")),
+		"184(s2): premise — the replica reads as hammer-equipped from its replicated ids")
+	rep.call("request_hammer_smash", 40.0)
+	_assert(absf(float(rep.get("_srv_smash_cd")) - 6.8) < 0.01,
+		"184(s2): the server gate divides at the MIRROR value — 10.0 x 0.85 / 1.25 = 6.8 on a replica copy")
+	rep.free()
+	# --- Section 4a: the lightning gate (design ratio kept).
+	var mg = PlayerScene.instantiate()
+	mg.class_id = "mage"
+	root.add_child(mg)
+	mg.set("bonus_atk_spd", 0.5)
+	mg.call("request_chain_lightning", 40.0)
+	_assert(absf(float(mg.get("_srv_lightning_cd")) - 0.4) < 0.01,
+		"184(s4): lightning gate divides for the caster — 0.6 / 1.5 = 0.4")
+	mg.call("request_chain_lightning", 40.0)
+	_assert(absf(float(mg.get("_srv_lightning_cd")) - 0.4) < 0.01,
+		"184(s4): a recast inside the gate is refused (the gate holds)")
+	mg.set("_srv_lightning_cd", 0.0)
+	mg.call("request_chain_lightning", 40.0)
+	_assert(absf(float(mg.get("_srv_lightning_cd")) - 0.4) < 0.01,
+		"184(s4): at the honest new cadence the next cast is accepted — honest casts are never eaten")
+	mg.free()
+	current_scene = null
+	holder.free()
+	# --- Turret fire + Meteor fall: a REAL dungeon fixture
+	# --- (the caster resolves through the dungeon's own
+	# --- get_player_node, exactly as production resolves it).
+	var nm = root.get_node("NetworkManager")
+	nm.set("selected_class_id", "warrior")
+	var DunScript := load("res://scripts/dungeon/dungeon.gd")
+	var saved_next: Dictionary = DunScript.get("saved_player_state")
+	var saved_theme: String = DunScript.get("next_theme_id")
+	var saved_seed: int = DunScript.get("next_seed")
+	var saved_level: int = DunScript.get("next_level_number")
+	DunScript.set("saved_player_state", {})
+	DunScript.set("next_theme_id", "village")
+	DunScript.set("next_seed", 1)
+	DunScript.set("next_level_number", 1)
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dun)
+	current_scene = dun
+	DunScript.set("saved_player_state", saved_next)
+	DunScript.set("next_theme_id", saved_theme)
+	DunScript.set("next_seed", saved_seed)
+	DunScript.set("next_level_number", saved_level)
+	var dplayer = dun.call("get_player_node", 1)
+	dplayer.set("bonus_atk_spd", 0.25)
+	var StructureScript := load("res://scripts/combat/structure.gd")
+	var keystone = StructureScript.new()
+	dun.add_child(keystone)
+	keystone.call("setup", "keystone", 1)
+	keystone.global_position = Vector3(200, 0, 200)
+	var turret = StructureScript.new()
+	dun.add_child(turret)
+	turret.call("setup", "sentry_turret", 1)
+	turret.global_position = Vector3(203, 0, 200)
+	turret.set("_fire_tick", 0.0)
+	turret.call("_tick_turret", 0.016)
+	_assert(absf(float(turret.get("_fire_tick")) - 1.2 / 1.3 / 1.25) < 0.01,
+		"184(s1): turret fire interval = TURRET_TICK / 1.3 (keystone) / 1.25 (owner invested) = 0.738")
+	dplayer.set("bonus_atk_spd", 0.0)
+	turret.set("_fire_tick", 0.0)
+	turret.call("_tick_turret", 0.016)
+	_assert(absf(float(turret.get("_fire_tick")) - 1.2 / 1.3) < 0.01,
+		"184(s1): the interval re-evaluates per shot — investment removed, the next shot reads 0.923")
+	# Meteor fall: FALL_TIME / the caster's mult, resolved
+	# from the cast's owner at this peer.
+	dplayer.set("bonus_atk_spd", 1.0)
+	var MeteorScript := load("res://scripts/combat/meteor.gd")
+	var met = MeteorScript.new()
+	met.call("setup", Vector3(200, 0, 200), 40.0, 1)
+	dun.add_child(met)
+	met.call("_physics_process", 0.6)
+	_assert(absf(num_of.call(met, "_fall_time") - 0.5) < 0.01 and bool(met.get("_impacted")),
+		"184(s1): meteor fall divides by the caster's mult — 1.0 / 2.0 = 0.5s, impacted by 0.6s")
+	var met2 = MeteorScript.new()
+	met2.call("setup", Vector3(200, 0, 200), 40.0, 9999)
+	dun.add_child(met2)
+	met2.call("_physics_process", 0.6)
+	_assert(absf(num_of.call(met2, "_fall_time") - 1.0) < 0.01 and not bool(met2.get("_impacted")),
+		"184(s1): an ownerless meteor falls at the undivided 1.0s")
+	dun.free()
+	current_scene = null
+	# --- Section 4b: the RTS hit floor, BOTH validators.
+	var holder2 := Node3D.new()
+	root.add_child(holder2)
+	current_scene = holder2
+	var UnitScript: GDScript = load("res://scripts/rts/unit.gd")
+	var BuildingScript: GDScript = load("res://scripts/rts/building.gd")
+	var sender = PlayerScene.instantiate()
+	sender.name = "Sender184"
+	holder2.add_child(sender)
+	sender.set_multiplayer_authority(7711)
+	sender.set("rts_faction", 0)
+	sender.global_position = Vector3(501, 0, 500)
+	if sender.has_method("atk_spd_mult"):
+		sender.call("push_snapshot", Vector3(501, 0, 500), 100.0, 1, true, 0.0, {}, false, 100.0, false, 0.0, 0.5)
+	_assert(absf(mult_of.call(sender) - 1.5) < 0.001,
+		"184(s4): premise — the sender's server copy reads mult 1.5 from its mirror (500 points)")
+	var unit_t = UnitScript.new()
+	unit_t.name = "Unit184"
+	holder2.add_child(unit_t)
+	unit_t.call("setup", 1, "spearman", null)
+	unit_t.global_position = Vector3(500, 0, 500)
+	var bldg_t = BuildingScript.new()
+	bldg_t.name = "Bldg184"
+	holder2.add_child(bldg_t)
+	bldg_t.call("setup", 1, "barracks", null)
+	bldg_t.global_position = Vector3(502, 0, 500)
+	for tgt in [unit_t, bldg_t]:
+		var tag := "unit" if tgt == unit_t else "building"
+		_assert(is_equal_approx(float(tgt.call("_srv_validate_hit", 5.0, 7711)), 5.0),
+			"184(s4): %s validator accepts the first hit" % tag)
+		var stamps: Dictionary = tgt.get("_hit_last_by")
+		stamps[7711] = Time.get_ticks_msec() / 1000.0 - 0.1
+		_assert(float(tgt.call("_srv_validate_hit", 5.0, 7711)) < 0.0,
+			"184(s4): %s floor at mult 1.5 is 0.25/1.5 = 0.1667 — a hit at +0.1s is refused" % tag)
+		stamps[7711] = Time.get_ticks_msec() / 1000.0 - 0.2
+		_assert(is_equal_approx(float(tgt.call("_srv_validate_hit", 5.0, 7711)), 5.0),
+			"184(s4): %s hit at +0.2s accepted (the scaled floor elapsed)" % tag)
+	# Extreme investment: the ABSOLUTE floor binds (placeholder
+	# 0.10, Jesse's at tuning).
+	if sender.has_method("atk_spd_mult"):
+		sender.call("push_snapshot", Vector3(501, 0, 500), 100.0, 1, true, 0.0, {}, false, 100.0, false, 0.0, 9.0)
+	for tgt in [unit_t, bldg_t]:
+		var tag := "unit" if tgt == unit_t else "building"
+		var stamps: Dictionary = tgt.get("_hit_last_by")
+		stamps[7711] = Time.get_ticks_msec() / 1000.0 - 0.05
+		_assert(float(tgt.call("_srv_validate_hit", 5.0, 7711)) < 0.0,
+			"184(s4): %s at mult 10 the ABSOLUTE floor 0.10 binds (0.25/10 = 0.025) — +0.05s refused" % tag)
+		stamps[7711] = Time.get_ticks_msec() / 1000.0 - 0.15
+		_assert(is_equal_approx(float(tgt.call("_srv_validate_hit", 5.0, 7711)), 5.0),
+			"184(s4): %s hit at +0.15s accepted (past the absolute floor)" % tag)
+	_assert(absf(float(UnitScript.get_script_constant_map().get("ABSOLUTE_MIN_HIT_INTERVAL", -1.0)) - 0.10) < 0.001
+			and absf(float(BuildingScript.get_script_constant_map().get("ABSOLUTE_MIN_HIT_INTERVAL", -1.0)) - 0.10) < 0.001,
+		"184(s4): ABSOLUTE_MIN_HIT_INTERVAL = 0.10 stands in BOTH validators [placeholder]")
+	holder2.free()
+	current_scene = null
+	# --- Section 6: display — the formatter, the row, the
+	# --- Swiftness drive-by.
+	var HudScript := load("res://scripts/ui/hud.gd")
+	_assert(HudScript.get_script_constant_map().get("ATK_SPD_DISPLAY_X", false) == true,
+		"184(s6): the x form is the selected display (FLAGGED PROVISIONAL — tracker 34d is Jesse's)")
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	root.add_child(hud)
+	var fmt := func(v: float) -> String:
+		return str(hud.call("atk_spd_text", v)) if hud.has_method("atk_spd_text") else "<absent>"
+	_assert(fmt.call(1.25) == "×1.25" and fmt.call(1.0) == "×1.00",
+		"184(s6): atk_spd_text renders the multiplier form behind the one formatter")
+	_assert(hud.find_child("StatPair3", true, false) != null
+			and hud.find_child("AtkSpdVal", true, false) != null,
+		"184(s6): the third StatPair carries the ATK SPD row")
+	var ip = PlayerScene.instantiate()
+	ip.class_id = "warrior"
+	root.add_child(ip)
+	ip.set("bonus_atk_spd", 0.25)
+	hud.set("_player", ip)
+	hud.call("refresh_stats")
+	var val_lbl = hud.find_child("AtkSpdVal", true, false)
+	_assert(val_lbl != null and str(val_lbl.get("text")) == "×1.25",
+		"184(s6): refresh_stats renders the invested multiplier through the formatter")
+	# The row's button, driven for real: its baked connection
+	# (binds are scene-baked, invisible to get_connections)
+	# must spend a point into atk_spd itself.
+	var plus = hud.find_child("AtkSpdPlus", true, false)
+	ip.set("stat_points", 1)
+	if plus != null:
+		(plus as Button).pressed.emit()
+	_assert(plus != null and absf(num_of.call(ip, "bonus_atk_spd") - 0.251) < 0.0001
+			and int(ip.get("stat_points")) == 0,
+		"184(s6): pressing AtkSpdPlus spends the point into atk_spd (the _on_stat_pressed(\"atk_spd\") connection, driven)")
+	ip.free()
+	hud.free()
+	var htscn := FileAccess.get_file_as_string("res://scenes/ui/hud.tscn")
+	_assert(htscn.contains("Swiftness (+0.15 spd)") and not htscn.contains("Swiftness (+0.2 spd)"),
+		"184(s6): Swiftness drive-by — the scene label now matches the code's +0.15 [flagged in the report]")
+	print("[Playtest] ATK SPD (issue #184) done")
 func _test_ability_matrix_162() -> void:
 	print("[Playtest] Ability matrix fixes (issues #162/#166/#169)...")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")

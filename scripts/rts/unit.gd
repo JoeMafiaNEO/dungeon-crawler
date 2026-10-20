@@ -716,6 +716,9 @@ func rpc_take_damage(amount: float, attacker_peer_id: int) -> void:
 ## Issue #165 Part B (D7): validation bounds for remote damage
 ## claims — bounds, not balance numbers.
 const MIN_HIT_INTERVAL := 0.25
+## Issue #184 (section 4b): the attack-speed-scaled floor never
+## divides below this absolute bound. PLACEHOLDER — Jesse's at tuning.
+const ABSOLUTE_MIN_HIT_INTERVAL := 0.10
 const HIT_RANGE_SLACK := 3.0
 ## Absolute per-hit ceiling (the amendment's route (b)): the
 ## audited max legitimate hit is ~500 (damage x buff product
@@ -754,7 +757,11 @@ func _srv_validate_hit(amount: float, sender: int) -> float:
 	# Rate floor: one sender cannot hit the same target more
 	# often than MIN_HIT_INTERVAL; distinct targets unaffected.
 	var now := Time.get_ticks_msec() / 1000.0
-	if float(_hit_last_by.get(sender, -10.0)) + MIN_HIT_INTERVAL > now:
+	var attacker_mult := 1.0
+	if sp.has_method("atk_spd_mult"):
+		attacker_mult = float(sp.call("atk_spd_mult"))
+	var floor_interval := maxf(MIN_HIT_INTERVAL / attacker_mult, ABSOLUTE_MIN_HIT_INTERVAL)
+	if float(_hit_last_by.get(sender, -10.0)) + floor_interval > now:
 		return -1.0
 	# Clamp-and-log at min(ceiling, this target's max_hp) —
 	# server-known quantities only (the amendment's route (b));

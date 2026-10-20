@@ -419,7 +419,7 @@ func _build_pause_tabs() -> void:
 	# Define tab membership.
 	_pause_tab_members = [
 		["HintLabel", "VolLabel", "MasterRow", "MusicRow", "SFXRow",
-			"StatPointsLabel", "StatPair1", "StatPair2"],
+			"StatPointsLabel", "StatPair1", "StatPair2", "StatPair3"],
 		["SpecLabel", "SpecList"],
 		["FamilyLabel", "FamilyPanel", "CollectionLabel", "CollectionLog"],
 	]
@@ -468,7 +468,7 @@ func _compact_stats_tab(vbox: VBoxContainer) -> void:
 		hint.text = PromptText.resolve(PAUSE_HINT_TEMPLATE)
 		_pause_hint_label = hint
 	# Slimmer stat labels so two columns fit the 480px panel.
-	for pn in ["StatPair1", "StatPair2"]:
+	for pn in ["StatPair1", "StatPair2", "StatPair3"]:
 		var pair := vbox.get_node_or_null(pn) as HBoxContainer
 		if pair == null:
 			continue
@@ -1805,6 +1805,20 @@ func _on_respec_pressed() -> void:
 
 # --- Stat points ---
 
+## Issue #184 (section 6): the ATK SPD display form. The x
+## form ships as the FLAGGED PROVISIONAL (tracker 34d stays
+## Jesse's call — the HUD already speaks x natively); BOTH
+## forms live behind this one switch and the single formatter
+## below, so the ruling lands as a one-line change.
+const ATK_SPD_DISPLAY_X := true
+
+
+func atk_spd_text(mult: float) -> String:
+	if ATK_SPD_DISPLAY_X:
+		return "×%.2f" % mult
+	return "+%d%%" % int(roundf((mult - 1.0) * 100.0))
+
+
 func refresh_stats() -> void:
 	if _player == null:
 		return
@@ -1813,6 +1827,7 @@ func refresh_stats() -> void:
 	%HpVal.text = "+%d hp" % int(_player.bonus_health)
 	%SpdVal.text = "+%.1f spd" % _player.bonus_speed
 	%AuraVal.text = "+%d aura" % int(_player.bonus_aura)
+	%AtkSpdVal.text = atk_spd_text(_player.atk_spd_mult())
 	var is_mage := str(_player.get("class_id")) == "mage"
 	%AuraRow.visible = is_mage
 	_refresh_spec_list()
@@ -1823,7 +1838,8 @@ func refresh_stats() -> void:
 	%HpPlus.disabled = not can
 	%SpdPlus.disabled = not can
 	%AuraPlus.disabled = not can
-	# Issue #156: spending the last stat point disables all four
+	%AtkSpdPlus.disabled = not can
+	# Issue #156: spending the last stat point disables all the
 	# +/- buttons at once — including, typically, the one the pad
 	# just pressed. Rescue re-seeds focus off the dead button (a
 	# no-op while focus lives elsewhere in the pause chain).

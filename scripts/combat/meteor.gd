@@ -13,6 +13,21 @@ var owner_peer := 0
 var _t := 0.0
 var _start := Vector3.ZERO
 var _impacted := false
+## Issue #184: the effective fall time for THIS cast —
+## FALL_TIME / the caster's atk_spd_mult(), resolved on the
+## first tick at each peer from the cast's owner (on replicas
+## the caster copy's multiplier reads its snapshot mirror).
+var _fall_time := FALL_TIME
+var _fall_resolved := false
+
+
+func _caster_atk_spd_mult() -> float:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null and dungeon.has_method("get_player_node"):
+		var caster = dungeon.get_player_node(owner_peer)
+		if caster != null and caster.has_method("atk_spd_mult"):
+			return float(caster.call("atk_spd_mult"))
+	return 1.0
 
 
 func setup(p_target: Vector3, p_damage: float, p_owner: int) -> void:
@@ -71,8 +86,11 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if _impacted:
 		return
+	if not _fall_resolved:
+		_fall_resolved = true
+		_fall_time = FALL_TIME / _caster_atk_spd_mult()
 	_t += delta
-	var f := clampf(_t / FALL_TIME, 0.0, 1.0)
+	var f := clampf(_t / _fall_time, 0.0, 1.0)
 	# Ease-in: accelerates as it falls.
 	var eased := f * f
 	global_position = _start.lerp(target + Vector3(0, 0.3, 0), eased)

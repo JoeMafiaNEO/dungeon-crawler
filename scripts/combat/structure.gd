@@ -207,6 +207,14 @@ func _tick_turret(delta: float) -> void:
 	var interval := TURRET_TICK
 	if keystone_near(get_tree(), global_position, owner_peer):
 		interval /= 1.3
+	# Issue #184 (Family F): the owner's ATK SPD divides the
+	# fire interval, resolved through _caster() and re-evaluated
+	# at EVERY shot's reset — mid-life investments apply from
+	# the next shot. On a guest's turret the caster copy's
+	# atk_spd_mult() reads its snapshot mirror.
+	var owner := _caster()
+	if owner != null:
+		interval /= owner.atk_spd_mult()
 	_fire_tick = interval
 	var target := _pick_target()
 	if target == null:

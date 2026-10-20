@@ -72,6 +72,11 @@ var bonus_damage := 0.0
 var bonus_health := 0.0
 var bonus_speed := 0.0
 var bonus_aura := 0.0 # mage only: staff glow brightness per point
+## Issue #184: ATK SPD investment — the fraction itself
+## (+0.001 per stat point, NO cap, no class gate). Read
+## through atk_spd_mult(); replicated via push_snapshot into
+## net_bonus_atk_spd so server-side gates divide truly.
+var bonus_atk_spd := 0.0
 var supermarket_cash := 0 # cash from selling supermarket loot
 ## Relic Vault (issue #6): exactly one special equipped per run ("" = none).
 ## Run-scoped, saved with the run, cleared on a new run.
@@ -93,6 +98,17 @@ var special_cooldown_mult := 1.0
 ## Ability cooldown multiplier from the equipped special (apex_warden_sigil).
 func cooldown_mult() -> float:
 	return special_cooldown_mult
+
+
+## Issue #184: attack-speed multiplier, computed on read
+## (1.0 + the invested fraction). The authority copy reads its
+## live investment; a replica reads the snapshot mirror — the
+## sync_aura pattern, enforcement-grade: a server gate on a
+## guest's copy divides by the guest's true investment.
+func atk_spd_mult() -> float:
+	if is_multiplayer_authority():
+		return 1.0 + bonus_atk_spd
+	return 1.0 + net_bonus_atk_spd
 ## Bounty Board (issue #7): server-authoritative per-player progress,
 ## {bounty_id: count} (-1 = failed). Synced via player snapshots.
 var bounty_progress := {}
@@ -331,6 +347,10 @@ var _staff_crystal_mat: StandardMaterial3D
 var _aura_light: OmniLight3D
 var net_aura_level := 1
 var net_bonus_aura := 0.0
+## Issue #184 (section 2): the snapshot mirror of the owner's
+## ATK SPD investment — replicas (incl. the server's copies of
+## guests) read their multiplier from here.
+var net_bonus_atk_spd := 0.0
 var _bob_t := 0.0
 var _prompt_pickup: ItemPickup = null
 var _prompt_interact := false
@@ -2313,7 +2333,7 @@ func _activate_mark() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["mark"] = (25.0) * cooldown_mult()
+	ability_cds["mark"] = (25.0) * cooldown_mult() / atk_spd_mult()
 	# Hamstring Mark trait: marked targets are also slowed 20%.
 	var hamstring := 0.8 if has_trait("hamstring_mark") else 1.0
 	# SteamMultiplayerPeer can't rpc_id its own peer ID: when this instance is
@@ -2405,7 +2425,7 @@ func _activate_fan() -> void:
 			hud.toast("Fan of Knives on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["fan"] = (20.0) * cooldown_mult()
+	ability_cds["fan"] = (20.0) * cooldown_mult() / atk_spd_mult()
 	var dmg := damage * _buff_mult("damage") * rank_mult() * 1.2
 	# Unseen trait: first attack after veil/blink crits for 2x.
 	if unseen_crit_ready:
@@ -2493,7 +2513,7 @@ func _activate_inferno() -> void:
 	var hit := space.intersect_ray(params)
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
-	ability_cds["inferno"] = (60.0) * cooldown_mult()
+	ability_cds["inferno"] = (60.0) * cooldown_mult() / atk_spd_mult()
 	_cast_seq += 1
 	# 10 ticks x 0.6 = 6.0x base ≈ 1.5x rank-V meteor (4.0x), plus burn.
 	var dmg := damage * _buff_mult("damage") * 0.6 * trait_damage_mult("fireball")
@@ -2546,7 +2566,7 @@ func _activate_glacial_prison() -> void:
 			hud.toast("Glacial Prison on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["glacial_prison"] = (60.0) * cooldown_mult()
+	ability_cds["glacial_prison"] = (60.0) * cooldown_mult() / atk_spd_mult()
 	_cast_seq += 1
 	rpc("cast_glacial_prison", global_position, int(multiplayer.get_unique_id()), _cast_seq)
 	AudioManager.sfx("milestone")
@@ -2579,7 +2599,7 @@ func _activate_tempest() -> void:
 			hud.toast("Tempest on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["tempest"] = (90.0) * cooldown_mult()
+	ability_cds["tempest"] = (90.0) * cooldown_mult() / atk_spd_mult()
 	_cast_seq += 1
 	var dmg := damage * _buff_mult("damage") * 0.8 * 1.5 * trait_damage_mult("lightning")
 	rpc("cast_tempest", dmg, int(multiplayer.get_unique_id()), _cast_seq)
@@ -2672,7 +2692,7 @@ func _activate_assassinate() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["assassinate"] = (45.0) * cooldown_mult()
+	ability_cds["assassinate"] = (45.0) * cooldown_mult() / atk_spd_mult()
 	var origin := global_position
 	# Blink to behind the target (far side relative to our position).
 	var away: Vector3 = target.global_position - global_position
@@ -2720,7 +2740,7 @@ func _activate_execution() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["execution"] = (60.0) * cooldown_mult()
+	ability_cds["execution"] = (60.0) * cooldown_mult() / atk_spd_mult()
 	var me := int(multiplayer.get_unique_id())
 	var base := damage * _buff_mult("damage") * rank_mult()
 	var is_boss: bool = (target.get("data") as MobData).is_boss
@@ -2952,6 +2972,7 @@ func switch_class(new_class: String) -> void:
 	bonus_health = 0.0
 	bonus_speed = 0.0
 	bonus_aura = 0.0
+	bonus_atk_spd = 0.0
 	selected_ability = 0
 	ability_cds.clear()
 	totem_charges = 1 if class_id == "warrior" else 0
@@ -3319,7 +3340,7 @@ func _physics_process(delta: float) -> void:
 		_dagger_catch_cd = maxf(0.0, _dagger_catch_cd - delta)
 		# Issue #69 Phase 1: charge the dagger while RMB held (0→1 over 0.8s).
 		if _charging:
-			_dagger_charge = minf(1.0, _dagger_charge + delta / DAGGER_CHARGE_TIME)
+			_dagger_charge = minf(1.0, _dagger_charge + delta * atk_spd_mult() / DAGGER_CHARGE_TIME)
 			if hud != null and hud.has_method("set_charge_meter"):
 				hud.set_charge_meter(_dagger_charge, true)
 		_update_pickup_prompt()
@@ -3416,7 +3437,8 @@ func _do_attack() -> void:
 	if class_id == "rogue" and _dagger_out:
 		return
 	# War Drums: +10% attack speed while the trait buff is active.
-	_cooldown = attack_cooldown / (1.1 if _war_drums_t > 0.0 else 1.0)
+	# Issue #184: ATK SPD divides at this reset site, fresh per swing.
+	_cooldown = attack_cooldown / (1.1 if _war_drums_t > 0.0 else 1.0) / atk_spd_mult()
 	_attack_anim()
 	if class_id == "mage":
 		_cast_spell()
@@ -3512,7 +3534,7 @@ func _on_dagger_returning() -> void:
 @rpc("any_peer", "call_local")
 func _on_dagger_caught() -> void:
 	_dagger_out = false
-	_dagger_catch_cd = DAGGER_CATCH_COOLDOWN
+	_dagger_catch_cd = DAGGER_CATCH_COOLDOWN / atk_spd_mult()
 	AudioManager.sfx("dagger_catch")
 
 
@@ -3711,7 +3733,7 @@ func _cast_demolish() -> void:
 			hud.toast("No structures to demolish!")
 		AudioManager.sfx("ui_error")
 		return
-	ability_cds["demolish"] = (45.0) * cooldown_mult()
+	ability_cds["demolish"] = (45.0) * cooldown_mult() / atk_spd_mult()
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null:
 		dungeon.rpc("demolish_structures", me)
@@ -3738,7 +3760,7 @@ func _cast_hammer_smash() -> void:
 			hud.toast("Hammer Smash on cooldown!")
 		AudioManager.sfx("ui_error")
 		return
-	ability_cds["hammer_smash"] = SMASH_COOLDOWN * cooldown_mult()
+	ability_cds["hammer_smash"] = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult()
 	var dmg := damage * _buff_mult("damage") * rank_mult() * SMASH_DAMAGE_MULT
 	if multiplayer.is_server():
 		request_hammer_smash(dmg)
@@ -3769,7 +3791,7 @@ func request_hammer_smash(claimed_damage: float) -> void:
 	# this server copy holds the caster's equipped special, so
 	# the factor is evaluated HERE, on the enforcing node, and
 	# the HUD mirror's multiplied value becomes the truth.
-	_srv_smash_cd = SMASH_COOLDOWN * cooldown_mult()
+	_srv_smash_cd = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult()
 	var attacker := int(get_multiplayer_authority())
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
@@ -4162,7 +4184,7 @@ func _hl_strike() -> void:
 	_hl_active_t = 0.0
 	_hl_aim_send_t = 0.0
 	# 20s cooldown starts at STRIKE, not at arm.
-	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult()
+	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult()
 	if hud != null:
 		hud.refresh_abilities(self)
 	# Clear the reticle; the beam takes over.
@@ -4502,7 +4524,7 @@ func request_chain_lightning(claimed_damage: float) -> void:
 	# claimed-damage trust model is unchanged from #166.
 	if _srv_lightning_cd > 0.0:
 		return
-	_srv_lightning_cd = LIGHTNING_COOLDOWN
+	_srv_lightning_cd = LIGHTNING_COOLDOWN / atk_spd_mult()
 	_execute_chain_lightning(claimed_damage)
 
 
@@ -6071,6 +6093,11 @@ func spend_point(stat: String) -> bool:
 			hp += 12.0
 		"speed":
 			bonus_speed += 0.15
+		"atk_spd":
+			# Issue #184: +0.1% per point, flat — NO cap and
+			# NO class gate (the aura arm's gate/cap are its
+			# own; this stat is universal by design).
+			bonus_atk_spd += 0.001
 		"aura":
 			if class_id != "mage":
 				return false
@@ -6176,7 +6203,7 @@ func rpc_earn_special(special_id: String) -> void:
 ## losslessly instead of being silently dropped at restore.
 const STATE_KEYS: Array[String] = [
 	"level", "xp", "xp_next", "stat_points", "bonus_damage",
-	"bonus_health", "bonus_speed", "bonus_aura", "inventory",
+	"bonus_health", "bonus_speed", "bonus_aura", "bonus_atk_spd", "inventory",
 	"run_start_msec", "run_kills", "run_damage_dealt",
 	"supermarket_cash", "bounty_progress", "totem_charges",
 	"specialization", "affinity", "family_collection",
@@ -6220,6 +6247,7 @@ func get_state() -> Dictionary:
 		"bonus_health": bonus_health,
 		"bonus_speed": bonus_speed,
 		"bonus_aura": bonus_aura,
+		"bonus_atk_spd": bonus_atk_spd,
 		"inventory": inv,
 		"run_start_msec": run_start_msec,
 		"run_kills": run_kills,
@@ -6270,6 +6298,7 @@ func apply_state(s: Dictionary) -> void:
 	bonus_health = float(s.get("bonus_health", 0.0))
 	bonus_speed = float(s.get("bonus_speed", 0.0))
 	bonus_aura = float(s.get("bonus_aura", 0.0))
+	bonus_atk_spd = float(s.get("bonus_atk_spd", 0.0))
 	run_start_msec = int(s.get("run_start_msec", Time.get_ticks_msec()))
 	run_kills = int(s.get("run_kills", 0))
 	run_damage_dealt = float(s.get("run_damage_dealt", 0.0))
@@ -6432,7 +6461,7 @@ func _emit_snapshot(delta: float) -> void:
 		# Issue #133: never fire into a dead peer (the Oct 14 spam
 		# site — 10 Hz of not-connected errors after the host died).
 		if _mp_peer_connected():
-			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac)
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd)
 
 
 ## Issue #164 (parts A + C): a puppet's presentation follows its
@@ -6456,7 +6485,7 @@ func _refresh_puppet_presentation() -> void:
 
 
 @rpc("any_peer", "call_local", "unreliable")
-func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false, max_hp_v: float = 0.0, downed_v: bool = false, pool_frac_v: float = 0.0) -> void:
+func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: float, eq_ids: Dictionary = {}, rod_out_v: bool = false, max_hp_v: float = 0.0, downed_v: bool = false, pool_frac_v: float = 0.0, atk_spd_v: float = 0.0) -> void:
 	if is_multiplayer_authority():
 		return
 	_remote_pos = pos
@@ -6484,6 +6513,12 @@ func push_snapshot(pos: Vector3, hp_v: float, lvl: int, alive_v: bool, yaw_v: fl
 	# sync_revive_pool and the owner's stream carries the
 	# latest value onward, so all copies render the same bar.
 	_revive_pool_frac = pool_frac_v
+	# Issue #184 (section 2): the ATK SPD investment rides the
+	# snapshot — the self-healing channel (the event-RPC
+	# alternative was rejected on the record); its convergence
+	# window errs stricter-only, since a stale mirror reads a
+	# SMALLER multiplier and therefore a longer gate.
+	net_bonus_atk_spd = atk_spd_v
 	level = lvl
 	alive = alive_v
 	if eq_ids != equipped_ids:
