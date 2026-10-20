@@ -43,6 +43,7 @@ func _run() -> void:
 	_test_fishing_actions_176()
 	_test_rod_prop_invariant_177()
 	_test_army_sync_packing_178()
+	_test_build_menu_softlock_180()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3529,6 +3530,150 @@ func _test_army_sync_packing_178() -> void:
 	root.remove_child(holder)
 	holder.free()
 	print("[Playtest] Army sync packing done")
+
+class _DungeonStub180:
+	extends Node3D
+	var construction_calls: Array = []
+
+	func rpc_start_construction(f: int, t: String, pos: Vector3, builders: Array) -> void:
+		construction_calls.append([f, t, pos, builders])
+
+
+## Issue #180: in command view, RTSCamera._input runs BEFORE the
+## GUI stage, so a build-button click's RELEASE reached the camera
+## first: _select_single -> _clear_selection deselected the
+## villager, and only then did the Button's pressed fire
+## start_placement — whose confirm collects builders from the
+## (now empty) selection and cancels with the "select villager/s"
+## toast. Menu building was impossible top-down. The fix is one
+## guard at the head of the camera's mouse-button handling: a
+## mouse-button event while a UI control is hovered belongs to
+## the UI. (The buttons cannot fix this themselves — accept_event
+## acts in the GUI stage, after _input already consumed the
+## click's meaning.) This section drives a real RTSCamera with
+## real viewport hover state and a real Button under the click
+## point. The fixture lives in a SubViewport (own world): the
+## root window's hover follows the OS mouse, which the headless
+## display server never provides, while a SubViewport's hover is
+## driven by the events fed to it — real hover state either way,
+## established by pushing real motion events.
+func _test_build_menu_softlock_180() -> void:
+	print("[Playtest] Build menu softlock (#180)...")
+	var UnitScript: GDScript = load("res://scripts/rts/unit.gd")
+	var MgrScript: GDScript = load("res://scripts/rts/rts_manager.gd")
+	var CamScript: GDScript = load("res://scripts/rts/rts_camera.gd")
+	var prev_scene = current_scene
+	for n in get_nodes_in_group("dungeon"):
+		n.remove_from_group("dungeon")
+	for n in get_nodes_in_group("rts_units"):
+		n.remove_from_group("rts_units")
+	var sub := SubViewport.new()
+	sub.size = Vector2i(400, 300)
+	sub.own_world_3d = true
+	sub.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	root.add_child(sub)
+	var holder := Node3D.new()
+	holder.name = "Softlock180Holder"
+	sub.add_child(holder)
+	current_scene = holder
+	var mgr: Node = MgrScript.new()
+	holder.add_child(mgr)
+	# The dungeon stub _confirm_placement fires construction on.
+	var dstub := _DungeonStub180.new()
+	holder.add_child(dstub)
+	dstub.add_to_group("dungeon")
+	var rts_child := Node3D.new()
+	rts_child.name = "RTS"
+	dstub.add_child(rts_child)
+	# The selected villager, standing away from the click ground.
+	var villager = UnitScript.new()
+	holder.add_child(villager)
+	villager.setup(0, &"villager", null)
+	villager.set("unit_id", 701)
+	villager.add_to_group("rts_units")
+	villager.global_position = Vector3(430, 0, 430)
+	# The camera, above EMPTY ground (click ground = viewport
+	# center, the #165 rig): nothing pickable under the cursor.
+	var cam = CamScript.new()
+	holder.add_child(cam)
+	cam.call("setup", mgr, 0)
+	cam.set("active", true)
+	cam.position = Vector3(460, 40, 460)
+	cam.rotation = Vector3(-PI / 2, 0, 0)
+	var center := sub.get_visible_rect().size * 0.5
+	# A real UI button covering the click point.
+	var layer := CanvasLayer.new()
+	sub.add_child(layer)
+	var btn := Button.new()
+	btn.text = "House"
+	btn.position = center - Vector2(120, 120)
+	btn.size = Vector2(240, 240)
+	layer.add_child(btn)
+	var mk_motion := func(p: Vector2) -> InputEventMouseMotion:
+		var e := InputEventMouseMotion.new()
+		e.position = p
+		e.global_position = p
+		return e
+	var mk_button := func(p: Vector2, idx: int, pressed: bool) -> InputEventMouseButton:
+		var e := InputEventMouseButton.new()
+		e.position = p
+		e.global_position = p
+		e.button_index = idx
+		e.pressed = pressed
+		return e
+	# Establish REAL hover over the button.
+	sub.push_input(mk_motion.call(center))
+	_assert(sub.gui_get_hovered_control() == btn,
+		"180(rig): the viewport hovers the button at the click point")
+	# (1) Press + release over the button: the click is the UI's —
+	# the selection must survive (this is the softlock's release).
+	cam.set("_selected", [villager])
+	cam.call("_input", mk_button.call(center, MOUSE_BUTTON_LEFT, true))
+	cam.call("_input", mk_button.call(center, MOUSE_BUTTON_LEFT, false))
+	_assert((cam.get("_selected") as Array) == [villager],
+		"180(1): release over a UI control leaves the selection intact")
+	# (2) Right-click over the panel issues no order.
+	cam.set("_selected", [villager])
+	cam.call("_input", mk_button.call(center, MOUSE_BUTTON_RIGHT, true))
+	_assert(villager.get("_move_target") == Vector3.INF,
+		"180(2): right-click over a UI control issues no order")
+	# (3) Negative control: hover moved off every control, the
+	# same release on empty ground clears the selection as today.
+	sub.push_input(mk_motion.call(Vector2(8, 8)))
+	_assert(sub.gui_get_hovered_control() == null,
+		"180(rig): hover is clear at the corner point")
+	cam.set("_selected", [villager])
+	cam.call("_input", mk_button.call(center, MOUSE_BUTTON_LEFT, true))
+	cam.call("_input", mk_button.call(center, MOUSE_BUTTON_LEFT, false))
+	_assert((cam.get("_selected") as Array).is_empty(),
+		"180(3): the same release with no control under it still clears the selection (world clicks unguarded)")
+	# (4) The full path the softlock broke: selection intact ->
+	# start_placement -> a ground click away from UI confirms,
+	# with the villager among the builders. (The build panel
+	# hides during placement in the real UI; the fixture hides
+	# its button to match.)
+	cam.set("_selected", [villager])
+	cam.call("start_placement", "house")
+	btn.visible = false
+	sub.push_input(mk_motion.call(center)) # hover clears + ghost tracks
+	cam.call("_input", mk_button.call(center, MOUSE_BUTTON_LEFT, true))
+	_assert(dstub.construction_calls.size() == 1,
+		"180(4): the placement confirm fires construction after the guarded click path")
+	if dstub.construction_calls.size() == 1:
+		var call0: Array = dstub.construction_calls[0]
+		_assert(str(call0[1]) == "house" and (call0[3] as Array).has(villager.get_path()),
+			"180(4): the villager is among the builders for the placed house")
+	# (5) Labeled source pin: the guard reads the hovered control.
+	var csrc := FileAccess.get_file_as_string("res://scripts/rts/rts_camera.gd")
+	var ibody := _body_of(csrc, "func _input(")
+	_assert(ibody.contains("gui_get_hovered_control"),
+		"180(5): _input guards mouse-button handling on the hovered control (labeled source pin)")
+	current_scene = prev_scene
+	root.remove_child(sub)
+	sub.free()
+	print("[Playtest] Build menu softlock done")
+
+
 
 
 func _test_station_phase4() -> void:

@@ -97,6 +97,19 @@ func _input(event: InputEvent) -> void:
 			return
 	if not active:
 		return
+	# Issue #180: a mouse-button event over ANY UI control belongs
+	# to the UI. _input runs BEFORE the GUI stage, so without this
+	# guard a build-button click's release reached the selection
+	# branch first and deselected the villager (_select_single ->
+	# _clear_selection) before the Button's pressed ever fired;
+	# start_placement then found no builders and every top-down
+	# menu build softlocked. The buttons cannot fix this from
+	# their side: accept_event()/set_input_as_handled() act in the
+	# GUI stage, after this handler has already run. Keyboard
+	# handling above is deliberately outside the guard.
+	if event is InputEventMouseButton \
+			and get_viewport().gui_get_hovered_control() != null:
+		return
 	# Placement mode: ghost follows mouse, left-click places, right-click cancels.
 	if _placing_type != "":
 		if event is InputEventMouseMotion:
