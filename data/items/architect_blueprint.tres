@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "architect_blueprint"
+display_name = "Architect's Blueprint"
+description = "Use: +2 upgrade levels on your equipped weapon (+2 damage per level, max +5)."
+slot = 2
+rarity = 4
+world_model = "res://assets/models/kaykit/pickups/spellbook_open.gltf"
+consumable = true
+upgrade_levels = 2

@@ -1,0 +1,13 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "prime_shard"
+display_name = "Prime Shard"
+description = "A shard of the prime stone, the vault's heart. Vendors buy it as a mason relic-fragment."
+slot = 2
+rarity = 3
+world_model = "res://assets/models/kaykit/pickups/bottle_B_green.glb"
+sell_value = 60

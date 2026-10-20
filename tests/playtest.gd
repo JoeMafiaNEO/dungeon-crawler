@@ -50,6 +50,7 @@ func _run() -> void:
 	_test_turret_permanence_183()
 	_test_mason_vault_level_185()
 	_test_mason_vault_rite_186()
+	_test_mason_vault_loot_187()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -4562,6 +4563,166 @@ func _test_mason_vault_rite_186() -> void:
 	_assert(not savemgr.is_architect_unlocked() and not savemgr.is_vault_cleared(),
 		"186: the fixture profile is restored after the rite drives")
 	print("[Playtest] Mason's Vault rite (P3) done")
+
+
+## Issue #187 — the Mason's Vault, Phase 4: LOOT + repeats +
+## polish. The treasure chamber spawns through the house drop
+## path when the rite completes, from the RICH table on a first
+## clear and the REPEAT table when the HOST's profile already
+## carries the clear (read at level build). EVERY expectation
+## below is an independent literal (the #150 doctrine): the
+## tables under test are never read as their own expectation,
+## and every id in all three tables is asserted resolvable in
+## ItemDB — a dangling row must fail the suite, not ship.
+func _treasure_pickups(dun: Node) -> Array:
+	var out: Array = []
+	for p in dun.get_node("Pickups").get_children():
+		var it = p.get("item")
+		if it != null and (p as Node3D).position.z > 37.0:
+			out.append(p)
+	return out
+
+
+func _sing_rite(dir: Node) -> void:
+	var perm: Array = dir.get("rite_perm")
+	var pos_of := {}
+	for pos in 8:
+		pos_of[int(perm[pos])] = pos
+	for k in 8:
+		dir.call("request_interact", "rite_%d" % int(pos_of[k]), null)
+
+
+func _test_mason_vault_loot_187() -> void:
+	print("[Playtest] Mason's Vault loot (P4, #187)...")
+	var ItemDBNode: Variant = root.get_node("ItemDB")
+	# --- The four new items, literal fields (ItemDB level).
+	var cache = ItemDBNode.call("get_item", "vault_gold_cache")
+	_assert(cache != null and int(cache.get("sell_value")) == 250
+			and int(cache.get("rarity")) == 4,
+		"187(items): vault_gold_cache — a hoard worth gold 250, rarity 4")
+	var bp = ItemDBNode.call("get_item", "architect_blueprint")
+	_assert(bp != null and bool(bp.get("consumable"))
+			and int(bp.get("upgrade_levels")) == 2 and int(bp.get("rarity")) == 4,
+		"187(items): architect_blueprint — consumable, the Masterwork effect (upgrade_levels 2), rarity 4")
+	var shard = ItemDBNode.call("get_item", "prime_shard")
+	_assert(shard != null and int(shard.get("rarity")) == 3
+			and int(shard.get("sell_value")) == 60 and not bool(shard.get("consumable")),
+		"187(items): prime_shard — a sellable curio, rarity 3, no use promised")
+	var crate = ItemDBNode.call("get_item", "vault_supply_crate")
+	_assert(crate != null and bool(crate.get("consumable"))
+			and float(crate.get("heal_fraction")) == 0.5,
+		"187(items): vault_supply_crate — a consumable ration (heal 50%)")
+	# --- The gate's resolvability sweep: every id, all tables.
+	for tid in ["vault_gold_cache", "prime_shard", "architect_blueprint",
+			"vault_supply_crate", "upgrade_kit", "masterwork_kit"]:
+		_assert(ItemDBNode.call("get_item", tid) != null,
+			"187(tables): id resolves in ItemDB: " + tid)
+	# --- Sentry drop rows (literal expectations on the .tres).
+	var SentryData: Resource = load("res://data/mobs/stone_sentry.tres")
+	_assert(float(SentryData.get("drop_chance")) == 0.5,
+		"187(sentry): drop_chance is the skeleton family's 0.5 [placeholder]")
+	var sdrops: Array = SentryData.get("drops")
+	_assert(sdrops.size() == 2
+			and str(sdrops[0].get("item").get("id")) == "masterwork_kit"
+			and float(sdrops[0].get("weight")) == 2.0
+			and str(sdrops[1].get("item").get("id")) == "upgrade_kit"
+			and float(sdrops[1].get("weight")) == 1.0,
+		"187(sentry): drop rows are masterwork_kit w2, upgrade_kit w1 (the citation's mappings)")
+	# --- Board polish: the title + the spelled danger fallback.
+	var BoardScript := load("res://scripts/station/departure_board.gd")
+	var row: String = BoardScript.row_base_text("mason_vault", 5)
+	_assert(row.begins_with("THE MASON'S VAULT"),
+		"187(board): the row title resolves 'The Mason's Vault'")
+	_assert(row.contains("Danger ⚠⚠") and not row.contains("★"),
+		"187(board): the vault's danger renders spelled 'Danger' + ⚠×2 (Titre draws no ★)")
+	# --- Fixtures: first clear (clean profile), then the repeat.
+	var cfg_path := "user://profile_local.cfg"
+	var backup := PackedByteArray()
+	if FileAccess.file_exists(cfg_path):
+		backup = FileAccess.get_file_as_bytes(cfg_path)
+	var savemgr = root.get_node("SaveManager")
+	var DungeonScene: PackedScene = load("res://scenes/dungeon/dungeon.tscn")
+	var DunScript := load("res://scripts/dungeon/dungeon.gd")
+	var saved_next: Dictionary = DunScript.get("saved_player_state")
+	var saved_theme: String = DunScript.get("next_theme_id")
+	var saved_seed: int = DunScript.get("next_seed")
+	var saved_level: int = DunScript.get("next_level_number")
+	var saved_scene: Node = current_scene
+	var rich_literal: Array = [
+		{"gold": [60, 120], "weight": 3.0},
+		{"item": "prime_shard", "weight": 2.0},
+		{"item": "vault_gold_cache", "weight": 2.0},
+		{"item": "architect_blueprint", "weight": 1.0},
+		{"item": "vault_supply_crate", "weight": 1.0},
+	]
+	var repeat_literal: Array = [
+		{"gold": [30, 60], "weight": 3.0},
+		{"item": "upgrade_kit", "weight": 2.0},
+		{"item": "prime_shard", "weight": 1.0},
+	]
+	for leg in 2:
+		if leg == 1:
+			savemgr.set_vault_cleared()
+		DunScript.set("saved_player_state", {})
+		DunScript.set("next_theme_id", "mason_vault")
+		DunScript.set("next_seed", 1)
+		DunScript.set("next_level_number", 1)
+		var dun = DungeonScene.instantiate()
+		root.add_child(dun)
+		current_scene = dun
+		DunScript.set("saved_player_state", saved_next)
+		DunScript.set("next_theme_id", saved_theme)
+		DunScript.set("next_seed", saved_seed)
+		DunScript.set("next_level_number", saved_level)
+		var dir = dun.get_node_or_null("VaultDirector")
+		if dir == null or not dir.has_method("active_loot_table"):
+			_assert(false, "187(loot): the director carries the loot tables")
+			dun.free()
+			current_scene = saved_scene
+			continue
+		if leg == 0:
+			_assert(dir.get("vault_first_clear") == true,
+				"187(loot): a clean host profile reads FIRST clear at build")
+			_assert(dir.call("active_loot_table") == rich_literal,
+				"187(loot): the first-clear table is the RICH table (literal)")
+		else:
+			_assert(dir.get("vault_first_clear") == false,
+				"187(loot): a cleared host profile reads REPEAT at build (the solo re-clear)")
+			_assert(dir.call("active_loot_table") == repeat_literal,
+				"187(loot): the repeat table is the REPEAT table (literal)")
+		_sing_rite(dir)
+		var loot := _treasure_pickups(dun)
+		_assert(loot.size() == 4,
+			"187(loot): rite completion spawns exactly 4 treasure pickups (leg %d)" % leg)
+		var ids_ok := true
+		var values_ok := true
+		for p in loot:
+			var it = p.get("item")
+			var iid := str(it.get("id"))
+			var sv := int(it.get("sell_value"))
+			if leg == 0:
+				if iid not in ["vault_gold_cache", "prime_shard", "architect_blueprint", "vault_supply_crate"]:
+					ids_ok = false
+				if iid == "vault_gold_cache" and not (sv == 250 or (sv >= 60 and sv <= 120)):
+					values_ok = false
+			else:
+				if iid not in ["vault_gold_cache", "upgrade_kit", "prime_shard"]:
+					ids_ok = false
+				if iid == "vault_gold_cache" and not (sv >= 30 and sv <= 60):
+					values_ok = false
+		_assert(ids_ok, "187(loot): every treasure pickup is from the active table (leg %d)" % leg)
+		_assert(values_ok, "187(loot): gold caches carry their row's value (leg %d)" % leg)
+		dun.free()
+		current_scene = saved_scene
+	if backup.is_empty():
+		DirAccess.remove_absolute(cfg_path)
+	else:
+		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
+		f.store_buffer(backup)
+	savemgr.load_game()
+	_assert(not savemgr.is_vault_cleared(),
+		"187: the fixture profile is restored after the loot drives")
+	print("[Playtest] Mason's Vault loot (P4) done")
 
 
 func _test_station_phase4() -> void:

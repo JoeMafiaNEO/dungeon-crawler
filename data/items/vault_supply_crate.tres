@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "vault_supply_crate"
+display_name = "Vault Supply Crate"
+description = "Provisions sealed by the masons. Use: restores 50% of max health."
+slot = 2
+rarity = 2
+world_model = "res://assets/models/kaykit/pickups/bottle_A_brown.glb"
+consumable = true
+heal_fraction = 0.5

@@ -1,0 +1,13 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/item_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "vault_gold_cache"
+display_name = "Vault Gold Cache"
+description = "A hoard sealed by the masons of the Vault. Worth 250 gold to a vendor."
+slot = 2
+rarity = 4
+world_model = "res://assets/models/kaykit/pickups/coin_stack_small.glb"
+sell_value = 250

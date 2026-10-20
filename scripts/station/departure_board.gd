@@ -56,6 +56,11 @@ func interact(player: Player) -> void:
 static func row_base_text(theme_id: String, next_level: int, party_level: int = 0) -> String:
 	var name := str(Station.theme_display_name(theme_id)).to_upper()
 	var stars := str(Station.BOARD_STARS.get(theme_id, ""))
+	if theme_id == "mason_vault":
+		# Issue #187: the board's font (Titre) draws no ★ glyph,
+		# so the vault's danger renders spelled out — one ⚠ per
+		# danger tier (BOARD_STARS stays as the placeholder data).
+		stars = "Danger " + "⚠".repeat(int(Dungeon.DANGER_TIERS.get(theme_id, 0)))
 	if theme_id == "supermarket":
 		stars += " $"
 	var rec := Station.recommended_level(theme_id, next_level)

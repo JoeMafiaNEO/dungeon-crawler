@@ -46,6 +46,31 @@ var rite_next := 0
 var lever_active := false
 var lever_pulled := false
 
+# --- Treasure loot (issue #187) ---
+## ALL values below are PLACEHOLDERS for Jesse's tuning pass
+## (tracker item 35) — built as specced, never settled. Rows are
+## {"item": id, "weight": w} for goods, or {"gold": [min, max],
+## "weight": w} for a gold row: the vault_gold_cache item itself
+## spawned through the allocated path with its value scaled
+## into the range (physical pickups, claim-credited — the
+## citation's settled mechanism). First-clear vs repeat is the
+## HOST's mason_vault_cleared flag alone, read at level build
+## before this run's rite can set it, and replicated below.
+const TREASURE_ROLLS := 4
+const LOOT_RICH: Array = [
+	{"gold": [60, 120], "weight": 3.0},
+	{"item": "prime_shard", "weight": 2.0},
+	{"item": "vault_gold_cache", "weight": 2.0},
+	{"item": "architect_blueprint", "weight": 1.0},
+	{"item": "vault_supply_crate", "weight": 1.0},
+]
+const LOOT_REPEAT: Array = [
+	{"gold": [30, 60], "weight": 3.0},
+	{"item": "upgrade_kit", "weight": 2.0},
+	{"item": "prime_shard", "weight": 1.0},
+]
+var vault_first_clear := true
+
 
 func _ready() -> void:
 	add_to_group("vault_director")
@@ -94,6 +119,62 @@ func on_vault_built(dungeon: Node) -> void:
 	while perm == [0, 1, 2, 3, 4, 5, 6, 7]:
 		perm.shuffle()
 	rpc("sync_rite_perm", perm)
+	# Treasure (#187): first clear or repeat is the HOST's own
+	# flag, read NOW — at build, before this run's rite can set
+	# it (a guest's home clear never makes the host's vault a
+	# repeat). Replicated on the P1 gate-sync discipline.
+	vault_first_clear = not SaveManager.is_vault_cleared()
+	rpc("sync_first_clear", vault_first_clear)
+
+
+## The build's first-clear read, replicated: every peer's
+## director agrees which table the treasure will draw from.
+@rpc("authority", "call_local", "reliable")
+func sync_first_clear(first: bool) -> void:
+	vault_first_clear = first
+
+
+func active_loot_table() -> Array:
+	return LOOT_RICH if vault_first_clear else LOOT_REPEAT
+
+
+## One weighted draw from a loot table (server rolls).
+func roll_loot_row(table: Array) -> Dictionary:
+	var total := 0.0
+	for row in table:
+		total += float((row as Dictionary).get("weight", 1.0))
+	var roll := randf() * total
+	for row in table:
+		roll -= float((row as Dictionary).get("weight", 1.0))
+		if roll <= 0.0:
+			return row
+	return table[table.size() - 1]
+
+
+## The treasure shower (server only): TREASURE_ROLLS draws from
+## the active table, scattered in the treasure chamber through
+## the house's allocated spawn path.
+func _spawn_treasure_loot() -> void:
+	if not multiplayer.is_server():
+		return
+	var dun = get_parent()
+	var table := active_loot_table()
+	var cache_base := 0
+	var cache_item = ItemDB.get_item("vault_gold_cache")
+	if cache_item != null:
+		cache_base = int(cache_item.get("sell_value"))
+	for i in TREASURE_ROLLS:
+		var row := roll_loot_row(table)
+		var pos := Vector3(randf_range(-3.0, 3.0), 0.8, randf_range(39.5, 42.5))
+		if row.has("gold"):
+			if cache_base <= 0:
+				continue
+			var g: Array = row["gold"]
+			var amount := randi_range(int(g[0]), int(g[1]))
+			dun.call("spawn_pickup_allocated", "vault_gold_cache", pos,
+				float(amount) / float(cache_base))
+		else:
+			dun.call("spawn_pickup_allocated", str(row.get("item", "")), pos)
 
 
 ## The rite's presentation, replicated: every peer arranges the
@@ -494,6 +575,7 @@ func set_treasure_open(open: bool) -> void:
 	treasure_open = open
 	if open:
 		_open_door("treasure_door")
+		_spawn_treasure_loot()
 
 
 func _handle_rite_stone(key: String, d: Dictionary) -> void:
