@@ -70,22 +70,6 @@ static func cipher_word(word: String, shift: int) -> String:
 	return out
 
 
-## The decoded passphrase: all eight words in order.
-static func passphrase() -> String:
-	var words: Array = []
-	for p in POEMS:
-		words.append(str(p["word"]))
-	return " ".join(words)
-
-
-## Normalize player lockbox input: uppercase, collapse whitespace, trim.
-static func normalize_key(s: String) -> String:
-	var t := s.to_upper().strip_edges()
-	for ws in ["\t", "\n", "\r"]:
-		t = t.replace(ws, " ")
-	return " ".join(t.split(" ", false))
-
-
 ## Lowest fragment index 0..7 not in collected, or -1 when complete.
 static func next_fragment(collected: Array) -> int:
 	for i in POEMS.size():

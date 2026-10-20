@@ -173,6 +173,7 @@ func _seed_profile_defaults() -> void:
 	_profile.set_value("meta", "cipher_fragments", [])
 	_profile.set_value("meta", "combos_discovered", [])
 	_profile.set_value("meta", "architect_unlocked", false)
+	_profile.set_value("meta", "mason_vault_cleared", false)
 	_profile.set_value("meta", "vault_specials", [])
 	# Issue #11 Phase 1: Ascension count (permanent +5% XP per ascension, cap +50%).
 	_profile.set_value("meta", "ascension_count", 0)
@@ -619,6 +620,20 @@ func unlock_architect() -> bool:
 	return true
 
 
+func is_vault_cleared() -> bool:
+	return bool(_profile.get_value("meta", "mason_vault_cleared", false))
+
+
+## Record a completed Mason's Vault rite (issue #186). Returns
+## true if newly set.
+func set_vault_cleared() -> bool:
+	if is_vault_cleared():
+		return false
+	_profile.set_value("meta", "mason_vault_cleared", true)
+	save_game()
+	return true
+
+
 # --- Settings ---
 func get_setting(section: String, key: String, default = null):
 	return _settings.get_value(section, key, default)
@@ -808,6 +823,8 @@ func _migrate_legacy_meta() -> void:
 			int(old.get_value("meta", key, 0))))
 	if bool(old.get_value("meta", "architect_unlocked", false)):
 		_profile.set_value("meta", "architect_unlocked", true)
+	if bool(old.get_value("meta", "mason_vault_cleared", false)):
+		_profile.set_value("meta", "mason_vault_cleared", true)
 
 
 # --- Run slots ---

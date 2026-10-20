@@ -60,7 +60,7 @@ static func build(dungeon: Node3D, director: Node) -> void:
 		_box(root, Vector3(gap * 2.0, 1.0, 0.8), Vector3(0, 3.5, z), stone, true)
 	_build_chambers(root, director)
 	# Server: the patrolled chamber's sentries are live at build.
-	director.call("spawn_live_sentries", dungeon)
+	director.call("on_vault_built", dungeon)
 
 
 static func _mat(c: Color) -> StandardMaterial3D:
@@ -206,23 +206,18 @@ static func _build_chambers(root: Node3D, director: Node) -> void:
 			{"kind": "lsocket", "item": "stone_%s" % letter.to_lower(), "letter": letter,
 				"door": "door8", "family": fam}, Vector3(14, 0, 19.5 + 1.5 * i))
 	_mech(root, director, "door8", {"kind": "door"}, Vector3(0, 0, 26))
-	# --- The rite hall: eight word-stones stand in passphrase
-	# order (props in P2 — the rite itself is P3), flanked by
-	# the two warden statues that wake only on a blown rite (P3).
+	# --- The rite hall: eight word-stones on plinths, flanked by
+	# the two warden statues. The stones' WORDS are the
+	# director's business — a per-run permutation (#186); the
+	# layout only stands the stones (positions 0-7, in two rows).
 	for i in 8:
-		var pos := Vector3(-6.0 + 4.0 * (i % 4), 0, 29.0 + 4.0 * (i / 4))
-		_box(root, Vector3(0.9, 0.9, 0.9), pos + Vector3(0, 0.45, 0), stone)
-		_box(root, Vector3(0.62, 0.5, 0.14), pos + Vector3(0, 1.12, 0), stone)
-		_label(root, str(CipherPoems.POEMS[i]["word"]), pos + Vector3(0, 1.8, 0), 48)
+		_mech(root, director, "rite_%d" % i,
+			{"kind": "rite_stone", "pos": i, "chamber": "rite"},
+			Vector3(-6.0 + 4.0 * (i % 4), 0, 29.0 + 4.0 * (i / 4)))
 	_statue(root, director, "warden_a", "rite", "vault_warden", Vector3(-8, 0, 32))
 	_statue(root, director, "warden_b", "rite", "vault_warden", Vector3(8, 0, 32))
 	_mech(root, director, "treasure_door", {"kind": "door"}, Vector3(0, 0, 38))
-	# --- Treasure chamber: the departure lever stands here,
-	# present but inert in P2 (P3 wires its activation).
-	var lever := Node3D.new()
-	lever.name = "VaultLever"
-	lever.position = Vector3(0, 0, 41)
-	root.add_child(lever)
-	_box(lever, Vector3(0.7, 0.9, 0.7), Vector3(0, 0.45, 0), stone)
-	var arm := _box(lever, Vector3(0.12, 1.1, 0.12), Vector3(0, 1.25, 0), _mat(Color(0.55, 0.48, 0.30)))
-	arm.rotation.z = 0.6
+	# --- Treasure chamber: the departure lever (#186) — a real
+	# mechanism, inert until the rite activates it.
+	var lever_node := _mech(root, director, "lever", {"kind": "lever"}, Vector3(0, 0, 41))
+	lever_node.name = "VaultLever"

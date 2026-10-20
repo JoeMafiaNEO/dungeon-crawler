@@ -19,6 +19,7 @@ var _panel: MeshInstance3D = null
 var _body: StaticBody3D = null
 var _label: Label3D = null
 var _ring: MeshInstance3D = null
+var _arm: MeshInstance3D = null
 var _fill_visual: MeshInstance3D = null
 var _mat: StandardMaterial3D = null
 var _home_pos := Vector3.ZERO
@@ -72,6 +73,10 @@ func prompt_text() -> String:
 			return "Put the %d-weight on the pan" % int(def.get("weight", 0))
 		"plate":
 			return "Press the plate"
+		"rite_stone":
+			return "Sound the word-stone"
+		"lever":
+			return "Pull the departure lever"
 	return ""
 
 
@@ -110,6 +115,18 @@ func apply_state(state: Dictionary) -> void:
 				_mat.emission_enabled = bool(state.get("rung", false))
 		"statue":
 			visible = not bool(state.get("woken", false))
+		"rite_stone":
+			# The word comes from the director's state (the
+			# per-run permutation); a sung stone glows.
+			if _label != null:
+				_label.text = str(state.get("word", ""))
+			if _mat != null:
+				_mat.emission_enabled = bool(state.get("lit", false))
+		"lever":
+			if _mat != null:
+				_mat.emission_enabled = bool(state.get("active", false))
+			if _arm != null:
+				_arm.rotation_degrees.x = -38.0 if bool(state.get("pulled", false)) else 0.0
 
 
 # --- Construction (authored by VaultLayout's defs) ---
@@ -222,6 +239,23 @@ func _build_visuals() -> void:
 			add_child(mi)
 			# The floor inlay shows the order: this plate's step.
 			_mk_label(str(def.get("step_roman", "")), 0.35, 40)
+		"rite_stone":
+			# A word-stone on a plinth; its label is set from the
+			# director's state (the per-run permutation, #186).
+			_mk_box(Vector3(0.9, 0.9, 0.9), Vector3(0, 0.45, 0), dark)
+			_mat = _stone_mat(Color(0.48, 0.45, 0.40))
+			_mat.emission = Color(0.95, 0.78, 0.35)
+			_mat.emission_energy_multiplier = 1.4
+			_panel = _mk_box(Vector3(0.66, 0.85, 0.14), Vector3(0, 1.35, 0), _mat)
+			_label = _mk_label("", 2.05, 48)
+		"lever":
+			# The departure lever (#186): brass arm on a stone
+			# base; it glows once the rite activates it.
+			_mk_box(Vector3(0.8, 0.5, 0.8), Vector3(0, 0.25, 0), dark)
+			_mat = _stone_mat(Color(0.55, 0.48, 0.30))
+			_mat.emission = Color(0.95, 0.78, 0.35)
+			_mat.emission_energy_multiplier = 1.2
+			_arm = _mk_box(Vector3(0.14, 1.1, 0.14), Vector3(0, 1.0, 0), _mat)
 		"statue":
 			# A stone figure on a plinth (the mob's own sprite,
 			# stone-tinted); the director hides it on wake.

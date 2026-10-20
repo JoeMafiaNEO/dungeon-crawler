@@ -49,6 +49,7 @@ func _run() -> void:
 	_test_mason_vault_gate_182()
 	_test_turret_permanence_183()
 	_test_mason_vault_level_185()
+	_test_mason_vault_rite_186()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -4377,6 +4378,192 @@ func _test_mason_vault_level_185() -> void:
 	print("[Playtest] Mason's Vault level (P2) done")
 
 
+## Issue #186 — the Mason's Vault, Phase 3: THE RITE + the
+## completion grants. The eight word-stones present in a per-run
+## server-chosen permutation; singing the passphrase IN ORDER
+## (wherever each word stands) completes the rite: the treasure
+## door opens, the departure lever activates, and the
+## rite_completed broadcast runs the OLD lockbox success tail on
+## each peer's OWN profile. A wrong word resets the rite and the
+## room answers — the wardens first; once they are dead, a fresh
+## sentry pair. Expectations derive from the director's own
+## permutation + the CipherPoems rows, never copies.
+func _mobs_of(dun: Node, type_id: String) -> Array:
+	var out: Array = []
+	var mobs_node: Node = dun.get_node("Mobs")
+	for m in mobs_node.get_children():
+		var d = m.get("data")
+		if d != null and str(d.get("id")) == type_id:
+			out.append(m)
+	return out
+
+
+func _test_mason_vault_rite_186() -> void:
+	print("[Playtest] Mason's Vault rite (P3, #186)...")
+	# The completion handler writes the REAL profile (the grants
+	# are the point): back it up and restore it at the end.
+	var cfg_path := "user://profile_local.cfg"
+	var backup := PackedByteArray()
+	if FileAccess.file_exists(cfg_path):
+		backup = FileAccess.get_file_as_bytes(cfg_path)
+	var savemgr = root.get_node("SaveManager")
+	# Guard the not-yet-built accessor with has_method + a
+	# short-circuit so the red run fails these asserts instead of
+	# erroring on the call (the section's later drives sit behind
+	# the rite_0 guard for the same reason).
+	var grants_ready: bool = savemgr.has_method("is_vault_cleared")
+	_assert(not savemgr.is_architect_unlocked(),
+		"186(rite): the fixture profile starts with the Architect locked")
+	_assert(grants_ready and not savemgr.is_vault_cleared(),
+		"186(rite): the fixture profile starts with the vault uncleared")
+	var DungeonScene: PackedScene = load("res://scenes/dungeon/dungeon.tscn")
+	var DunScript := load("res://scripts/dungeon/dungeon.gd")
+	var saved_next: Dictionary = DunScript.get("saved_player_state")
+	var saved_theme: String = DunScript.get("next_theme_id")
+	var saved_seed: int = DunScript.get("next_seed")
+	var saved_level: int = DunScript.get("next_level_number")
+	DunScript.set("saved_player_state", {})
+	DunScript.set("next_theme_id", "mason_vault")
+	DunScript.set("next_seed", 1)
+	DunScript.set("next_level_number", 1)
+	var saved_scene: Node = current_scene
+	var dun = DungeonScene.instantiate()
+	root.add_child(dun)
+	current_scene = dun
+	DunScript.set("saved_player_state", saved_next)
+	DunScript.set("next_theme_id", saved_theme)
+	DunScript.set("next_seed", saved_seed)
+	DunScript.set("next_level_number", saved_level)
+	var dir = dun.get_node_or_null("VaultDirector")
+	if dir == null or not (dir.get("defs") as Dictionary).has("rite_0"):
+		_assert(false, "186(rite): the director carries the rite (rite_0 registered)")
+		dun.free()
+		current_scene = saved_scene
+		if backup.is_empty():
+			DirAccess.remove_absolute(cfg_path)
+		else:
+			var fb := FileAccess.open(cfg_path, FileAccess.WRITE)
+			fb.store_buffer(backup)
+		savemgr.load_game()
+		return
+	var mobs_node: Node = dun.get_node("Mobs")
+	# --- The presentation: a real permutation, never the order.
+	var perm: Array = dir.get("rite_perm")
+	_assert(perm.size() == 8, "186(rite): the permutation covers all eight stones")
+	var sorted_perm := perm.duplicate()
+	sorted_perm.sort()
+	_assert(sorted_perm == [0, 1, 2, 3, 4, 5, 6, 7],
+		"186(rite): the permutation is a true permutation of the eight words")
+	_assert(perm != [0, 1, 2, 3, 4, 5, 6, 7],
+		"186(rite): the presentation is NOT passphrase order")
+	var labels_ok := true
+	for pos in 8:
+		var st: Dictionary = dir.call("mech_state", "rite_%d" % pos)
+		if str(st.get("word", "")) != str(CipherPoems.POEMS[int(perm[pos])]["word"]):
+			labels_ok = false
+		if bool(st.get("lit", true)):
+			labels_ok = false
+	_assert(labels_ok,
+		"186(rite): each stone shows its permuted word, all dim at the start")
+	var pos_of := {}
+	for pos in 8:
+		pos_of[int(perm[pos])] = pos
+	var sing = func(poem_idx: int) -> void:
+		dir.call("request_interact", "rite_%d" % int(pos_of[poem_idx]), null)
+	# --- The lever is inert before the rite.
+	dir.call("request_interact", "lever", null)
+	_assert(not bool(dir.call("mech_state", "lever").get("pulled", true))
+			and not bool(dun.get("level_cleared")),
+		"186(rite): the departure lever is inert before the rite")
+	# --- Progress, then a wrong word at 3: reset + the wardens.
+	sing.call(0)
+	sing.call(1)
+	sing.call(2)
+	_assert(int(dir.get("rite_next")) == 3,
+		"186(rite): three words in order advance the rite to 3")
+	_assert(bool(dir.call("mech_state", "rite_%d" % int(pos_of[0])).get("lit", false)),
+		"186(rite): a sung stone lights")
+	sing.call(5)
+	_assert(int(dir.get("rite_next")) == 0,
+		"186(rite): a wrong word resets the rite to 0")
+	_assert(bool(dir.call("mech_state", "warden_a").get("woken", false))
+			and _mobs_of(dun, "vault_warden").size() == 2,
+		"186(rite): the blow wakes the two vault wardens")
+	# --- Wrong again while they live: nothing additional.
+	sing.call(0)
+	sing.call(1)
+	sing.call(2)
+	var mobs_before := mobs_node.get_child_count()
+	sing.call(6)
+	_assert(int(dir.get("rite_next")) == 0 and mobs_node.get_child_count() == mobs_before,
+		"186(rite): a second blow while the wardens live adds nothing")
+	# --- The wardens die; the next blow is answered by sentries.
+	for w in _mobs_of(dun, "vault_warden"):
+		(w as Node).free()
+	sing.call(0)
+	sing.call(1)
+	sing.call(7)
+	_assert(int(dir.get("rite_next")) == 0,
+		"186(rite): the rite resets again after the wardens fall")
+	_assert(_mobs_of(dun, "stone_sentry").size() == 4,
+		"186(rite): with the wardens dead, a fresh sentry pair answers (2 patrol + 2 answer)")
+	# --- The full song: completion.
+	for k in 8:
+		sing.call(k)
+	_assert(int(dir.get("rite_next")) == 8,
+		"186(rite): eight words in order complete the rite")
+	_assert(bool(dir.get("treasure_open"))
+			and bool(dir.call("mech_state", "treasure_door").get("open", false)),
+		"186(rite): completion opens the treasure door (the P2 flag)")
+	_assert(bool(dir.call("mech_state", "lever").get("active", false)),
+		"186(rite): completion activates the departure lever")
+	# --- The grants landed on THIS peer's own profile (the
+	# broadcast's call_local handler ran the lockbox tail).
+	_assert(savemgr.is_architect_unlocked(),
+		"186(grants): rite completion unlocks the Architect on the local profile")
+	_assert(bool(savemgr.get_achievement_progress("drafted").get("done", false)),
+		"186(grants): rite completion grants the drafted achievement")
+	_assert(savemgr.is_vault_cleared(),
+		"186(grants): rite completion sets mason_vault_cleared")
+	# A second broadcast is idempotent (the already-unlocked path).
+	dir.call("rite_completed")
+	_assert(savemgr.is_architect_unlocked() and savemgr.is_vault_cleared(),
+		"186(grants): a repeat rite_completed is idempotent, no error")
+	# --- The lever now works: the level objective completes.
+	dir.call("request_interact", "lever", null)
+	_assert(bool(dir.call("mech_state", "lever").get("pulled", false))
+			and bool(dun.get("level_cleared")),
+		"186(rite): pulling the activated lever completes the level objective")
+	dun.free()
+	current_scene = saved_scene
+	# --- Removal drive: a supermarket builds with NO lockbox.
+	DunScript.set("saved_player_state", {})
+	DunScript.set("next_theme_id", "supermarket")
+	DunScript.set("next_seed", 1)
+	DunScript.set("next_level_number", 1)
+	var dun2 = DungeonScene.instantiate()
+	root.add_child(dun2)
+	current_scene = dun2
+	DunScript.set("saved_player_state", saved_next)
+	DunScript.set("next_theme_id", saved_theme)
+	DunScript.set("next_seed", saved_seed)
+	DunScript.set("next_level_number", saved_level)
+	_assert(get_nodes_in_group("cipher_lockbox").is_empty(),
+		"186(removal): no cipher_lockbox group member exists after a supermarket build")
+	dun2.free()
+	current_scene = saved_scene
+	# Restore the profile the grants wrote, and prove it.
+	if backup.is_empty():
+		DirAccess.remove_absolute(cfg_path)
+	else:
+		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
+		f.store_buffer(backup)
+	savemgr.load_game()
+	_assert(not savemgr.is_architect_unlocked() and not savemgr.is_vault_cleared(),
+		"186: the fixture profile is restored after the rite drives")
+	print("[Playtest] Mason's Vault rite (P3) done")
+
+
 func _test_station_phase4() -> void:
 	print("[Playtest] Train station phase 4 (vendor + heal pad)...")
 	var StationScript := load("res://scripts/station/station.gd")
@@ -8388,7 +8575,11 @@ func _test_cipher_unlock() -> void:
 	print("[Playtest] Mason's cipher unlock...")
 	_assert(load("res://scripts/data/cipher_poems.gd") != null, "CipherPoems loads")
 	_assert(load("res://scripts/items/cipher_plaque.gd") != null, "CipherPlaque loads")
-	_assert(load("res://scripts/items/cipher_lockbox.gd") != null, "CipherLockbox loads")
+	# Issue #186 (P3 removal): the lockbox is GONE — the rite in
+	# the Mason's Vault replaced it. Labeled source pins: the
+	# deleted names stand at zero references in scripts/.
+	_assert(not FileAccess.file_exists("res://scripts/items/cipher_lockbox.gd"),
+		"186(removal): cipher_lockbox.gd is deleted")
 	# Caesar vectors from the spec.
 	_assert(CipherPoems.cipher_word("THE", 3) == "WKH", "cipher THE+3=WKH")
 	_assert(CipherPoems.cipher_word("QUIET", 5) == "VZNJY", "cipher QUIET+5=VZNJY")
@@ -8405,10 +8596,12 @@ func _test_cipher_unlock() -> void:
 		_assert(CipherPoems.cipher_word(str(p["word"]), int(p["shift"])) == str(p["cipher"]),
 			"poem cipher self-consistent: " + str(p["word"]))
 	_assert(CipherPoems.POEMS.size() == 8, "8 cipher poems")
-	_assert(CipherPoems.passphrase() == "THE QUIET STONE REMEMBERS EVERY HAND THAT BUILDS",
-		"passphrase decodes in order")
-	_assert(CipherPoems.normalize_key("  the\tQUIET\nstone  ") == "THE QUIET STONE",
-		"normalize_key collapses whitespace")
+	# Issue #186: passphrase() and normalize_key() died with the
+	# lockbox — the words in order are now the RITE's sequence,
+	# pinned live from the rows in the vault rite section.
+	var cpsrc := FileAccess.get_file_as_string("res://scripts/data/cipher_poems.gd")
+	_assert(not cpsrc.contains("func passphrase") and not cpsrc.contains("func normalize_key"),
+		"186(removal): passphrase()/normalize_key() are deleted from CipherPoems")
 	_assert(CipherPoems.next_fragment([]) == 0, "next_fragment starts at 0")
 	_assert(CipherPoems.next_fragment([0, 1, 3]) == 2, "next_fragment finds lowest gap")
 	_assert(CipherPoems.next_fragment([0, 1, 2, 3, 4, 5, 6, 7]) == -1, "next_fragment -1 when complete")
@@ -8438,73 +8631,35 @@ func _test_cipher_unlock() -> void:
 	_assert(mgr2.is_architect_unlocked(), "architect unlock persists")
 	mgr.free()
 	mgr2.free()
-	# Issue #168: drive the REAL lockbox popup through its Unlock
-	# BUTTON's pressed signal — never a direct handler call. The
-	# pressed+bind arity break shipped because existence asserts
-	# can't see a dead click; only the signal can.
-	var savemgr = root.get_node("SaveManager")
-	_assert(not savemgr.is_architect_unlocked(),
-		"168: architect locked before the button drive")
-	var HudScene2: PackedScene = load("res://scenes/ui/hud.tscn")
-	var hud2 = HudScene2.instantiate()
-	root.add_child(hud2)
-	hud2.show_lockbox_popup()
-	var popup2 = hud2.get("_cipher_popup")
-	_assert(popup2 != null, "168: lockbox popup opens")
-	var entries2: Array = popup2.find_children("", "LineEdit", true, false)
-	_assert(entries2.size() == 1, "168: lockbox popup builds one entry field")
-	var entry2 = entries2[0]
-	var submit2: Button = null
-	for b in popup2.find_children("", "Button", true, false):
-		if b.text == "Unlock":
-			submit2 = b
-	_assert(submit2 != null, "168: lockbox popup builds the Unlock button")
-	var feedback2 = entry2.get_parent().get_child(entry2.get_index() + 1) as Label
-	_assert(feedback2 != null, "168: lockbox popup builds the feedback label")
-	# Enter with a wrong phrase: the working path fires feedback.
-	entry2.text = "THE LOUD PEBBLE FORGETS NOTHING"
-	entry2.text_submitted.emit(entry2.text)
-	_assert(feedback2.text.begins_with("The lockbox clicks shut."),
-		"168: Enter with a wrong phrase fires the refusal feedback")
-	feedback2.text = ""
-	# The button with the same wrong phrase: the same feedback (the
-	# #168 regression — this click used to die silently at emit).
-	submit2.pressed.emit()
-	_assert(feedback2.text.begins_with("The lockbox clicks shut."),
-		"168: Unlock button with a wrong phrase fires the refusal feedback")
-	_assert(not savemgr.is_architect_unlocked(),
-		"168: wrong phrase via the button does not unlock")
-	_assert(bool(hud2.get("cipher_popup_open")),
-		"168: popup stays open after a wrong button submit")
-	# The button with the mason's key: unlocks and closes.
-	entry2.text = "THE QUIET STONE REMEMBERS EVERY HAND THAT BUILDS"
-	submit2.pressed.emit()
-	_assert(savemgr.is_architect_unlocked(),
-		"168: Unlock button with the correct phrase unlocks the Architect")
-	_assert(not bool(hud2.get("cipher_popup_open")),
-		"168: popup closes after a correct button submit")
-	# Immediate free, not queue_free: the success toast's tween is
-	# still live, and a deferred free lets it reach engine teardown.
-	hud2.free()
+	# Issue #186: the #168 lockbox button drive is retired with
+	# the lockbox itself — its intent (the correct performance
+	# GRANTS the class + the drafted achievement) is re-homed in
+	# the vault rite section's completion-handler pins. What
+	# remains here is the profile restore the meta block needs.
 	if backup.is_empty():
 		DirAccess.remove_absolute(cfg_path)
 	else:
 		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
 		f.store_buffer(backup)
-	# The button drive ran against the real SaveManager autoload:
-	# resync its in-memory profile with the restored file so the
-	# unlock above cannot leak into later sections.
+	# The meta drives ran against the shared profile file: resync
+	# the autoload's in-memory profile with the restored file.
+	var savemgr = root.get_node("SaveManager")
 	savemgr.load_game()
 	_assert(not savemgr.is_architect_unlocked(),
-		"168: autoload profile restored after the button drive")
-	# Wiring: spawns, HUD popups, picker gating.
+		"186: autoload profile restored after the meta drives")
+	# Wiring: spawns, HUD popups, picker gating — and the removal.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	_assert(dsrc.contains("func spawn_cipher_plaque"), "spawn_cipher_plaque RPC exists")
-	_assert(dsrc.contains("func spawn_cipher_lockbox"), "spawn_cipher_lockbox RPC exists")
+	_assert(not dsrc.contains("spawn_cipher_lockbox"),
+		"186(removal): spawn_cipher_lockbox is deleted from dungeon.gd")
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
 	_assert(hsrc.contains("func show_poem_popup"), "show_poem_popup exists")
-	_assert(hsrc.contains("func show_lockbox_popup"), "show_lockbox_popup exists")
+	_assert(not hsrc.contains("show_lockbox_popup") and not hsrc.contains("_on_lockbox_submit"),
+		"186(removal): the lockbox popup pair is deleted from hud.gd")
 	_assert(hsrc.contains("func show_toast"), "show_toast alias exists")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(not psrc.contains("\"cipher_lockbox\""),
+		"186(removal): the cipher_lockbox scan entry is deleted from player.gd")
 	var msrc := FileAccess.get_file_as_string("res://scripts/ui/main_menu.gd")
 	_assert(msrc.contains("is_architect_unlocked"), "title picker gated on unlock")
 

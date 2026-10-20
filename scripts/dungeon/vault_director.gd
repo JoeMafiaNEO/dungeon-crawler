@@ -33,7 +33,18 @@ var wstone_on_pan: Dictionary = {} # weigh stone key -> bool
 var plate_next: Dictionary = {}    # plates family key -> next step (1-based)
 var statue_woken: Dictionary = {}  # statue key -> bool
 var wake_latched: Dictionary = {}  # chamber key -> bool
-var treasure_open := false         # P3 rite drives this (seam below)
+var treasure_open := false         # the rite drives this (below)
+
+# --- The rite (issue #186) ---
+## The eight word-stones present in a per-run permutation the
+## server picks at build (rite_perm: stone POSITION -> poem
+## index), replicated so every screen agrees. _rite_next is the
+## next word's POEM INDEX: the passphrase sung in order, wherever
+## each word stands.
+var rite_perm: Array = []
+var rite_next := 0
+var lever_active := false
+var lever_pulled := false
 
 
 func _ready() -> void:
@@ -64,8 +75,9 @@ func register_mechanism(key: String, p_def: Dictionary, node: Node) -> void:
 
 ## Server only, called once by VaultLayout after registration:
 ## chambers whose sentries are LIVE from the start (the patrolled
-## carry room) spawn through the dungeon's standard mob path.
-func spawn_live_sentries(dungeon: Node) -> void:
+## carry room) spawn through the dungeon's standard mob path, and
+## the rite's presentation is chosen.
+func on_vault_built(dungeon: Node) -> void:
 	if not multiplayer.is_server():
 		return
 	for key in defs:
@@ -75,6 +87,31 @@ func spawn_live_sentries(dungeon: Node) -> void:
 			_sync(key)
 			dungeon.call("server_spawn_mob", str(d.get("mob", "stone_sentry")),
 				(nodes[key] as Node3D).global_position)
+	# The rite's presentation: a shuffled permutation of the
+	# eight words — never passphrase order itself.
+	var perm := [0, 1, 2, 3, 4, 5, 6, 7]
+	perm.shuffle()
+	while perm == [0, 1, 2, 3, 4, 5, 6, 7]:
+		perm.shuffle()
+	rpc("sync_rite_perm", perm)
+
+
+## The rite's presentation, replicated: every peer arranges the
+## word-stones by the same permutation.
+@rpc("authority", "call_local", "reliable")
+func sync_rite_perm(p_perm: Array) -> void:
+	rite_perm = p_perm.duplicate()
+	for key in defs:
+		if str(defs[key].get("kind", "")) == "rite_stone":
+			_sync_local(key)
+
+
+## Render one mechanism from local state WITHOUT broadcasting
+## (the client half of a sync; the server uses _sync).
+func _sync_local(key: String) -> void:
+	var n = nodes.get(key)
+	if n != null and is_instance_valid(n):
+		n.call("apply_state", mech_state(key))
 
 
 # --- State composition (identical on server and clients) ---
@@ -131,6 +168,15 @@ func mech_state(key: String) -> Dictionary:
 			return {"rung": int(plate_next.get(str(d.get("plates", "")), 1)) > int(d.get("step", 0))}
 		"statue":
 			return {"woken": bool(statue_woken.get(key, false))}
+		"rite_stone":
+			var poem_idx := -1
+			if rite_perm.size() == 8:
+				poem_idx = int(rite_perm[int(d.get("pos", 0))])
+			return {"word": str(_poem(poem_idx)["word"]) if poem_idx >= 0 else "",
+				"lit": poem_idx >= 0 and poem_idx < rite_next,
+				"rite_next": rite_next}
+		"lever":
+			return {"active": lever_active, "pulled": lever_pulled}
 	return {}
 
 
@@ -162,14 +208,19 @@ func sync_mech(key: String, state: Dictionary) -> void:
 				plate_next[str(d.get("plates", ""))] = int(state["next"])
 		"statue":
 			statue_woken[key] = bool(state.get("woken", false))
+		"rite_stone":
+			rite_next = int(state.get("rite_next", rite_next))
+		"lever":
+			lever_active = bool(state.get("active", lever_active))
+			lever_pulled = bool(state.get("pulled", lever_pulled))
 	var n = nodes.get(key)
 	if n != null and is_instance_valid(n):
 		n.call("apply_state", mech_state(key))
 
 
 @rpc("authority", "call_local", "reliable")
-func sync_fx(sfx_name: String, pos: Vector3) -> void:
-	AudioManager.sfx(sfx_name, pos)
+func sync_fx(sfx_name: String, pos: Vector3, pitch: float = 1.0) -> void:
+	AudioManager.sfx(sfx_name, pos, pitch)
 
 
 ## Item syncs carry the carrier so every peer can dress the
@@ -253,6 +304,10 @@ func _handle(key: String, sender: int) -> void:
 			_handle_weigh_stone(key, d)
 		"plate":
 			_handle_plate(key, d, sender)
+		"rite_stone":
+			_handle_rite_stone(key, d)
+		"lever":
+			_handle_lever(key)
 
 
 func _open_door(door_key: String) -> void:
@@ -432,10 +487,122 @@ func _handle_plate(key: String, d: Dictionary, sender: int) -> void:
 		rpc("sync_fx", "door_lock", (nodes[key] as Node3D).global_position)
 
 
-# --- P3 seams (rite / treasure), present but unwired in P2 ---
+# --- The rite (issue #186) ---
 
-## The rite (P3) opens the treasure chamber through here.
+## The rite opens the treasure chamber through here.
 func set_treasure_open(open: bool) -> void:
 	treasure_open = open
 	if open:
 		_open_door("treasure_door")
+
+
+func _handle_rite_stone(key: String, d: Dictionary) -> void:
+	if rite_next >= 8 or rite_perm.size() != 8:
+		return
+	var poem_idx := int(rite_perm[int(d.get("pos", 0))])
+	var n = nodes.get(key)
+	var pos: Vector3 = (n as Node3D).global_position \
+		if n != null and is_instance_valid(n) else Vector3.ZERO
+	if poem_idx == rite_next:
+		rite_next += 1
+		_sync(key)
+		# The chime ladder climbs with the song.
+		rpc("sync_fx", "board_chime", pos, 1.0 + 0.07 * float(rite_next))
+		if rite_next >= 8:
+			_complete_rite()
+	else:
+		_blow_rite()
+
+
+## A wrong word: the song restarts and the room answers — the
+## wardens first; once they are dead, a fresh sentry pair at
+## their posts. An answer still standing is never doubled, and
+## there is no lockout: the rite can always be sung again.
+func _blow_rite() -> void:
+	rite_next = 0
+	for key in defs:
+		if str(defs[key].get("kind", "")) == "rite_stone":
+			_sync(key)
+	if not bool(statue_woken.get("warden_a", false)):
+		_wake_chamber("rite")
+		return
+	if _rite_answer_alive():
+		return
+	var dun = get_parent()
+	for key in ["warden_a", "warden_b"]:
+		var st = nodes.get(key)
+		if st != null and is_instance_valid(st):
+			dun.call("server_spawn_mob", "stone_sentry", (st as Node3D).global_position)
+
+
+## Is the room's current answer still alive — a warden anywhere,
+## or an answer sentry standing at a warden's post?
+func _rite_answer_alive() -> bool:
+	var posts: Array = []
+	for key in ["warden_a", "warden_b"]:
+		var st = nodes.get(key)
+		if st != null and is_instance_valid(st):
+			posts.append((st as Node3D).global_position)
+	var mobs_node: Node = get_parent().get_node_or_null("Mobs")
+	if mobs_node == null:
+		return false
+	for m in mobs_node.get_children():
+		var md = m.get("data")
+		if md == null:
+			continue
+		var mid := str(md.get("id"))
+		if mid == "vault_warden":
+			return true
+		if mid == "stone_sentry":
+			for wp in posts:
+				if (m as Node3D).global_position.distance_to(wp) < 3.0:
+					return true
+	return false
+
+
+## The eighth word lands: the treasure opens, the departure
+## lever activates, and the completion broadcasts — every peer's
+## handler runs the grants on its OWN profile.
+func _complete_rite() -> void:
+	set_treasure_open(true)
+	lever_active = true
+	_sync("lever")
+	rpc("rite_completed")
+
+
+## The Mason's Vault completion (issue #186): each peer performs
+## the OLD lockbox success tail on its own profile, verbatim —
+## unlock_architect() + the drafted achievement + the unlock cue
+## + the fresh/already toasts — plus the vault-cleared flag. The
+## server writes nobody's profile; presence is the eligibility.
+@rpc("any_peer", "call_local", "reliable")
+func rite_completed() -> void:
+	var fresh := SaveManager.unlock_architect()
+	SaveManager.unlock_achievement("drafted")
+	SaveManager.set_vault_cleared()
+	AudioManager.sfx("unlock")
+	var dun = get_parent()
+	var hud = dun.get("_local_hud") if dun != null else null
+	if hud != null:
+		if fresh:
+			hud.toast("SECRET CLASS UNLOCKED: Architect")
+			var prog: Dictionary = SaveManager.get_achievement_progress("drafted")
+			if not prog.is_empty():
+				hud.show_toast("ACHIEVEMENT: %s — %s" % [prog["name"], prog["desc"]])
+		else:
+			hud.toast("The Architect is already unlocked.")
+
+
+## The departure lever: inert until the rite completes (a plain
+## refusal, no state change), then one pull finishes the level
+## through the standard objective path — gains secured, and the
+## annex departure rides from there.
+func _handle_lever(key: String) -> void:
+	if lever_pulled:
+		return
+	if not lever_active:
+		rpc("sync_fx", "door_lock", (nodes[key] as Node3D).global_position)
+		return
+	lever_pulled = true
+	_sync(key)
+	get_parent().rpc("complete_level_objective")

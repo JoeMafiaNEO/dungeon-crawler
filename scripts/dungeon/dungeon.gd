@@ -523,12 +523,13 @@ func _ready() -> void:
 		market_cash_goal = 500 + mkt_cycle * 250
 		market_earned_visit = 0
 		wave_state = WaveState.CLEARED  # skip wave logic
-		# Spawn checkout, potion shop, and cipher lockbox immediately.
+		# Spawn checkout and potion shop immediately. (The brass
+		# lockbox that stood near the checkout is gone — issue
+		# #186 retired it for the Mason's Vault rite; the plaza
+		# spot stands empty.)
 		if multiplayer.is_server():
 			_spawn_checkout()
 			_spawn_potion_shop()
-			# Mason's Cipher: the lockbox sits near the checkout (any cycle).
-			rpc("spawn_cipher_lockbox", _plaza_pos() + Vector3(9, 0, 0))
 	# Mason's Cipher: one parchment note per dungeon level.
 	if multiplayer.is_server() and not is_supermarket and not is_warlord:
 		rpc("spawn_cipher_plaque", _cipher_plaque_pos())
@@ -3024,15 +3025,6 @@ func spawn_cipher_plaque(pos: Vector3) -> void:
 	plaque.name = "CipherPlaque"
 	plaque.position = pos
 	$Pickups.add_child(plaque)
-
-
-## Mason's Cipher: brass lockbox on the supermarket level.
-@rpc("any_peer", "call_local")
-func spawn_cipher_lockbox(pos: Vector3) -> void:
-	var box := CipherLockbox.new()
-	box.name = "CipherLockbox"
-	box.position = pos
-	$Pickups.add_child(box)
 
 
 ## Random floor spot for the cipher note, away from the spawn area.
