@@ -13,7 +13,10 @@ const TRAP_AOE := 2.5
 const DEMOLISH_RADIUS := 3.0
 
 const STATS := {
-	"sentry_turret": {"hp": 100.0, "life": 60.0},
+	# Issue #183 (Jesse's ruling): the sentry turret is PERMANENT —
+	# a non-positive life never counts down; only damage or
+	# Demolish removes it. The other four stay timed, as listed.
+	"sentry_turret": {"hp": 100.0, "life": 0.0},
 	"bulwark_wall": {"hp": 150.0, "life": 20.0},
 	"spike_trap": {"hp": 60.0, "life": 60.0},
 	"keystone": {"hp": 200.0, "life": 45.0},
@@ -182,10 +185,14 @@ func _build_keystone() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	_life -= delta
-	if _life <= 0.0:
-		_expire()
-		return
+	# Lifetime countdown — timed structures only. A non-positive
+	# life is PERMANENT (the sentry turret, #183): it never counts
+	# down and never expires. The timed types' path is unchanged.
+	if _life > 0.0:
+		_life -= delta
+		if _life <= 0.0:
+			_expire()
+			return
 	match structure_id:
 		"sentry_turret":
 			_tick_turret(delta)

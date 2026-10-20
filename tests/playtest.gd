@@ -47,6 +47,7 @@ func _run() -> void:
 	_test_own_faction_attack_181()
 	_test_hp_bar_migration_179()
 	_test_mason_vault_gate_182()
+	_test_turret_permanence_183()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -4100,6 +4101,65 @@ func _test_mason_vault_gate_182() -> void:
 	print("[Playtest] Mason's Vault gate (P1) done")
 
 
+func _test_turret_permanence_183() -> void:
+	print("[Playtest] Sentry turret permanence...")
+	# Issue #183 (Jesse's ruling): the sentry turret is PERMANENT —
+	# removed only by damage or Demolish. The mechanism is a
+	# non-positive STATS life; the four timed structures keep
+	# their exact lifetimes and their countdown path. Drives call
+	# _physics_process directly with synthetic deltas (the suite
+	# is synchronous; no real frames pass between the drives).
+	var StructureScript = load("res://scripts/combat/structure.gd")
+	var stats: Dictionary = StructureScript.STATS
+	_assert(float(stats["sentry_turret"]["life"]) <= 0.0,
+		"183(a0): the turret's table life is the permanent sentinel (non-positive)")
+	_assert(float(stats["bulwark_wall"]["life"]) == 20.0
+			and float(stats["spike_trap"]["life"]) == 60.0
+			and float(stats["keystone"]["life"]) == 45.0
+			and float(stats["mud_mound"]["life"]) == 25.0,
+		"183(b0): the timed four keep their exact lifetimes (20/60/45/25)")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var saved_scene = current_scene
+	current_scene = holder
+	# --- (a) The turret outlives its old 60 s, at full function.
+	var tur = StructureScript.new()
+	tur.setup("sentry_turret", 1)
+	holder.add_child(tur)
+	tur.call("_physics_process", 61.0)
+	_assert(not tur.is_queued_for_deletion(),
+		"183(a1): the turret is alive past its old 60 s expiry")
+	_assert(float(tur.get("hp")) == 100.0,
+		"183(a2): its HP is intact past the old expiry")
+	var ft := float(tur.get("_fire_tick"))
+	_assert(ft > 0.0,
+		"183(a3): the turret tick ran past the old expiry and re-armed its cooldown")
+	tur.call("_physics_process", 0.5)
+	_assert(absf(float(tur.get("_fire_tick")) - (ft - 0.5)) < 0.001,
+		"183(a4): the cooldown is cycling — the turret is operating, not frozen")
+	tur.call("_physics_process", 120.0)
+	_assert(not tur.is_queued_for_deletion(),
+		"183(a5): the turret is still alive at 180 s+ of driven time")
+	holder.remove_child(tur)
+	tur.free()
+	# --- (b) The wall still expires on schedule.
+	var wall = StructureScript.new()
+	wall.setup("bulwark_wall", 1)
+	holder.add_child(wall)
+	wall.call("_physics_process", 19.0)
+	_assert(not wall.is_queued_for_deletion(),
+		"183(b1): the wall is alive at 19 s")
+	wall.call("_physics_process", 1.5)
+	_assert(wall.is_queued_for_deletion(),
+		"183(b2): the wall still expires on schedule (20 s life)")
+	holder.remove_child(wall)
+	wall.free()
+	current_scene = saved_scene
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] Sentry turret permanence done")
+
+
 func _test_station_phase4() -> void:
 	print("[Playtest] Train station phase 4 (vendor + heal pad)...")
 	var StationScript := load("res://scripts/station/station.gd")
@@ -8058,7 +8118,7 @@ func _test_architect() -> void:
 	var stats: Dictionary = StructureScript.STATS
 	_assert(float(stats["bulwark_wall"]["hp"]) == 150.0, "Wall 150 HP / 20s")
 	_assert(float(stats["bulwark_wall"]["life"]) == 20.0, "Wall 20s life")
-	_assert(float(stats["sentry_turret"]["hp"]) == 100.0, "Turret 100 HP / 60s")
+	_assert(float(stats["sentry_turret"]["hp"]) == 100.0, "Turret 100 HP / permanent (#183)")
 	_assert(float(stats["spike_trap"]["hp"]) == 60.0, "Trap 60 HP")
 	_assert(float(stats["keystone"]["hp"]) == 200.0, "Keystone 200 HP / 45s")
 	_assert(StructureScript.STRUCTURE_CAP == 6, "Structure cap 6")
