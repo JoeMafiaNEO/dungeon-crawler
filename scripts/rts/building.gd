@@ -70,8 +70,13 @@ var _select_t := 0.0
 
 var _train_t := 0.0
 var _body_root: Node3D
-var _hp_fill: MeshInstance3D
-var _hp_bg: MeshInstance3D
+# Floating HP bar (shared mob/player form, #179): a "HealthBar"
+# Node3D holding one billboarded Sprite3D with a code-drawn texture.
+var _hb_bar: Node3D = null
+var _hb_fill: Sprite3D = null
+var _hb_image: Image = null
+var _hb_tex: ImageTexture = null
+var _hb_last_fill_w := -1  # redraw guard cache (#179)
 var _sync_t := 0.0
 
 
@@ -688,7 +693,10 @@ func _build_flag(accent: Color) -> void:
 
 
 func _build_hp_bar() -> void:
-	# Floating HP bar above the building (billboarded, ~1.6m wide).
+	# Floating HP bar above the building: the shared form (#179) —
+	# a "HealthBar" Node3D holding ONE billboarded, no-depth-test
+	# Sprite3D with a 200x22 code-drawn texture (dark border + red
+	# gradient fill), replacing the flat quad pair.
 	var h := 3.8
 	match building_type:
 		"barracks":
@@ -705,29 +713,31 @@ func _build_hp_bar() -> void:
 			h = 2.6
 		"tower":
 			h = 4.4
-	var bg := MeshInstance3D.new()
-	_hp_bg = bg
-	var bgm := BoxMesh.new()
-	bgm.size = Vector3(1.7, 0.14, 0.02)
-	bg.mesh = bgm
-	var bgmat := StandardMaterial3D.new()
-	bgmat.albedo_color = Color(0.08, 0.08, 0.08, 0.85)
-	bgmat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	bgmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	bg.material_override = bgmat
-	bg.position = Vector3(0, h, 0)
-	add_child(bg)
-	_hp_fill = MeshInstance3D.new()
-	var fm := BoxMesh.new()
-	fm.size = Vector3(1.6, 0.09, 0.02)
-	_hp_fill.mesh = fm
-	var fmat := StandardMaterial3D.new()
-	fmat.albedo_color = Color(0.25, 0.85, 0.3)
-	fmat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_hp_fill.material_override = fmat
-	_hp_fill.position = Vector3(0, h, 0.005)
-	add_child(_hp_fill)
+	# Bar width by footprint class (placeholder sizes for
+	# Jesse/Art, tracker item 33): the wide-footprint types get
+	# the town-hall-class bar (2.6 m, under the town hall's 3.4 m
+	# footprint); the rest get the tower-class bar (1.7 m, the
+	# width every building carried before the migration).
+	var full_w := 1.7
+	match building_type:
+		"town_hall", "barracks", "siege_workshop", "monastery", "dock":
+			full_w = 2.6
+	var bar := Node3D.new()
+	bar.name = "HealthBar"
+	bar.position = Vector3(0, h, 0)
+	add_child(bar)
+	_hb_bar = bar
+	_hb_image = Image.create(200, 22, false, Image.FORMAT_RGBA8)
+	_hb_tex = ImageTexture.create_from_image(_hb_image)
+	var spr := Sprite3D.new()
+	spr.texture = _hb_tex
+	spr.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	spr.no_depth_test = true
+	# Sprite3D pixel_size = 0.01: world size = px * 0.01 * scale.
+	spr.scale = Vector3(full_w / (200 * 0.01), 0.22 / (22 * 0.01), 1)
+	bar.add_child(spr)
+	_hb_fill = spr
+	_hb_last_fill_w = -1
 	_update_hp_bar()
 
 
@@ -765,23 +775,29 @@ func _build_name_label() -> void:
 	add_child(label)
 
 
+## Refresh the building HP bar; hidden at full HP (the RTS
+## rule). Redraw guarded exactly as the unit's (#179): the
+## set_pixel pass only runs when the integer fill width changes.
 func _update_hp_bar() -> void:
-	if _hp_fill == null:
+	if _hb_fill == null or not is_instance_valid(_hb_fill) or _hb_image == null:
 		return
 	var frac := clampf(hp / maxf(max_hp, 1.0), 0.0, 1.0)
-	_hp_fill.scale.x = maxf(frac, 0.001)
-	_hp_fill.position.x = -0.8 * (1.0 - frac)
-	var mat := _hp_fill.material_override as StandardMaterial3D
-	if mat != null:
-		if frac > 0.5:
-			mat.albedo_color = Color(0.25, 0.85, 0.3)
-		elif frac > 0.25:
-			mat.albedo_color = Color(0.95, 0.8, 0.2)
-		else:
-			mat.albedo_color = Color(0.9, 0.25, 0.2)
-	_hp_fill.visible = frac < 1.0 and not destroyed
-	if _hp_bg != null and is_instance_valid(_hp_bg):
-		_hp_bg.visible = frac < 1.0 and not destroyed
+	var border := 3
+	var iw := 200 - border * 2
+	var ih := 22 - border * 2
+	var fill_w := int(iw * frac)
+	if fill_w != _hb_last_fill_w:
+		_hb_last_fill_w = fill_w
+		_hb_image.fill(Color(0.05, 0.05, 0.07, 0.92))
+		if fill_w > 0:
+			# Vertical gradient: brighter top, darker bottom.
+			for y in range(ih):
+				var t := float(y) / float(maxi(ih - 1, 1))
+				var col := Color(0.85, 0.12, 0.10).lerp(Color(0.55, 0.05, 0.05), t)
+				for x in range(fill_w):
+					_hb_image.set_pixel(border + x, border + y, col)
+		_hb_tex.update(_hb_image)
+	_hb_bar.visible = frac < 1.0 and not destroyed
 
 
 # --- Networked visuals ---
@@ -889,8 +905,8 @@ func destroy_fx() -> void:
 	AudioManager.sfx("explosion", base)
 	if _body_root != null:
 		_body_root.visible = false
-	if _hp_fill != null:
-		_hp_fill.visible = false
+	if _hb_bar != null:
+		_hb_bar.visible = false
 	# Let the poof play, then remove the husk.
 	var t := get_tree().create_timer(1.2)
 	t.timeout.connect(queue_free)

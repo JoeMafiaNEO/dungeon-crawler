@@ -57,10 +57,13 @@ var _fish_tick := 0.0
 # Selection ring (RTS command view).
 var _select_ring: MeshInstance3D = null
 var _select_t := 0.0
-# Floating HP bar.
-var _hp_fill: MeshInstance3D = null
-var _hp_bg: MeshInstance3D = null
-var _hp_bar_w := 1.0
+# Floating HP bar (shared mob/player form, #179): a "HealthBar"
+# Node3D holding one billboarded Sprite3D with a code-drawn texture.
+var _hb_bar: Node3D = null
+var _hb_fill: Sprite3D = null
+var _hb_image: Image = null
+var _hb_tex: ImageTexture = null
+var _hb_last_fill_w := -1  # redraw guard cache (#179)
 
 
 @rpc("any_peer", "call_local")
@@ -271,15 +274,15 @@ func _build_visual() -> void:
 		_sprite.get_parent().remove_child(_sprite)
 		_sprite.queue_free()
 		_sprite = null
-	# Free old HP bar nodes too (convert_to rebuilds the visual).
-	if _hp_bg and is_instance_valid(_hp_bg):
-		_hp_bg.get_parent().remove_child(_hp_bg)
-		_hp_bg.queue_free()
-		_hp_bg = null
-	if _hp_fill and is_instance_valid(_hp_fill):
-		_hp_fill.get_parent().remove_child(_hp_fill)
-		_hp_fill.queue_free()
-		_hp_fill = null
+	# Free the old HP bar too (convert_to rebuilds the visual).
+	if _hb_bar and is_instance_valid(_hb_bar):
+		_hb_bar.get_parent().remove_child(_hb_bar)
+		_hb_bar.queue_free()
+	_hb_bar = null
+	_hb_fill = null
+	_hb_image = null
+	_hb_tex = null
+	_hb_last_fill_w = -1
 	# Billboard 3D sprite (~0.9m tall). Civ-specific: iron_vanguard_spearman.png etc.
 	var sprite := Sprite3D.new()
 	sprite.name = "UnitSprite"
@@ -338,32 +341,8 @@ func _build_visual() -> void:
 		area.add_child(pcol)
 		add_child(area)
 
-	# Floating HP bar (billboarded, hidden at full HP).
-	_hp_bar_w = 1.0
-	var ubg := MeshInstance3D.new()
-	var ubgm := BoxMesh.new()
-	ubgm.size = Vector3(_hp_bar_w, 0.09, 0.02)
-	ubg.mesh = ubgm
-	var ubgmat := StandardMaterial3D.new()
-	ubgmat.albedo_color = Color(0.08, 0.08, 0.08, 0.85)
-	ubgmat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	ubgmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	ubg.material_override = ubgmat
-	ubg.position = Vector3(0, 1.05, 0)
-	add_child(ubg)
-	_hp_bg = ubg
-	_hp_fill = MeshInstance3D.new()
-	var ufm := BoxMesh.new()
-	ufm.size = Vector3(_hp_bar_w - 0.08, 0.06, 0.02)
-	_hp_fill.mesh = ufm
-	var ufmat := StandardMaterial3D.new()
-	ufmat.albedo_color = Color(0.25, 0.85, 0.3)
-	ufmat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	ufmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_hp_fill.material_override = ufmat
-	_hp_fill.position = Vector3(0, 1.05, 0.005)
-	add_child(_hp_fill)
-	_update_hp_bar()
+	# Floating HP bar (shared form, hidden at full HP).
+	_build_hp_bar()
 
 
 ## Jesse 2026-10-11: sprite faces the active camera. Command (top-down)
@@ -389,25 +368,57 @@ func _on_command_view_toggled(_active: bool) -> void:
 	_update_sprite_orientation()
 
 
-## Refresh the unit HP bar; hidden at full HP.
+## Issue #179: the shared health-bar form (mob.gd/player.gd carry
+## the same design): a "HealthBar" Node3D above the unit holding
+## ONE billboarded, no-depth-test Sprite3D whose 200x22 texture is
+## drawn in code — dark border + red gradient fill. Replaces the
+## flat quad pair (scale-faked fill, fraction-banded colors).
+func _build_hp_bar() -> void:
+	var bar := Node3D.new()
+	bar.name = "HealthBar"
+	bar.position = Vector3(0, 1.15, 0)
+	add_child(bar)
+	_hb_bar = bar
+	_hb_image = Image.create(200, 22, false, Image.FORMAT_RGBA8)
+	_hb_tex = ImageTexture.create_from_image(_hb_image)
+	var spr := Sprite3D.new()
+	spr.texture = _hb_tex
+	spr.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	spr.no_depth_test = true
+	# Sprite3D pixel_size = 0.01: world size = px * 0.01 * scale.
+	# Bar width 1.2 m, height 0.22 m (placeholder, Jesse/Art).
+	spr.scale = Vector3(1.2 / (200 * 0.01), 0.22 / (22 * 0.01), 1)
+	bar.add_child(spr)
+	_hb_fill = spr
+	_hb_last_fill_w = -1
+	_update_hp_bar()
+
+
+## Refresh the unit HP bar; hidden at full HP (the RTS rule —
+## mobs/players show theirs always). The redraw is guarded
+## (#179): client_sync_army calls this at 8 Hz for every unit,
+## so the set_pixel pass only runs when the integer fill width
+## actually changes; the visibility write stays per-call.
 func _update_hp_bar() -> void:
-	if _hp_fill == null:
+	if _hb_fill == null or not is_instance_valid(_hb_fill) or _hb_image == null:
 		return
 	var frac := clampf(hp / maxf(max_hp, 1.0), 0.0, 1.0)
-	_hp_fill.scale.x = maxf(frac, 0.001)
-	_hp_fill.position.x = -(_hp_bar_w - 0.08) * 0.5 * (1.0 - frac)
-	var mat := _hp_fill.material_override as StandardMaterial3D
-	if mat != null:
-		if frac > 0.5:
-			mat.albedo_color = Color(0.25, 0.85, 0.3)
-		elif frac > 0.25:
-			mat.albedo_color = Color(0.95, 0.8, 0.2)
-		else:
-			mat.albedo_color = Color(0.9, 0.25, 0.2)
-	var show := frac < 1.0 and alive
-	_hp_fill.visible = show
-	if _hp_bg != null and is_instance_valid(_hp_bg):
-		_hp_bg.visible = show
+	var border := 3
+	var iw := 200 - border * 2
+	var ih := 22 - border * 2
+	var fill_w := int(iw * frac)
+	if fill_w != _hb_last_fill_w:
+		_hb_last_fill_w = fill_w
+		_hb_image.fill(Color(0.05, 0.05, 0.07, 0.92))
+		if fill_w > 0:
+			# Vertical gradient: brighter top, darker bottom.
+			for y in range(ih):
+				var t := float(y) / float(maxi(ih - 1, 1))
+				var col := Color(0.85, 0.12, 0.10).lerp(Color(0.55, 0.05, 0.05), t)
+				for x in range(fill_w):
+					_hb_image.set_pixel(border + x, border + y, col)
+		_hb_tex.update(_hb_image)
+	_hb_bar.visible = frac < 1.0 and alive
 
 
 func order_move(pos: Vector3) -> void:

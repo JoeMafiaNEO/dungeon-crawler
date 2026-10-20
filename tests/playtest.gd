@@ -45,6 +45,7 @@ func _run() -> void:
 	_test_army_sync_packing_178()
 	_test_build_menu_softlock_180()
 	_test_own_faction_attack_181()
+	_test_hp_bar_migration_179()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3779,6 +3780,167 @@ func _test_own_faction_attack_181() -> void:
 	root.remove_child(holder)
 	holder.free()
 	print("[Playtest] Own-faction attack carve-out done")
+
+
+func _test_hp_bar_migration_179() -> void:
+	print("[Playtest] RTS health bar migration...")
+	# Issue #179: RTSUnit and RTSBuilding migrate from their flat
+	# quad-pair HP bars (scale-faked fill, banded colors) to the
+	# shared mob/player form: a "HealthBar" Node3D holding ONE
+	# billboarded, no-depth-test Sprite3D whose 200x22 texture is
+	# drawn in code — dark border + red gradient fill, width = HP
+	# fraction — redrawn in _update_hp_bar (name/call sites as
+	# before), with a redraw guard (only when the integer fill
+	# width changes; client_sync_army calls it at 8 Hz per unit).
+	# The RTS visibility rule stays: hidden at full HP. Literals
+	# below are the shared design's, read off mob.gd/player.gd,
+	# never the SUT's own tables.
+	var UnitScript := load("res://scripts/rts/unit.gd")
+	var BuildingScript := load("res://scripts/rts/building.gd")
+	var BORDER := Color(0.05, 0.05, 0.07, 0.92)
+	var px := func(img: Image, x: int, y: int) -> Color:
+		if img == null:
+			return Color(-1, -1, -1, -1)
+		return img.get_pixel(x, y)
+	var fillw := func(o: Object) -> int:
+		var v = o.get("_hb_last_fill_w")
+		return int(v) if v != null else -999
+	var near := func(c: Color, r: float, g: float, b: float) -> bool:
+		return absf(c.r - r) < 0.01 and absf(c.g - g) < 0.01 and absf(c.b - b) < 0.01
+	# Gradient expectation at image row y=11 (inner row 8 of 16).
+	var t8 := 8.0 / 15.0
+	var fill_exp := Color(0.85, 0.12, 0.10).lerp(Color(0.55, 0.05, 0.05), t8)
+	var holder := Node3D.new()
+	holder.name = "HpBar179Holder"
+	root.add_child(holder)
+	var prev_scene := current_scene
+	current_scene = holder
+	# --- The unit ---
+	var u = UnitScript.new()
+	holder.add_child(u)
+	u.call("setup", 0, &"villager", null)
+	u.set("unit_id", 901)
+	u.set("max_hp", 100.0)
+	u.set("hp", 100.0)
+	u.call("_update_hp_bar")
+	var ubar = u.get_node_or_null("HealthBar")
+	_assert(ubar != null, "179u(1): the unit carries a HealthBar node")
+	var uspr: Sprite3D = null
+	if ubar != null and ubar.get_child_count() > 0:
+		uspr = ubar.get_child(0) as Sprite3D
+	_assert(uspr != null and uspr.billboard == BaseMaterial3D.BILLBOARD_ENABLED,
+		"179u(2): the unit bar is a billboarded Sprite3D")
+	_assert(uspr != null and uspr.no_depth_test,
+		"179u(3): the unit bar sprite ignores depth")
+	_assert(uspr != null and uspr.texture != null
+			and uspr.texture.get_size() == Vector2(200, 22),
+		"179u(4): the unit bar texture is 200x22")
+	_assert(u.get("_hp_bg") == null and u.get("_hp_fill") == null,
+		"179u(5): no quad pair remains on the unit")
+	_assert(uspr != null and absf(uspr.scale.x - 0.6) < 0.001,
+		"179u(6): the unit bar is 1.2 m wide (200px x 0.01 x 0.6)")
+	_assert(ubar != null and absf(ubar.position.y - 1.15) < 0.001,
+		"179u(7): the unit bar floats at y 1.15")
+	_assert(ubar != null and not ubar.visible,
+		"179u(8): the unit bar is hidden at full HP (the RTS rule)")
+	var uimg: Image = u.get("_hb_image")
+	u.set("hp", 60.0)
+	u.call("_update_hp_bar")
+	_assert(ubar != null and ubar.visible, "179u(9): the unit bar shows when damaged")
+	_assert(near.call(px.call(uimg, 0, 0), BORDER.r, BORDER.g, BORDER.b)
+			and absf(px.call(uimg, 0, 0).a - BORDER.a) < 0.01,
+		"179u(10): the corner pixel reads the dark border color")
+	_assert(near.call(px.call(uimg, 61, 11), fill_exp.r, fill_exp.g, fill_exp.b),
+		"179u(11): a pixel inside the 0.6 fill reads the red gradient")
+	_assert(near.call(px.call(uimg, 139, 11), BORDER.r, BORDER.g, BORDER.b),
+		"179u(12): a pixel beyond the 0.6 fill reads border")
+	u.set("hp", 30.0)
+	u.call("_update_hp_bar")
+	_assert(near.call(px.call(uimg, 60, 11), fill_exp.r, fill_exp.g, fill_exp.b),
+		"179u(13): at 0.3 the fill reaches its last column")
+	_assert(near.call(px.call(uimg, 62, 11), BORDER.r, BORDER.g, BORDER.b),
+		"179u(14): at 0.3 the pixel past the fill reads border")
+	u.set("hp", 0.0)
+	u.call("_update_hp_bar")
+	_assert(ubar != null and ubar.visible, "179u(15): the unit bar still shows at 0 HP")
+	_assert(near.call(px.call(uimg, 10, 11), BORDER.r, BORDER.g, BORDER.b),
+		"179u(16): at 0 HP the bar is border-only")
+	# Redraw guard: a marker pixel written into the image survives
+	# a same-fraction update (no redraw happened) and is painted
+	# over when the fraction changes (a redraw did happen).
+	u.set("hp", 60.0)
+	u.call("_update_hp_bar")
+	_assert(fillw.call(u) == 116,
+		"179u(17): the guard caches fill width 116 at 0.6")
+	if uimg != null:
+		uimg.set_pixel(0, 0, Color(1, 0, 1, 1))
+	u.call("_update_hp_bar")
+	_assert(px.call(uimg, 0, 0) == Color(1, 0, 1, 1),
+		"179u(18): a same-fraction update does not redraw (marker survives)")
+	u.set("hp", 30.0)
+	u.call("_update_hp_bar")
+	_assert(near.call(px.call(uimg, 0, 0), BORDER.r, BORDER.g, BORDER.b),
+		"179u(19): a fraction change redraws (marker painted over)")
+	_assert(fillw.call(u) == 58,
+		"179u(20): the guard cache follows the new fill width (58 at 0.3)")
+	# --- The buildings: town hall (wide class) + tower (narrow) ---
+	var th = BuildingScript.new()
+	th.call("setup", 0, "town_hall", null)
+	th.set("building_id", 901)
+	holder.add_child(th)
+	th.set("max_hp", 100.0)
+	th.set("hp", 100.0)
+	th.call("_update_hp_bar")
+	var bbar = th.get_node_or_null("HealthBar")
+	_assert(bbar != null, "179b(1): the town hall carries a HealthBar node")
+	var bspr: Sprite3D = null
+	if bbar != null and bbar.get_child_count() > 0:
+		bspr = bbar.get_child(0) as Sprite3D
+	_assert(bspr != null and bspr.billboard == BaseMaterial3D.BILLBOARD_ENABLED,
+		"179b(2): the building bar is a billboarded Sprite3D")
+	_assert(bspr != null and bspr.no_depth_test,
+		"179b(3): the building bar sprite ignores depth")
+	_assert(bspr != null and bspr.texture != null
+			and bspr.texture.get_size() == Vector2(200, 22),
+		"179b(4): the building bar texture is 200x22")
+	_assert(th.get("_hp_bg") == null and th.get("_hp_fill") == null,
+		"179b(5): no quad pair remains on the building")
+	_assert(bspr != null and absf(bspr.scale.x - 1.3) < 0.001,
+		"179b(6): the town-hall-class bar is 2.6 m wide")
+	_assert(bbar != null and absf(bbar.position.y - 3.8) < 0.001,
+		"179b(7): the town hall bar keeps its height (3.8)")
+	var tw = BuildingScript.new()
+	tw.call("setup", 0, "tower", null)
+	tw.set("building_id", 902)
+	holder.add_child(tw)
+	var wbar = tw.get_node_or_null("HealthBar")
+	var wspr: Sprite3D = null
+	if wbar != null and wbar.get_child_count() > 0:
+		wspr = wbar.get_child(0) as Sprite3D
+	_assert(wspr != null and absf(wspr.scale.x - 0.85) < 0.001,
+		"179b(8): the tower-class bar is 1.7 m wide")
+	_assert(wbar != null and absf(wbar.position.y - 4.4) < 0.001,
+		"179b(9): the tower bar keeps its height (4.4)")
+	_assert(bbar != null and not bbar.visible,
+		"179b(10): the building bar is hidden at full HP")
+	var bimg: Image = th.get("_hb_image")
+	th.set("hp", 60.0)
+	th.call("_update_hp_bar")
+	_assert(bbar != null and bbar.visible, "179b(11): the building bar shows when damaged")
+	_assert(near.call(px.call(bimg, 0, 0), BORDER.r, BORDER.g, BORDER.b),
+		"179b(12): the building corner pixel reads the dark border color")
+	_assert(near.call(px.call(bimg, 61, 11), fill_exp.r, fill_exp.g, fill_exp.b),
+		"179b(13): a pixel inside the building 0.6 fill reads the red gradient")
+	_assert(fillw.call(th) == 116,
+		"179b(14): the building redraw guard caches 116 at 0.6")
+	th.set("hp", 0.0)
+	th.call("_update_hp_bar")
+	_assert(bbar != null and bbar.visible,
+		"179b(15): the building bar still shows at 0 HP (not destroyed)")
+	current_scene = prev_scene
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] RTS health bar migration done")
 
 
 func _test_station_phase4() -> void:
