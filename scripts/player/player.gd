@@ -3764,7 +3764,12 @@ func request_hammer_smash(claimed_damage: float) -> void:
 		return
 	if _srv_smash_cd > 0.0 or claimed_damage <= 0.0:
 		return
-	_srv_smash_cd = SMASH_COOLDOWN
+	# Issue #188 (F1): the enforced cooldown takes the caster's
+	# cooldown_mult like every other cooldown in the game —
+	# this server copy holds the caster's equipped special, so
+	# the factor is evaluated HERE, on the enforcing node, and
+	# the HUD mirror's multiplied value becomes the truth.
+	_srv_smash_cd = SMASH_COOLDOWN * cooldown_mult()
 	var attacker := int(get_multiplayer_authority())
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob

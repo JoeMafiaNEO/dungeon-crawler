@@ -120,6 +120,7 @@ func _run() -> void:
 	_test_architect_tools_repair()
 	_test_switch_in_tool_grant_113()
 	_test_hammer_smash()
+	_test_smash_cooldown_honesty_188()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -18227,6 +18228,85 @@ func _test_hammer_smash() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] hammer smash done")
+
+
+## Issue #188 (audit finding F1, gate re-cut): Hammer Smash's
+## SERVER gate was the dishonest side — it enforced a flat
+## 10.0s while the sigil's cooldown_mult (0.85) lawfully set
+## the mirror and every owner-local entry to 8.5s, so casts
+## in the gap were silently dropped. The fix moves the SERVER
+## set site: _srv_smash_cd = SMASH_COOLDOWN * cooldown_mult(),
+## evaluated on the enforcing node (the server copy holds the
+## caster's equipped special). The mirror and the local entry
+## are UNTOUCHED — they were honest all along. All
+## expectations are independent literals.
+func _test_smash_cooldown_honesty_188() -> void:
+	print("[Playtest] Smash cooldown honesty (F1, #188)...")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	# The totem drives look the dungeon group up — it must find
+	# nothing here (stale incumbents from earlier sections are
+	# displaced, the matrix section's own pattern).
+	for n in get_nodes_in_group("dungeon"):
+		n.remove_from_group("dungeon")
+	# Architect + Forge Hammer + the sigil's multiplier live.
+	var arch = PlayerScene.instantiate()
+	arch.class_id = "architect"
+	root.add_child(arch)
+	var hammer_idx := -1
+	for i in arch.inventory.size():
+		if str((arch.inventory[i]["item"] as Object).get("id")) == "forge_hammer":
+			hammer_idx = i
+	_assert(hammer_idx >= 0 and arch.equip_stack(hammer_idx),
+		"188: the Forge Hammer equips for the Smash drives")
+	arch.set("equipped_special", "apex_warden_sigil")
+	arch.call("_apply_equipped_special")
+	_assert(absf(float(arch.call("cooldown_mult")) - 0.85) < 0.001,
+		"188: premise — the sigil's cooldown_mult 0.85 is live on this player")
+	# THE pin: the SERVER endpoint itself, sigil equipped — the
+	# enforcing node must evaluate the factor, not assume it.
+	arch.call("request_hammer_smash", 40.0)
+	_assert(absf(float(arch.get("_srv_smash_cd")) - 8.5) < 0.01,
+		"188(F1): with the sigil, the SERVER-enforced Smash cooldown is 8.5 (10.0 x 0.85) — evaluated at the server set site")
+	# The mirror is untouched (regression read) and now TRUE:
+	# an end-to-end cast sets both registers to the same 8.5.
+	arch.set("_srv_smash_cd", 0.0)
+	arch.ability_cds["hammer_smash"] = 0.0
+	arch.call("_cast_hammer_smash")
+	_assert(absf(float(arch.ability_cds.get("hammer_smash", 0.0)) - 8.5) < 0.01,
+		"188(F1): the HUD mirror still sets 8.5 with the sigil (untouched) — and it is now the enforced truth")
+	_assert(absf(float(arch.get("_srv_smash_cd")) - 8.5) < 0.01,
+		"188(F1): the cast's own server leg agrees at 8.5 — mirror equals enforcement end to end")
+	# No sigil: the enforced value is the flat base, unchanged.
+	arch.set("equipped_special", "")
+	arch.call("_apply_equipped_special")
+	_assert(absf(float(arch.call("cooldown_mult")) - 1.0) < 0.001,
+		"188: premise — unequipping the sigil restores cooldown_mult 1.0")
+	arch.set("_srv_smash_cd", 0.0)
+	arch.call("request_hammer_smash", 40.0)
+	_assert(float(arch.get("_srv_smash_cd")) == 10.0,
+		"188(F1): without the sigil the server enforces the flat 10.0, exactly as before")
+	# F2 regression legs: the owner-local family keeps the
+	# multiplier (their local entry IS their enforcement).
+	var war = PlayerScene.instantiate()
+	war.class_id = "warrior"
+	root.add_child(war)
+	war.set("equipped_special", "apex_warden_sigil")
+	war.call("_apply_equipped_special")
+	war.set("totem_charges", 2)
+	war.call("_activate_signature_totem", "sanctuary_totem")
+	_assert(absf(float(war.ability_cds.get("sanctuary_totem", 0.0)) - 102.0) < 0.01,
+		"188(F2): Sanctuary Totem keeps the sigil's multiplier (120.0 x 0.85 = 102.0)")
+	war.call("_activate_signature_totem", "doom_totem")
+	_assert(absf(float(war.ability_cds.get("doom_totem", 0.0)) - 76.5) < 0.01,
+		"188(F2): Doom Totem keeps the sigil's multiplier (90.0 x 0.85 = 76.5)")
+	arch.free()
+	war.free()
+	current_scene = null
+	holder.free()
+	print("[Playtest] Smash cooldown honesty (F1) done")
 func _test_ability_matrix_162() -> void:
 	print("[Playtest] Ability matrix fixes (issues #162/#166/#169)...")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
