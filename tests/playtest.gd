@@ -44,6 +44,7 @@ func _run() -> void:
 	_test_rod_prop_invariant_177()
 	_test_army_sync_packing_178()
 	_test_build_menu_softlock_180()
+	_test_own_faction_attack_181()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3674,6 +3675,110 @@ func _test_build_menu_softlock_180() -> void:
 	print("[Playtest] Build menu softlock done")
 
 
+func _test_own_faction_attack_181() -> void:
+	print("[Playtest] Own-faction attack carve-out...")
+	# Issue #181: a player character whose rts_faction equals the
+	# ordering side's faction must never be an attack target. The
+	# door was ORDERS, not auto-acquisition: RTSCamera's
+	# _pick_enemy_at players loop had no faction check (its unit/
+	# building loops skip the clicker's faction), so a right-click
+	# near the player's own feet resolved as attack-that-player;
+	# and unit.rpc_order_attack validated ownership only, unlike
+	# order_convert's same-faction refusal in the same file.
+	# Enemy players stay fully targetable (designed PvP). Real
+	# camera + real units + real Player fixtures throughout.
+	var CamScript := load("res://scripts/rts/rts_camera.gd")
+	var MgrScript := load("res://scripts/rts/rts_manager.gd")
+	var UnitScript := load("res://scripts/rts/unit.gd")
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	# Displace incumbents so the group scans see only this fixture.
+	for n in get_nodes_in_group("players"):
+		n.remove_from_group("players")
+	for n in get_nodes_in_group("rts_units"):
+		n.remove_from_group("rts_units")
+	for n in get_nodes_in_group("rts_buildings"):
+		n.remove_from_group("rts_buildings")
+	var holder := Node3D.new()
+	holder.name = "OwnAttack181Holder"
+	root.add_child(holder)
+	var prev_scene := current_scene
+	current_scene = holder
+	var mgr = MgrScript.new()
+	holder.add_child(mgr)
+	var p_own = PlayerScene.instantiate()
+	holder.add_child(p_own)
+	p_own.set("rts_faction", 0)
+	p_own.global_position = Vector3(460, 0, 460)
+	var p_foe = PlayerScene.instantiate()
+	holder.add_child(p_foe)
+	p_foe.set("rts_faction", 1)
+	p_foe.global_position = Vector3(461.5, 0, 460)
+	var cam = CamScript.new()
+	holder.add_child(cam)
+	cam.call("setup", mgr, 0)
+	cam.set("active", true)
+	cam.global_position = Vector3(460, 40, 460)
+	cam.rotation = Vector3(-PI / 2.0, 0, 0)
+	var villager = UnitScript.new()
+	holder.add_child(villager)
+	villager.call("setup", 0, &"villager", null)
+	villager.set("unit_id", 801)
+	villager.global_position = Vector3(455, 0, 455)
+	var foe_unit = UnitScript.new()
+	holder.add_child(foe_unit)
+	foe_unit.call("setup", 1, &"spearman", null)
+	foe_unit.set("unit_id", 802)
+	foe_unit.global_position = Vector3(600, 0, 600)
+	var ally_unit = UnitScript.new()
+	holder.add_child(ally_unit)
+	ally_unit.call("setup", 0, &"spearman", null)
+	ally_unit.set("unit_id", 803)
+	ally_unit.global_position = Vector3(605, 0, 600)
+	var ground := Vector3(460, 0, 460)
+	# (1) Pick, both players in reach: the own-faction player at
+	# the click point is skipped; the enemy player (PvP) is picked.
+	_assert(cam.call("_pick_enemy_at", ground) == p_foe,
+		"181(1): the pick skips the own-faction player and returns the enemy player")
+	# (2) Pick, only the own player in reach: no target at all.
+	p_foe.global_position = Vector3(700, 0, 700)
+	_assert(cam.call("_pick_enemy_at", ground) == null,
+		"181(2): with only the own-faction player present the pick returns null")
+	# (3)+(4) The full order: a right-click at the player's own
+	# feet is the MOVE the player meant — not an attack order.
+	cam.set("_selected", [villager])
+	villager.set("_attack_target", null)
+	villager.set("_move_target", Vector3.INF)
+	cam.call("_issue_order", root.get_visible_rect().size * 0.5)
+	_assert(villager.get("_move_target") != Vector3.INF,
+		"181(3): the order at the own player's feet issues a move")
+	_assert(villager.get("_attack_target") == null,
+		"181(4): ...and no attack target is set")
+	# (5)-(8) The handler itself (rpc_order_attack), driven
+	# directly: the enforcement layer refuses own-faction targets
+	# even if an order somehow names them.
+	villager.set("_attack_target", null)
+	villager.call("rpc_order_attack", p_own.get_path())
+	_assert(villager.get("_attack_target") == null,
+		"181(5): rpc_order_attack refuses the own-faction player")
+	villager.call("rpc_order_attack", p_foe.get_path())
+	_assert(villager.get("_attack_target") == p_foe,
+		"181(6): rpc_order_attack accepts the enemy player (PvP at the enforcement layer)")
+	villager.set("_attack_target", null)
+	villager.call("rpc_order_attack", foe_unit.get_path())
+	_assert(villager.get("_attack_target") == foe_unit,
+		"181(7): rpc_order_attack accepts an enemy unit (regression)")
+	villager.set("_attack_target", null)
+	villager.call("rpc_order_attack", ally_unit.get_path())
+	_assert(villager.get("_attack_target") == null,
+		"181(8): rpc_order_attack refuses a same-faction unit (clause b)")
+	# (9) Labeled source pin: auto-acquisition was never the
+	# defect site — _find_nearest_enemy must stay player-blind.
+	_assert(not _body_of("res://scripts/rts/unit.gd", "func _find_nearest_enemy(").contains("\"players\""),
+		"181(9): _find_nearest_enemy gained no players leg (labeled source pin)")
+	current_scene = prev_scene
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] Own-faction attack carve-out done")
 
 
 func _test_station_phase4() -> void:

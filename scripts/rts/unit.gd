@@ -484,8 +484,23 @@ func rpc_order_attack(target_path: NodePath) -> void:
 	if not _owns_me():
 		return
 	var target := get_node_or_null(target_path) as Node3D
-	if target != null:
-		order_attack(target)
+	if target == null:
+		return
+	# Issue #181: orders never target the orderer's own faction —
+	# (a) a player character whose rts_faction is this unit's
+	# faction, or (b) a same-faction unit/building. order_convert's
+	# refusal below is the precedent; the camera's pick filters
+	# these too, but the handler is the enforcement layer — a
+	# forged or stale order must not land either. Enemy players
+	# stay targetable (designed PvP); _attack_tick's players
+	# branch is how that damage lands and is untouched.
+	if target.is_in_group("players"):
+		if int(target.get("rts_faction")) == faction:
+			return
+	elif target.is_in_group("rts_units") or target.is_in_group("rts_buildings"):
+		if int(target.get("faction")) == faction:
+			return
+	order_attack(target)
 
 
 ## Monk conversion: channel on an enemy unit for CONVERT_TIME seconds.

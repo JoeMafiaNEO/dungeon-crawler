@@ -366,7 +366,14 @@ func _pick_enemy_at(ground: Vector3) -> Node3D:
 			best_d = d
 			best = n
 	# Jesse 2026-10-11: RTS units can be ordered to attack players.
+	# Issue #181: but never the clicker's OWN character — this loop
+	# mirrors its sibling loops above and skips players of the
+	# camera's faction, so a right-click at the player's own feet
+	# falls through to the move-order path. Enemy players stay
+	# pickable (designed PvP).
 	for n in get_tree().get_nodes_in_group("players"):
+		if int(n.get("rts_faction")) == faction_id:
+			continue
 		var d := ground.distance_to(n.global_position)
 		if d < best_d:
 			best_d = d
