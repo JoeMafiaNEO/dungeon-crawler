@@ -5202,6 +5202,56 @@ func on_sold(amount: int) -> void:
 		AudioManager.sfx("cash_register")
 
 
+## Supermarket checkout (owner side): tally this player's supermarket
+## loot and remove it from the REAL bag. Inventory is per-peer
+## authoritative (issue #105) and never replicates, so the server's
+## copy of a client's bag is a spawn-time snapshot — a server-side
+## tally (the old way) always totals 0 for groceries picked up in the
+## level, and would pay out for carried-in groceries without ever
+## removing them from the real bag. The tally therefore runs here, on
+## the owner's instance; the server credits from the reported total.
+func tally_and_remove_groceries() -> int:
+	var total := 0
+	var kept: Array = []
+	# Issue #104 marker-preservation audit: entries are carried by
+	# reference (never rebuilt), so "equipped_slot" markers survive.
+	for entry in inventory:
+		var item = entry["item"]
+		if bool(item.get("supermarket_loot")):
+			total += int(item.get("sell_value")) * int(entry["count"])
+		else:
+			kept.append(entry)
+	if total > 0:
+		inventory = kept
+		_recalc_stats()
+		if hud != null:
+			hud.refresh_inventory(self)
+	return total
+
+
+## Checkout delegation: the server asks the owner to tally + remove
+## its groceries (tally_and_remove_groceries) and report the total
+## back; the server then credits the sale from the reported total.
+@rpc("any_peer", "call_local")
+func rpc_collect_groceries() -> void:
+	if not is_multiplayer_authority():
+		return
+	var total := tally_and_remove_groceries()
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null:
+		dungeon.rpc_id(NetworkManager.server_peer_id, "rpc_report_checkout_total", total)
+
+
+## Checkout feedback for an empty bag (Jesse 2026-10-19): a zero sell
+## used to be silent, indistinguishable from the sell not happening.
+@rpc("any_peer", "call_local")
+func on_checkout_empty() -> void:
+	if not is_multiplayer_authority():
+		return
+	if hud != null:
+		hud.toast("Nothing to sell — your bag has no groceries.")
+
+
 @rpc("any_peer", "call_local")
 func on_bought(item_id: String, price: int) -> void:
 	if not is_multiplayer_authority():

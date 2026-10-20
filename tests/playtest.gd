@@ -123,6 +123,7 @@ func _run() -> void:
 	_test_weapon_model_coverage_113()
 	_test_lobby_strip()
 	_test_checkout_multiplayer()
+	_test_checkout_delegation_team_bounties()
 	_test_holy_light_linger()
 	_test_train_state_handoff()
 	_test_economy()
@@ -6889,6 +6890,114 @@ func _test_checkout_multiplayer() -> void:
 		"checkout: clients detect their own entry")
 
 
+func _test_checkout_delegation_team_bounties() -> void:
+	print("[Playtest] Checkout delegation + team bounties...")
+	# Jesse 2026-10-19 (live MP report): client sells at the supermarket
+	# checkout never happened — the server tallied its spawn-time
+	# snapshot of the client's bag (inventory is per-peer authoritative
+	# since #105 and never replicates), always empty for in-level
+	# pickups; and carried-in groceries would have been paid for without
+	# ever leaving the real bag. The tally now runs owner-side
+	# (tally_and_remove_groceries) and the server credits the reported
+	# total (_credit_checkout_sale). The wire leg is two-seat held, so
+	# this section drives the two production halves composed exactly as
+	# _request_checkout_sell composes them locally, on fixtures whose
+	# authorities stay at the local peer to keep the harness quiet.
+	# Bounties are team goals (Jesse 2026-10-19): shared progress, and
+	# a completion pays every player.
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var BountyScript := load("res://scripts/systems/bounty.gd")
+	# (A) Owner tally: production grants, production tally.
+	var solo = PlayerScene.instantiate()
+	root.add_child(solo)
+	solo.receive_item("cereal_box", -1, "", 2)
+	solo.receive_item("health_potion")
+	var total_a: int = solo.call("tally_and_remove_groceries")
+	_assert(total_a == 50, "checkout tally: 2 cereal total $50 (got %d)" % total_a)
+	var loot_left := 0
+	var has_potion := false
+	for e in solo.get("inventory"):
+		var it = e["item"]
+		if bool(it.get("supermarket_loot")):
+			loot_left += int(e["count"])
+		if str(it.get("id")) == "health_potion":
+			has_potion = true
+	_assert(loot_left == 0 and has_potion,
+		"checkout tally: groceries gone, non-grocery items kept")
+	_assert(int(solo.call("tally_and_remove_groceries")) == 0,
+		"checkout tally: a second tally finds nothing (no double-sell)")
+	root.remove_child(solo)
+	solo.free()
+	# (B) Credit + team bounties on a dungeon fixture with two players.
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	DungeonScript.next_theme_id = "village"
+	DungeonScript.next_seed = 1
+	DungeonScript.next_level_number = 1
+	DungeonScript.saved_player_state = {}
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dun)
+	# The dungeon spawns its own host player at ready — adopt it as
+	# player 1 (adding another "Player_1" would just get renamed) and
+	# add only the second player.
+	var p1 = dun.call("get_player_node", 1)
+	var p2 = PlayerScene.instantiate()
+	dun.get_node("Players").add_child(p2)
+	p2.name = "Player_2"
+	_assert(dun.call("get_player_node", 1) == p1 and dun.call("get_player_node", 2) == p2,
+		"team bounty fixture: both players addressable by peer name")
+	# Real-shaped bounties (keys/shapes as BountySys._make_cash and
+	# _make_no_death emit them).
+	var bounties: Array = [
+		{"id": "b_team_cash", "kind": "cash", "target": 40, "cash_reward": 30, "xp_reward": 10, "name": "Big Spender", "desc": "Sell $40 of loot at checkout."},
+		{"id": "b_team_nd", "kind": "no_death", "target": 1, "cash_reward": 20, "xp_reward": 5, "name": "Untouchable", "desc": "Clear the level without dying."},
+	]
+	var bs = BountyScript.new()
+	bs.set("bounties", bounties)
+	dun.set("_bounty", bs)
+	dun.set("_team_bounty_progress", BountyScript.new_progress(bounties))
+	dun.call("_mirror_team_bounty_progress")
+	# The seller tallies its own real bag; the server credits the total.
+	p2.receive_item("cereal_box", -1, "", 2)
+	var total_b: int = p2.call("tally_and_remove_groceries")
+	dun.call("_credit_checkout_sale", p2, total_b)
+	_assert(int(p2.get("supermarket_cash")) == 80,
+		"team bounty: seller keeps the sale + team bounty cash (got %d)" % int(p2.get("supermarket_cash")))
+	_assert(int(p1.get("supermarket_cash")) == 30,
+		"team bounty: the OTHER player is paid the bounty too (got %d)" % int(p1.get("supermarket_cash")))
+	_assert(int(dun.get("market_earned_visit")) == 50,
+		"team bounty fixture: visit earnings track the sale only")
+	var prog1: Dictionary = p1.get("bounty_progress")
+	var prog2: Dictionary = p2.get("bounty_progress")
+	_assert(int(prog1.get("b_team_cash", 0)) == 50 and int(prog2.get("b_team_cash", 0)) == 50,
+		"team bounty: progress mirrored on both players")
+	# Zero sale: feedback path only, no cash moves.
+	dun.call("_credit_checkout_sale", p1, 0)
+	_assert(int(p1.get("supermarket_cash")) == 30,
+		"checkout credit: a zero total pays nothing")
+	# Any death fails the team's no_death bounty — on BOTH mirrors.
+	dun.call("_bounty_fail_no_death", 2)
+	prog1 = p1.get("bounty_progress")
+	prog2 = p2.get("bounty_progress")
+	_assert(int(prog1.get("b_team_nd", 0)) == -1 and int(prog2.get("b_team_nd", 0)) == -1,
+		"team bounty: one death fails no_death for the whole team")
+	root.remove_child(dun)
+	dun.free()
+	# (C) Wiring pins: the delegation exists; the stale-copy tally is gone.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(dsrc.contains("func rpc_report_checkout_total"),
+		"checkout delegation: owner report-back RPC exists")
+	_assert(dsrc.contains("rpc_collect_groceries"),
+		"checkout delegation: server asks the owner to collect")
+	_assert(not dsrc.contains("_sell_player_loot"),
+		"checkout delegation: the server-side snapshot tally is removed")
+	_assert(psrc.contains("func rpc_collect_groceries") and psrc.contains("func tally_and_remove_groceries"),
+		"checkout delegation: owner-side collect + tally exist")
+	_assert(psrc.contains("func on_checkout_empty"),
+		"checkout delegation: nothing-to-sell toast hook exists")
+	print("[Playtest] Checkout delegation + team bounties done.")
+
+
 func _test_holy_light_linger() -> void:
 	print("[Playtest] Holy Light linger...")
 	# Jesse 2026-10-10: the "beam never cleans up" bug is now a feature —
@@ -12619,10 +12728,16 @@ func _test_equip_system_phase1() -> void:
 		"equip: class switch auto-unequips restricted stacks")
 	m.queue_free()
 
-	# --- Marker-preservation audit (source): both dungeon transition
-	# filters carry entry dicts by reference, never rebuild them.
+	# --- Marker-preservation audit (source): both inventory transition
+	# filters carry entry dicts by reference, never rebuild them. The
+	# checkout tally moved from dungeon.gd to player.gd with the
+	# owner-side sell delegation (2026-10-19), so the count spans both
+	# files: the train-exit confiscation filter (dungeon) + the
+	# checkout tally (player).
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
-	_assert(dsrc.split("kept.append(entry)").size() - 1 >= 2,
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(dsrc.split("kept.append(entry)").size() - 1
+		+ psrc.split("kept.append(entry)").size() - 1 >= 2,
 		"equip audit: dungeon filters carry inventory entries by reference")
 	print("[Playtest] equip system phase 1 done")
 

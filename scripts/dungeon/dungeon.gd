@@ -272,6 +272,11 @@ var _director: Node = null
 ## class cache is stale on a fresh clone (Eng 5's false-positive red).
 const BountySys := preload("res://scripts/systems/bounty.gd")
 var _bounty: BountySys = null
+## Team goals (Jesse 2026-10-19): bounty progress is the PARTY's, not
+## each player's. This one server-side dictionary is the source of
+## truth; every player's bounty_progress mirrors it for HUD/snapshot
+## display, and a completion pays every player.
+var _team_bounty_progress: Dictionary = {}
 var wave_info := {"wave": 0, "total": TOTAL_WAVES, "level": 1, "theme_name": "", "state": 0, "time_left": 8.0, "mobs_left": 0, "keys_found": 0, "keys_needed": 0}
 
 var _layout: LevelLayout
@@ -686,8 +691,9 @@ func _register_class_as(sender: int, class_id: String, steam_id: int = 0) -> voi
 			_derive_dock_mirrors(sender, ps.get("inventory", []))
 			# Bounty Board (issue #7): the continued level runs fresh
 			# bounties — progress from the saved level does not carry over.
+			# Team goals: the rejoiner mirrors the party's shared progress.
 			if _bounty != null:
-				node.set("bounty_progress", BountySys.new_progress(_bounty.bounties))
+				node.set("bounty_progress", _team_progress())
 			rpc_id(sender, "apply_continued_state", ps)
 		# Warlord: reclaim their faction from AI control.
 		if is_warlord:
@@ -1019,10 +1025,11 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 			AudioManager.sfx("train_brake")
 	if multiplayer.is_server():
 		# Bounty Board (issue #7): fresh progress for the new level, before
-		# the forfeit snapshot so entry state includes it.
+		# the forfeit snapshot so entry state includes it. Team goals: the
+		# node mirrors the party's shared progress dictionary.
 		var pnode := get_player_node(peer_id)
 		if pnode != null and _bounty != null:
-			pnode.set("bounty_progress", BountySys.new_progress(_bounty.bounties))
+			pnode.set("bounty_progress", _team_progress())
 		# Issue #102 Phase 3: free starter seed packet on misty-docks level
 		# entry so the farming loop boots even without fishing. The server
 		# tracks the seed ledger; each seed also lands in the player's own
@@ -1970,7 +1977,7 @@ func _on_checkout_body(body: Node3D, checkout: Area3D) -> void:
 	if not body.is_in_group("players"):
 		return
 	if multiplayer.is_server():
-		_sell_player_loot(body)
+		_request_checkout_sell(int(body.get_multiplayer_authority()))
 	elif int(body.get_multiplayer_authority()) == multiplayer.get_unique_id():
 		rpc_id(NetworkManager.server_peer_id, "rpc_request_checkout_sell")
 
@@ -1981,10 +1988,42 @@ func _on_checkout_body(body: Node3D, checkout: Area3D) -> void:
 func rpc_request_checkout_sell() -> void:
 	if not multiplayer.is_server():
 		return
-	var sender := multiplayer.get_remote_sender_id()
-	var node := get_player_node(sender)
+	_request_checkout_sell(multiplayer.get_remote_sender_id())
+
+
+## Authoritative sell entry (server only). The tally runs on the
+## OWNER's instance: since issue #105, inventory is per-peer
+## authoritative and never replicates, so the server's copy of a
+## client's bag is a spawn-time snapshot. Tallying there always
+## totalled 0 for groceries picked up in the level (client sells
+## silently never happened), and for groceries carried INTO a level
+## it would have paid out without ever removing them from the real
+## bag — the same items sellable again after the next transition.
+## The server therefore asks the owner to tally + remove and report
+## the total back (rpc_report_checkout_total), then credits the sale
+## from the reported total. The host tallies locally — its server
+## copy IS the real bag.
+func _request_checkout_sell(peer_id: int) -> void:
+	var node := get_player_node(peer_id)
+	if node == null:
+		return
+	if peer_id == multiplayer.get_unique_id():
+		_credit_checkout_sale(node, int(node.call("tally_and_remove_groceries")))
+	else:
+		node.rpc_id(peer_id, "rpc_collect_groceries")
+
+
+## Owner's report-back: the groceries are already removed from the
+## owner's real bag; credit the sale from the reported total. The
+## total is computed owner-side from real item data — accepted under
+## the co-op trust model, like client-claimed ability damage.
+@rpc("any_peer")
+func rpc_report_checkout_total(total: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var node := get_player_node(multiplayer.get_remote_sender_id())
 	if node != null:
-		_sell_player_loot(node)
+		_credit_checkout_sale(node, total)
 
 
 ## Potion shop: 3D counter with 3 buyable potions. E at a pedestal to buy.
@@ -2145,33 +2184,34 @@ func _process_pending_buys() -> void:
 
 
 ## Server-side: convert a player's supermarket loot into cash.
-func _sell_player_loot(player: Node) -> void:
+## Credit a checkout sale (server only): payout with the seller's
+## Greed Charm multiplier, visit earnings, achievements, bounty
+## progress, and the seller's sold feedback. The tally itself happens
+## owner-side (see _request_checkout_sell) — this runs purely from
+## the reported total. A zero total means the bag held no groceries:
+## the seller gets the nothing-to-sell toast (a zero sell used to be
+## silent, indistinguishable from the sell not happening at all).
+func _credit_checkout_sale(player: Node, total: int) -> void:
 	var sender := int(player.get_multiplayer_authority())
-	var total := 0
-	var kept: Array = []
-	# Issue #104 marker-preservation audit: entries are carried by
-	# reference (never rebuilt), so "equipped_slot" markers survive.
-	for entry in player.get("inventory"):
-		var item = entry["item"]
-		if bool(item.get("supermarket_loot")):
-			total += int(item.get("sell_value")) * int(entry["count"])
+	if total <= 0:
+		if sender == multiplayer.get_unique_id():
+			player.call("on_checkout_empty")
 		else:
-			kept.append(entry)
-	if total > 0:
-		player.set("inventory", kept)
-		# Greed Charm (issue #6): +25% loot-sale cash while equipped.
-		var payout := checkout_payout(total, float(player.get("cash_mult")))
-		player.set("supermarket_cash", int(player.get("supermarket_cash")) + payout)
-		market_earned_visit += payout
-		rpc("sync_market_earnings", market_earned_visit)
-		SaveManager.add_cash_earned(payout)
-		SaveManager.check_achievements()
-		if market_earned_visit >= SpecialData.GREED_CHARM_GOAL:
-			SpecialData.earn_for(player, "greed_charm")
-		# Bounty Board (issue #7): cash bounties progress on the sale total.
-		notify_bounty_checkout(sender, payout)
-		player.rpc_id(sender, "on_sold", payout)
-		_check_gate_unlock()
+			player.rpc_id(sender, "on_checkout_empty")
+		return
+	# Greed Charm (issue #6): +25% loot-sale cash while equipped.
+	var payout := checkout_payout(total, float(player.get("cash_mult")))
+	player.set("supermarket_cash", int(player.get("supermarket_cash")) + payout)
+	market_earned_visit += payout
+	rpc("sync_market_earnings", market_earned_visit)
+	SaveManager.add_cash_earned(payout)
+	SaveManager.check_achievements()
+	if market_earned_visit >= SpecialData.GREED_CHARM_GOAL:
+		SpecialData.earn_for(player, "greed_charm")
+	# Bounty Board (issue #7): cash bounties progress on the sale total.
+	notify_bounty_checkout(sender, payout)
+	player.rpc_id(sender, "on_sold", payout)
+	_check_gate_unlock()
 
 
 ## Relic Vault (issue #6): pure checkout math, static for testability. The
@@ -3921,9 +3961,38 @@ func notify_player_died() -> void:
 
 
 # --- Bounty Board hooks (issue #7 Phase 1) ---
-# All tracking is server-authoritative; progress lives on each player's
-# bounty_progress ({bounty_id: count}, -1 = failed) and syncs to clients
-# via sync_bounties + player snapshots.
+# All tracking is server-authoritative. Team goals (Jesse 2026-10-19):
+# progress is the party's — one shared dictionary on the server
+# (_team_bounty_progress; {bounty_id: count}, -1 = failed). Anyone's
+# kills and sales advance it, any player's death fails the team's
+# no_death bounties, and a completion pays EVERY player. Each player's
+# bounty_progress mirrors the team dictionary for HUD/snapshot display.
+
+## The party's shared bounty progress (server source of truth),
+## lazily seeded fresh for the level's bounties.
+func _team_progress() -> Dictionary:
+	if _team_bounty_progress.is_empty() and _bounty != null:
+		_team_bounty_progress = BountySys.new_progress(_bounty.bounties)
+	return _team_bounty_progress
+
+
+## Push the team progress onto every player's bounty_progress (server
+## copies directly; clients via rpc so their HUDs show team progress).
+func _mirror_team_bounty_progress() -> void:
+	for p in get_tree().get_nodes_in_group("players"):
+		p.set("bounty_progress", _team_bounty_progress)
+	rpc("sync_team_bounty_progress", _team_bounty_progress)
+
+
+## Client side of the team-progress mirror: adopt the team's progress
+## for display on every local player node.
+@rpc("any_peer", "call_local")
+func sync_team_bounty_progress(progress: Dictionary) -> void:
+	if multiplayer.is_server():
+		return
+	for p in get_tree().get_nodes_in_group("players"):
+		p.set("bounty_progress", progress.duplicate())
+
 
 @rpc("any_peer", "call_local")
 func sync_bounties(bounty_list: Array) -> void:
@@ -3933,28 +4002,28 @@ func sync_bounties(bounty_list: Array) -> void:
 		_bounty.add_to_group("bounty_system")
 		add_child(_bounty)
 	_bounty.bounties = bounty_list
+	if multiplayer.is_server():
+		_team_bounty_progress = BountySys.new_progress(bounty_list)
 	for p in get_tree().get_nodes_in_group("players"):
 		p.set("bounty_progress", BountySys.new_progress(bounty_list))
 
 
 ## Mob death hook (called from Mob._drop_and_reward, server only).
+## Team goals: the kill advances the PARTY's progress, whoever made it.
 func notify_bounty_kill(peer_id: int, mob_id: String, is_elite: bool) -> void:
 	if not multiplayer.is_server():
 		return
 	if _bounty == null:
 		return
-	var node := get_player_node(peer_id)
-	if node == null:
-		return
-	var progress: Dictionary = node.get("bounty_progress")
-	var done: Array = BountySys.record_kill(progress, _bounty.bounties, mob_id, is_elite)
-	node.set("bounty_progress", progress)
+	var done: Array = BountySys.record_kill(_team_progress(), _bounty.bounties, mob_id, is_elite)
+	_mirror_team_bounty_progress()
 	for b in done:
-		_pay_bounty(peer_id, b)
+		_pay_bounty_team(b)
 
 
-## Player death hook: fails the dead player's no_death bounties only.
-## Clients route through the server; the server calls bounty_death_local.
+## Player death hook: team goals — ANY player's death fails the
+## team's no_death bounties. Clients route through the server; the
+## server calls bounty_death_local.
 @rpc("any_peer", "call_local")
 func notify_bounty_death() -> void:
 	if not multiplayer.is_server():
@@ -3974,28 +4043,21 @@ func bounty_death_local(peer_id: int) -> void:
 func _bounty_fail_no_death(peer_id: int) -> void:
 	if _bounty == null:
 		return
-	var node := get_player_node(peer_id)
-	if node == null:
-		return
-	var progress: Dictionary = node.get("bounty_progress")
-	BountySys.record_death(progress, _bounty.bounties)
-	node.set("bounty_progress", progress)
+	BountySys.record_death(_team_progress(), _bounty.bounties)
+	_mirror_team_bounty_progress()
 
 
-## Checkout hook: cash bounties progress on the sale total.
+## Checkout hook: cash bounties progress on the sale total — the
+## team's total, whoever made the sale.
 func notify_bounty_checkout(peer_id: int, earned: int) -> void:
 	if not multiplayer.is_server():
 		return
 	if _bounty == null or earned <= 0:
 		return
-	var node := get_player_node(peer_id)
-	if node == null:
-		return
-	var progress: Dictionary = node.get("bounty_progress")
-	var done: Array = BountySys.record_checkout(progress, _bounty.bounties, earned)
-	node.set("bounty_progress", progress)
+	var done: Array = BountySys.record_checkout(_team_progress(), _bounty.bounties, earned)
+	_mirror_team_bounty_progress()
 	for b in done:
-		_pay_bounty(peer_id, b)
+		_pay_bounty_team(b)
 
 
 ## Level-clear hook: surviving no_death bounties complete and pay out.
@@ -4004,30 +4066,29 @@ func _bounty_level_cleared() -> void:
 		return
 	if _bounty == null:
 		return
-	for p in get_tree().get_nodes_in_group("players"):
-		var peer_id := int(p.get_multiplayer_authority())
-		var progress: Dictionary = p.get("bounty_progress")
-		var done: Array = BountySys.record_level_cleared(progress, _bounty.bounties)
-		p.set("bounty_progress", progress)
-		for b in done:
-			_pay_bounty(peer_id, b)
+	var done: Array = BountySys.record_level_cleared(_team_progress(), _bounty.bounties)
+	_mirror_team_bounty_progress()
+	for b in done:
+		_pay_bounty_team(b)
 
 
-## Payout: toast + bonus cash and XP immediately (server grants), then
-## feed SaveManager.check_achievements() so bounties drive achievements.
-func _pay_bounty(peer_id: int, bounty: Dictionary) -> void:
-	var node := get_player_node(peer_id)
-	if node == null:
-		return
+## Team payout: bonus cash and XP to EVERY player (server grants on
+## each player's server copy; feedback rpc'd to each owner), then
+## feed SaveManager.check_achievements() so bounties drive
+## achievements. The cash-earned stat is counted once per completion
+## (it tracks the host profile's earnings, not per-recipient sums).
+func _pay_bounty_team(bounty: Dictionary) -> void:
 	var cash := int(bounty["cash_reward"])
 	var xp := int(bounty["xp_reward"])
-	node.set("supermarket_cash", int(node.get("supermarket_cash")) + cash)
 	SaveManager.add_cash_earned(cash)
-	node.rpc_id(peer_id, "gain_xp", xp, false)
-	node.rpc_id(peer_id, "show_bounty_complete", str(bounty["name"]), cash, xp)
 	var new_unlocks: Array = SaveManager.check_achievements()
-	if not new_unlocks.is_empty():
-		node.rpc_id(peer_id, "show_achievement_unlock", new_unlocks)
+	for p in get_tree().get_nodes_in_group("players"):
+		var peer_id := int(p.get_multiplayer_authority())
+		p.set("supermarket_cash", int(p.get("supermarket_cash")) + cash)
+		p.rpc_id(peer_id, "gain_xp", xp, false)
+		p.rpc_id(peer_id, "show_bounty_complete", str(bounty["name"]), cash, xp)
+		if not new_unlocks.is_empty():
+			p.rpc_id(peer_id, "show_achievement_unlock", new_unlocks)
 
 
 ## If all connected players are dead, the run is over: clear the save.
