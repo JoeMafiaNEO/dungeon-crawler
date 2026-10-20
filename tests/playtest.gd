@@ -122,6 +122,7 @@ func _run() -> void:
 	_test_hammer_smash()
 	_test_smash_cooldown_honesty_188()
 	_test_atk_spd_184()
+	_test_rogue_rework_189()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -18644,6 +18645,178 @@ func _test_atk_spd_184() -> void:
 	_assert(htscn.contains("Swiftness (+0.15 spd)") and not htscn.contains("Swiftness (+0.2 spd)"),
 		"184(s6): Swiftness drive-by — the scene label now matches the code's +0.15 [flagged in the report]")
 	print("[Playtest] ATK SPD (issue #184) done")
+
+
+func _test_rogue_rework_189() -> void:
+	print("[Playtest] Rogue rework (issue #189)...")
+	# Issue #189 (Jesse's order, SE spec gate-passed, FORK
+	# RULED: BRANCH MANY): Mark becomes permanent until the
+	# marked enemy dies; Hamstring's slow follows the mark;
+	# a marked death — BY ANY MEANS — refreshes the MARKING
+	# rogue's Eagle Eye (the mob records _marked_by_peer; the
+	# notification fires at EXACTLY TWO kill-decision sites:
+	# take_damage's death block and _take_burn_tick's).
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var MobScript: Script = load("res://scripts/mobs/mob.gd")
+	var slime_data: Resource = load("res://data/mobs/slime.tres")
+	var num_of := func(o, k: String) -> float:
+		if o == null:
+			return -999.0
+		var v = o.get(k)
+		return -999.0 if v == null else float(v)
+	var int_of := func(o, k: String) -> int:
+		if o == null:
+			return -999
+		var v = o.get(k)
+		return -999 if v == null else int(v)
+	# -- Section 1: the permanent representation + the cast.
+	var cmap: Dictionary = MobScript.get_script_constant_map()
+	_assert(cmap.has("MARK_PERMANENT") and is_inf(float(cmap.get("MARK_PERMANENT", 0.0))),
+		"189(s1): MARK_PERMANENT exists on Mob and is INF (the durationless sentinel)")
+	var perm := 10.0
+	if cmap.has("MARK_PERMANENT"):
+		perm = float(cmap["MARK_PERMANENT"])
+	var mark_body := _body_of(psrc, "func _activate_mark")
+	_assert(mark_body.count("MARK_PERMANENT") >= 2 and not mark_body.contains("apply_mark(10.0")
+			and not mark_body.contains("\"apply_mark\", 10.0"),
+		"189(s1): the cast passes MARK_PERMANENT at BOTH branches (direct + rpc) — no finite duration remains at the cast site [source pin]")
+	_assert(not _body_of(msrc, "func _play_death").contains("_notify_marked_death")
+			and _body_of(msrc, "func take_damage").contains("_notify_marked_death()")
+			and _body_of(msrc, "func _take_burn_tick").contains("_notify_marked_death()")
+			and _body_of(msrc, "func _notify_marked_death").contains("notify_marked_target_died"),
+		"189(s3): the notification hooks EXACTLY the two kill-decision sites (take_damage + _take_burn_tick) and NOT _play_death [source pin]")
+	# -- Condition 3: the ability text ships updated.
+	_assert(psrc.contains("\"desc\": \"Reveal all enemies 4s; refreshes when a marked foe dies\"")
+			and not psrc.contains("Reveal all enemies 4s, 1/wave"),
+		"189(C3): Eagle Eye's text drops the bare 1/wave claim for the refresh wording")
+	_assert(psrc.contains("\"desc\": \"Marked foe takes +50% dmg until it dies\""),
+		"189(C3): Mark's text states the permanence")
+	# -- Permanence, driven on a real mob.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var pm = MobScene.instantiate()
+	pm.setup(1, slime_data, 1.0, 1.0, false, 1.0)
+	pm.position = Vector3(300, 0, 300)
+	root.add_child(pm)
+	pm.apply_mark(perm, 0.8)
+	_assert(bool(pm.call("is_marked")), "189(s1): premise — the mob is marked")
+	pm.call("_physics_process", 30.0)
+	_assert(bool(pm.call("is_marked")),
+		"189(s1): the mark SURVIVES 30s of ticks (the old 10s timer would have expired it)")
+	_assert(int(pm.call("status_mask")) & 16 != 0,
+		"189(s7): the snapshot STATUS_MARK bit still reads set after 30s (late joiners see the permanent mark)")
+	_assert(num_of.call(pm, "_slow_t") > 0.0 and absf(num_of.call(pm, "_slow_mult") - 0.8) < 0.001,
+		"189(s2): Hamstring's 20% slow still rides after 30s (the slow follows the mark for its whole life)")
+	pm.set("hp", 1000.0)
+	pm.call("take_damage", 100.0, 1, pm.global_position)
+	_assert(absf(num_of.call(pm, "hp") - 850.0) < 0.01,
+		"189(s1): the +50% damage leg still reads the permanent mark (100 -> 150)")
+	pm.free()
+	holder.free()
+	current_scene = null
+	# -- The refresh, in a real dungeon (the mob resolves the
+	# marker through the dungeon's get_player_node).
+	var NM = root.get_node("NetworkManager")
+	var prev_class = NM.get("selected_class_id")
+	NM.set("selected_class_id", "rogue")
+	var DS: Script = load("res://scripts/dungeon/dungeon.gd")
+	var sv: Dictionary = {}
+	for k in ["saved_player_state", "next_theme_id", "next_seed", "next_level_number"]:
+		sv[k] = DS.get(k)
+	DS.set("saved_player_state", {})
+	DS.set("next_theme_id", "")
+	DS.set("next_seed", 1)
+	DS.set("next_level_number", 1)
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dun)
+	current_scene = dun
+	var rogue = dun.call("get_player_node", 1)
+	_assert(rogue != null, "189(s3): premise — the dungeon built its player")
+	if rogue == null:
+		dun.free()
+		current_scene = null
+		NM.set("selected_class_id", prev_class)
+		for k in sv.keys():
+			DS.set(k, sv[k])
+		print("[Playtest] Rogue rework (issue #189) done")
+		return
+	var wave := int(dun.get("wave"))
+	var used_of := func() -> int: return int(rogue.get("eagle_eye_used_wave"))
+	var spawn_marked := func() -> Node:
+		var m = MobScene.instantiate()
+		m.setup(1, slime_data, 1.0, 1.0, false, 1.0)
+		m.position = Vector3(310, 0, 310)
+		dun.add_child(m)
+		m.apply_mark(perm, 1.0)
+		return m
+	# Ownership record: a server-local cast records the
+	# server's own id (the 0 -> own-id rule).
+	var om = spawn_marked.call()
+	_assert(int_of.call(om, "_marked_by_peer") == 1,
+		"189(s3): apply_mark records the marker on the server (sender 0 -> the server's own id)")
+	om.set("_marked_by_peer", 7711)
+	om.apply_mark(perm, 1.0)
+	_assert(int_of.call(om, "_marked_by_peer") == 1,
+		"189(s5): a re-mark OVERWRITES the ownership record (last applier owns the refresh — never stacked)")
+	om.free()
+	# Own kill refreshes.
+	rogue.set("eagle_eye_used_wave", wave)
+	var k1 = spawn_marked.call()
+	k1.call("take_damage", 100000.0, 1, k1.global_position)
+	_assert(used_of.call() == -1,
+		"189(s3): refresh on the rogue's OWN kill (the take_damage death block notifies the marker)")
+	# Another killer's kill refreshes — death by any means.
+	rogue.set("eagle_eye_used_wave", wave)
+	var k2 = spawn_marked.call()
+	k2.call("take_damage", 100000.0, 9999, k2.global_position)
+	_assert(used_of.call() == -1,
+		"189(s3): refresh on ANOTHER killer's kill (addressed to the marker, not the killer)")
+	# A BURN-TICK kill refreshes — the second site, by name.
+	rogue.set("eagle_eye_used_wave", wave)
+	var k3 = spawn_marked.call()
+	k3.call("apply_burn", 5.0, 100.0, 1)
+	k3.set("hp", 10.0)
+	k3.call("_take_burn_tick")
+	_assert(used_of.call() == -1,
+		"189(s3): refresh on a BURN-TICK kill (the _take_burn_tick death block — burn kills skip _drop_and_reward)")
+	# An unmarked death refreshes nobody.
+	rogue.set("eagle_eye_used_wave", wave)
+	var k4 = MobScene.instantiate()
+	k4.setup(1, slime_data, 1.0, 1.0, false, 1.0)
+	k4.position = Vector3(320, 0, 320)
+	dun.add_child(k4)
+	k4.call("take_damage", 100000.0, 1, k4.global_position)
+	_assert(used_of.call() == wave,
+		"189(s3): NO refresh on an unmarked death")
+	# No banking: an unspent Eagle Eye gains nothing.
+	rogue.set("eagle_eye_used_wave", -1)
+	var k5 = spawn_marked.call()
+	k5.call("take_damage", 100000.0, 1, k5.global_position)
+	_assert(used_of.call() == -1,
+		"189(s3): no-bank — a marked death while Eagle Eye is unspent leaves exactly one cast available (no charge stored)")
+	# The handler's authority guard: a replica copy ignores it.
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var repl = PlayerScene.instantiate()
+	repl.class_id = "rogue"
+	root.add_child(repl)
+	repl.set_multiplayer_authority(7712)
+	repl.set("eagle_eye_used_wave", wave)
+	if repl.has_method("notify_marked_target_died"):
+		repl.call("notify_marked_target_died")
+	_assert(int(repl.get("eagle_eye_used_wave")) == wave,
+		"189(s3): the handler is authority-guarded (a replica copy does not refresh)")
+	repl.free()
+	dun.free()
+	current_scene = null
+	NM.set("selected_class_id", prev_class)
+	for k in sv.keys():
+		DS.set(k, sv[k])
+	print("[Playtest] Rogue rework (issue #189) done")
+
+
 func _test_ability_matrix_162() -> void:
 	print("[Playtest] Ability matrix fixes (issues #162/#166/#169)...")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")

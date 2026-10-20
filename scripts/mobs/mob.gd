@@ -682,6 +682,34 @@ func _take_burn_tick() -> void:
 		hp = 0.0
 		alive = false
 		rpc("play_death")
+		# Issue #189 (section 3): kill-decision site 2 of 2 —
+		# burn kills skip _drop_and_reward entirely, so the
+		# marker notification hooks HERE, not the reward path.
+		_notify_marked_death()
+
+
+## Issue #189 (section 3): tell the MARKER's player that
+## their marked target died. Server-only, fires once per death
+## from the two kill-decision sites (take_damage's death
+## block and _take_burn_tick's) — _play_death is per-peer
+## presentation and is NOT a hook site. Distinct from
+## _drop_and_reward's notify_mark_kill, which addresses the
+## KILLER for affinity; this one addresses the marker.
+func _notify_marked_death() -> void:
+	if not multiplayer.is_server():
+		return
+	if _marked_by_peer == 0 or not is_marked():
+		return
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return
+	var marker = dungeon.get_player_node(_marked_by_peer)
+	if marker == null or not marker.has_method("notify_marked_target_died"):
+		return
+	if _marked_by_peer == int(multiplayer.get_unique_id()):
+		marker.notify_marked_target_died()
+	else:
+		marker.rpc_id(_marked_by_peer, "notify_marked_target_died")
 
 
 @rpc("any_peer", "call_local")
@@ -708,6 +736,20 @@ func set_xray(enabled: bool) -> void:
 ## Marked target: takes +50% damage from everyone while marked.
 var _mark_t := 0.0
 
+## Issue #189 (section 1): the permanent mark — the cast passes
+## this in place of a duration. INF lives in the existing
+## _mark_t: every consumer (damage +50%, True Aim, the status
+## mask, turret preference, dagger synergy, Orbital keying)
+## reads only positivity, so nothing migrates — the mark ends
+## only when the mob dies.
+const MARK_PERMANENT := INF
+
+## Issue #189 (section 3): who marked this mob (peer id),
+## recorded server-side in apply_mark; the LAST applier owns
+## it. 0 = unmarked. The mob's death notifies THIS peer's
+## player (the marker), never the killer.
+var _marked_by_peer := 0
+
 
 func is_marked() -> bool:
 	return _mark_t > 0.0
@@ -716,6 +758,13 @@ func is_marked() -> bool:
 @rpc("any_peer", "call_local")
 func apply_mark(duration: float, slow_mult: float = 1.0) -> void:
 	_mark_t = duration
+	# Issue #189 (section 3): record the marker on the server
+	# (sender resolution, house pattern; a local server cast
+	# reports sender 0 -> the server's own id). A re-mark
+	# overwrites: the last applier owns the death refresh.
+	if multiplayer.is_server():
+		var sender := multiplayer.get_remote_sender_id()
+		_marked_by_peer = sender if sender != 0 else int(multiplayer.get_unique_id())
 	if _sprite != null:
 		# Red pulsing outline effect via modulate.
 		_sprite.modulate = Color(1.0, 0.6, 0.6)
@@ -1842,6 +1891,10 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		hp = 0.0
 		alive = false
 		rpc("play_death")
+		# Issue #189 (section 3): kill-decision site 1 of 2 —
+		# the marker hears of the death here, whatever the
+		# damage source was.
+		_notify_marked_death()
 		_drop_and_reward(attacker)
 		# Splitter (issue #67 Phase 2): server-side spawn-on-death.
 		# Children have split_on_death=false (hard cap, no cascade).

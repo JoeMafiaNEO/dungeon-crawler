@@ -1982,9 +1982,9 @@ static func class_abilities(cid: String) -> Array:
 			]
 		"rogue":
 			return [
-				{"id": "eagle_eye", "name": "Eagle Eye", "unlock": 1, "key": "F", "desc": "Reveal all enemies 4s, 1/wave"},
+				{"id": "eagle_eye", "name": "Eagle Eye", "unlock": 1, "key": "F", "desc": "Reveal all enemies 4s; refreshes when a marked foe dies"},
 				{"id": "smoke_veil", "name": "Smoke Veil", "unlock": 4, "key": "F", "desc": "Untargetable 6s"},
-				{"id": "mark", "name": "Mark Target", "unlock": 7, "key": "F", "desc": "Marked foe takes +50% dmg"},
+				{"id": "mark", "name": "Mark Target", "unlock": 7, "key": "F", "desc": "Marked foe takes +50% dmg until it dies"},
 				{"id": "shadow_step", "name": "Shadow Step", "unlock": 15, "key": "F", "desc": "Blink 8m forward"},
 				{"id": "fan", "name": "Fan of Knives", "unlock": 30, "key": "F", "desc": "Blades hit all nearby foes"},
 			]
@@ -2255,7 +2255,7 @@ func _activate_rogue_ability() -> void:
 			_activate_execution()
 
 
-## Eagle Eye: reveal all enemies through walls for 4s. Once per wave.
+## Eagle Eye: reveal all enemies through walls for 4s. Once per wave — refreshed when a marked target dies (issue #189).
 func _activate_eagle_eye() -> void:
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	var wave := 0
@@ -2316,7 +2316,7 @@ func _activate_smoke_veil() -> void:
 		hud.refresh_abilities(self)
 
 
-## Mark Target: the enemy under your crosshair takes +50% damage for 10s. 25s cooldown.
+## Mark Target: the enemy under your crosshair takes +50% damage until it dies (issue #189: the mark is permanent). 25s cooldown.
 func _activate_mark() -> void:
 	if float(ability_cds.get("mark", 0.0)) > 0.0:
 		if hud != null:
@@ -2339,9 +2339,9 @@ func _activate_mark() -> void:
 	# SteamMultiplayerPeer can't rpc_id its own peer ID: when this instance is
 	# the server, call directly (same outcome — the handler is call_local).
 	if multiplayer.is_server():
-		target.apply_mark(10.0, hamstring)
+		target.apply_mark(Mob.MARK_PERMANENT, hamstring)
 	else:
-		target.rpc_id(NetworkManager.server_peer_id, "apply_mark", 10.0, hamstring)
+		target.rpc_id(NetworkManager.server_peer_id, "apply_mark", Mob.MARK_PERMANENT, hamstring)
 	AudioManager.sfx("mark")
 	if hud != null:
 		hud.toast("Target marked! +50% damage.")
@@ -6079,6 +6079,28 @@ func notify_mark_kill() -> void:
 		4:
 			hud.announce("RAMPAGE!")
 			AudioManager.sfx("levelup", null, 1.2)
+
+
+## Issue #189 (section 3): a target THIS player marked has
+## died — by any means, at either of the mob's two
+## kill-decision sites. Eagle Eye becomes usable again THIS
+## wave. Only a spent Eagle Eye refreshes: the wave-equality
+## guard means an unspent one gains nothing and no second
+## charge can ever bank. Silent by ruling (section 4): no
+## toast, no sfx — the slot visibly re-enables via
+## refresh_abilities.
+@rpc("any_peer", "call_local")
+func notify_marked_target_died() -> void:
+	if not is_multiplayer_authority():
+		return
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	var wave := 0
+	if dungeon != null and "wave" in dungeon:
+		wave = int(dungeon.get("wave"))
+	if eagle_eye_used_wave == wave:
+		eagle_eye_used_wave = -1
+		if hud != null:
+			hud.refresh_abilities(self)
 
 
 ## Spend one stat point. Returns false when there is nothing to spend.
