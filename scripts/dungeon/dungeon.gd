@@ -129,6 +129,8 @@ static func arrival_tint(theme_id: String) -> Color:
 			return Color(1.0, 0.25, 0.2)
 		"misty_docks":
 			return Color(0.45, 0.7, 0.9)
+		"mason_vault":
+			return Color(0.78, 0.72, 0.58)
 	return Color.WHITE
 
 static var next_theme_id: String = "village"
@@ -242,6 +244,9 @@ var wave := 0
 var wave_state: WaveState = WaveState.INTERMISSION
 # Supermarket mode: collect & sell loot to unlock the gate.
 var is_supermarket := false
+## Issue #185: the Mason's Vault — authored chambers, no waves;
+## the VaultDirector owns its mechanisms (see _build_vault).
+var is_vault := false
 # Warlord mode: AoE4-style RTS hybrid. No waves, no keys.
 var is_warlord := false
 # Apex arena (issue #5): boss arena replacing the warlord slot every 3rd cycle.
@@ -484,9 +489,14 @@ func _ready() -> void:
 	# mutate without touching the .tres.
 	if theme.theme_id == "apex":
 		theme.boss_id = apex_boss_id(get_cycle_number())
+	# Issue #185: the Mason's Vault is an authored layout (a
+	# chamber chain built in code by VaultLayout) — never procgen,
+	# never baked.
+	if theme.theme_id == "mason_vault":
+		_layout = VaultLayoutScript.make_layout(theme)
 	# Issue #138 Phase 2: baked path for pinned cycle-1 levels;
 	# every other level generates exactly as before.
-	if not _try_baked():
+	elif not _try_baked():
 		_layout = ProcGen.generate(theme, next_seed)
 	_mob_mix_sorted = ProcGen.sorted_mob_mix(theme)
 	# AI Director only spawns mobs this theme allows.
@@ -529,6 +539,11 @@ func _ready() -> void:
 		if multiplayer.is_server():
 			# Defer RTS setup until players have spawned.
 			_warlord_setup_pending = true
+	# Mason's Vault (issue #185): no waves, no keys — the chamber
+	# chain is the level; mechanisms are player-paced.
+	is_vault = theme.theme_id == "mason_vault"
+	if is_vault:
+		wave_state = WaveState.CLEARED  # skip wave logic
 	# Apex arena (issue #5): normal waves, boss wave spawns the rotating apex
 	# boss; killing it clears the level (no keys).
 	is_apex = theme.theme_id == "apex"
@@ -2431,6 +2446,8 @@ func _start_wave() -> void:
 func request_next_wave() -> void:
 	if not multiplayer.is_server():
 		return
+	if is_vault:
+		return  # Issue #185: the vault has no waves, ever.
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
@@ -3161,6 +3178,9 @@ func _build_arena_from_layout() -> void:
 		_build_torches()
 	_build_fishing_director()
 	_build_farm_plots()
+	# (theme read directly: is_vault is assigned later in _ready.)
+	if theme != null and theme.theme_id == "mason_vault":
+		_build_vault()
 	StationAnnex.build(self, _annex_plan, _layout)
 	_build_station_annex_content()
 	spawn_points = _layout.player_spawns
@@ -3769,6 +3789,20 @@ func _build_fishing_director() -> void:
 	var director := FishingDirectorScript.new()
 	director.name = "FishingDirector"
 	add_child(director)
+
+
+## Issue #185: the Mason's Vault's director + authored chambers.
+## Built for the vault theme only (from _build_arena_from_layout);
+## the director owns all mechanism state, VaultLayout builds the
+## chamber chain and registers every mechanism with it.
+const VaultDirectorScript := preload("res://scripts/dungeon/vault_director.gd")
+const VaultLayoutScript := preload("res://scripts/dungeon/vault_layout.gd")
+
+func _build_vault() -> void:
+	var director := VaultDirectorScript.new()
+	director.name = "VaultDirector"
+	add_child(director)
+	VaultLayoutScript.build(self, director)
 
 
 ## E-interact farm plot nodes from the layout (misty docks only).

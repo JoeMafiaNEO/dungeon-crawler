@@ -1,0 +1,24 @@
+[gd_resource type="Resource" format=3]
+
+[ext_resource type="Script" path="res://scripts/data/mob_data.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/sprites/skeleton.png" id="3"]
+
+[resource]
+script = ExtResource("2")
+id = "vault_warden"
+display_name = "Vault Warden"
+health = 850.0
+damage = 26.0
+move_speed = 3.0
+attack_range = 2.2
+attack_cooldown = 1.5
+xp_reward = 300
+drop_chance = 0.0
+drops = []
+frames = [ExtResource("3")]
+tint = Color(0.55, 0.55, 0.6, 1)
+loot_luck = 0.0
+bonus_drops = 0
+is_boss = true
+boss_title = "THE VAULT WARDEN"
+scale_mult = 2.2

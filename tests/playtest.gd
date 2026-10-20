@@ -48,6 +48,7 @@ func _run() -> void:
 	_test_hp_bar_migration_179()
 	_test_mason_vault_gate_182()
 	_test_turret_permanence_183()
+	_test_mason_vault_level_185()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -4158,6 +4159,222 @@ func _test_turret_permanence_183() -> void:
 	root.remove_child(holder)
 	holder.free()
 	print("[Playtest] Sentry turret permanence done")
+
+
+func _test_mason_vault_level_185() -> void:
+	print("[Playtest] Mason's Vault level (P2)...")
+	# Issue #185, spec section 3 + pins section 8 Phase 2: the
+	# vault LEVEL on a real dungeon fixture whose theme is
+	# mason_vault. Every expectation derives FROM the CipherPoems
+	# rows (words / ciphers / shifts read live) — no copy of the
+	# content is authored here. Mechanism drives go through the
+	# director's real interact route (request_interact, sender =
+	# this peer = the server in-suite).
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var NM: Variant = root.get_node("NetworkManager")
+	# --- MobData pins: both vault mobs load and resolve.
+	var sentry = load("res://data/mobs/stone_sentry.tres")
+	var warden = load("res://data/mobs/vault_warden.tres")
+	_assert(sentry != null and str(sentry.get("id")) == "stone_sentry"
+			and not bool(sentry.get("is_boss"))
+			and not (sentry.get("frames") as Array).is_empty(),
+		"185: stone_sentry MobData loads (skeleton-family, not a boss)")
+	_assert(warden != null and str(warden.get("id")) == "vault_warden"
+			and bool(warden.get("is_boss"))
+			and not (warden.get("frames") as Array).is_empty(),
+		"185: vault_warden MobData loads (boss-family)")
+	# --- Statics + network snapshot (restored at the end).
+	var saved_state: Variant = DungeonScript.get("saved_player_state")
+	var saved_theme: Variant = DungeonScript.get("next_theme_id")
+	var saved_seed: Variant = DungeonScript.get("next_seed")
+	var saved_level: Variant = DungeonScript.get("next_level_number")
+	var saved_notices: Variant = NM.get("saved_class_notices")
+	var saved_records: Variant = NM.get("peer_cipher_complete")
+	var saved_remote: Variant = NM.get("vault_remote_peers")
+	var saved_gate: Variant = NM.get("vault_gate_open")
+	DungeonScript.set("saved_player_state", {})
+	DungeonScript.set("next_theme_id", "mason_vault")
+	DungeonScript.set("next_seed", 1)
+	DungeonScript.set("next_level_number", 1)
+	NM.set("saved_class_notices", {})
+	NM.set("peer_cipher_complete", {})
+	NM.set("vault_remote_peers", [])
+	NM.set("vault_gate_open", false)
+	# The dungeon goes DIRECTLY under root: SceneTree.current_scene
+	# only accepts a root child, and the vault's positional cues
+	# resolve through AudioManager's current_scene path.
+	var saved_scene = current_scene
+	var dun = (load("res://scenes/dungeon/dungeon.tscn") as PackedScene).instantiate()
+	root.add_child(dun)
+	current_scene = dun
+	var dir: Variant = get_first_node_in_group("vault_director")
+	# The fixture has read the statics it needs; restore the data
+	# statics NOW so an abort in a drive below cannot leak vault
+	# state into later sections (abort-safety rule).
+	DungeonScript.set("saved_player_state", saved_state)
+	DungeonScript.set("next_theme_id", saved_theme)
+	DungeonScript.set("next_seed", saved_seed)
+	DungeonScript.set("next_level_number", saved_level)
+	NM.set("saved_class_notices", saved_notices)
+	NM.set("peer_cipher_complete", saved_records)
+	NM.set("vault_remote_peers", saved_remote)
+	NM.set("vault_gate_open", saved_gate)
+	DungeonScript.set("vault_gate_open", false)
+	_assert(dir != null, "185: the VaultDirector is built for the vault theme")
+	if dir == null:
+		# Nothing to drive; bail clean (the data statics are
+		# already restored above) so the failure stays in this
+		# section instead of poisoning later ones.
+		root.remove_child(dun)
+		dun.free()
+		current_scene = saved_scene
+		print("[Playtest] Mason's Vault level (P2) done")
+		return
+	_assert(bool(dun.get("is_vault")), "185: the dungeon flags the vault theme")
+	_assert(int(dun.get("wave")) == 0, "185: the vault starts at wave 0")
+	_assert(not bool(dun.get("_warlord_setup_pending")) and dun.get("_rts_manager") == null,
+		"185: no Warlord RTS setup is pending or present in the vault")
+	var defs: Dictionary = dir.get("defs")
+	for k in ["wheel1", "door1", "tablet_quiet", "socket_quiet", "door2",
+			"wstone1", "wstone5", "door3", "wheel4", "door4", "wheel5a", "wheel5b", "door5",
+			"plate1", "plate8", "door6", "door7a", "door7b", "door7c",
+			"stone_b", "lsock_b", "door8", "warden_a", "warden_b", "treasure_door"]:
+		_assert(defs.has(k), "185: mechanism registered: %s" % k)
+	var mobs_node = dun.get_node("Mobs")
+	_assert(mobs_node.get_child_count() == 2,
+		"185: chamber 2's patrol sentries are live at build (2 mobs, no statues)")
+	# --- Wave suppression: no wave can start, none ticks in.
+	dun.call("request_next_wave")
+	dun.call("_process_waves", 30.0)
+	_assert(int(dun.get("wave")) == 0 and mobs_node.get_child_count() == 2,
+		"185: zero waves over a driven interval (request refused, tick inert)")
+	var host_player = dun.call("get_player_node", 1)
+	_assert(host_player != null, "185: the host player stands in the vault (standard spawn)")
+	var hp0 := float(host_player.get("hp"))
+	# --- WHEEL, chamber 1 (poem row 0): the letters counter-shift
+	# with the wheel; the door opens when TRIED at the word.
+	var row0: Dictionary = CipherPoems.POEMS[0]
+	_assert(str(dir.call("mech_state", "door1").get("display", "")) == str(row0["cipher"]),
+		"185(wheel): the door shows the cipher before any turn")
+	dir.call("request_interact", "door1", null)
+	_assert(not bool(dir.call("mech_state", "door1").get("open", true)),
+		"185(wheel): trying the door at the cipher reading refuses plainly (no penalty, no reset)")
+	for i in int(row0["shift"]):
+		dir.call("request_interact", "wheel1", null)
+	_assert(str(dir.call("mech_state", "door1").get("display", "")) == str(row0["word"]),
+		"185(wheel): at the poem's shift the letters read the decoded word")
+	_assert(not bool(dir.call("mech_state", "door1").get("open", true)),
+		"185(wheel): the door is still closed until it is tried")
+	dir.call("request_interact", "door1", null)
+	_assert(bool(dir.call("mech_state", "door1").get("open", false)),
+		"185(wheel): trying the door at the decoded word opens it")
+	# --- CARRY, chamber 2: take the tablet, socket it, door opens.
+	dir.call("request_interact", "tablet_quiet", null)
+	_assert(str(dir.call("mech_state", "tablet_quiet").get("state", "")) == "carried",
+		"185(carry): the tablet is carried after the take")
+	dir.call("request_interact", "socket_quiet", null)
+	_assert(str(dir.call("mech_state", "tablet_quiet").get("state", "")) == "socketed"
+			and bool(dir.call("mech_state", "door2").get("open", false)),
+		"185(carry): the matching socket takes the tablet and opens the door")
+	# --- WEIGH, chamber 3: stones summing to the row's shift balance.
+	dir.call("request_interact", "wstone2", null)
+	_assert(not bool(dir.call("mech_state", "door3").get("open", true)),
+		"185(weigh): 2 on the pan does not balance a shift of %d" % int(CipherPoems.POEMS[2]["shift"]))
+	dir.call("request_interact", "wstone5", null)
+	_assert(bool(dir.call("mech_state", "door3").get("open", false)),
+		"185(weigh): stones summing to the shift (2 + 5) balance and open")
+	# --- WHEEL wake, chamber 4: a full revolution past the target
+	# without stopping wakes the sentries (statues become mobs).
+	var row3: Dictionary = CipherPoems.POEMS[3]
+	for i in int(row3["shift"]) + 25:
+		dir.call("request_interact", "wheel4", null)
+	_assert(not bool(dir.call("mech_state", "statue_c4a").get("woken", true)),
+		"185(wheel): one spin short of a full revolution past — the chamber still sleeps")
+	dir.call("request_interact", "wheel4", null)
+	_assert(bool(dir.call("mech_state", "statue_c4a").get("woken", false))
+			and mobs_node.get_child_count() == 4,
+		"185(wheel): rotations REACHING shift + 26 wake the chamber (statue -> live mob)")
+	# --- WHEEL pair, chamber 5: both wheels at the shift.
+	var row4: Dictionary = CipherPoems.POEMS[4]
+	for i in int(row4["shift"]):
+		dir.call("request_interact", "wheel5a", null)
+	_assert(str(dir.call("mech_state", "door5").get("display", "")) != str(row4["word"]),
+		"185(wheel): one wheel alone does not read the word")
+	for i in int(row4["shift"]):
+		dir.call("request_interact", "wheel5b", null)
+	_assert(str(dir.call("mech_state", "door5").get("display", "")) == str(row4["word"]),
+		"185(wheel): both wheels at the shift read the decoded word")
+	dir.call("request_interact", "door5", null)
+	_assert(bool(dir.call("mech_state", "door5").get("open", false)),
+		"185(wheel): the pair's door opens when tried at the word")
+	# --- PLATES, chamber 6: wrong plate traps + resets; the shown
+	# order completes.
+	dir.call("request_interact", "plate2", null)
+	_assert(float(host_player.get("hp")) == hp0 - 10.0,
+		"185(plates): a wrong plate fires the stone traps (placeholder damage, 'Stone Trap')")
+	dir.call("request_interact", "plate1", null)
+	dir.call("request_interact", "plate1", null)
+	_assert(float(host_player.get("hp")) == hp0 - 20.0,
+		"185(plates): a repeated plate is out of sequence — traps again, counter reset")
+	for s in [1, 2, 3, 4, 5, 6, 7, 8]:
+		dir.call("request_interact", "plate%d" % s, null)
+	_assert(bool(dir.call("mech_state", "door6").get("open", false)),
+		"185(plates): the shown order completes and opens the door")
+	_assert(float(host_player.get("hp")) == hp0 - 20.0,
+		"185(plates): the correct sequence costs no further HP")
+	# --- DOORS, chamber 7: only the lintel decoding at the row's
+	# shift to the row's word is real; a wrong one wakes sentries.
+	var row6: Dictionary = CipherPoems.POEMS[6]
+	var real_key := ""
+	var wrong_key := ""
+	for k in ["door7a", "door7b", "door7c"]:
+		var lintel := str(defs[k].get("lintel", ""))
+		var decoded := CipherPoems.cipher_word(lintel, (26 - int(row6["shift"]) % 26) % 26)
+		if decoded == str(row6["word"]):
+			real_key = k
+		elif wrong_key == "":
+			wrong_key = k
+	_assert(real_key != "" and wrong_key != "",
+		"185(doors): exactly one lintel decodes to the word (derived from the row)")
+	dir.call("request_interact", wrong_key, null)
+	_assert(not bool(dir.call("mech_state", wrong_key).get("open", true))
+			and bool(dir.call("mech_state", "statue_c7a").get("woken", false))
+			and mobs_node.get_child_count() == 6,
+		"185(doors): a wrong door stays shut and wakes the chamber's sentries")
+	dir.call("request_interact", real_key, null)
+	_assert(bool(dir.call("mech_state", real_key).get("open", false)),
+		"185(doors): the decoding door opens")
+	# --- CARRY, chamber 8: five stones; wrong socket refuses;
+	# one at a time; the lintel completes.
+	dir.call("request_interact", "stone_b", null)
+	dir.call("request_interact", "stone_u", null)
+	_assert(str(dir.call("mech_state", "stone_u").get("state", "")) == "pedestal",
+		"185(carry): one at a time — the second stone refuses while hands are full")
+	dir.call("request_interact", "lsock_u", null)
+	_assert(str(dir.call("mech_state", "stone_b").get("state", "")) == "carried"
+			and not bool(dir.call("mech_state", "lsock_u").get("filled", true)),
+		"185(carry): the wrong socket refuses, unchanged (still carried, socket empty)")
+	dir.call("request_interact", "lsock_b", null)
+	_assert(bool(dir.call("mech_state", "lsock_b").get("filled", false)),
+		"185(carry): the matching socket fills")
+	for letter in ["u", "i", "l", "d"]:
+		dir.call("request_interact", "stone_%s" % letter, null)
+		dir.call("request_interact", "lsock_%s" % letter, null)
+	_assert(bool(dir.call("mech_state", "door8").get("open", false)),
+		"185(carry): five socketed stones complete the lintel and open the door")
+	# --- Rite hall + treasure, present and P3-seamed.
+	_assert(not bool(dir.call("mech_state", "treasure_door").get("open", true))
+			and not bool(dir.get("treasure_open")),
+		"185: the treasure door stays shut on its director flag (P3 drives it)")
+	_assert(not bool(dir.call("mech_state", "warden_a").get("woken", true)),
+		"185: the wardens stand unwoken (they wake only on a blown rite — P3)")
+	_assert(dun.find_child("VaultLever", true, false) != null,
+		"185: the departure lever is present in the treasure chamber (inert until P3)")
+	# --- Teardown (the data statics were restored up top).
+	root.remove_child(dun)
+	dun.free()
+	current_scene = saved_scene
+	print("[Playtest] Mason's Vault level (P2) done")
 
 
 func _test_station_phase4() -> void:
