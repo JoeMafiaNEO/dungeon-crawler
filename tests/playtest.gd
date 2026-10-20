@@ -46,6 +46,7 @@ func _run() -> void:
 	_test_build_menu_softlock_180()
 	_test_own_faction_attack_181()
 	_test_hp_bar_migration_179()
+	_test_mason_vault_gate_182()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3941,6 +3942,162 @@ func _test_hp_bar_migration_179() -> void:
 	root.remove_child(holder)
 	holder.free()
 	print("[Playtest] RTS health bar migration done")
+
+
+func _test_mason_vault_gate_182() -> void:
+	print("[Playtest] Mason's Vault gate (P1)...")
+	# Issue #182 Phase 1 (plumbing): a single boolean per peer —
+	# cipher_complete, computed by each client from its OWN
+	# profile — gates a hidden board destination. Host-computed
+	# gate: at least one peer connected (the local peer counts)
+	# AND every connected peer's record true; unknown = not
+	# complete, always. The board list is the only signal: closed,
+	# it is byte-identical to the pre-vault list (the secrecy
+	# pin); open, "mason_vault" appends last. Fixture naming and
+	# expectations follow the architect-secrecy conventions: the
+	# closed legs assert the literal historical lists.
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var StationScript := load("res://scripts/station/station.gd")
+	var NM = root.get_node("NetworkManager")
+	# Snapshot everything the section touches.
+	var snap_gate = DungeonScript.get("vault_gate_open")
+	var snap_records = NM.get("peer_cipher_complete")
+	var snap_remote = NM.get("vault_remote_peers")
+	var snap_nm_gate = NM.get("vault_gate_open")
+	if snap_records != null:
+		snap_records = (snap_records as Dictionary).duplicate()
+	if snap_remote != null:
+		snap_remote = (snap_remote as Array).duplicate()
+	var closed_1: Array = ["village", "dungeon", "depths", "supermarket", "warlord", "misty_docks"]
+	var closed_apex: Array = ["village", "dungeon", "depths", "supermarket", "apex", "misty_docks"]
+	# --- The board-gate trio, as state pins on the real function.
+	DungeonScript.set("vault_gate_open", false)
+	_assert(DungeonScript.board_destinations(1) == closed_1,
+		"182 board(1): gate closed, cycle 1 — the literal pre-vault list")
+	_assert(DungeonScript.board_destinations(11) == closed_apex,
+		"182 board(2): gate closed, apex cycle — the literal pre-vault list (secrecy)")
+	_assert(DungeonScript.board_destinations(16) == closed_1,
+		"182 board(3): gate closed, cycle 4 — the literal pre-vault list")
+	DungeonScript.set("vault_gate_open", true)
+	var open_1: Array = closed_1.duplicate()
+	open_1.append("mason_vault")
+	var open_apex: Array = closed_apex.duplicate()
+	open_apex.append("mason_vault")
+	_assert(DungeonScript.board_destinations(1) == open_1,
+		"182 board(4): gate open — the same list + mason_vault last")
+	_assert(DungeonScript.board_destinations(11) == open_apex,
+		"182 board(5): gate open, apex cycle — the same list + mason_vault last")
+	DungeonScript.set("vault_gate_open", false)
+	# --- Placeholders (Jesse tunes at P4; pinned as dispatched).
+	var dtiers: Dictionary = DungeonScript.get_script_constant_map().get("DANGER_TIERS", {})
+	_assert(int(dtiers.get("mason_vault", -1)) == 2,
+		"182 data(1): DANGER_TIERS mason_vault == 2 (placeholder)")
+	var bstars: Dictionary = StationScript.get_script_constant_map().get("BOARD_STARS", {})
+	_assert(str(bstars.get("mason_vault", "")) == "★★★",
+		"182 data(2): BOARD_STARS mason_vault == ★★★ (placeholder)")
+	_assert(str(StationScript.theme_display_name("mason_vault")) == "The Mason's Vault",
+		"182 data(3): the display name reads The Mason's Vault")
+	# --- Report/gate drives on the testable core (a real dungeon
+	# fixture; senders are explicit, the #135 pattern).
+	DungeonScript.next_theme_id = "village"
+	DungeonScript.next_seed = 1
+	DungeonScript.next_level_number = 1
+	DungeonScript.saved_player_state = {}
+	var dun = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dun)
+	var has_core: bool = dun.has_method("_report_cipher_complete_as") \
+		and NM.has_method("vault_peer_disconnected") \
+		and NM.has_method("vault_peer_connected")
+	if has_core:
+		NM.set("vault_remote_peers", [2, 3])
+		NM.call("recompute_vault_gate")
+		dun.call("_report_cipher_complete_as", 1, true)
+		dun.call("_report_cipher_complete_as", 2, true)
+		# Guest B (peer 3) has NOT reported: unknown = not complete.
+		_assert(not bool(NM.get("vault_gate_open")),
+			"182 gate(1): host + A complete, B silent — gate closed")
+		# B disconnects: the settled rule's plain meaning — the
+		# remaining party is unanimous, the gate opens.
+		NM.call("vault_peer_disconnected", 3)
+		_assert(not (NM.get("peer_cipher_complete") as Dictionary).has(3),
+			"182 gate(2): a disconnect erases the peer's record")
+		_assert(bool(NM.get("vault_gate_open")),
+			"182 gate(3): B disconnects — gate opens for the remaining party")
+		# B reconnects: unknown again until they report.
+		NM.call("vault_peer_connected", 3)
+		_assert(not bool(NM.get("vault_gate_open")),
+			"182 gate(4): B reconnects unreported — gate closed again")
+		dun.call("_report_cipher_complete_as", 3, false)
+		_assert(not bool(NM.get("vault_gate_open")),
+			"182 gate(5): B reports false — gate closed")
+		dun.call("_report_cipher_complete_as", 3, true)
+		_assert(bool(NM.get("vault_gate_open")),
+			"182 gate(6): B reports true — gate opens")
+		# Solo: the local record alone decides.
+		NM.set("vault_remote_peers", [])
+		(NM.get("peer_cipher_complete") as Dictionary).clear()
+		NM.call("recompute_vault_gate")
+		dun.call("_report_cipher_complete_as", 1, true)
+		_assert(bool(NM.get("vault_gate_open")),
+			"182 gate(7): solo complete — gate open")
+		dun.call("_report_cipher_complete_as", 1, false)
+		_assert(not bool(NM.get("vault_gate_open")),
+			"182 gate(8): solo incomplete — gate closed")
+	else:
+		for i in 8:
+			_assert(false, "182 gate(%d): report core present" % (i + 1))
+	root.remove_child(dun)
+	dun.free()
+	# --- Sync shape: the lan_sync handler, driven as a receiver
+	# (client-shaped), mirrors into BOTH NetworkManager and the
+	# Dungeon static the board reads.
+	if NM.has_method("lan_sync_vault_gate"):
+		NM.call("lan_sync_vault_gate", true)
+		_assert(bool(NM.get("vault_gate_open")) and bool(DungeonScript.get("vault_gate_open")),
+			"182 sync(1): the handler mirrors the open verdict into NM + the Dungeon static")
+		NM.call("lan_sync_vault_gate", false)
+		_assert(not bool(NM.get("vault_gate_open")) and not bool(DungeonScript.get("vault_gate_open")),
+			"182 sync(2): the handler mirrors the closed verdict into NM + the Dungeon static")
+	else:
+		_assert(false, "182 sync(1): lan_sync_vault_gate present")
+		_assert(false, "182 sync(2): lan_sync_vault_gate present")
+	# --- Labeled source pin: the report fires alongside
+	# registration in the handshake (wiring has no other in-suite
+	# observable; the core drives above prove the treatment).
+	var dun_src := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(_body_of(dun_src, "func _send_handshake(").contains("report_cipher_complete"),
+		"182 wire(1): the handshake reports cipher completion alongside register_class (labeled source pin)")
+	# --- refresh_rows: an in-station flip re-renders the board.
+	var BoardScript := load("res://scripts/station/departure_board.gd")
+	StationScript.next_level_number = 1
+	var board = BoardScript.new()
+	root.add_child(board)
+	if board.has_method("refresh_rows"):
+		_assert((board.get("_rows") as Dictionary).size() == 6,
+			"182 rows(1): the closed board builds the 6 historical rows")
+		DungeonScript.set("vault_gate_open", true)
+		board.call("refresh_rows")
+		_assert((board.get("_rows") as Dictionary).size() == 7
+				and (board.get("_rows") as Dictionary).has("mason_vault"),
+			"182 rows(2): refresh after the flip renders the vault row")
+		DungeonScript.set("vault_gate_open", false)
+		board.call("refresh_rows")
+		_assert((board.get("_rows") as Dictionary).size() == 6,
+			"182 rows(3): refresh after closing removes the vault row")
+	else:
+		for i in 3:
+			_assert(false, "182 rows(%d): refresh_rows present" % (i + 1))
+	root.remove_child(board)
+	board.free()
+	# Restore every snapshot.
+	DungeonScript.set("vault_gate_open", snap_gate)
+	if snap_records != null:
+		NM.set("peer_cipher_complete", snap_records)
+	if snap_remote != null:
+		NM.set("vault_remote_peers", snap_remote)
+	if snap_nm_gate != null:
+		NM.set("vault_gate_open", snap_nm_gate)
+	print("[Playtest] Mason's Vault gate (P1) done")
 
 
 func _test_station_phase4() -> void:

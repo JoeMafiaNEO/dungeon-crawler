@@ -31,8 +31,9 @@ const THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket
 
 ## Danger model (Phase 3): base tier per theme × depth scaling.
 ## Single source of truth for mob HP/damage, XP, and loot sell values.
+## (mason_vault's tier 2 is a PLACEHOLDER — Jesse tunes it at #182 P4.)
 ## Risk/reward: picking a harder destination pays more if you survive.
-const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4, "misty_docks": 1}
+const DANGER_TIERS := {"village": 1, "dungeon": 2, "depths": 3, "supermarket": 1, "warlord": 4, "apex": 4, "misty_docks": 1, "mason_vault": 2}
 const TIER_MULT := {1: 1.0, 2: 1.3, 3: 1.7, 4: 2.2}
 
 ## Apex arena (issue #5): every 3rd cycle the warlord board row becomes the
@@ -66,6 +67,13 @@ static func apex_boss_id(cycle_number: int) -> String:
 ## The swap plays the apex_announce sting once per apex cycle (issue #5) —
 ## not on every call, since vote validation re-queries this on each vote.
 static var _last_apex_announce_cycle := -1
+
+## Issue #182 (Mason's Vault P1): the vault gate verdict, mirrored
+## from NetworkManager's host computation by the lan_sync handler
+## on every peer. board_destinations() reads ONLY this static:
+## when it is false the vault does not exist anywhere a player
+## can see (secrecy is structural).
+static var vault_gate_open := false
 static func board_destinations(next_level: int) -> Array[String]:
 	var out: Array[String] = []
 	var cycle := int((next_level - 1) / THEME_ORDER.size()) + 1
@@ -78,6 +86,14 @@ static func board_destinations(next_level: int) -> Array[String]:
 	# Issue #102: misty docks is an opt-in 6th destination — never enters
 	# THEME_ORDER, so the rotation and cycle math are untouched.
 	out.append("misty_docks")
+	# Issue #182 (Mason's Vault P1): the vault appends after the
+	# docks ONLY when the gate is open — its presence in this list
+	# is the sole board signal. Closed, the list is byte-identical
+	# to the pre-vault list. Like the docks it never enters
+	# THEME_ORDER, so it rides the opt-in flow (incl. no cycle
+	# advance) exactly.
+	if vault_gate_open:
+		out.append("mason_vault")
 	if apex and _last_apex_announce_cycle != cycle:
 		_last_apex_announce_cycle = cycle
 		AudioManager.sfx("apex_announce")
@@ -523,6 +539,10 @@ func _ready() -> void:
 		peer_steam_ids[host_id] = SteamManager.steam_id
 		NetworkManager.peer_steam_ids[host_id] = SteamManager.steam_id
 		_do_spawn(host_id, NetworkManager.selected_class_id, spawn_points[0], SteamManager.steam_id)
+		# Issue #182: the host reports its own cipher completion
+		# through the same core its guests' reports land on.
+		_report_cipher_complete_as(host_id,
+			SaveManager.get_cipher_fragments().size() >= 8)
 	else:
 		# Pull-based: the server pushes new arrivals to everyone already in
 		# the game, and each newcomer pulls the full world state once loaded.
@@ -602,6 +622,11 @@ func _send_handshake() -> void:
 	var my_sid := SteamManager.steam_id if SteamManager.initialized else 0
 	_sent_sid = my_sid
 	rpc_id(NetworkManager.server_peer_id, "register_class", NetworkManager.selected_class_id, my_sid)
+	# Issue #182: report cipher completion alongside registration —
+	# ONE boolean computed from our OWN profile. Fragments, counts
+	# and missing identity never cross the wire.
+	rpc_id(NetworkManager.server_peer_id, "report_cipher_complete",
+		SaveManager.get_cipher_fragments().size() >= 8)
 	rpc_id(NetworkManager.server_peer_id, "request_state")
 
 
@@ -630,6 +655,27 @@ func register_class(class_id: String, steam_id: int = 0) -> void:
 	if not multiplayer.is_server():
 		return
 	_register_class_as(multiplayer.get_remote_sender_id(), class_id, steam_id)
+
+
+## Issue #182 (Mason's Vault P1): a peer's cipher-complete report.
+## Mirrors register_class exactly — any_peer shell, server-only
+## body, treatment split into a testable core.
+@rpc("any_peer", "call_local")
+func report_cipher_complete(complete: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	_report_cipher_complete_as(multiplayer.get_remote_sender_id(), complete)
+
+
+## The report treatment, split from its RPC shell so tests can
+## drive it with an explicit sender (the #135 pattern). Only the
+## BOOLEAN is recorded — fragments, counts and identity never
+## enter session state. The claim is accepted as-is (spec §1
+## trust posture): no profile is read or written here; each
+## client computed the bool from its OWN profile.
+func _report_cipher_complete_as(sender: int, complete: bool) -> void:
+	NetworkManager.peer_cipher_complete[sender] = complete
+	NetworkManager.recompute_vault_gate()
 
 
 ## The register treatment, split from its RPC shell so tests can

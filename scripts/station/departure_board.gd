@@ -89,7 +89,6 @@ func _build() -> void:
 	var wood_dark := _mat(Color(0.32, 0.22, 0.14))
 	var board_dark := _mat(Color(0.10, 0.10, 0.13))
 	var gold := _mat(Color(0.85, 0.65, 0.25), Color(0.85, 0.60, 0.20), 0.8)
-	var slate := Color(0.16, 0.17, 0.22)
 	# Two posts.
 	_box(Vector3(0.22, 3.8, 0.22), Vector3(-2.0, 1.9, 0), wood_dark)
 	_box(Vector3(0.22, 3.8, 0.22), Vector3(2.0, 1.9, 0), wood_dark)
@@ -109,22 +108,10 @@ func _build() -> void:
 	header.outline_size = 12
 	header.position = Vector3(0, 3.32, 0.10)
 	add_child(header)
-	# One clickable row per destination. On apex cycles (issue #5) the warlord
-	# row becomes the APEX ARENA row; misty docks (issue #102) appends a 6th
-	# opt-in row — board_destinations() is the single source of truth.
-	# Rows fit inside the legacy 5-row bounds (2.88..0.72): 5 rows keep the
-	# exact legacy spacing, more rows compress evenly.
-	var next_level := Station.next_level_number
-	var party_level := _party_level(next_level)
-	var dests: Array = Dungeon.board_destinations(next_level)
-	var spacing := 0.54
-	if dests.size() > 5:
-		spacing = 2.16 / float(dests.size() - 1)
-	var y := 2.88
-	for theme_id in dests:
-		var tid := str(theme_id)
-		_build_row(tid, y, slate, next_level, party_level)
-		y -= spacing
+	# One clickable row per destination — built by refresh_rows()
+	# (extracted, issue #182) so a vault-gate flip re-renders the
+	# board in-station; _build calls it for the initial render.
+	refresh_rows()
 	# Faint gold light so it reads at dusk.
 	var light := OmniLight3D.new()
 	light.light_color = Color(1.0, 0.85, 0.5)
@@ -142,6 +129,37 @@ func _build() -> void:
 	hint.outline_modulate = Color(0, 0, 0, 0.9)
 	hint.position = Vector3(0, 0.12, 0.10)
 	add_child(hint)
+
+
+## Issue #182: the destination rows, extracted from _build so
+## the vault gate's sync handler can re-render the board when
+## the gate flips in-station. Clears the current row set and
+## rebuilds it from board_destinations() — the single source of
+## truth. On apex cycles (issue #5) the warlord row becomes the
+## APEX ARENA row; misty docks (issue #102) appends a 6th opt-in
+## row; the vault (issue #182) a 7th when its gate is open.
+## Rows fit inside the legacy 5-row bounds (2.88..0.72): 5 rows
+## keep the exact legacy spacing, more rows compress evenly.
+func refresh_rows() -> void:
+	for tid in _rows:
+		var r: Dictionary = _rows[tid]
+		for key in ["plate", "label", "area", "frame"]:
+			var n = r.get(key)
+			if n != null and is_instance_valid(n):
+				(n as Node).free()
+	_rows.clear()
+	var slate := Color(0.16, 0.17, 0.22)
+	var next_level := Station.next_level_number
+	var party_level := _party_level(next_level)
+	var dests: Array = Dungeon.board_destinations(next_level)
+	var spacing := 0.54
+	if dests.size() > 5:
+		spacing = 2.16 / float(dests.size() - 1)
+	var y := 2.88
+	for theme_id in dests:
+		var tid := str(theme_id)
+		_build_row(tid, y, slate, next_level, party_level)
+		y -= spacing
 
 
 ## Party level for the apex row's "Rec. Lv = party level + 5" (issue #5):

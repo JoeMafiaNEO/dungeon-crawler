@@ -70,6 +70,21 @@ var continued_session_roster: Array = []
 ## Cleared wherever continued_session_roster is cleared.
 var saved_class_notices: Dictionary = {}
 signal saved_class_notice_received
+## Issue #182 (Mason's Vault P1): per-peer cipher-complete records
+## — peer id -> the ONE boolean that peer reported, computed from
+## its OWN profile. Fragments, counts and identity are never
+## stored here (or anywhere in session state). Cleared wherever
+## saved_class_notices is cleared.
+var peer_cipher_complete: Dictionary = {}
+## Remote peers currently connected (the local peer is folded in
+## by the gate computation itself). Maintained by the vault
+## lifecycle hooks in the peer connect/disconnect handlers.
+var vault_remote_peers: Array = []
+## The vault gate verdict. Host-computed; clients only mirror it
+## (lan_sync_vault_gate). True iff at least one peer is connected
+## (the local peer counts) AND every connected peer's record is
+## true. Unknown = not complete, always.
+var vault_gate_open := false
 ## Save file hosting: -1 = fresh run, else the slot index.
 var host_save_slot: int = -1
 ## Ready states for the lobby (Jesse 2026-10-11): peer_id -> bool.
@@ -179,6 +194,7 @@ func host_lobby(slot: int = 0) -> void:
 		return
 	continued_session_roster = []  # Issue #140: a fresh lobby owns no roster.
 	saved_class_notices = {}
+	_reset_vault_gate_state()  # Issue #182: a fresh session owns no cipher records.
 	active_run_mode = SaveManager.MODE_MP
 	active_run_slot = slot
 	_reset_peer()
@@ -235,6 +251,7 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 func host_lan(port: int = LAN_PORT) -> void:
 	continued_session_roster = []  # Issue #140: fresh session owns no roster.
 	saved_class_notices = {}
+	_reset_vault_gate_state()  # Issue #182: a fresh session owns no cipher records.
 	transport = Transport.LAN
 	active_run_mode = "lan"
 	active_run_slot = 0
@@ -382,6 +399,70 @@ func _push_saved_class_notices() -> void:
 				str(payload["class_id"]), int(payload["level"]))
 
 
+## Issue #182 (Mason's Vault P1): recompute the vault gate from
+## the records + the connected set, syncing host -> all on any
+## change (or when forced, so a fresh connect hears the current
+## verdict). Host-only: clients mirror via lan_sync_vault_gate.
+## Solo folds to the local record alone (no remote peers, the
+## unique id is the whole connected set).
+func recompute_vault_gate(force_sync := false) -> void:
+	if not multiplayer.is_server():
+		return
+	var connected: Array = vault_remote_peers.duplicate()
+	var me := multiplayer.get_unique_id()
+	if not connected.has(me):
+		connected.append(me)
+	var open := not connected.is_empty()
+	for pid in connected:
+		if not bool(peer_cipher_complete.get(pid, false)):
+			open = false
+			break
+	if open != vault_gate_open or force_sync:
+		vault_gate_open = open
+		rpc("lan_sync_vault_gate", open)
+
+
+## Host -> all: the vault gate verdict (lan_sync family). Mirrors
+## into the Dungeon static the departure board reads, and
+## re-renders any board in the station so an in-station flip
+## shows without a re-entry.
+@rpc("authority", "call_local", "reliable")
+func lan_sync_vault_gate(open: bool) -> void:
+	vault_gate_open = open
+	Dungeon.vault_gate_open = open
+	for b in get_tree().get_nodes_in_group("departure_board"):
+		if b.has_method("refresh_rows"):
+			b.call("refresh_rows")
+
+
+## Vault lifecycle, called from the peer handlers below: a fresh
+## peer has no record, so the gate recomputes closed until they
+## report (unknown = not complete).
+func vault_peer_connected(id: int) -> void:
+	if not vault_remote_peers.has(id):
+		vault_remote_peers.append(id)
+	recompute_vault_gate(true)
+
+
+## A departed peer's record AND seat leave the computation — a
+## party blocked only by the departed peer's missing/false
+## record can open (the settled rule's plain meaning).
+func vault_peer_disconnected(id: int) -> void:
+	peer_cipher_complete.erase(id)
+	vault_remote_peers.erase(id)
+	recompute_vault_gate()
+
+
+## Session start/end: the record starts empty and the gate
+## closed, on every peer. Called wherever saved_class_notices
+## is cleared.
+func _reset_vault_gate_state() -> void:
+	peer_cipher_complete = {}
+	vault_remote_peers = []
+	vault_gate_open = false
+	Dungeon.vault_gate_open = false
+
+
 ## Host-side: push the current LAN roster to every connected client.
 func _broadcast_lan_roster() -> void:
 	if not is_host or transport != Transport.LAN:
@@ -485,6 +566,7 @@ func join_lobby(id: int) -> void:
 		return
 	continued_session_roster = []  # Issue #140: a joiner owns no roster.
 	saved_class_notices = {}
+	_reset_vault_gate_state()  # Issue #182: a fresh session owns no cipher records.
 	_join_timeout = JOIN_TIMEOUT_S
 	Steam.joinLobby(id)
 
@@ -574,6 +656,7 @@ func _note_session_lost() -> void:
 func _on_peer_connected(id: int) -> void:
 	if transport == Transport.LAN:
 		_on_lan_peer_connected(id)
+	vault_peer_connected(id)  # Issue #182: the gate's connected set.
 	_refresh_members()
 	lobby_members_changed.emit()
 	_push_saved_class_notices()
@@ -584,6 +667,7 @@ func _on_peer_disconnected(id: int) -> void:
 		# Drop the name so ghosts don't linger in the lobby list.
 		lan_names.erase(id)
 		_broadcast_lan_roster()
+	vault_peer_disconnected(id)  # Issue #182: record + seat leave the gate.
 	# Issue #126 Phase 2: a dropped peer's fishing session ends — the
 	# dungeon's FishingDirector force-ends it (visuals clear on every
 	# peer via the fx broadcast).
@@ -673,6 +757,7 @@ func leave_lobby() -> void:
 		Dungeon.continued_roster = []
 		continued_session_roster = []  # Issue #140: session store ends too.
 		saved_class_notices = {}
+		_reset_vault_gate_state()  # Issue #182: the cipher record ends with the session.
 		_reset_peer()
 		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		server_id = 1

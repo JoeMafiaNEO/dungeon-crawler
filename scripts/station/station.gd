@@ -41,6 +41,8 @@ const BOARD_STARS := {
 	"village": "★☆☆☆", "dungeon": "★★☆☆", "depths": "★★★☆",
 	"supermarket": "★☆☆☆", "warlord": "★★★★",
 	"apex": "★★★★★", "misty_docks": "★☆☆☆",
+	# Issue #182: PLACEHOLDER stars — Jesse tunes them at P4.
+	"mason_vault": "★★★",
 }
 
 ## Per-theme station dressing: platform lamp tint (Phase 5).
@@ -252,6 +254,11 @@ static func theme_display_name(theme_id: String) -> String:
 	var t = load("res://data/levels/theme_%s.tres" % theme_id)
 	if t != null and str(t.get("display_name")) != "":
 		return str(t.get("display_name"))
+	# Issue #182: until P2 lands the vault's theme resource, the
+	# board shows its proper name (the capitalize fallback would
+	# read "Mason Vault"). The .tres wins the day it exists.
+	if theme_id == "mason_vault":
+		return "The Mason's Vault"
 	return theme_id.capitalize()
 
 
