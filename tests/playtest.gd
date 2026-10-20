@@ -42,6 +42,7 @@ func _run() -> void:
 	_test_raid_replication_174()
 	_test_fishing_actions_176()
 	_test_rod_prop_invariant_177()
+	_test_army_sync_packing_178()
 	_test_affinity_families()
 	_test_rogue_traits()
 	_test_warrior_signatures()
@@ -3387,6 +3388,146 @@ func _test_rod_prop_invariant_177() -> void:
 	root.remove_child(holder)
 	holder.free()
 	print("[Playtest] Rod prop invariant done")
+
+
+## Issue #178: _broadcast_army_sync's packing appended THROUGH the
+## Dictionary indexer — `(d["ids"] as PackedInt32Array).append(...)`.
+## Packed arrays are value types: the fetch returns a copy, the
+## append grew the copy, the copy died at the semicolon. Every
+## payload shipped ZERO ids, so client replicas (which exist —
+## spawn works) never moved, while scalar resource syncs updated
+## fine. The packing now lives in _pack_army_sync() with write-back
+## accumulation; this section drives that site, then feeds its
+## payload to the real client_sync_army on a client-shaped branch
+## (a scoped MultiplayerAPI whose peer is a never-connected ENet
+## client: is_server() false, direct calls carry sender 0, which
+## the Part B D7 guard admits). The loop leg proves both halves +
+## payload compatibility on one peer — NOT wire delivery (the
+## two-seat visual pair is machine-prohibition-held).
+func _test_army_sync_packing_178() -> void:
+	print("[Playtest] Army sync packing (#178)...")
+	var UnitScript: GDScript = load("res://scripts/rts/unit.gd")
+	var MgrScript: GDScript = load("res://scripts/rts/rts_manager.gd")
+	var prev_scene = current_scene
+	var holder := Node3D.new()
+	holder.name = "ArmySync178Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var default_api = holder.get_multiplayer()
+	# Displace any rts_units incumbents earlier sections left in
+	# the group — the packing reads the whole group by design.
+	for n in get_nodes_in_group("rts_units"):
+		n.remove_from_group("rts_units")
+	# Server rig: real RTSUnits in two factions, literal ids/pos/hp.
+	var mgr: Node = MgrScript.new()
+	holder.add_child(mgr)
+	var seed_spec := [
+		[501, 0, Vector3(10, 0, 20), 80.0],
+		[502, 0, Vector3(-6, 0, 14), 65.0],
+		[503, 0, Vector3(30, 0, -12), 100.0],
+		[601, 1, Vector3(100, 0, 100), 45.0],
+		[602, 1, Vector3(96, 0, 108), 90.0],
+		[504, 0, Vector3(1, 0, 1), 10.0], # dead before packing: excluded
+	]
+	var server_units: Array = []
+	for spec in seed_spec:
+		var u = UnitScript.new()
+		holder.add_child(u)
+		u.setup(spec[1], &"villager", null)
+		u.set("unit_id", spec[0])
+		u.add_to_group("rts_units")
+		u.global_position = spec[2]
+		u.set("hp", spec[3])
+		if int(spec[0]) == 504:
+			u.set("alive", false)
+		server_units.append(u)
+	var payload: Dictionary = mgr.call("_pack_army_sync")
+	# (1) The packing pin, literal per faction.
+	_assert(payload.has(0) and payload.has(1), "178(1): payload carries both factions")
+	var d0: Dictionary = payload.get(0, {})
+	var d1: Dictionary = payload.get(1, {})
+	_assert((d0.get("ids", PackedInt32Array()) as PackedInt32Array).size() == 3,
+		"178(1): faction 0 packs its 3 living units (the dead one excluded)")
+	_assert((d1.get("ids", PackedInt32Array()) as PackedInt32Array).size() == 2,
+		"178(1): faction 1 packs its 2 living units")
+	_assert((d0.get("pos", PackedVector3Array()) as PackedVector3Array).size() == 3
+		and (d0.get("rot", PackedFloat32Array()) as PackedFloat32Array).size() == 3
+		and (d0.get("hp", PackedFloat32Array()) as PackedFloat32Array).size() == 3,
+		"178(1): faction 0's four arrays are size-consistent")
+	var got0 := {}
+	var ids0: PackedInt32Array = d0.get("ids", PackedInt32Array())
+	var pos0: PackedVector3Array = d0.get("pos", PackedVector3Array())
+	var hp0: PackedFloat32Array = d0.get("hp", PackedFloat32Array())
+	for i in ids0.size():
+		got0[ids0[i]] = [pos0[i], hp0[i]]
+	_assert(got0 == {501: [Vector3(10, 0, 20), 80.0], 502: [Vector3(-6, 0, 14), 65.0],
+			503: [Vector3(30, 0, -12), 100.0]},
+		"178(1): faction 0 payload ids/positions/hp match the seeded units literally")
+	var got1 := {}
+	var ids1: PackedInt32Array = d1.get("ids", PackedInt32Array())
+	var pos1: PackedVector3Array = d1.get("pos", PackedVector3Array())
+	var hp1: PackedFloat32Array = d1.get("hp", PackedFloat32Array())
+	for i in ids1.size():
+		got1[ids1[i]] = [pos1[i], hp1[i]]
+	_assert(got1 == {601: [Vector3(100, 0, 100), 45.0], 602: [Vector3(96, 0, 108), 90.0]},
+		"178(1): faction 1 payload ids/positions/hp match the seeded units literally")
+	# (2) The in-suite loop: free the server rig, build matching
+	# replicas on a client-shaped branch, feed the payload through
+	# the real client_sync_army (sender 0, D7-admitted).
+	for u in server_units:
+		u.free()
+	server_units.clear()
+	var holder2 := Node3D.new()
+	holder2.name = "ArmySyncClient178"
+	root.add_child(holder2)
+	var api := MultiplayerAPI.create_default_interface()
+	var enet := ENetMultiplayerPeer.new()
+	enet.create_client("127.0.0.1", 49178)
+	api.multiplayer_peer = enet
+	set_multiplayer(api, "/root/ArmySyncClient178")
+	var mgr2: Node = MgrScript.new()
+	holder2.add_child(mgr2)
+	var replicas := {}
+	for spec in seed_spec:
+		if int(spec[0]) == 504:
+			continue
+		var r = UnitScript.new()
+		holder2.add_child(r)
+		r.setup(spec[1], &"villager", null)
+		r.set("unit_id", spec[0])
+		r.add_to_group("rts_units")
+		r.global_position = spec[2] + Vector3(500, 0, 500) # scrambled
+		r.set("hp", 1.0)
+		replicas[int(spec[0])] = r
+	mgr2.call("client_sync_army", 0, payload[0])
+	mgr2.call("client_sync_army", 1, payload[1])
+	var landed := {}
+	for id in replicas:
+		var r = replicas[id]
+		landed[id] = [r.global_position, float(r.get("hp"))]
+	_assert(landed == {501: [Vector3(10, 0, 20), 80.0], 502: [Vector3(-6, 0, 14), 65.0],
+			503: [Vector3(30, 0, -12), 100.0], 601: [Vector3(100, 0, 100), 45.0],
+			602: [Vector3(96, 0, 108), 90.0]},
+		"178(2): every replica's position/hp lands equal to the packed payload (both halves, one peer)")
+	# (3) Source pins: the through-fetch append form is gone; the
+	# broadcast packs through the helper.
+	var rsrc := FileAccess.get_file_as_string("res://scripts/rts/rts_manager.gd")
+	var pack := _body_of(rsrc, "func _pack_army_sync(")
+	_assert(not pack.contains("(d[\"ids\"] as PackedInt32Array).append")
+		and not pack.contains("(d[\"pos\"] as PackedVector3Array).append")
+		and not pack.contains("(d[\"rot\"] as PackedFloat32Array).append")
+		and not pack.contains("(d[\"hp\"] as PackedFloat32Array).append"),
+		"178(3): no through-fetch append remains in the packing (labeled source pin)")
+	var bcast := _body_of(rsrc, "func _broadcast_army_sync(")
+	_assert(bcast.contains("_pack_army_sync()"),
+		"178(3): _broadcast_army_sync packs through the helper")
+	set_multiplayer(default_api, "/root/ArmySyncClient178")
+	current_scene = prev_scene
+	root.remove_child(holder2)
+	holder2.free()
+	root.remove_child(holder)
+	holder.free()
+	print("[Playtest] Army sync packing done")
 
 
 func _test_station_phase4() -> void:

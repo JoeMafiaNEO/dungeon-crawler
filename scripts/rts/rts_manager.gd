@@ -232,8 +232,11 @@ func dissolve_squads_for(units: Array) -> void:
 		squads.erase(s)
 
 
-## Gather all living units by faction and broadcast packed transforms.
-func _broadcast_army_sync() -> void:
+## Issue #178: the packing half of _broadcast_army_sync, extracted
+## into a value-returning helper so the suite can drive the site
+## directly. Gathers all living units by faction into packed
+## per-faction payloads.
+func _pack_army_sync() -> Dictionary:
 	var by_faction: Dictionary = {}
 	for n in get_tree().get_nodes_in_group("rts_units"):
 		# Jesse 2026-10-12: typed access instead of .get() (see unit.gd).
@@ -245,10 +248,29 @@ func _broadcast_army_sync() -> void:
 			by_faction[f] = {"ids": PackedInt32Array(), "pos": PackedVector3Array(),
 				"rot": PackedFloat32Array(), "hp": PackedFloat32Array()}
 		var d: Dictionary = by_faction[f]
-		(d["ids"] as PackedInt32Array).append(u.unit_id)
-		(d["pos"] as PackedVector3Array).append(u.global_position)
-		(d["rot"] as PackedFloat32Array).append(u.rotation.y)
-		(d["hp"] as PackedFloat32Array).append(u.hp)
+		# Write-back accumulation: packed arrays are VALUE types,
+		# so each array is fetched into a local, appended, and
+		# stored back. Appending through the Dictionary indexer
+		# (the old form) grew a throwaway copy and every payload
+		# shipped empty — replicas never moved (issue #178).
+		var ids: PackedInt32Array = d["ids"]
+		ids.append(u.unit_id)
+		d["ids"] = ids
+		var pos: PackedVector3Array = d["pos"]
+		pos.append(u.global_position)
+		d["pos"] = pos
+		var rot: PackedFloat32Array = d["rot"]
+		rot.append(u.rotation.y)
+		d["rot"] = rot
+		var hp: PackedFloat32Array = d["hp"]
+		hp.append(u.hp)
+		d["hp"] = hp
+	return by_faction
+
+
+## Gather all living units by faction and broadcast packed transforms.
+func _broadcast_army_sync() -> void:
+	var by_faction := _pack_army_sync()
 	for f in by_faction:
 		rpc("client_sync_army", f, by_faction[f])
 
