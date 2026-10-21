@@ -124,6 +124,7 @@ func _run() -> void:
 	_test_atk_spd_184()
 	_test_rogue_rework_189()
 	_test_prompt_glyph_190()
+	_test_atk_spd_retune_192()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -7978,7 +7979,7 @@ func _test_save_format_pf1() -> void:
 			"pf1: producer %d slot stamped save_version == SAVE_VERSION" % pidx)
 		pidx += 1
 
-	# --- migrate_run: identity at v1, idempotent, non-mutating, no deletes.
+	# --- migrate_run: v1 -> v2 changes the stamp (+ the #192 rescale where a bonus exists); idempotent, non-mutating, no deletes.
 	_assert(sm_src.contains("return migrate_run(data)"), "pf1: load_run routes through migrate_run")
 	var msrc_dict := {"theme_id": "dungeon", "save_version": 1,
 		"player_state": {"level": 2, "future_key": {"nested": [1, 2]}},
@@ -7986,7 +7987,10 @@ func _test_save_format_pf1() -> void:
 	var frozen := str(msrc_dict)
 	var once: Dictionary = mgr.migrate_run(msrc_dict)
 	_assert(str(msrc_dict) == frozen, "pf1: migrate_run does not mutate its input")
-	_assert(str(once) == frozen, "pf1: migrate_run is a true identity at v1")
+	var expected_v2: Dictionary = msrc_dict.duplicate(true)
+	expected_v2["save_version"] = 2
+	_assert(str(once) == str(expected_v2),
+		"pf1/192: migrate_run on a v1 dict changes ONLY the version stamp (this fixture carries no bonus_atk_spd — the #192 rescale is pinned in the #192 section; the v1-identity form of this pin was retired BY the bump its own fixture header sanctions)")
 	_assert(str(mgr.migrate_run(once)) == str(once), "pf1: migrate_run is idempotent")
 	var keys_ok := true
 	for k in msrc_dict.keys():
@@ -18381,26 +18385,26 @@ func _test_atk_spd_184() -> void:
 	w.set("stat_points", 3)
 	_assert(w.call("spend_point", "atk_spd"),
 		"184(s0): atk_spd is spendable (no class gate — a warrior spends it)")
-	_assert(absf(bonus_of.call(w) - 0.001) < 0.00001,
-		"184(s0): one point invests +0.001 (0.1%)")
-	_assert(absf(mult_of.call(w) - 1.001) < 0.00001,
-		"184(s0): atk_spd_mult() computes on read (1.0 + fraction)")
+	_assert(absf(bonus_of.call(w) - 0.01) < 0.00001,
+		"184/192(s0): one point invests +0.01 (1% — retargeted by #192, was +0.001)")
+	_assert(absf(mult_of.call(w) - 1.01) < 0.00001,
+		"184/192(s0): atk_spd_mult() computes on read (1.0 + fraction)")
 	w.set("stat_points", 249)
 	for i in 249:
 		w.call("spend_point", "atk_spd")
-	_assert(absf(bonus_of.call(w) - 0.25) < 0.0001 and absf(mult_of.call(w) - 1.25) < 0.0001,
-		"184(s0): 250 points invest 0.25 — mult 1.25, NO cap")
+	_assert(absf(bonus_of.call(w) - 2.5) < 0.0001 and absf(mult_of.call(w) - 3.5) < 0.0001,
+		"184/192(s0): 250 points invest 2.5 — mult 3.5, NO cap (retargeted by #192, was 0.25/1.25)")
 	var keys: Array = PlayerScript.get_script_constant_map().get("STATE_KEYS", [])
 	_assert(keys.has("bonus_atk_spd"), "184(s0): bonus_atk_spd joins STATE_KEYS")
 	var st: Dictionary = w.call("get_state")
-	_assert(absf(float(st.get("bonus_atk_spd", -999.0)) - 0.25) < 0.0001,
-		"184(s0): get_state carries the investment")
+	_assert(absf(float(st.get("bonus_atk_spd", -999.0)) - 2.5) < 0.0001,
+		"184/192(s0): get_state carries the investment (2.5 at the #192 rate)")
 	var w2 = PlayerScene.instantiate()
 	w2.class_id = "rogue"
 	root.add_child(w2)
 	w2.call("apply_state", st)
-	_assert(absf(bonus_of.call(w2) - 0.25) < 0.0001,
-		"184(s0): apply_state restores the investment (save round trip)")
+	_assert(absf(bonus_of.call(w2) - 2.5) < 0.0001,
+		"184/192(s0): apply_state restores the investment (save round trip)")
 	w.call("switch_class", "mage")
 	_assert(bonus_of.call(w) == 0.0,
 		"184(s0): class-switch reset zeroes the investment")
@@ -18601,7 +18605,7 @@ func _test_atk_spd_184() -> void:
 	if sender.has_method("atk_spd_mult"):
 		sender.call("push_snapshot", Vector3(501, 0, 500), 100.0, 1, true, 0.0, {}, false, 100.0, false, 0.0, 0.5)
 	_assert(absf(mult_of.call(sender) - 1.5) < 0.001,
-		"184(s4): premise — the sender's server copy reads mult 1.5 from its mirror (500 points)")
+		"184/192(s4): premise — the sender's server copy reads mult 1.5 from its mirror (0.5 fraction = 50 points at the #192 rate)")
 	var unit_t = UnitScript.new()
 	unit_t.name = "Unit184"
 	holder2.add_child(unit_t)
@@ -18671,7 +18675,7 @@ func _test_atk_spd_184() -> void:
 	ip.set("stat_points", 1)
 	if plus != null:
 		(plus as Button).pressed.emit()
-	_assert(plus != null and absf(num_of.call(ip, "bonus_atk_spd") - 0.251) < 0.0001
+	_assert(plus != null and absf(num_of.call(ip, "bonus_atk_spd") - 0.26) < 0.0001
 			and int(ip.get("stat_points")) == 0,
 		"184(s6): pressing AtkSpdPlus spends the point into atk_spd (the _on_stat_pressed(\"atk_spd\") connection, driven)")
 	ip.free()
@@ -19161,6 +19165,62 @@ func _test_prompt_glyph_190() -> void:
 		_assert(d.contains("{interact}") and not d.contains("Hold E") and not d.contains(" E at") and not d.contains("hold E"),
 			"190(s3): item description tokenized: " + tres)
 	print("[Playtest] Prompt/glyph layer (issue #190) done")
+
+
+func _test_atk_spd_retune_192() -> void:
+	print("[Playtest] ATK SPD retune (issue #192)...")
+	# Issue #192 (Jesse's tuning order): ATK SPD goes from
+	# +0.1% to +1% per point. The spend rate itself is
+	# retargeted inside the #184 section (disclosed there);
+	# this section pins the EXISTING-INVESTMENT half: stored
+	# bonus_atk_spd values are old-rate (uniformly — #184's
+	# spend path was the only writer), so the run-save format
+	# bumps to v2 and migrate_run rescales stored bonuses x10
+	# exactly once, version-gated.
+	var SM = root.get_node("SaveManager")
+	var smsrc := FileAccess.get_file_as_string("res://scripts/autoload/save_manager.gd")
+	var smconsts: Dictionary = load("res://scripts/autoload/save_manager.gd").get_script_constant_map()
+	_assert(int(smconsts.get("SAVE_VERSION", -1)) == 2,
+		"192: SAVE_VERSION is 2 (the retune is a format version, not a silent reinterpretation)")
+	_assert(smsrc.contains("return migrate_run(data)"),
+		"192: load_run routes every stored run through migrate_run (the single funnel) [source pin]")
+	var bonus_in := func(run: Dictionary, key: String) -> float:
+		var ps: Dictionary = run.get(key, {})
+		return float(ps.get("bonus_atk_spd", -999.0)) if ps is Dictionary else -999.0
+	# Solo v1: 250 old-rate points (0.25) become 2.5 — the
+	# same 250 points at the new rate.
+	var solo: Dictionary = SM.call("migrate_run", {"save_version": 1, "theme_id": "village",
+		"player_state": {"level": 5, "bonus_atk_spd": 0.25, "bonus_damage": 10.0},
+		"custom_future_key": {"x": 1}})
+	_assert(absf(bonus_in.call(solo, "player_state") - 2.5) < 0.0001,
+		"192: a v1 solo run's stored bonus rescales x10 (0.25 -> 2.5 — the points already spent stay whole)")
+	_assert(int(solo.get("save_version", 0)) == 2,
+		"192: the migrated dict is stamped v2 (so is_save_compatible passes it)")
+	_assert(float((solo["player_state"] as Dictionary).get("bonus_damage", -1.0)) == 10.0
+			and (solo.get("custom_future_key", {}) as Dictionary).get("x", 0) == 1,
+		"192: the migration touches bonus_atk_spd ONLY — other stats and unknown keys survive verbatim (the format contract)")
+	# MP v1: the roster entries AND the derived mirror (which
+	# the contract says mirrors roster[0]) scale together.
+	var mp: Dictionary = SM.call("migrate_run", {"save_version": 1,
+		"player_state": {"bonus_atk_spd": 0.25},
+		"roster": [{"player_state": {"bonus_atk_spd": 0.25}}, {"player_state": {"bonus_atk_spd": 0.1}}]})
+	var r0: Dictionary = (mp["roster"] as Array)[0]
+	var r1: Dictionary = (mp["roster"] as Array)[1]
+	_assert(absf(bonus_in.call(mp, "player_state") - 2.5) < 0.0001
+			and absf(bonus_in.call(r0, "player_state") - 2.5) < 0.0001
+			and absf(bonus_in.call(r1, "player_state") - 1.0) < 0.0001,
+		"192: an MP v1 run rescales the mirror AND every roster entry (mirror stays roster[0]'s copy)")
+	# Already v2: never rescaled again.
+	var v2: Dictionary = SM.call("migrate_run", {"save_version": 2,
+		"player_state": {"bonus_atk_spd": 2.5}})
+	_assert(absf(bonus_in.call(v2, "player_state") - 2.5) < 0.0001,
+		"192: a v2 run is untouched (the gate is the version stamp — no double rescale, ever)")
+	# Pre-#184 v1 (no atk_spd key): the key is NOT invented.
+	var old: Dictionary = SM.call("migrate_run", {"save_version": 1,
+		"player_state": {"level": 3}})
+	_assert(not (old["player_state"] as Dictionary).has("bonus_atk_spd"),
+		"192: a pre-#184 state gains no bonus_atk_spd key (absent stays absent; apply_state defaults it)")
+	print("[Playtest] ATK SPD retune (issue #192) done")
 
 
 func _test_ability_matrix_162() -> void:

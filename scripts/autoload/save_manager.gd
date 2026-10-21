@@ -17,6 +17,10 @@ extends Node
 ## RUN SAVE FORMAT CONTRACT (v1, SAVE_VERSION = 1) — frozen by issue #111
 ## (Save-Format Future-Proofing). save_run() below is the ONLY sanctioned
 ## run-save writer; every run dict passes through migrate_run() on load.
+## AMENDMENT (issue #192): SAVE_VERSION is now 2. The only v1 -> v2
+## transformation is the ATK SPD rescale in migrate_run (stored
+## bonus_atk_spd x10 — the per-point rate changed 0.001 -> 0.01);
+## player_state also carries bonus_atk_spd (#184).
 ## A slot file stores ONE Dictionary under ConfigFile section "run", key
 ## "data". Fields a future converter may rely on:
 ##   Run top level: theme_id (String), level_number (int), seed (int),
@@ -56,8 +60,11 @@ const RUNS_DIR := "user://runs"
 ## Jesse 2026-10-11: unlimited saves — slots grow dynamically. Existing
 ## saves keep their indices; new saves take the next free index.
 const MAX_DYNAMIC_SLOTS := 999
-## Save format version. Continue refuses saves with a mismatched version.
-const SAVE_VERSION := 1
+## Save format version. Continue refuses saves with a mismatched version
+## (checked against the MIGRATED dict — migrate_run upgrades older
+## versions on load, so a bump never orphans a convertible save).
+## v2 (issue #192): the ATK SPD retune rescale — see migrate_run.
+const SAVE_VERSION := 2
 ## Issue #111 minor 2: player-facing warning for pre-roster MP saves
 ## (see is_legacy_mp_save). One shared string so every surface that
 ## refuses such a save says exactly the same thing.
@@ -881,8 +888,35 @@ func save_run(run: Dictionary, mode: String, slot: int, keep_saved_at := false) 
 ## semantics and does not route through here.
 func migrate_run(run: Dictionary) -> Dictionary:
 	var out := run.duplicate(true)
-	# v1: no transformations.
+	# v1 -> v2 (issue #192): ATK SPD's per-point rate went
+	# 0.001 -> 0.01 on Jesse's tuning order. A stored
+	# bonus_atk_spd is an accumulated fraction written at the
+	# old rate by the single spend path, so a v1 run's values
+	# rescale x10 — points already spent buy the same
+	# 1%-per-point they cost now. Version-gated: a v2 dict
+	# never re-enters the branch, and every load of a
+	# still-v1 file starts from the on-disk value, so the
+	# rescale is idempotent until the next save_run stamps
+	# v2 permanently. The top-level player_state (the solo
+	# record / the MP derived mirror of roster[0]) and every
+	# roster entry rescale together, keeping the mirror true.
+	if not out.is_empty() and int(out.get("save_version", 0)) < 2:
+		_rescale_atk_spd_state(out.get("player_state"))
+		var roster_v: Variant = out.get("roster", [])
+		if roster_v is Array:
+			for entry in roster_v:
+				if entry is Dictionary:
+					_rescale_atk_spd_state((entry as Dictionary).get("player_state"))
+		out["save_version"] = 2
 	return out
+
+
+## Issue #192: the v1 -> v2 rescale for one player_state.
+## Absent key stays absent (pre-#184 states have no ATK SPD
+## investment to convert; apply_state defaults the stat).
+func _rescale_atk_spd_state(state: Variant) -> void:
+	if state is Dictionary and (state as Dictionary).has("bonus_atk_spd"):
+		(state as Dictionary)["bonus_atk_spd"] = float((state as Dictionary)["bonus_atk_spd"]) * 10.0
 
 
 ## Load a run from a slot. {} when empty or the slot is invalid.

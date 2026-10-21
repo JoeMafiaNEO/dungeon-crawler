@@ -73,7 +73,8 @@ var bonus_health := 0.0
 var bonus_speed := 0.0
 var bonus_aura := 0.0 # mage only: staff glow brightness per point
 ## Issue #184: ATK SPD investment — the fraction itself
-## (+0.001 per stat point, NO cap, no class gate). Read
+## (+0.01 per stat point since #192's retune, NO cap, no
+## class gate). Read
 ## through atk_spd_mult(); replicated via push_snapshot into
 ## net_bonus_atk_spd so server-side gates divide truly.
 var bonus_atk_spd := 0.0
@@ -6116,10 +6117,14 @@ func spend_point(stat: String) -> bool:
 		"speed":
 			bonus_speed += 0.15
 		"atk_spd":
-			# Issue #184: +0.1% per point, flat — NO cap and
-			# NO class gate (the aura arm's gate/cap are its
-			# own; this stat is universal by design).
-			bonus_atk_spd += 0.001
+			# Issue #184: flat per point — NO cap and NO class
+			# gate (the aura arm's gate/cap are its own; this
+			# stat is universal by design). Issue #192
+			# (Jesse's tuning order): +1% per point (was
+			# +0.1%); stored v1 bonuses rescale in
+			# SaveManager.migrate_run so spent points keep
+			# their value.
+			bonus_atk_spd += 0.01
 		"aura":
 			if class_id != "mage":
 				return false
