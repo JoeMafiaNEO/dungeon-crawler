@@ -140,9 +140,9 @@ func prompt_text() -> String:
 			var reg := _local_bag_count(SEED_ITEM)
 			var fine := _local_bag_count(SEED_ITEM_FINE)
 			if reg > 0 and fine > 0:
-				return "E — Plant Seed · Hold E — Plant Quality Seed"
+				return "{interact} — Plant Seed · Hold {interact} — Plant Quality Seed"
 			if fine > 0:
-				return "E — Plant Quality Seed"
+				return "{interact} — Plant Quality Seed"
 			return "Plant seeds ({interact})"
 		"planted", "growing":
 			return "Growing (%d waves left)" % _waves_left()

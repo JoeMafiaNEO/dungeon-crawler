@@ -1544,7 +1544,7 @@ func _setup_warlord() -> void:
 		rts_hud.set_season_manager(_season_manager)
 
 	rpc("announce_text", "WARLORD'S DOMAIN — Last faction standing wins!")
-	rpc("announce_text", "Press TAB for command view. B to build. Right-click to order units.")
+	rpc("announce_text", "Press TAB for command view. {build_menu} to build. {alt_attack} to order units.")
 
 	# Tell clients to build their local RTS stack (manager + camera + HUD).
 	for p in get_tree().get_nodes_in_group("players"):

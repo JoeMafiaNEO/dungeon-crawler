@@ -6,7 +6,7 @@
 script = ExtResource("1")
 id = "seed_packet"
 display_name = "Seed Packet"
-description = "A packet of dockside seeds. E at a tilled farm plot to plant. (Issue #102)"
+description = "A packet of dockside seeds. {interact} at a tilled farm plot to plant. (Issue #102)"
 slot = 2
 rarity = 0
 sell_value = 0

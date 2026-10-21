@@ -853,7 +853,7 @@ func equip_stack(index: int) -> bool:
 	# equipping — the rod readies on V, not on equip.
 	if item.id == "fishing_rod" and target == "TOOL" and not rod_out:
 		if hud != null:
-			hud.toast("Press V to ready your rod")
+			hud.toast("Press {toggle_rod} to ready your rod")
 	return true
 
 
@@ -4834,14 +4834,14 @@ func _update_pickup_prompt() -> void:
 		if _prompt_repair:
 			_prompt_repair = false
 			hud.set_pickup_prompt(false, "")
-		hud.set_hint("Hold E to revive teammate")
+		hud.set_hint("Hold {interact} to revive teammate")
 		return
 	# Repair prompt (wrench equipped + damaged friendly repairable near).
 	if not repair.is_empty():
 		if _prompt_pickup != null:
 			_prompt_pickup = null
 		_prompt_repair = true
-		hud.set_pickup_prompt(true, "%s — Hold E to repair (%d/%d HP)" % [
+		hud.set_pickup_prompt(true, "%s — Hold {interact} to repair (%d/%d HP)" % [
 			str(repair["name"]), int(ceil(float(repair["hp"]))),
 			int(ceil(float(repair["max_hp"])))])
 		return
@@ -4906,7 +4906,7 @@ func _toggle_command_mode() -> void:
 		# Cache the player's RTS faction.
 		_command_faction = int(get("rts_faction"))
 		if hud != null:
-			hud.set_hint("Command: aim + click select | Right-click order | E building | T exits")
+			hud.set_hint("Command: aim + {attack} select | {alt_attack} order | {interact} building | {ability} exits")
 	else:
 		command_cancel_placement()
 		for u in _command_selected:
@@ -5119,7 +5119,7 @@ func command_start_placement(btype: String) -> void:
 	else:
 		get_tree().current_scene.add_child(_placing_ghost)
 	if hud != null:
-		hud.set_hint("Click to place %s | Right-click/Esc cancels" % btype.replace("_", " ").capitalize())
+		hud.set_hint("{attack} to place %s | {alt_attack}/{close} cancels" % btype.replace("_", " ").capitalize())
 
 
 func command_cancel_placement() -> void:
@@ -5128,7 +5128,7 @@ func command_cancel_placement() -> void:
 		_placing_ghost.queue_free()
 	_placing_ghost = null
 	if _command_mode and hud != null:
-		hud.set_hint("Command: E on building | Click select | Right-click order | T exits")
+		hud.set_hint("Command: {interact} on building | {attack} select | {alt_attack} order | {ability} exits")
 
 
 ## Update ghost position from the camera raycast each frame while placing.
@@ -5396,7 +5396,7 @@ func receive_item(item_id: String, sell_value: int = -1, claim_from: String = ""
 			return
 	if inventory.size() >= INVENTORY_MAX:
 		if hud != null:
-			hud.toast("Inventory full! Press I to manage it.")
+			hud.toast("Inventory full! Press {inventory} to manage it.")
 		# Issue #142: a claim that lands nothing reports a zero take —
 		# the drop stays in the world (ItemPickup.report_claim).
 		_report_claim(claim_from, 0, claim_tag)

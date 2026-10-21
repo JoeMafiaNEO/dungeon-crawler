@@ -6,7 +6,7 @@
 script = ExtResource("1")
 id = "fertilizer"
 display_name = "Fertilizer"
-description = "E on a growing plot to advance it one growth tick instantly. (Issue #102)"
+description = "{interact} on a growing plot to advance it one growth tick instantly. (Issue #102)"
 slot = 2
 rarity = 0
 sell_value = 0

@@ -18,6 +18,22 @@ var _toast_label: Label = null
 var _toast_timer := 0.0
 var _guide_panel: PanelContainer = null
 var _guide_timer := 0.0
+## Issue #190 (section 3): the guide card's lines are
+## TEMPLATES (action tokens); they resolve at display time
+## and re-render on binding/source changes. TAB stays
+## literal throughout: the command-view toggle is a raw
+## KEY_TAB in code, with no InputMap action to tokenize.
+var _guide_rows: Array = []
+var _guide_dismiss: Label = null
+var _in_command_view := false
+
+const GUIDE_LINES := [
+	"[TAB]  Toggle top-down command view",
+	"[{build_menu}]  Build menu (in command view)",
+	"[{attack_phrase}]  Select units · {attack} building to train · {attack} resource to gather",
+	"[{alt_attack}]  Order selected units (move / attack / gather)",
+	"[Drag]  Select multiple units",
+]
 # Build menu (B key): pick a building to place.
 var _build_panel: PanelContainer = null
 var _build_buttons: Dictionary = {}
@@ -32,6 +48,16 @@ func _ready() -> void:
 	layer = 10
 	visible = false
 	_build_ui()
+	# Issue #190 (sections 3+5): prompt text here re-renders
+	# when the binding picture or the input source changes.
+	InputSource.changed.connect(_on_prompt_bindings_changed)
+	SteamInputAdapter.bindings_changed.connect(_on_prompt_bindings_changed)
+
+
+func _on_prompt_bindings_changed(_source: int = 0) -> void:
+	set_command_view(_in_command_view)
+	if _guide_panel != null and _guide_panel.visible:
+		_render_guide()
 
 
 func _build_ui() -> void:
@@ -392,37 +418,44 @@ func _build_guide() -> void:
 	sub.add_theme_font_size_override("font_size", 14)
 	sub.add_theme_color_override("font_color", Color(0.75, 0.78, 0.82))
 	vb.add_child(sub)
-	var lines := [
-		"[TAB]  Toggle top-down command view",
-		"[B]  Build menu (in command view)",
-		"[Left-click]  Select units · Click building to train · Click resource to gather",
-		"[Right-click]  Order selected units (move / attack / gather)",
-		"[Drag]  Select multiple units",
-	]
-	for line in lines:
+	for line in GUIDE_LINES:
 		var row := RichTextLabel.new()
 		row.bbcode_enabled = true
 		row.fit_content = true
 		row.scroll_active = false
 		row.add_theme_font_size_override("normal_font_size", 14)
+		vb.add_child(row)
+		_guide_rows.append([row, line])
+	var dismiss := Label.new()
+	dismiss.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dismiss.add_theme_font_size_override("font_size", 13)
+	dismiss.add_theme_color_override("font_color", Color(0.6, 0.65, 0.7))
+	vb.add_child(dismiss)
+	_guide_dismiss = dismiss
+	_render_guide()
+	_guide_panel.visible = false
+	add_child(_guide_panel)
+
+
+## (Re)render the guide card from its templates: tokens
+## resolve against the CURRENT binding picture, then the
+## "[KEY]" split + colorizing runs as it always has.
+func _render_guide() -> void:
+	for entry in _guide_rows:
+		var row := entry[0] as RichTextLabel
+		var line := PromptText.resolve(str(entry[1]))
 		# Split "[KEY]" (gold) from the description (white).
 		var brk: int = line.find("]  ")
 		var key_part: String = line.substr(0, brk + 1)
 		var desc_part: String = line.substr(brk + 3)
 		row.text = "[color=#ffd966]%s[/color]  [color=#e8e8e8]%s[/color]" % [key_part, desc_part]
-		vb.add_child(row)
-	var dismiss := Label.new()
-	dismiss.text = "Press TAB to start commanding — this card will fade."
-	dismiss.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	dismiss.add_theme_font_size_override("font_size", 13)
-	dismiss.add_theme_color_override("font_color", Color(0.6, 0.65, 0.7))
-	vb.add_child(dismiss)
-	_guide_panel.visible = false
-	add_child(_guide_panel)
+	if _guide_dismiss != null:
+		_guide_dismiss.text = "Press TAB to start commanding — this card will fade."
 
 
 func show_guide() -> void:
 	if _guide_panel != null:
+		_render_guide()
 		_guide_panel.visible = true
 		_guide_timer = 15.0
 
@@ -444,9 +477,10 @@ func hide_guide() -> void:
 
 ## Called when the command view toggles: updates hints, hides the guide.
 func set_command_view(active: bool) -> void:
+	_in_command_view = active
 	if active:
 		hide_guide()
-		_hint_label.text = "B — Build | Click — Select / Train / Gather | Right-click — Order | Drag — Multi-select | TAB — Exit"
+		_hint_label.text = PromptText.resolve("{build_menu} — Build | {attack} — Select / Train / Gather | {alt_attack} — Order | Drag — Multi-select | TAB — Exit")
 	else:
 		_hint_label.text = "TAB — Command View"
 

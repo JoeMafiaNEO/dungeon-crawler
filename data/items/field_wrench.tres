@@ -7,7 +7,7 @@
 script = ExtResource("1")
 id = "field_wrench"
 display_name = "Field Wrench"
-description = "The Architect's starting tool. Equip it and hold E near a damaged friendly structure or building to repair it. Never sold, never dropped — a lost wrench is re-issued at the next run start."
+description = "The Architect's starting tool. Equip it and hold {interact} near a damaged friendly structure or building to repair it. Never sold, never dropped — a lost wrench is re-issued at the next run start."
 icon = ExtResource("2")
 slot = 0
 rarity = 2

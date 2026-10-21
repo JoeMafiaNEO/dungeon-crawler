@@ -123,6 +123,7 @@ func _run() -> void:
 	_test_smash_cooldown_honesty_188()
 	_test_atk_spd_184()
 	_test_rogue_rework_189()
+	_test_prompt_glyph_190()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -3367,13 +3368,21 @@ func _test_rod_prop_invariant_177() -> void:
 	_assert(not bool(p2.get("rod_out")) and has_named.call(hp2, "WeaponProp") and not has_named.call(hp2, "RodProp"),
 		"177: the replica reverts to WeaponProp alone at rod_out_v=false")
 	# Tooltip (a): the item description carries the sentence, and
-	# the pre-existing wording is untouched.
+	# the pre-existing wording is untouched. RETARGETED by #190
+	# (disclosed in its pre-push report): the description is now
+	# authored with the {toggle_rod} token — the data assert
+	# names the token, and a render assert proves the token
+	# reads "V" on keyboard, so the taught sentence survives
+	# verbatim at display time.
 	var rod_res: Resource = load("res://data/items/fishing_rod.tres")
 	var desc := str(rod_res.get("description"))
-	_assert(desc.contains("Press V to ready your rod."),
-		"177: the rod tooltip teaches V (exact sentence)")
+	_assert(desc.contains("Press {toggle_rod} to ready your rod."),
+		"177/190: the rod tooltip teaches the toggle via its token (retargeted — was the literal 'Press V' data assert)")
 	_assert(desc.contains("to fish at marked spots"),
 		"177: the existing description wording is untouched")
+	var PT177: Script = load("res://scripts/ui/prompt_text.gd")
+	_assert(str(PT177.call("resolve", desc, 0)).contains("Press V to ready your rod."),
+		"190: rendered on keyboard, the rod description reads 'Press V to ready your rod.' verbatim")
 	# Tooltip (b): equipping the rod toasts the teaching line on an
 	# authority fixture; equipping a non-rod tool does not.
 	var stub := _HudStub177.new()
@@ -3383,8 +3392,8 @@ func _test_rod_prop_invariant_177() -> void:
 	p3.set("hud", stub)
 	p3.set("inventory", [{"item": rod_item, "count": 1, "equipped_slot": ""}])
 	_assert(bool(p3.call("equip_stack", 0)), "177: the rod equips (toast fixture)")
-	_assert(stub.toasts == ["Press V to ready your rod"],
-		"177: equipping the rod records the exact V toast")
+	_assert(stub.toasts == ["Press {toggle_rod} to ready your rod"],
+		"177/190: equipping the rod records the exact toast TEMPLATE (retargeted by #190 — call sites author tokens; hud.toast resolves at display, pinned in the #190 section)")
 	var stub2 := _HudStub177.new()
 	holder.add_child(stub2)
 	var p4 = PlayerScene.instantiate()
@@ -16102,12 +16111,23 @@ func _test_prompt_text_152() -> void:
 	_assert(pause_hint != null and pause_hint.text == "WASD move · Click attack · Shift dash · Q ability · G ping · R start wave",
 		"152-2: pause controls hint flips back with the source")
 	hud.set_pickup_prompt(true, "Copper Key")
-	var pp := hud.get_node("%PickupPrompt") as Label
-	_assert(pp.text == "[E]  Copper Key", "152-2: loot prompt renders [E] on KB")
+	# Retargeted by #190 (disclosed): the prompt renders as
+	# composite SEGMENTS in the HUD's prompt line now; the
+	# pin reads the line's concatenated label text — the same
+	# rendered string, on the new surface.
+	var pline = hud.get("_prompt_line")
+	var pp_text := func() -> String:
+		var t := ""
+		if pline != null:
+			for c in pline.get_children():
+				if c is Label:
+					t += (c as Label).text
+		return t
+	_assert(pp_text.call() == "[E]  Copper Key", "152-2: loot prompt renders [E] on KB")
 	src.set_source(1)
-	_assert(pp.text == "[X]  Copper Key", "152-2: loot prompt re-renders [X] live on pad")
+	_assert(pp_text.call() == "[X]  Copper Key", "152-2: loot prompt re-renders [X] live on pad")
 	hud.set_pickup_prompt(true, "Browse vendor")
-	_assert(pp.text == "[X]  Browse vendor",
+	_assert(pp_text.call() == "[X]  Browse vendor",
 		"152-2: interact prompts take the same resolved renderer on pad")
 	src.set_source(0)
 	hud.set_pickup_prompt(false, "")
@@ -16144,10 +16164,25 @@ func _test_prompt_text_152() -> void:
 	hud.refresh_mouse_legend(stub_p)
 	var ll = hud.get("_legend_left")
 	var lm = hud.get("_legend_mid")
-	_assert(ll.text == "LMB  Attack" and lm.text == "MMB  Ping",
+	# Retargeted by #190 (disclosed): the legend line is
+	# composite now — the caption lives in its own segment
+	# host beside the verb label. The pin composes the two,
+	# which is the line the player reads.
+	var cap_text := func(host) -> String:
+		var t := ""
+		if host != null:
+			for c in host.get_children():
+				if c is Label:
+					t += (c as Label).text
+		return t
+	var line_of := func(cap_host, verb) -> String:
+		return cap_text.call(cap_host) + "  " + str(verb.text)
+	_assert(line_of.call(hud.get("_legend_cap_left"), ll) == "LMB  Attack"
+			and line_of.call(hud.get("_legend_cap_mid"), lm) == "MMB  Ping",
 		"152-2: legend renders mouse captions + verbs on KB")
 	src.set_source(1)
-	_assert(ll.text == "RT  Attack" and lm.text == "RS Click  Ping",
+	_assert(line_of.call(hud.get("_legend_cap_left"), ll) == "RT  Attack"
+			and line_of.call(hud.get("_legend_cap_mid"), lm) == "RS Click  Ping",
 		"152-2: legend re-renders pad captions on a source flip")
 	src.set_source(0)
 	_assert(ml.slot_actions_for("repair_ready")["right"] == "interact",
@@ -18817,6 +18852,317 @@ func _test_rogue_rework_189() -> void:
 	print("[Playtest] Rogue rework (issue #189) done")
 
 
+var _bc190 := 0
+
+
+func _on_bc190() -> void:
+	_bc190 += 1
+
+
+class _FakeSteamBackend190:
+	extends RefCounted
+	var ready := true
+	var init_ok := true
+	var controllers: Array = [42]
+	var set_handle := 99
+	var digital_handles: Dictionary = {}
+	var analog_handles: Dictionary = {}
+	var origins_d: Dictionary = {}
+	var origins_a: Dictionary = {}
+	var strings: Dictionary = {}
+	var glyphs: Dictionary = {}
+	var shutdown_calls := 0
+
+	func session_ready() -> bool:
+		return ready
+
+	func set_manifest_path(_path: String) -> bool:
+		return true
+
+	func input_init() -> bool:
+		return init_ok
+
+	func input_shutdown() -> void:
+		shutdown_calls += 1
+
+	func run_frame() -> void:
+		pass
+
+	func connected_controllers() -> Array:
+		return controllers
+
+	func action_set_handle(_set_name: String) -> int:
+		return set_handle
+
+	func digital_handle(action_name: String) -> int:
+		return int(digital_handles.get(action_name, 0))
+
+	func analog_handle(action_name: String) -> int:
+		return int(analog_handles.get(action_name, 0))
+
+	func activate_action_set(_controller: int, _set_handle: int) -> void:
+		pass
+
+	func digital_data(_controller: int, _handle: int) -> Dictionary:
+		return {"state": false, "active": true}
+
+	func analog_data(_controller: int, _handle: int) -> Dictionary:
+		return {"x": 0.0, "y": 0.0, "active": true}
+
+	func _name_for(handle: int, table: Dictionary) -> String:
+		for name in table.keys():
+			if int(table[name]) == handle:
+				return str(name)
+		return ""
+
+	func digital_origins(_controller: int, _set_handle: int, handle: int) -> Array:
+		var n := _name_for(handle, digital_handles)
+		return [int(origins_d.get(n, 0))] if n != "" else []
+
+	func analog_origins(_controller: int, _set_handle: int, handle: int) -> Array:
+		var n := _name_for(handle, analog_handles)
+		return [int(origins_a.get(n, 0))] if n != "" else []
+
+	func glyph_for_origin(origin: int) -> String:
+		return str(glyphs.get(origin, ""))
+
+	func string_for_origin(origin: int) -> String:
+		return str(strings.get(origin, ""))
+
+	func show_binding_panel(_controller: int) -> bool:
+		return true
+
+
+func _test_prompt_glyph_190() -> void:
+	print("[Playtest] Prompt/glyph layer (issue #190)...")
+	# Issue #190 (Jesse's order, SE spec gate-passed): prompts
+	# gain a STEAM tier above PromptText's native tables —
+	# resolved through the adapter only, fail-closed per
+	# action; static text carries tokens resolved at the
+	# display point; glyph ART renders as composite segments
+	# on the designated surfaces; the adapter owns a
+	# bindings_changed signal with a fingerprint poll.
+	var PT: Script = load("res://scripts/ui/prompt_text.gd")
+	var ad = root.get_node("SteamInputAdapter")
+	var real_backend = ad.backend
+	var aconsts: Dictionary = ad.get_script().get_script_constant_map()
+	var digi: Array = aconsts["DIGITAL_ACTIONS"]
+	var ana: Array = aconsts["ANALOG_ACTIONS"]
+	var fake := _FakeSteamBackend190.new()
+	for i in digi.size():
+		fake.digital_handles[digi[i]] = 100 + i
+	for i in ana.size():
+		fake.analog_handles[ana[i]] = 200 + i
+	fake.origins_d = {"interact": 501, "attack": 502, "toggle_rod": 503, "dash": 0, "ping": 504, "build_menu": 505}
+	fake.strings = {501: "Steam Cross", 502: "Steam Trigger", 503: "Steam DPadL", 504: "", 505: "Steam DPadR"}
+	fake.glyphs = {501: "fake/no_such_glyph.png", 502: "fake/no_such_glyph.png", 503: "fake/no_such_glyph.png", 505: "fake/no_such_glyph.png"}
+	ad.set_backend(fake)
+	# -- Section 1: tier order.
+	_assert(bool(ad.call("try_activate")) and bool(ad.active),
+		"190(s1): premise — the fake backend activates the adapter")
+	_assert(str(PT.call("label", "interact", 1)) == "Steam Cross",
+		"190(s1): PAD + Steam active -> the label is Steam's origin string for the actual binding")
+	_assert(str(PT.call("label", "interact", 0)) == "E",
+		"190(s1): a KEYBOARD prompt never renders a controller origin (source gate)")
+	_assert(str(PT.call("glyph", "attack", 1)) == "Steam Trigger",
+		"190(s1): the caption form takes the same Steam tier (above the GLYPHS overrides)")
+	_assert(str(PT.call("label", "attack_phrase", 1)) == "Steam Trigger",
+		"190(s1): attack_phrase resolves its Steam tier through attack's origin")
+	# -- Fail-closed cascade (per action).
+	_assert(str(PT.call("label", "dash", 1)) == "LS Click",
+		"190(s1): origin 0 (unbound in Steam) -> the NATIVE pad label, never blank")
+	_assert(str(PT.call("label", "ping", 1)) == "RS Click",
+		"190(s1): an empty origin string -> the NATIVE pad label")
+	_assert(str(PT.call("label", "close", 1)) == "B",
+		"190(s1): display tokens have no adapter action and stay native even while Steam is active")
+	# -- Segments: structure + the no-regression form.
+	var segs: Array = []
+	if PT.has_method("resolve_segments"):
+		segs = PT.call("resolve_segments", "{interact} — Plant Seed", 1)
+	_assert(segs.size() == 2 and str((segs[0] as Dictionary).get("kind", "")) == "action"
+			and str((segs[0] as Dictionary).get("text", "")) == "Steam Cross"
+			and str((segs[0] as Dictionary).get("glyph_path", "")) == "fake/no_such_glyph.png"
+			and str((segs[1] as Dictionary).get("text", "")) == " — Plant Seed",
+		"190(s4): resolve_segments parses a mixed template — the action segment carries the origin string + glyph path, text runs intact")
+	# -- The HUD segment builder: art falls back to the string.
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	var host := HBoxContainer.new()
+	root.add_child(host)
+	if hud.has_method("_fill_segment_line"):
+		hud.call("_fill_segment_line", host, segs, 22)
+	var kinds := ""
+	var texts := ""
+	for c in host.get_children():
+		kinds += ("T" if c is TextureRect else "L")
+		if c is Label:
+			texts += (c as Label).text
+	_assert(kinds == "LL" and texts.contains("Steam Cross"),
+		"190(s4): an unloadable glyph path falls back to the origin STRING segment (fail-closed in cascade)")
+	fake.glyphs[501] = ProjectSettings.globalize_path("res://assets/sprites/menu/portrait_architect_64.png")
+	var segs2: Array = []
+	if PT.has_method("resolve_segments"):
+		segs2 = PT.call("resolve_segments", "{interact} — Plant Seed", 1)
+	if hud.has_method("_fill_segment_line"):
+		hud.call("_fill_segment_line", host, segs2, 22)
+	kinds = ""
+	for c in host.get_children():
+		kinds += ("T" if c is TextureRect else "L")
+	_assert(kinds == "TL",
+		"190(s4): a loadable glyph path renders as TEXTURE art ahead of the text run")
+	host.free()
+	# -- Section 5: the refresh signal + fingerprint poll.
+	_bc190 = 0
+	var connected := false
+	if ad.has_signal("bindings_changed"):
+		ad.bindings_changed.connect(_on_bc190)
+		connected = true
+	ad.call("deactivate", "pin")
+	ad.call("try_activate")
+	_assert(connected and _bc190 == 2,
+		"190(s5): bindings_changed fires on deactivate AND on activate")
+	fake.origins_d["interact"] = 509
+	fake.strings[509] = "Steam Circle"
+	ad.call("_process", 0.6)
+	_assert(_bc190 == 3,
+		"190(s5): a mutated origin diffs the fingerprint on the poll and fires bindings_changed")
+	ad.call("_process", 0.6)
+	_assert(_bc190 == 3,
+		"190(s5): an unchanged picture emits nothing across repeated polls")
+	# The HUD re-renders its prompt line on the signal.
+	var IS = root.get_node("InputSource")
+	IS.call("set_source", 1)
+	hud.call("set_pickup_prompt", true, "Loot")
+	var line_text := ""
+	var pl = hud.get("_prompt_line")
+	if pl != null:
+		for c in pl.get_children():
+			if c is Label:
+				line_text += (c as Label).text
+	_assert(line_text.contains("Steam Circle"),
+		"190(s5): the prompt line renders the CURRENT binding (post-rebind) through the signal-driven re-render")
+	IS.call("set_source", 0)
+	ad.call("deactivate", "pin done")
+	ad.set_backend(real_backend)
+	# Teardown hygiene: activation latched the adapter's
+	# input-initialized flag; the #150 matrix (which runs
+	# after this section) drives init failure modes and must
+	# find the adapter exactly as it was.
+	ad.set("_input_inited", false)
+	# -- Inactive: everything is byte-identical native.
+	_assert(str(PT.call("label", "interact", 1)) == "X",
+		"190(s1): adapter inactive -> the native pad label (byte-identical fallback)")
+	var segs3: Array = []
+	if PT.has_method("resolve_segments"):
+		segs3 = PT.call("resolve_segments", "{interact} — Plant Seed", 1)
+	var concat := ""
+	var all_text := true
+	for s in segs3:
+		if str((s as Dictionary).get("kind", "")) != "text" and str((s as Dictionary).get("glyph_path", "")) != "":
+			all_text = false
+		concat += str((s as Dictionary).get("text", ""))
+	_assert(all_text and concat == str(PT.call("resolve", "{interact} — Plant Seed", 1)),
+		"190(s4): with Steam inactive the segment form concatenates EXACTLY to today's resolve() output (no regression)")
+	# -- The amendment: ability-bar caps are source-
+	# conditional; pad shows cycle flank glyphs instead.
+	var PlayerScene190: PackedScene = load("res://scenes/player/player.tscn")
+	var p190 = PlayerScene190.instantiate()
+	p190.set("class_id", "rogue")
+	root.add_child(p190)
+	# The player's ready rebuilds its roster from the class
+	# table; the bar fixture sets the roster AFTER ready,
+	# with direct-select number keys.
+	p190.set("unlocked_abilities", [
+		{"id": "eagle_eye", "name": "Eagle Eye", "unlock": 1, "key": "1", "desc": "x"},
+		{"id": "mark", "name": "Mark Target", "unlock": 7, "key": "2", "desc": "y"},
+	])
+	p190.set("selected_ability", 0)
+	var caps_of := func() -> Array:
+		var out: Array = []
+		var bar = hud.get_node("%AbilityBar")
+		for slot in bar.get_children():
+			if slot.is_queued_for_deletion():
+				continue # rebuilds queue_free the old slots; the live set is the un-queued tail
+			if slot.get_child_count() > 0 and slot.get_child(0).get_child_count() > 0:
+				var kl = slot.get_child(0).get_child(0)
+				if kl is Label:
+					out.append((kl as Label).text)
+		return out
+	var flank_text := func(host) -> String:
+		var t := ""
+		if host != null:
+			for c in host.get_children():
+				if c is Label:
+					t += (c as Label).text
+		return t
+	hud.call("refresh_abilities", p190)
+	_assert(caps_of.call() == ["[1]", "[2]"],
+		"190(amend): KEYBOARD render — the direct-select caps render as today")
+	_assert(not bool(hud.get("_ability_flank_left").visible),
+		"190(amend): no flank glyphs on keyboard")
+	IS.call("set_source", 1)
+	_assert(caps_of.call() == ["", ""],
+		"190(amend): PAD render — the numbers are REMOVED (a source flip re-renders the bar)")
+	var fl = hud.get("_ability_flank_left")
+	var fr = hud.get("_ability_flank_right")
+	_assert(bool(fl.visible) and bool(fr.visible) and flank_text.call(fl) == "LB/RB" and flank_text.call(fr) == "LB/RB",
+		"190(amend): PAD render — cycle_ability flank glyphs flank the bar (native pad labels with the adapter inactive)")
+	IS.call("set_source", 0)
+	_assert(caps_of.call() == ["[1]", "[2]"] and not bool(fl.visible),
+		"190(amend): the swap back re-renders caps and hides the flanks")
+	p190.free()
+	hud.free()
+	# -- Section 2: the rod template renders per tier from the
+	# SAME data text; the retargeted #177 pin's render legs.
+	var rod_desc := str(load("res://data/items/fishing_rod.tres").get("description"))
+	_assert(rod_desc.contains("Press {toggle_rod} to ready your rod."),
+		"190(s2): the rod description is authored with the {toggle_rod} token")
+	_assert(str(PT.call("resolve", rod_desc, 0)) == "A trusty dock rod. Equip it in the TOOL slot to fish at marked spots. Press V to ready your rod.",
+		"190(s2): the SAME text renders 'V' on keyboard (the #177 sentence, tokenized)")
+	_assert(str(PT.call("resolve", rod_desc, 1)) == "A trusty dock rod. Equip it in the TOOL slot to fish at marked spots. Press D-Pad Left to ready your rod.",
+		"190(s2): and 'D-Pad Left' on a native pad")
+	# -- Q6 + vocabulary: no new tokens.
+	_assert(str(PT.call("resolve", "{ability_3}", 1)) == "{ability_3}",
+		"190(s7): Q6 — {ability_3} is still not a token (left as written, the unknown-token rule)")
+	_assert((PT.get_script_constant_map()["LABELS"] as Dictionary).size() == 21,
+		"190(s7): the token vocabulary is unchanged (21 entries — this build adds none)")
+	# -- Central resolution + the migration set [source pins].
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("%ToastLabel.text = PromptText.resolve(message)"),
+		"190(s2): toast() resolves centrally at the display point [source pin]")
+	_assert(hsrc.contains("%AnnounceLabel.text = PromptText.resolve(text)"),
+		"190(s2): announce() resolves on the VIEWER's machine [source pin]")
+	_assert(hsrc.contains("desc.text = PromptText.resolve(data.description)")
+			and hsrc.contains("_track_prompt_label(desc, data.description)"),
+		"190(s2): the item-description site resolves at display and joins the tracked registry [source pin]")
+	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
+	_assert(psrc.contains("hud.toast(\"Press {toggle_rod} to ready your rod\")")
+			and psrc.contains("Press {inventory} to manage it")
+			and psrc.contains("Hold {interact} to revive teammate")
+			and psrc.contains("Hold {interact} to repair")
+			and psrc.contains("{alt_attack} order | {interact} building | {ability} exits")
+			and psrc.contains("{alt_attack}/{close} cancels")
+			and psrc.contains("{interact} on building | {attack} select"),
+		"190(s3): the player-side migration set carries tokens (rod toast, inventory toast, revive, repair, both command hints, placement hint) [source pin]")
+	var fsrc := FileAccess.get_file_as_string("res://scripts/dungeon/farm_plot.gd")
+	_assert(fsrc.contains("\"{interact} — Plant Seed · Hold {interact} — Plant Quality Seed\"")
+			and fsrc.contains("\"{interact} — Plant Quality Seed\""),
+		"190(s3): the farm plant prompts tokenized in #155's exact wording shape [source pin]")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("\"Press TAB for command view. {build_menu} to build. {alt_attack} to order units.\""),
+		"190(s3): the Warlord announce is authored with tokens (TAB stays literal — a raw key with no InputMap action) [source pin]")
+	var rsrc := FileAccess.get_file_as_string("res://scripts/rts/rts_hud.gd")
+	_assert(rsrc.contains("[{attack_phrase}]  Select units") and rsrc.contains("[{alt_attack}]  Order selected units")
+			and rsrc.contains("{build_menu} — Build | {attack} — Select"),
+		"190(s3): the RTS guide card + command hint tokenized [source pin]")
+	for tres in ["seed_packet", "seed_packet_fine", "fertilizer", "field_wrench"]:
+		var d := str(load("res://data/items/" + tres + ".tres").get("description"))
+		_assert(d.contains("{interact}") and not d.contains("Hold E") and not d.contains(" E at") and not d.contains("hold E"),
+			"190(s3): item description tokenized: " + tres)
+	print("[Playtest] Prompt/glyph layer (issue #190) done")
+
+
 func _test_ability_matrix_162() -> void:
 	print("[Playtest] Ability matrix fixes (issues #162/#166/#169)...")
 	var psrc := FileAccess.get_file_as_string("res://scripts/player/player.gd")
@@ -19731,11 +20077,18 @@ func _test_seed_tiering_155() -> void:
 	_assert(str(plotD.call("prompt_text")) == "Plant seeds ({interact})",
 		"155ii: regular-only bag keeps the classic plant prompt")
 	p2.call("receive_item", "seed_packet_fine")
-	_assert(str(plotD.call("prompt_text")) == "E — Plant Seed · Hold E — Plant Quality Seed",
-		"155ii: both tiers held -> Jesse's tap/hold prompt, verbatim")
+	# Retargeted by #190 (disclosed, spec section 3 ordered
+	# the token form): the provider authors the template;
+	# the render leg proves Jesse's verbatim string is what
+	# a keyboard player reads.
+	var PT155: Script = load("res://scripts/ui/prompt_text.gd")
+	_assert(str(plotD.call("prompt_text")) == "{interact} — Plant Seed · Hold {interact} — Plant Quality Seed"
+			and str(PT155.call("resolve", str(plotD.call("prompt_text")), 0)) == "E — Plant Seed · Hold E — Plant Quality Seed",
+		"155ii: both tiers held -> Jesse's tap/hold prompt (template authored, verbatim on keyboard render)")
 	p2.call("consume_seed_item", "seed_packet")
-	_assert(str(plotD.call("prompt_text")) == "E — Plant Quality Seed",
-		"155ii: fine-only bag -> the tap plants quality")
+	_assert(str(plotD.call("prompt_text")) == "{interact} — Plant Quality Seed"
+			and str(PT155.call("resolve", str(plotD.call("prompt_text")), 0)) == "E — Plant Quality Seed",
+		"155ii: fine-only bag -> the tap plants quality (template authored, verbatim on keyboard render)")
 	p2.free()
 	plotD.free()
 	for pair in incumbents:

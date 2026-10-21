@@ -83,8 +83,15 @@ const INJECT := {
 	"build_menu": ["btn", JOY_BUTTON_DPAD_RIGHT],
 }
 
+## Issue #190 (section 5): the binding picture changed —
+## activation, deactivation, or a fingerprint diff on the
+## poll (an overlay rebind sends the game no event; the poll
+## is how it is seen). Prompt surfaces connect and re-render.
+signal bindings_changed
+
 var backend: RefCounted
 var active := false
+var _last_fingerprint := ""
 ## Diagnostic record of injected digital edges ([action, pressed]),
 ## newest last, capped. The suite asserts exactly-once edges here;
 ## the Input action states prove the edges land.
@@ -211,11 +218,38 @@ func set_backend(b: RefCounted) -> void:
 
 func _process(delta: float) -> void:
 	if active:
+		# Issue #190 (section 5): while active, the existing
+		# 0.5s cadence polls the binding fingerprint — an
+		# overlay rebind reflects within one interval (~0.5s);
+		# no API offers better, and none is pretended.
+		_retry_t += delta
+		if _retry_t >= 0.5:
+			_retry_t = 0.0
+			_poll_bindings()
 		return
 	_retry_t += delta
 	if _retry_t >= _retry_interval:
 		_retry_t = 0.0
 		try_activate()
+
+
+## The binding picture as one comparable string: the
+## controller handle + the first origin of every vocabulary
+## action, read through the backend's origins calls.
+func _bindings_fingerprint() -> String:
+	var parts: Array = [str(_controller)]
+	for name in DIGITAL_ACTIONS:
+		parts.append(str(binding_origin_for(name)))
+	for name in ANALOG_ACTIONS:
+		parts.append(str(binding_origin_for(name)))
+	return ",".join(parts)
+
+
+func _poll_bindings() -> void:
+	var fp := _bindings_fingerprint()
+	if fp != _last_fingerprint:
+		_last_fingerprint = fp
+		bindings_changed.emit()
 
 
 func _physics_process(_delta: float) -> void:
@@ -263,6 +297,8 @@ func try_activate() -> bool:
 	_swap_bindings()
 	active = true
 	_retry_interval = 0.5
+	_last_fingerprint = _bindings_fingerprint()
+	bindings_changed.emit()
 	print("[SteamInputAdapter] Steam Input active (controller %d) — pad source: Steam" % _controller)
 	return true
 
@@ -296,6 +332,8 @@ func deactivate(reason: String) -> void:
 	_controller = 0
 	_set_handle = 0
 	_handles.clear()
+	_last_fingerprint = ""
+	bindings_changed.emit()
 	print("[SteamInputAdapter] Steam Input inactive (%s) — pad source: native" % reason)
 
 

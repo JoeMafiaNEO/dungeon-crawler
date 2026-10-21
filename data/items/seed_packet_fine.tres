@@ -6,7 +6,7 @@
 script = ExtResource("1")
 id = "seed_packet_fine"
 display_name = "Quality Seed Packet"
-description = "A packet of select dockside seeds. Hold E at a tilled farm plot to plant the quality tier — its harvest rolls for rare crops. (Issue #155)"
+description = "A packet of select dockside seeds. Hold {interact} at a tilled farm plot to plant the quality tier — its harvest rolls for rare crops. (Issue #155)"
 slot = 2
 rarity = 2
 sell_value = 0

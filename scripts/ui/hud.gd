@@ -89,15 +89,81 @@ func _track_prompt_label(l: Label, template: String) -> void:
 	_tracked_prompts.append([l, template])
 
 
-func _on_input_source_changed(_source: int) -> void:
+# --- Issue #190 (section 4): composite prompt segments ---
+## The designated ART surfaces (the interact/pickup prompt
+## line, the legend caption slots) render a template as
+## SEGMENTS: text runs as Labels, Steam glyph art as
+## TextureRects, inside an HBox. Textures cache per path; a
+## path that fails to load falls back to the segment's text
+## (under the Steam tier, Steam's origin string), and from
+## there the native label — fail-closed in cascade. With no
+## art in play the composite is all-text segments and reads
+## exactly as the standing prompt did.
+var _prompt_line: HBoxContainer = null
+var _prompt_template := ""
+var _prompt_visible := false
+var _glyph_cache: Dictionary = {}
+
+
+func _glyph_texture(path: String) -> Texture2D:
+	if _glyph_cache.has(path):
+		return _glyph_cache[path]
+	var tex: Texture2D = null
+	var img := Image.new()
+	if img.load(path) == OK and img.get_width() > 0:
+		tex = ImageTexture.create_from_image(img)
+	_glyph_cache[path] = tex
+	return tex
+
+
+func _fill_segment_line(host: HBoxContainer, segments: Array, font_size: int, font_color: Color = Color.WHITE) -> void:
+	for c in host.get_children():
+		host.remove_child(c)
+		c.free()
+	for seg in segments:
+		var d: Dictionary = seg
+		var art: Texture2D = null
+		if str(d.get("kind", "")) == "action" and str(d.get("glyph_path", "")) != "":
+			art = _glyph_texture(str(d["glyph_path"]))
+		if art != null:
+			var tr := TextureRect.new()
+			tr.texture = art
+			tr.custom_minimum_size = Vector2(font_size + 4, font_size + 4)
+			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			host.add_child(tr)
+		elif str(d.get("text", "")) != "":
+			var l := Label.new()
+			l.text = str(d["text"])
+			l.add_theme_font_size_override("font_size", font_size)
+			l.add_theme_color_override("font_color", font_color)
+			l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			host.add_child(l)
+
+
+func _render_prompt_line() -> void:
+	if _prompt_line == null:
+		return
+	_prompt_line.visible = _prompt_visible
+	if _prompt_visible:
+		_fill_segment_line(_prompt_line, PromptText.resolve_segments(_prompt_template), 22)
+
+
+func _on_input_source_changed(_source: int = 0) -> void:
 	var live: Array = []
 	for entry in _tracked_prompts:
 		if is_instance_valid(entry[0]):
 			(entry[0] as Label).text = PromptText.resolve(str(entry[1]))
 			live.append(entry)
 	_tracked_prompts = live
-	if _pickup_shown:
-		%PickupPrompt.text = PromptText.resolve("[{interact}]  " + _pickup_name)
+	_render_prompt_line()
+	# Issue #190 (amendment): the ability bar's conditional
+	# caps + flanks re-render with the source/binding change.
+	if _ability_player != null and is_instance_valid(_ability_player):
+		refresh_abilities(_ability_player)
+	else:
+		_render_ability_flanks()
 	if _pause_hint_label != null and is_instance_valid(_pause_hint_label):
 		_pause_hint_label.text = PromptText.resolve(PAUSE_HINT_TEMPLATE)
 	if _legend_player != null and is_instance_valid(_legend_player):
@@ -108,6 +174,50 @@ func _ready() -> void:
 	add_to_group("hud")
 	# Issue #152 (2A-2): live prompt re-render on input-source flips.
 	InputSource.changed.connect(_on_input_source_changed)
+	# Issue #190 (section 5): the SAME re-render routine serves
+	# the adapter's bindings_changed (activation, controller
+	# swap, overlay rebind via the fingerprint poll).
+	SteamInputAdapter.bindings_changed.connect(_on_input_source_changed)
+	# Issue #190 (section 4): the composite prompt line lives
+	# where %PickupPrompt stood (same anchors/offsets); the
+	# plain label is superseded and stays hidden.
+	_prompt_line = HBoxContainer.new()
+	_prompt_line.name = "PromptLine"
+	_prompt_line.anchor_left = 0.5
+	_prompt_line.anchor_top = 1.0
+	_prompt_line.anchor_right = 0.5
+	_prompt_line.anchor_bottom = 1.0
+	_prompt_line.offset_left = -200.0
+	_prompt_line.offset_top = -165.0
+	_prompt_line.offset_right = 200.0
+	_prompt_line.offset_bottom = -130.0
+	_prompt_line.alignment = HBoxContainer.ALIGNMENT_CENTER
+	_prompt_line.add_theme_constant_override("separation", 3)
+	_prompt_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_prompt_line.visible = false
+	add_child(_prompt_line)
+	%PickupPrompt.visible = false
+	# Issue #190 (amendment): the cycle_ability flank hosts,
+	# flanking %AbilityBar (its band is -220..220, -76..-16).
+	for side in [-1, 1]:
+		var flank := HBoxContainer.new()
+		flank.name = "AbilityFlankL" if side < 0 else "AbilityFlankR"
+		flank.anchor_left = 0.5
+		flank.anchor_top = 1.0
+		flank.anchor_right = 0.5
+		flank.anchor_bottom = 1.0
+		flank.offset_left = -258.0 if side < 0 else 224.0
+		flank.offset_top = -66.0
+		flank.offset_right = -224.0 if side < 0 else 258.0
+		flank.offset_bottom = -26.0
+		flank.alignment = HBoxContainer.ALIGNMENT_CENTER
+		flank.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		flank.visible = false
+		add_child(flank)
+		if side < 0:
+			_ability_flank_left = flank
+		else:
+			_ability_flank_right = flank
 	# Issue #133: a guest whose host vanished gets the session-lost
 	# notice (NetworkManager detects; the HUD presents).
 	NetworkManager.session_lost.connect(_on_session_lost)
@@ -242,7 +352,7 @@ func _build_potion_slot() -> void:
 	_potion_button.offset_top = -76.0
 	_potion_button.offset_right = -232.0
 	_potion_button.offset_bottom = -12.0
-	_potion_button.tooltip_text = "Left-click: cycle potion type. H: drink."
+	_potion_button.tooltip_text = PromptText.resolve("Left-click: cycle potion type. {potion}: drink.")
 	_potion_button.pressed.connect(_cycle_potion)
 	# Count label (bottom-right of the slot).
 	_potion_count_label = Label.new()
@@ -332,7 +442,7 @@ func refresh_potion_slot() -> void:
 	_potion_button.add_theme_stylebox_override("pressed", sbp)
 	_potion_button.text = POTION_NAMES[equipped]
 	_potion_count_label.text = "x%d" % int(counts[equipped])
-	_potion_button.tooltip_text = "%s Potion x%d — Left-click: cycle. H: drink." % [POTION_NAMES[equipped], int(counts[equipped])]
+	_potion_button.tooltip_text = PromptText.resolve("%s Potion x%d — Left-click: cycle. {potion}: drink." % [POTION_NAMES[equipped], int(counts[equipped])])
 
 
 ## Left-click: cycle to the next potion type the player actually has.
@@ -649,7 +759,10 @@ func _item_mult(p: Player, kind: String) -> float:
 
 
 func toast(message: String) -> void:
-	%ToastLabel.text = message
+	# Issue #190 (section 2): display-point resolution — a
+	# toast authored with tokens (on any peer, by any author)
+	# renders with THIS viewer's bindings.
+	%ToastLabel.text = PromptText.resolve(message)
 	%ToastLabel.modulate.a = 1.0
 	if _toast_tween != null and _toast_tween.is_valid():
 		_toast_tween.kill()
@@ -1072,7 +1185,12 @@ func _vault_card(sid: String) -> Control:
 	vb.add_child(top)
 	var desc := Label.new()
 	if earned:
-		desc.text = data.description
+		# Issue #190 (section 2): descriptions are authored
+		# with tokens — resolve at the display point, and join
+		# the tracked registry (with the template retained) so
+		# an open description re-renders across a source flip.
+		desc.text = PromptText.resolve(data.description)
+		_track_prompt_label(desc, data.description)
 		desc.add_theme_color_override("font_color", Color(0.85, 0.85, 0.88))
 	else:
 		desc.text = "Locked — " + data.unlock_hint
@@ -2199,7 +2317,10 @@ func set_wave(info: Dictionary) -> void:
 
 
 func announce(text: String, tint: Color = Color(1.0, 1.0, 1.0)) -> void:
-	%AnnounceLabel.text = text
+	# Issue #190 (section 2): announces render on the VIEWER's
+	# machine — a host-authored string carrying tokens shows
+	# each player their own bindings.
+	%AnnounceLabel.text = PromptText.resolve(text)
 	%AnnounceLabel.modulate = Color(tint.r, tint.g, tint.b, 1.0)
 	%AnnounceLabel.scale = Vector2(1.25, 1.25)
 	# Issue #23/#46/#52/#59/#57: shrink-to-fit so wide banners don't overflow.
@@ -2360,18 +2481,48 @@ func _on_death_menu_pressed() -> void:
 
 
 func set_hint(text: String) -> void:
-	%PickupPrompt.visible = text != ""
-	%PickupPrompt.text = text
+	# Issue #190 (sections 2+4): hints are templates now —
+	# they render through the composite prompt line, tokens
+	# resolved at display time on this machine.
+	_prompt_visible = text != ""
+	_prompt_template = text
+	_render_prompt_line()
 
 
 # --- Class ability bar ---
 
+## Issue #190 (amendment): the ability-bar key caps are
+## input-source conditional. Keyboard renders them as
+## today; on PAD the numbers are REMOVED (Q6's pad-is-
+## cycle-only stays honest) and cycle_ability flank glyphs
+## render on both sides of the bar, resolving through the
+## #190 tier machinery like every other prompt surface.
+var _ability_player: Node = null
+var _ability_flank_left: HBoxContainer = null
+var _ability_flank_right: HBoxContainer = null
+
+
+func _render_ability_flanks() -> void:
+	if _ability_flank_left == null or _ability_flank_right == null:
+		return
+	var show := InputSource.is_pad() and _ability_player != null and is_instance_valid(_ability_player)
+	_ability_flank_left.visible = show
+	_ability_flank_right.visible = show
+	if show:
+		var segs := PromptText.action_segments("cycle_ability")
+		_fill_segment_line(_ability_flank_left, segs, 14, Color(0.8, 0.7, 0.4))
+		_fill_segment_line(_ability_flank_right, segs, 14, Color(0.8, 0.7, 0.4))
+
+
 func refresh_abilities(p) -> void:
 	refresh_mouse_legend(p)
+	_ability_player = p
 	for c in %AbilityBar.get_children():
 		c.queue_free()
 	if p == null:
+		_render_ability_flanks()
 		return
+	var pad_source := InputSource.is_pad()
 	for i in p.unlocked_abilities.size():
 		var a: Dictionary = p.unlocked_abilities[i]
 		var sid := String(a["id"])
@@ -2410,7 +2561,10 @@ func refresh_abilities(p) -> void:
 		var vb := VBoxContainer.new()
 		vb.add_theme_constant_override("separation", 0)
 		var key_l := Label.new()
-		key_l.text = "[%s]" % String(a["key"])
+		# Issue #190 (amendment): the direct-select number
+		# caps render on keyboard only — on pad there is no
+		# direct select, so the numbers vanish.
+		key_l.text = "" if pad_source else "[%s]" % String(a["key"])
 		key_l.add_theme_font_size_override("font_size", 11)
 		key_l.add_theme_color_override("font_color", Color(0.8, 0.7, 0.4))
 		key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -2495,7 +2649,7 @@ func refresh_abilities(p) -> void:
 			var vb := VBoxContainer.new()
 			vb.add_theme_constant_override("separation", 0)
 			var key_l := Label.new()
-			key_l.text = "[8]"
+			key_l.text = "" if pad_source else "[8]"
 			key_l.add_theme_font_size_override("font_size", 11)
 			key_l.add_theme_color_override("font_color", Color(0.9, 0.6, 1.0))
 			key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -2520,6 +2674,7 @@ func refresh_abilities(p) -> void:
 			slot.add_child(vb)
 			slot.tooltip_text = String(sig["desc"])
 			%AbilityBar.add_child(slot)
+	_render_ability_flanks()
 
 
 func _wave_number() -> int:
@@ -2549,15 +2704,19 @@ func hide_boss() -> void:
 # --- Inventory ---
 
 func set_pickup_prompt(visible: bool, item_name: String) -> void:
-	%PickupPrompt.visible = visible
 	_pickup_shown = visible
 	_pickup_name = item_name
+	_prompt_visible = visible
 	if visible:
-		# Issue #152 (2A-2): the interact-prompt renderer — every
-		# prompt_text() string and loot name lands here, so resolving
-		# the assembled line renders tokens embedded by the source
-		# (e.g. "({interact})") as well as the "[{interact}]" prefix.
-		%PickupPrompt.text = PromptText.resolve("[{interact}]  " + item_name)
+		# Issue #152 (2A-2) + #190 (section 4): the interact-
+		# prompt line — every prompt_text() string and loot name
+		# lands here, so rendering the assembled template as
+		# composite segments resolves tokens embedded by the
+		# source (e.g. "({interact})") as well as the
+		# "[{interact}]" prefix, with glyph art when Steam
+		# serves it.
+		_prompt_template = "[{interact}]  " + item_name
+	_render_prompt_line()
 
 
 func toggle_inventory() -> void:
@@ -3069,6 +3228,17 @@ func set_command_view(on: bool) -> void:
 var _legend_left: Label
 var _legend_right: Label
 var _legend_mid: Label
+## Issue #190 (section 4): the legend rows are composite —
+## a caption host (glyph art or caption text) beside the verb
+## label above. Row containers own the layout visibility;
+## the verb labels' visible flags mirror it (the standing
+## suite reads them).
+var _legend_row_left: HBoxContainer
+var _legend_row_right: HBoxContainer
+var _legend_row_mid: HBoxContainer
+var _legend_cap_left: HBoxContainer
+var _legend_cap_right: HBoxContainer
+var _legend_cap_mid: HBoxContainer
 
 
 ## Tiny procedural mouse icon (Art Director ships the real SNES sprite in Phase 3).
@@ -3136,20 +3306,49 @@ func _build_mouse_legend() -> void:
 	vb.add_theme_constant_override("separation", 2)
 	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hb.add_child(vb)
-	_legend_left = _legend_row(vb, "LMB")
-	_legend_right = _legend_row(vb, "RMB")
-	_legend_mid = _legend_row(vb, "MMB")
+	var rl := _legend_row(vb, "LMB")
+	_legend_row_left = rl["row"]
+	_legend_cap_left = rl["cap"]
+	_legend_left = rl["verb"]
+	var rr := _legend_row(vb, "RMB")
+	_legend_row_right = rr["row"]
+	_legend_cap_right = rr["cap"]
+	_legend_right = rr["verb"]
+	var rm := _legend_row(vb, "MMB")
+	_legend_row_mid = rm["row"]
+	_legend_cap_mid = rm["cap"]
+	_legend_mid = rm["verb"]
 	add_child(panel)
 
 
-func _legend_row(parent: Control, btn: String) -> Label:
-	var l := Label.new()
-	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	l.add_theme_font_size_override("font_size", 13)
-	l.add_theme_color_override("font_color", Color(0.8, 0.7, 0.4))
-	l.text = btn
-	parent.add_child(l)
-	return l
+func _legend_row(parent: Control, btn: String) -> Dictionary:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(row)
+	var cap := HBoxContainer.new()
+	cap.add_theme_constant_override("separation", 2)
+	cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(cap)
+	var verb := Label.new()
+	verb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	verb.add_theme_font_size_override("font_size", 13)
+	verb.add_theme_color_override("font_color", Color(0.8, 0.7, 0.4))
+	row.add_child(verb)
+	_fill_segment_line(cap, [{"kind": "text", "text": btn}], 13, Color(0.8, 0.7, 0.4))
+	return {"row": row, "cap": cap, "verb": verb}
+
+
+## One legend row's render: the caption slot as composite
+## segments (art when Steam serves it), the verb resolved.
+func _set_legend_row(row_c: Control, cap: HBoxContainer, verb: Label, action: String, verb_template: String, toggle: bool) -> void:
+	var show := verb_template != "" or not toggle
+	row_c.visible = show
+	verb.visible = show
+	if not show:
+		return
+	_fill_segment_line(cap, PromptText.action_segments(action), 13, Color(0.8, 0.7, 0.4))
+	verb.text = PromptText.resolve(verb_template)
 
 
 ## Re-renders the legend from the registry. Called on ability refresh (covers
@@ -3169,10 +3368,10 @@ func refresh_mouse_legend(p) -> void:
 	# the slot action's glyph for the current source and the verb
 	# labels resolve their tokens, all through PromptText.
 	var slots: Dictionary = MouseLegend.slot_actions_for(state)
-	var lmb := str(row["left"])
-	_legend_left.visible = lmb != ""
-	_legend_left.text = "%s  %s" % [PromptText.glyph(str(slots["left"])), PromptText.resolve(lmb)]
-	var rmb := str(row["right"])
-	_legend_right.visible = rmb != ""
-	_legend_right.text = "%s  %s" % [PromptText.glyph(str(slots["right"])), PromptText.resolve(rmb)]
-	_legend_mid.text = "%s  %s" % [PromptText.glyph(str(slots["middle"])), PromptText.resolve(str(row["middle"]))]
+	# Issue #190 (section 4): the caption slots are a
+	# designated art surface — they render as segments now;
+	# the verb labels keep the resolved text (and the
+	# visibility the standing pins read).
+	_set_legend_row(_legend_row_left, _legend_cap_left, _legend_left, str(slots["left"]), str(row["left"]), true)
+	_set_legend_row(_legend_row_right, _legend_cap_right, _legend_right, str(slots["right"]), str(row["right"]), true)
+	_set_legend_row(_legend_row_mid, _legend_cap_mid, _legend_mid, str(slots["middle"]), str(row["middle"]), false)
