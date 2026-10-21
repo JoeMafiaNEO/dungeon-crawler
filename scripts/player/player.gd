@@ -6606,7 +6606,7 @@ func _build_health_bar() -> void:
 	var spr := Sprite3D.new()
 	spr.texture = _phb_tex
 	spr.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	spr.no_depth_test = true
+	spr.no_depth_test = false  # depth-tested (Jesse #195): bars occlude behind walls
 	spr.scale = Vector3(_phb_full_w / (_phb_img_w * 0.01), _phb_bar_h / (_phb_img_h * 0.01), 1)
 	bar.add_child(spr)
 	_phb_fill = spr

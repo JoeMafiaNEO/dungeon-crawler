@@ -127,6 +127,7 @@ func _run() -> void:
 	_test_atk_spd_retune_192()
 	_test_menu_pad_191()
 	_test_pad_input_193()
+	_test_health_bar_depth_195()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -19232,6 +19233,65 @@ func _test_atk_spd_retune_192() -> void:
 # Issue #194: hotbar scaling — past the collision cap, slot
 # size and gaps step down until bar + flanks clear the
 # bottom-right controls legend; nominal width untouched.
+# Issue #195: first-person health bars are depth-tested;
+# RTS bars keep their no-depth form (guards both ways).
+func _test_health_bar_depth_195() -> void:
+	print("[Playtest] Health bar depth test (issue #195)...")
+	var holder := Node3D.new()
+	holder.name = "Depth195Holder"
+	root.add_child(holder)
+	current_scene = holder
+	# Mob bar through its real build path (setup).
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var slime_data: Resource = load("res://data/mobs/slime.tres")
+	var m = MobScene.instantiate()
+	m.setup(60, slime_data)
+	holder.add_child(m)
+	var mfill = m.get("_hb_fill")
+	_assert(mfill != null, "195: the mob's bar fill exists")
+	_assert(mfill != null and not bool(mfill.get("no_depth_test")),
+		"195: the MOB bar is depth-tested (occluded by walls)")
+	# Player overhead bar through its real build path (the scene).
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var p = PlayerScene.instantiate()
+	holder.add_child(p)
+	var pfill = p.get("_phb_fill")
+	_assert(pfill != null, "195: the player's overhead bar fill exists")
+	_assert(pfill != null and not bool(pfill.get("no_depth_test")),
+		"195: the PLAYER overhead bar is depth-tested (occluded by walls)")
+	# RTS bars STILL no-depth (guard direction two).
+	var unit_script = load("res://scripts/rts/unit.gd")
+	var u = unit_script.new()
+	holder.add_child(u)
+	u.call("_build_hp_bar")
+	var ufill = u.get("_hb_fill")
+	_assert(ufill != null and bool(ufill.get("no_depth_test")),
+		"195: the RTS UNIT bar stays no-depth (Jesse's ruling)")
+	var bld_script = load("res://scripts/rts/building.gd")
+	var b = bld_script.new()
+	holder.add_child(b)
+	b.call("_build_hp_bar")
+	var bfill = b.get("_hb_fill")
+	_assert(bfill != null and bool(bfill.get("no_depth_test")),
+		"195: the RTS BUILDING bar stays no-depth (Jesse's ruling)")
+	# Deliberate no-depth surfaces untouched: ping labels + downed marker.
+	p.call("spawn_ping", Vector3(0, 0, 3), "Tester")
+	var ping = holder.find_child("Ping", true, false)
+	_assert(ping != null, "195: the ping node spawns")
+	var labels_ok := ping != null
+	if ping != null:
+		for ch in ping.get_children():
+			if ch is Label3D and not bool(ch.get("no_depth_test")):
+				labels_ok = false
+	_assert(labels_ok, "195: the ping labels stay no-depth (deliberate)")
+	p.call("_show_downed_marker")
+	var dm = p.get("_downed_marker")
+	_assert(dm != null and bool(dm.get("no_depth_test")),
+		"195: the downed marker stays no-depth (findable in a fight)")
+	holder.queue_free()
+	print("[Playtest] Health bar depth test done.")
+
+
 func _test_hotbar_scaling_194() -> void:
 	print("[Playtest] hotbar scaling 194...")
 	for n in get_nodes_in_group("player"):
