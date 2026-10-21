@@ -126,6 +126,7 @@ func _run() -> void:
 	_test_prompt_glyph_190()
 	_test_atk_spd_retune_192()
 	_test_menu_pad_191()
+	_test_pad_input_193()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -19222,6 +19223,162 @@ func _test_atk_spd_retune_192() -> void:
 	_assert(not (old["player_state"] as Dictionary).has("bonus_atk_spd"),
 		"192: a pre-#184 state gains no bonus_atk_spd key (absent stays absent; apply_state defaults it)")
 	print("[Playtest] ATK SPD retune (issue #192) done")
+
+
+# Issue #193: pad input defects — (1) polled movement/look
+# leak into open menus; (2) the Steam-chain ping contract;
+# (3) ability flanks track the bar's live width.
+func _test_pad_input_193() -> void:
+	print("[Playtest] pad input 193...")
+	for n in get_nodes_in_group("player"):
+		if is_instance_valid(n):
+			n.free()
+	var IS = root.get_node("InputSource")
+	var holder := Node3D.new()
+	holder.name = "Pad193"
+	root.add_child(holder)
+	current_scene = holder
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	holder.add_child(hud)
+	var p = load("res://scenes/player/player.tscn").instantiate()
+	holder.add_child(p)
+	hud.call("setup", p)
+	p.set("hud", hud)
+	# (1) Movement: each menu state zeroes the polled vector;
+	# the no-menu control still moves. (Probed red on the
+	# unbuilt tree: paused velocity was the full walk speed.)
+	var drive := func(flag: String) -> float:
+		for f in ["is_paused", "inventory_open", "cipher_popup_open", "dest_popup_open"]:
+			hud.set(f, f == flag)
+		p.velocity = Vector3.ZERO
+		Input.action_press("move_forward")
+		p.call("_physics_process", 0.05)
+		Input.action_release("move_forward")
+		return Vector2(p.velocity.x, p.velocity.z).length()
+	_assert(drive.call("") > 1.0, "193(1): no menu — movement live (control)")
+	_assert(drive.call("is_paused") < 0.01, "193(1): pause menu locks movement")
+	_assert(drive.call("inventory_open") < 0.01, "193(1): inventory locks movement")
+	_assert(drive.call("cipher_popup_open") < 0.01, "193(1): cipher popup locks movement")
+	_assert(drive.call("dest_popup_open") < 0.01, "193(1): destination board locks movement")
+	for f in ["is_paused", "inventory_open", "cipher_popup_open", "dest_popup_open"]:
+		hud.set(f, false)
+	# (1b) Look contract (headless: mouse capture does not
+	# stick under the headless driver, so these legs ride
+	# gameplay_focused's HUD branch via _pad_seen; the
+	# captured-mouse combination is probe-covered under
+	# Xvfb in the build report).
+	p.set("_pad_seen", true)
+	Input.action_press("look_right")
+	var yaw0: float = p.get("_yaw")
+	p.call("_physics_process", 0.05)
+	_assert(absf(float(p.get("_yaw")) - yaw0) > 0.001, "193(1b): no menu — stick look turns (control)")
+	hud.set("is_paused", true)
+	var yaw1: float = p.get("_yaw")
+	p.call("_physics_process", 0.05)
+	_assert(absf(float(p.get("_yaw")) - yaw1) < 0.0001, "193(1b): pause — stick look locked")
+	Input.action_release("look_right")
+	hud.set("is_paused", false)
+	p.set("_pad_seen", false)
+	# (1c) The rod-cancel consequence, named in the report:
+	# a menu opening mid-session no longer cancels the cast
+	# (the cancel eats the same zeroed vector); the bobber
+	# stays out, and the first real move after the menu
+	# closes cancels as before.
+	p.set("rod_out", true)
+	p.set("_bobber_out", true)
+	hud.set("is_paused", true)
+	Input.action_press("move_forward")
+	p.call("_physics_process", 0.05)
+	Input.action_release("move_forward")
+	_assert(bool(p.get("_bobber_out")), "193(1c): menu open mid-cast — bobber stays out")
+	hud.set("is_paused", false)
+	Input.action_press("move_forward")
+	p.call("_physics_process", 0.05)
+	Input.action_release("move_forward")
+	_assert(not bool(p.get("_bobber_out")), "193(1c): first real move after close cancels the cast")
+	p.set("rod_out", false)
+	# (3) Flanks track the bar's live width. PAD source;
+	# expectations derive from the bar's own anchor geometry
+	# and combined minimum, not from the positioner.
+	IS.call("set_source", 1)
+	var check_flanks := func(pp, tag: String) -> void:
+		hud.call("refresh_abilities", pp)
+		var bar = hud.get_node("%AbilityBar")
+		var vp: Rect2 = hud.get_viewport().get_visible_rect()
+		var cx: float = vp.size.x * 0.5
+		var bar_l: float = vp.size.x * bar.anchor_left + bar.offset_left
+		var w := maxf(bar.offset_right - bar.offset_left, bar.get_combined_minimum_size().x)
+		var fl = hud.get("_ability_flank_left")
+		var fr = hud.get("_ability_flank_right")
+		_assert(fl.visible and fr.visible, "193(3): flanks shown on pad (%s)" % tag)
+		_assert(absf((fl.offset_right + cx) - (bar_l - 4.0)) < 1.5, "193(3): left flank inner edge at bar left - margin (%s)" % tag)
+		_assert(absf((fr.offset_left + cx) - (bar_l + w + 4.0)) < 1.5, "193(3): right flank inner edge at bar right + margin (%s)" % tag)
+	var PD = load("res://scripts/player/player.gd")
+	p.set("unlocked_abilities", PD.class_abilities("warrior"))
+	check_flanks.call(p, "warrior nominal")
+	var p2 = load("res://scenes/player/player.tscn").instantiate()
+	holder.add_child(p2)
+	p2.set("unlocked_abilities", PD.class_abilities("mage"))
+	p2.set("class_id", "mage")
+	check_flanks.call(p2, "mage wide")
+	_assert(hud.get_node("%AbilityBar").get_combined_minimum_size().x > 500.0, "193(3): mage bar is genuinely wide (fixture sanity)")
+	IS.call("set_source", 0)
+	# (2) CONTRACT PIN (passes on the unbuilt tree — the
+	# exclusion evidence for the Item 2 determination): the
+	# full Steam chain — adapter activation swaps ping's
+	# binding to the sentinel device, a Steam-side digital
+	# edge for ping injects the joypad event, and the real
+	# player's dispatch lands the ping.
+	var FakeB = _f193_fake_backend()
+	var ad = root.get_node("SteamInputAdapter")
+	var real_backend = ad.get("backend")
+	ad.call("set_backend", FakeB)
+	_assert(bool(ad.call("try_activate")), "193(2): adapter activates (contract)")
+	p.set("_ping_cd", 0.0)
+	FakeB.digital["ping"] = true
+	ad.call("tick")
+	_assert(float(p.get("_ping_cd")) > 0.0, "193(2): Steam-chain R3 lands the ping (contract)")
+	ad.call("deactivate", "193 done")
+	ad.call("set_backend", real_backend)
+	ad.set("_input_inited", false)
+	holder.free()
+	current_scene = null
+
+
+func _f193_fake_backend() -> RefCounted:
+	return _FakeBackend193.new()
+
+
+class _FakeBackend193:
+	extends RefCounted
+	var digital_handles := {}
+	var analog_handles := {"move": 200, "look": 201}
+	var digital := {}
+	func _init() -> void:
+		var names := ["jump", "attack", "alt_attack", "interact", "dash", "cycle_ability", "ability", "start_wave", "potion", "inventory", "pause", "ping", "toggle_rod", "build_menu"]
+		for i in names.size():
+			digital_handles[names[i]] = 101 + i
+	func session_ready() -> bool: return true
+	func set_manifest_path(_x: String) -> bool: return true
+	func input_init() -> bool: return true
+	func input_shutdown() -> void: pass
+	func run_frame() -> void: pass
+	func connected_controllers() -> Array: return [42]
+	func action_set_handle(_x: String) -> int: return 7
+	func digital_handle(a: String) -> int: return int(digital_handles.get(a, 100))
+	func analog_handle(a: String) -> int: return int(analog_handles.get(a, 200))
+	func activate_action_set(_c: int, _h: int) -> void: pass
+	func digital_data(_c: int, h: int) -> Dictionary:
+		for n in digital_handles.keys():
+			if int(digital_handles[n]) == h:
+				return {"state": bool(digital.get(n, false)), "active": true}
+		return {"state": false, "active": false}
+	func analog_data(_c: int, _h: int) -> Dictionary: return {"x": 0.0, "y": 0.0, "active": true}
+	func digital_origins(_c: int, _s: int, _h: int) -> Array: return [24]
+	func analog_origins(_c: int, _s: int, _h: int) -> Array: return [25]
+	func glyph_for_origin(_o: int) -> String: return ""
+	func string_for_origin(o: int) -> String: return "origin_%d" % o
+	func show_binding_panel(_c: int) -> bool: return true
 
 
 func _test_menu_pad_191() -> void:

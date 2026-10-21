@@ -3219,7 +3219,16 @@ func _physics_process(delta: float) -> void:
 		_tick_revive_channel(delta)
 		_tick_repair_channel(delta)
 		_tick_plant_hold(delta)
-		var mv := _move_vector()
+		# Issue #193: while a menu surface is up — pause,
+		# inventory, cipher, destination board, the census
+		# the event handlers already use — polled movement
+		# reads zero: opening a menu must not walk the
+		# player. The rod-cancel below eats from the same
+		# vector, so a menu opening mid-session no longer
+		# cancels the cast either; the bobber stays out
+		# until a real move input after the menu closes.
+		var menu_locked: bool = hud != null and (hud.is_paused or hud.inventory_open or hud.cipher_popup_open or hud.dest_popup_open)
+		var mv := Vector2.ZERO if menu_locked else _move_vector()
 		var ix := mv.x
 		var iz := mv.y
 		# Gilded Cage: rooted while caged.
@@ -3252,7 +3261,7 @@ func _physics_process(delta: float) -> void:
 		# focus-gated like the mouse path, sensitivity / deadzone /
 		# invert-Y from the settings phase.
 		var lk := Input.get_vector("look_left", "look_right", "look_up", "look_down", look_deadzone_setting())
-		if lk != Vector2.ZERO and gameplay_focused() and (hud == null or not hud.is_paused):
+		if lk != Vector2.ZERO and not menu_locked and gameplay_focused() and (hud == null or not hud.is_paused):
 			var lsens := look_sens_setting()
 			_yaw -= lk.x * LOOK_STICK_RATE * lsens * delta
 			var pd := -lk.y * LOOK_STICK_RATE * lsens * delta

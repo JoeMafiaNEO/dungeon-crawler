@@ -2538,6 +2538,37 @@ func _render_ability_flanks() -> void:
 		var segs := PromptText.action_segments("cycle_ability")
 		_fill_segment_line(_ability_flank_left, segs, 14, Color(0.8, 0.7, 0.4))
 		_fill_segment_line(_ability_flank_right, segs, 14, Color(0.8, 0.7, 0.4))
+		_position_ability_flanks()
+
+
+## Issue #193: the flanks track %AbilityBar's LIVE width. The
+## bar grows past its nominal 440px band as slots unlock (a
+## full mage bar measures ~686px) and the #190 amendment's
+## fixed offsets let the outer slots paint over the glyphs.
+## Positions derive from the bar's laid-out rect widened to
+## its combined minimum (growth runs rightward from the
+## anchored left edge), inner edges held at a fixed margin;
+## at nominal width the result equals the original offsets.
+func _position_ability_flanks() -> void:
+	if _ability_flank_left == null or _ability_flank_right == null:
+		return
+	if get_viewport() == null:
+		return  # detached fixture: no viewport, no geometry
+	var bar := %AbilityBar
+	# The HUD is a CanvasLayer: its children anchor to the
+	# viewport, so anchor geometry is computed in viewport
+	# space (exact at any layout state).
+	var vp := get_viewport().get_visible_rect()
+	var cx: float = vp.size.x * 0.5
+	var bar_l: float = vp.size.x * bar.anchor_left + bar.offset_left
+	var w := maxf(bar.offset_right - bar.offset_left, bar.get_combined_minimum_size().x)
+	var margin := 4.0
+	var l_in: float = bar_l - margin - cx
+	var r_in: float = bar_l + w + margin - cx
+	_ability_flank_left.offset_right = l_in
+	_ability_flank_left.offset_left = l_in - _ability_flank_left.get_combined_minimum_size().x
+	_ability_flank_right.offset_left = r_in
+	_ability_flank_right.offset_right = r_in + _ability_flank_right.get_combined_minimum_size().x
 
 
 func refresh_abilities(p) -> void:
