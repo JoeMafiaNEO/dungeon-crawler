@@ -127,6 +127,7 @@ func _run() -> void:
 	_test_atk_spd_retune_192()
 	_test_menu_pad_191()
 	_test_pad_input_193()
+	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -19228,6 +19229,99 @@ func _test_atk_spd_retune_192() -> void:
 # Issue #193: pad input defects — (1) polled movement/look
 # leak into open menus; (2) the Steam-chain ping contract;
 # (3) ability flanks track the bar's live width.
+# Issue #194: hotbar scaling — past the collision cap, slot
+# size and gaps step down until bar + flanks clear the
+# bottom-right controls legend; nominal width untouched.
+func _test_hotbar_scaling_194() -> void:
+	print("[Playtest] hotbar scaling 194...")
+	for n in get_nodes_in_group("player"):
+		if is_instance_valid(n):
+			n.free()
+	var IS = root.get_node("InputSource")
+	var holder := Node3D.new()
+	holder.name = "Hotbar194"
+	root.add_child(holder)
+	current_scene = holder
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	holder.add_child(hud)
+	var p = load("res://scenes/player/player.tscn").instantiate()
+	holder.add_child(p)
+	hud.call("setup", p)
+	p.set("hud", hud)
+	var PD = load("res://scripts/player/player.gd")
+	var bar = hud.get_node("%AbilityBar")
+	var vp_w: float = hud.get_viewport().get_visible_rect().size.x
+	var cx := vp_w * 0.5
+	var bar_l: float = vp_w * bar.anchor_left + bar.offset_left
+	var legend_l := vp_w - 280.0
+	# Nominal: the warrior's five slots build at scale 1.0 —
+	# full-size cooldown bar, full separation, under the cap.
+	IS.call("set_source", 1)
+	p.set("unlocked_abilities", PD.class_abilities("warrior"))
+	hud.call("refresh_abilities", p)
+	var w_nominal: float = hud.get("_hotbar_content_w")
+	_assert(w_nominal > 0.0 and w_nominal <= hud.call("_hotbar_cap"), "194: nominal bar fits the cap unscaled")
+	_assert(absf(float(hud.get("_hotbar_scale")) - 1.0) < 0.001, "194: nominal build chooses scale 1.0")
+	p.set("specialization", String(PD.class_abilities("warrior")[0]["id"]))
+	hud.call("refresh_abilities", p)
+	var aff_bar = null
+	var name_l = null
+	for sc in bar.get_children():
+		if sc.is_queued_for_deletion():
+			continue
+		for c in sc.get_child(0).get_children():
+			if c is ProgressBar:
+				aff_bar = c
+			if c is Label and name_l == null and (c as Label).get_theme_font_size("font_size") == 13:
+				name_l = c
+	_assert(aff_bar != null and absf(aff_bar.custom_minimum_size.x - 90.0) < 0.5, "194: nominal affinity bar at full 90px")
+	_assert(name_l != null, "194: nominal name label at full 13px")
+	p.set("specialization", "")
+	# Maximum: the mage's full row — 7 class abilities plus
+	# all three family signature slots (10 total).
+	p.set("unlocked_abilities", PD.class_abilities("mage"))
+	p.set("class_id", "mage")
+	p.set("family_collection", {"fire": {"signature": true}, "frost": {"signature": true}, "storm": {"signature": true}})
+	hud.call("refresh_abilities", p)
+	var live_slots := 0
+	for c in bar.get_children():
+		if not c.is_queued_for_deletion():
+			live_slots += 1
+	_assert(live_slots == 10, "194: the maximum row is 10 slots (fixture sanity)")
+	var w_max: float = hud.get("_hotbar_content_w")
+	var cap: float = hud.call("_hotbar_cap")
+	_assert(w_max <= cap, "194: at max count the scaled bar fits the cap")
+	var bar_r := bar_l + maxf(bar.offset_right - bar.offset_left, w_max)
+	var fl = hud.get("_ability_flank_left")
+	var fr = hud.get("_ability_flank_right")
+	var flank_l_r: float = fl.offset_right + cx
+	var flank_r_l: float = fr.offset_left + cx
+	var flank_r_r: float = fr.offset_right + cx
+	_assert(bar_r <= legend_l + 0.5, "194: bar right edge clears the legend")
+	_assert(flank_r_r <= legend_l + 0.5, "194: right flank clears the legend (Item 3 composition)")
+	_assert(flank_l_r <= bar_l + 0.5, "194: left flank still ends at the bar's left edge (Item 3 invariant)")
+	_assert(flank_r_l >= bar_r - 0.5, "194: right flank still starts at the bar's right edge (Item 3 invariant)")
+	# The legibility floor at max scale: no font under 8px,
+	# no cooldown bar under 40px, in any live slot.
+	var floor_ok := true
+	for c in bar.get_children():
+		if c.is_queued_for_deletion():
+			continue
+		for l in c.get_child(0).get_children():
+			if l is Label and (l as Label).get_theme_font_size("font_size") < 8:
+				floor_ok = false
+			if l is ProgressBar and (l as ProgressBar).custom_minimum_size.x < 39.5:
+				floor_ok = false
+	_assert(floor_ok, "194: legibility floor holds at max count (fonts >= 8, CD bar >= 40)")
+	# Keyboard source: flanks hide, the cap still binds.
+	IS.call("set_source", 0)
+	hud.call("refresh_abilities", p)
+	_assert(float(hud.get("_hotbar_content_w")) <= cap, "194: the cap binds on keyboard source too")
+	_assert(not fl.visible and not fr.visible, "194: flanks hidden on keyboard (unchanged)")
+	holder.free()
+	current_scene = null
+
+
 func _test_pad_input_193() -> void:
 	print("[Playtest] pad input 193...")
 	for n in get_nodes_in_group("player"):
@@ -19307,7 +19401,8 @@ func _test_pad_input_193() -> void:
 		var vp: Rect2 = hud.get_viewport().get_visible_rect()
 		var cx: float = vp.size.x * 0.5
 		var bar_l: float = vp.size.x * bar.anchor_left + bar.offset_left
-		var w := maxf(bar.offset_right - bar.offset_left, bar.get_combined_minimum_size().x)
+		var content_w: float = hud.get("_hotbar_content_w")
+		var w := maxf(bar.offset_right - bar.offset_left, content_w if content_w > 0.0 else bar.get_combined_minimum_size().x)
 		var fl = hud.get("_ability_flank_left")
 		var fr = hud.get("_ability_flank_right")
 		_assert(fl.visible and fr.visible, "193(3): flanks shown on pad (%s)" % tag)

@@ -2524,6 +2524,11 @@ func set_hint(text: String) -> void:
 ## render on both sides of the bar, resolving through the
 ## #190 tier machinery like every other prompt surface.
 var _ability_player: Node = null
+## Issue #194: the last built hotbar row's analytic width
+## (the #193 positioner's live measure; 0 = not built yet).
+var _hotbar_content_w := 0.0
+## Issue #194: the scale step the last build chose.
+var _hotbar_scale := 1.0
 var _ability_flank_left: HBoxContainer = null
 var _ability_flank_right: HBoxContainer = null
 
@@ -2561,7 +2566,8 @@ func _position_ability_flanks() -> void:
 	var vp := get_viewport().get_visible_rect()
 	var cx: float = vp.size.x * 0.5
 	var bar_l: float = vp.size.x * bar.anchor_left + bar.offset_left
-	var w := maxf(bar.offset_right - bar.offset_left, bar.get_combined_minimum_size().x)
+	var content_w: float = _hotbar_content_w if _hotbar_content_w > 0.0 else bar.get_combined_minimum_size().x
+	var w := maxf(bar.offset_right - bar.offset_left, content_w)
 	var margin := 4.0
 	var l_in: float = bar_l - margin - cx
 	var r_in: float = bar_l + w + margin - cx
@@ -2574,11 +2580,64 @@ func _position_ability_flanks() -> void:
 func refresh_abilities(p) -> void:
 	refresh_mouse_legend(p)
 	_ability_player = p
-	for c in %AbilityBar.get_children():
-		c.queue_free()
 	if p == null:
+		for c in %AbilityBar.get_children():
+			c.queue_free()
+		_hotbar_content_w = 0.0
 		_render_ability_flanks()
 		return
+	# Issue #194: hotbar scaling. The bar grows slot by slot
+	# with nothing capping its width; at high counts its right
+	# end (and the #193 flank riding it) reaches the
+	# bottom-right controls legend. Past the collision cap,
+	# slot size and gaps step down through clean scale steps
+	# until the bar fits; 0.5 is the floor (fonts floor at
+	# 8px, the affinity bar at 40px — legibility holds).
+	var cap := _hotbar_cap()
+	# Steps pair the slot scale with its padding: at the
+	# deepest step the padding crushes to 2px, which is
+	# what lets the maximum row fit at the reference width.
+	for step in [[1.0, 8], [0.85, 7], [0.7, 5], [0.6, 4], [0.5, 2]]:
+		_hotbar_scale = step[0]
+		_hotbar_content_w = _build_ability_slots(p, step[0], step[1])
+		if _hotbar_content_w <= cap:
+			break
+	_render_ability_flanks()
+
+
+## Issue #194: the width the hotbar may occupy — from its
+## anchored left edge to the controls legend's left edge,
+## less the Item 3 flank's margin and width allowance. Read
+## live from the legend's own offsets so the two stay tied.
+func _hotbar_cap() -> float:
+	if get_viewport() == null:
+		return 1e9
+	var vp_w := get_viewport().get_visible_rect().size.x
+	var bar := %AbilityBar
+	var legend = get_node_or_null("MouseLegend")
+	var legend_inset := 280.0
+	if legend != null:
+		legend_inset = -legend.offset_left
+	var bar_left: float = vp_w * bar.anchor_left + bar.offset_left
+	var flank_allow := 40.0
+	if _ability_flank_right != null:
+		flank_allow = maxf(flank_allow, _ability_flank_right.get_combined_minimum_size().x)
+	return vp_w - legend_inset - bar_left - 4.0 - flank_allow
+
+
+func _sf(base: int, s: float) -> int:
+	return maxi(8, int(round(float(base) * s)))
+
+
+## One scaled build of the slot row; returns the row's
+## analytic width (slot minimums + gaps), measured from the
+## slots built here — never from a half-freed predecessor.
+func _build_ability_slots(p, s: float, pad_px: int) -> float:
+	for c in %AbilityBar.get_children():
+		c.queue_free()
+	var sep := maxi(2, int(round(8.0 * s)))
+	%AbilityBar.add_theme_constant_override("separation", sep)
+	var built: Array = []
 	var pad_source := InputSource.is_pad()
 	for i in p.unlocked_abilities.size():
 		var a: Dictionary = p.unlocked_abilities[i]
@@ -2610,10 +2669,10 @@ func refresh_abilities(p) -> void:
 			sb.border_color = Color(0.8, 0.65, 0.25, 1.0)
 		sb.set_border_width_all(2)
 		sb.set_corner_radius_all(4)
-		sb.content_margin_left = 8
-		sb.content_margin_right = 8
-		sb.content_margin_top = 4
-		sb.content_margin_bottom = 4
+		sb.content_margin_left = pad_px
+		sb.content_margin_right = pad_px
+		sb.content_margin_top = maxi(2, pad_px / 2)
+		sb.content_margin_bottom = maxi(2, pad_px / 2)
 		slot.add_theme_stylebox_override("panel", sb)
 		var vb := VBoxContainer.new()
 		vb.add_theme_constant_override("separation", 0)
@@ -2622,13 +2681,13 @@ func refresh_abilities(p) -> void:
 		# caps render on keyboard only — on pad there is no
 		# direct select, so the numbers vanish.
 		key_l.text = "" if pad_source else "[%s]" % String(a["key"])
-		key_l.add_theme_font_size_override("font_size", 11)
+		key_l.add_theme_font_size_override("font_size", _sf(11, s))
 		key_l.add_theme_color_override("font_color", Color(0.8, 0.7, 0.4))
 		key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vb.add_child(key_l)
 		var name_l := Label.new()
 		name_l.text = "%s %s" % [String(a["name"]), p.rank_roman()]
-		name_l.add_theme_font_size_override("font_size", 13)
+		name_l.add_theme_font_size_override("font_size", _sf(13, s))
 		name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		if fam != "" and not is_spec:
 			name_l.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
@@ -2640,7 +2699,7 @@ func refresh_abilities(p) -> void:
 			bar.min_value = 0.0
 			bar.max_value = 100.0
 			bar.value = aff
-			bar.custom_minimum_size = Vector2(90, 6)
+			bar.custom_minimum_size = Vector2(maxf(40.0, 90.0 * s), 6)
 			bar.show_percentage = false
 			var bg2 := StyleBoxFlat.new()
 			bg2.bg_color = Color(0.15, 0.15, 0.18, 1.0)
@@ -2656,13 +2715,13 @@ func refresh_abilities(p) -> void:
 			for m in [25, 50, 75, 100]:
 				pip_txt += "◆%d " % m if aff >= m else "◇%d " % m
 			pips.text = pip_txt.strip_edges()
-			pips.add_theme_font_size_override("font_size", 10)
+			pips.add_theme_font_size_override("font_size", _sf(10, s))
 			pips.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
 			pips.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			vb.add_child(pips)
 		# Status line: charges (warrior) or cooldown.
 		var status_l := Label.new()
-		status_l.add_theme_font_size_override("font_size", 11)
+		status_l.add_theme_font_size_override("font_size", _sf(11, s))
 		status_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		if p.class_id == "warrior":
 			var sig_cd: float = float(p.ability_cds.get(sid, 0.0))
@@ -2683,6 +2742,7 @@ func refresh_abilities(p) -> void:
 		vb.add_child(status_l)
 		slot.add_child(vb)
 		slot.tooltip_text = String(a["desc"])
+		built.append(slot)
 		%AbilityBar.add_child(slot)
 	# Mage signature slots (key 8) appended after the regular bar.
 	if p.class_id == "mage":
@@ -2698,27 +2758,27 @@ func refresh_abilities(p) -> void:
 			sb.border_color = Color(0.9, 0.6, 1.0, 1.0)
 			sb.set_border_width_all(2)
 			sb.set_corner_radius_all(4)
-			sb.content_margin_left = 8
-			sb.content_margin_right = 8
-			sb.content_margin_top = 4
-			sb.content_margin_bottom = 4
+			sb.content_margin_left = pad_px
+			sb.content_margin_right = pad_px
+			sb.content_margin_top = maxi(2, pad_px / 2)
+			sb.content_margin_bottom = maxi(2, pad_px / 2)
 			slot.add_theme_stylebox_override("panel", sb)
 			var vb := VBoxContainer.new()
 			vb.add_theme_constant_override("separation", 0)
 			var key_l := Label.new()
 			key_l.text = "" if pad_source else "[8]"
-			key_l.add_theme_font_size_override("font_size", 11)
+			key_l.add_theme_font_size_override("font_size", _sf(11, s))
 			key_l.add_theme_color_override("font_color", Color(0.9, 0.6, 1.0))
 			key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			vb.add_child(key_l)
 			var name_l := Label.new()
 			name_l.text = String(sig["name"])
-			name_l.add_theme_font_size_override("font_size", 13)
+			name_l.add_theme_font_size_override("font_size", _sf(13, s))
 			name_l.add_theme_color_override("font_color", Color(0.95, 0.8, 1.0))
 			name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			vb.add_child(name_l)
 			var status_l := Label.new()
-			status_l.add_theme_font_size_override("font_size", 11)
+			status_l.add_theme_font_size_override("font_size", _sf(11, s))
 			status_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			var cd: float = float(p.ability_cds.get(ssid, 0.0))
 			if cd > 0.0:
@@ -2730,9 +2790,17 @@ func refresh_abilities(p) -> void:
 			vb.add_child(status_l)
 			slot.add_child(vb)
 			slot.tooltip_text = String(sig["desc"])
+			built.append(slot)
 			%AbilityBar.add_child(slot)
 	_render_ability_flanks()
 
+
+	var total := 0.0
+	for slot in built:
+		total += (slot as Control).get_combined_minimum_size().x
+	if built.size() > 1:
+		total += float(sep) * float(built.size() - 1)
+	return total
 
 func _wave_number() -> int:
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
