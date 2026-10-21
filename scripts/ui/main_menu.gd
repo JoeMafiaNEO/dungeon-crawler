@@ -19,6 +19,239 @@ var _solo_popup: Control = null
 ## Issue #152: the confirm modal's Cancel button (its focus primary —
 ## the non-destructive choice on a destructive confirm).
 var _confirm_cancel: Button = null
+## Issue #191 (section A): THE RULE — a close returns what the
+## open took. Opening an overlay captures the focus owner (the
+## opener) and its phase; the matching close hands focus back
+## to the opener when it can still take focus, else re-seeds
+## the surface underneath through its own phase apply. Focus
+## never strands inside a hidden surface (Jesse's Settings
+## B-lockout was the rule's first instance: _close_settings
+## only hid the overlay, leaving focus owned by an invisible
+## Close button).
+var _overlay_opener: Control = null
+var _overlay_phase := ""
+
+
+func _phase_node(phase_name: String) -> Control:
+	match phase_name:
+		"TitlePhase":
+			return %TitlePhase
+		"ModePhase":
+			return %ModePhase
+		"MultiPhase":
+			return %MultiPhase
+		"HostPhase":
+			return %HostPhase
+		"JoinPhase":
+			return %JoinPhase
+		"SoloPhase":
+			return %SoloPhase
+		"StagingPhase":
+			return %StagingPhase
+		"DailyPhase":
+			return %DailyPhase
+	return null
+
+
+func _current_phase_name() -> String:
+	for n in ["TitlePhase", "ModePhase", "MultiPhase", "HostPhase",
+			"JoinPhase", "SoloPhase", "StagingPhase", "DailyPhase"]:
+		var p := _phase_node(n)
+		if p != null and p.visible:
+			return n
+	return ""
+
+
+func _capture_overlay_return() -> void:
+	var vp := get_viewport()
+	_overlay_opener = vp.gui_get_focus_owner() if vp != null else null
+	_overlay_phase = _current_phase_name()
+
+
+func _restore_overlay_return() -> void:
+	var opener := _overlay_opener
+	var phase_name := _overlay_phase
+	_overlay_opener = null
+	_overlay_phase = ""
+	if opener != null and is_instance_valid(opener) and phase_name != "":
+		var phase := _phase_node(phase_name)
+		if phase != null and FocusChain.collect(phase).has(opener):
+			FocusChain.apply(phase, opener)
+			return
+	if phase_name != "":
+		_apply_phase_focus(phase_name)
+
+
+## --- On-screen keyboard (issue #191, section C) -----------
+## The TextEntry seam: the LAN fields summon text entry ONLY
+## through _request_text_entry. On pad that opens the built-in
+## OSK below (the fields live in the LAN flow — the least-Steam
+## context in the game, where a Steam-only keyboard would be a
+## dead end); a Steam gamepad-text-input front-end can slot in
+## behind this one function later without a field or a panel
+## changing. On keyboard/mouse the seam is a no-op and typing
+## stays native. The OSK writes live into the bound field
+## (the way Steam's keyboard does), and its own close obeys
+## section A's rule: focus returns to the field.
+var _osk_overlay: Control = null
+var _osk_field: LineEdit = null
+var _osk_echo: Label = null
+var _osk_first_key: Button = null
+var _osk_return_suppress := false
+
+
+func _request_text_entry(field: LineEdit) -> void:
+	if _osk_return_suppress:
+		_osk_return_suppress = false
+		return
+	# The summon arrives on focus_entered — INSIDE the
+	# engine's focus change. Opening there would grab focus
+	# for a key mid-notification (a hard engine crash), so
+	# the decision defers to the frame's end.
+	call_deferred("_summon_text_entry", field)
+
+
+## The seam's decision (synchronous): pad source summons
+## the built-in OSK for the field; anything else is native.
+func _summon_text_entry(field: LineEdit) -> void:
+	if field == null or not is_instance_valid(field):
+		return
+	if not InputSource.is_pad():
+		return
+	_open_osk(field)
+
+
+func _open_osk(field: LineEdit) -> void:
+	if _osk_overlay == null:
+		_build_osk()
+	_osk_field = field
+	_osk_overlay.visible = true
+	_osk_refresh_echo()
+	FocusChain.apply(_osk_overlay, _osk_first_key)
+
+
+func _close_osk() -> void:
+	if _osk_overlay != null:
+		_osk_overlay.visible = false
+	var field := _osk_field
+	_osk_field = null
+	if field != null and is_instance_valid(field):
+		# Section A: focus returns to the opener (the field);
+		# the return grab must not re-summon the OSK.
+		_osk_return_suppress = true
+		field.grab_focus()
+
+
+func _osk_refresh_echo() -> void:
+	if _osk_echo == null or _osk_field == null:
+		return
+	var text := _osk_field.text
+	if _osk_field == _host_pw_field:
+		# The password field's echo is MASKED — the OSK never
+		# renders the lobby password in clear (hard pin).
+		_osk_echo.text = "•".repeat(text.length())
+	elif text.is_empty():
+		_osk_echo.text = _osk_field.placeholder_text
+	else:
+		_osk_echo.text = text
+
+
+func _osk_key(ch: String) -> void:
+	if _osk_field == null or not is_instance_valid(_osk_field):
+		return
+	_osk_field.text += ch
+	_osk_field.text_changed.emit(_osk_field.text)
+	_osk_refresh_echo()
+
+
+func _osk_back() -> void:
+	if _osk_field == null or not is_instance_valid(_osk_field):
+		return
+	if not _osk_field.text.is_empty():
+		_osk_field.text = _osk_field.text.left(_osk_field.text.length() - 1)
+		_osk_field.text_changed.emit(_osk_field.text)
+	_osk_refresh_echo()
+
+
+func _build_osk() -> void:
+	_osk_overlay = Control.new()
+	_osk_overlay.name = "OskOverlay"
+	_osk_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_osk_overlay.visible = false
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_osk_overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_osk_overlay.add_child(center)
+	var panel := PanelContainer.new()
+	panel.name = "OskPanel"
+	# The settings overlay's framed-panel dressing (the Art
+	# Director's style pass): the OSK wears the menu's own
+	# clothes — same StyleBox family, the 0.65 dim untouched.
+	var psb := StyleBoxFlat.new()
+	psb.bg_color = Color(0.08, 0.07, 0.10, 0.98)
+	psb.border_color = Color(0.85, 0.70, 0.30)
+	psb.set_border_width_all(3)
+	psb.set_corner_radius_all(6)
+	psb.content_margin_left = 28
+	psb.content_margin_right = 28
+	psb.content_margin_top = 20
+	psb.content_margin_bottom = 20
+	panel.add_theme_stylebox_override("panel", psb)
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	panel.add_child(vb)
+	_osk_echo = Label.new()
+	_osk_echo.name = "OskEcho"
+	_osk_echo.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_osk_echo.add_theme_font_size_override("font_size", 22)
+	vb.add_child(_osk_echo)
+	# Deliberate QWERTY rows (the Art Director's style pass):
+	# four centered HBox rows — digits, qwerty, asdf, zxcv —
+	# short rows centered against the widest, so a D-pad
+	# user's spatial map of the keyboard holds. Keys type
+	# the character they show: digits literal, letters
+	# lowercase (no shift state in this widget).
+	var grid := VBoxContainer.new()
+	grid.name = "OskGrid"
+	grid.add_theme_constant_override("separation", 6)
+	vb.add_child(grid)
+	for row in ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]:
+		var hrow := HBoxContainer.new()
+		hrow.alignment = HBoxContainer.ALIGNMENT_CENTER
+		hrow.add_theme_constant_override("separation", 6)
+		grid.add_child(hrow)
+		for ch in row:
+			var b := Button.new()
+			b.text = ch
+			b.custom_minimum_size = Vector2(46, 44)
+			b.pressed.connect(_osk_key.bind(ch))
+			hrow.add_child(b)
+			if _osk_first_key == null:
+				_osk_first_key = b
+	var specials := HBoxContainer.new()
+	specials.name = "OskSpecials"
+	specials.add_theme_constant_override("separation", 6)
+	specials.alignment = HBoxContainer.ALIGNMENT_CENTER
+	vb.add_child(specials)
+	for spec in [[".", "."], ["-", "-"], ["_", "_"], ["Space", " "], ["Back", ""], ["Done", ""]]:
+		var sb := Button.new()
+		sb.text = spec[0]
+		if spec[0] == "Done":
+			sb.name = "OskDone"
+		sb.custom_minimum_size = Vector2(92, 44)
+		if spec[0] == "Back":
+			sb.pressed.connect(_osk_back)
+		elif spec[0] == "Done":
+			sb.pressed.connect(_close_osk)
+		else:
+			sb.pressed.connect(_osk_key.bind(spec[1]))
+		specials.add_child(sb)
+	add_child(_osk_overlay)
+	_style_buttons()
 ## Issue #70: LAN multiplayer UI state.
 var _lan_mode_host := false  # True if HostPhase is in LAN mode.
 var _lan_mode_join := false  # True if JoinPhase is in LAN mode.
@@ -94,6 +327,9 @@ func _wrap_solo_slots() -> void:
 		return
 	var scroll := ScrollContainer.new()
 	scroll.name = "SoloSlotsScroll"
+	# Issue #191 (section B): focus walking below the fold
+	# scrolls the list to the focused row.
+	scroll.follow_focus = true
 	scroll.custom_minimum_size = Vector2(600, 320)
 	var parent := list.get_parent()
 	var idx := list.get_index()
@@ -231,7 +467,9 @@ func _input(event: InputEvent) -> void:
 
 func _menu_back() -> void:
 	# Topmost overlays first, then the lobby, then the phase stack.
-	if _solo_popup != null and is_instance_valid(_solo_popup):
+	if _osk_overlay != null and _osk_overlay.visible:
+		_close_osk()
+	elif _solo_popup != null and is_instance_valid(_solo_popup):
 		_close_solo_class_popup()
 	elif _confirm_overlay != null and _confirm_overlay.visible:
 		_on_overwrite_cancelled()
@@ -693,12 +931,15 @@ func _build_join_lan_ui() -> void:
 	# full-width LineEdit reads as an unstyled dark band.
 	_lan_ip_field.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	form.add_child(_lan_ip_field)
+	# Issue #191 (section C): text entry summons through the seam.
+	_lan_ip_field.focus_entered.connect(_request_text_entry.bind(_lan_ip_field))
 	var name_label := Label.new()
 	name_label.text = "Your name:"
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	form.add_child(name_label)
 	_lan_name_field = LineEdit.new()
 	_lan_name_field.placeholder_text = "Player"
+	_lan_name_field.focus_entered.connect(_request_text_entry.bind(_lan_name_field))
 	_lan_name_field.custom_minimum_size = Vector2(280, 0)
 	_lan_name_field.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_lan_name_field.max_length = 16
@@ -811,6 +1052,8 @@ func _build_host_tabs() -> void:
 	save_label.add_theme_font_size_override("font_size", 18)
 	t1.add_child(save_label)
 	var save_scroll := ScrollContainer.new()
+	# Issue #191 (section B): follow focus below the fold.
+	save_scroll.follow_focus = true
 	save_scroll.custom_minimum_size = Vector2(540, 130)
 	# Issue #145: the scrollbar is ALWAYS present and dressed in
 	# the menu's own palette (the framed panels' dark inset +
@@ -848,6 +1091,8 @@ func _build_host_tabs() -> void:
 	_refresh_host_save_list()
 	# --- Tab 2: Difficulty & Loot ---
 	var t2_scroll := ScrollContainer.new()
+	# Issue #191 (section B): follow focus below the fold.
+	t2_scroll.follow_focus = true
 	t2_scroll.name = "Difficulty & Loot"
 	tabs.add_child(t2_scroll)
 	var t2 := VBoxContainer.new()
@@ -948,6 +1193,8 @@ func _build_host_tabs() -> void:
 	_host_pw_field.text = NetworkManager.lobby_password
 	_host_pw_field.editable = pw_toggle.button_pressed
 	_host_pw_field.text_changed.connect(_on_host_pw_changed)
+	# Issue #191 (section C): text entry summons through the seam.
+	_host_pw_field.focus_entered.connect(_request_text_entry.bind(_host_pw_field))
 	pw_row.add_child(_host_pw_field)
 	var vis_label := Label.new()
 	vis_label.text = "Lobby Visibility (Steam only)"
@@ -1732,6 +1979,7 @@ func _on_slot_new_pressed(mode: String, slot: int) -> void:
 
 ## Class popup for solo new/overwrite: pick a class, then start the run.
 func _show_solo_class_popup(slot: int) -> void:
+	_capture_overlay_return()
 	var overlay := Control.new()
 	overlay.name = "SoloClassPopup"
 	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -1776,6 +2024,9 @@ func _close_solo_class_popup() -> void:
 	if _solo_popup != null and is_instance_valid(_solo_popup):
 		_solo_popup.queue_free()
 	_solo_popup = null
+	# Issue #191 (section A): focus returns to the opener on
+	# the Solo phase.
+	_restore_overlay_return()
 
 
 func _on_solo_class_chosen(cid: String, slot: int, overlay: Control) -> void:
@@ -2037,6 +2288,7 @@ func _apply_saved_fullscreen() -> void:
 
 func _on_settings_pressed() -> void:
 	AudioManager.sfx("ui_click")
+	_capture_overlay_return()
 	_settings_overlay.visible = true
 	# Issue #152: chain the panel (sliders/toggles ride native focus
 	# behavior — ui_left/right adjust, ui_accept flips).
@@ -2045,9 +2297,13 @@ func _on_settings_pressed() -> void:
 
 func _close_settings() -> void:
 	_settings_overlay.visible = false
+	# Issue #191 (section A): hand focus back to the opener —
+	# Jesse's expectation: the Settings button is re-selected.
+	_restore_overlay_return()
 
 
 func _show_overwrite_confirm(mode: String, slot: int) -> void:
+	_capture_overlay_return()
 	_confirm_mode = mode
 	_confirm_slot = slot
 	var run := SaveManager.load_run(mode, slot)
@@ -2065,6 +2321,7 @@ var _delete_slot := -1
 
 func _show_delete_confirm(mode: String, slot: int) -> void:
 	AudioManager.sfx("ui_click")
+	_capture_overlay_return()
 	_delete_mode = mode
 	_delete_slot = slot
 	_confirm_mode = "delete"
@@ -2090,6 +2347,9 @@ func _on_overwrite_confirmed() -> void:
 		_refresh_solo_ui()
 		_refresh_host_save_list()
 		_refresh_host_tabs()
+		# Issue #191 (section A): the delete exit stays on this
+		# surface — focus returns to the opener.
+		_restore_overlay_return()
 		return
 	if _confirm_mode == SaveManager.MODE_MP:
 		_host_slot = _confirm_slot
@@ -2102,6 +2362,8 @@ func _on_overwrite_confirmed() -> void:
 func _on_overwrite_cancelled() -> void:
 	AudioManager.sfx("ui_click")
 	_confirm_overlay.visible = false
+	# Issue #191 (section A): focus returns to the opener.
+	_restore_overlay_return()
 
 
 func _on_solo_back_pressed() -> void:

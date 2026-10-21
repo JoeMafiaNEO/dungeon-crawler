@@ -125,6 +125,7 @@ func _run() -> void:
 	_test_rogue_rework_189()
 	_test_prompt_glyph_190()
 	_test_atk_spd_retune_192()
+	_test_menu_pad_191()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
 	_test_dock_mirror_invariant_160()
@@ -19221,6 +19222,190 @@ func _test_atk_spd_retune_192() -> void:
 	_assert(not (old["player_state"] as Dictionary).has("bonus_atk_spd"),
 		"192: a pre-#184 state gains no bonus_atk_spd key (absent stays absent; apply_state defaults it)")
 	print("[Playtest] ATK SPD retune (issue #192) done")
+
+
+func _test_menu_pad_191() -> void:
+	print("[Playtest] Menu pad usability (issue #191)...")
+	# Issue #191 (Jesse's live-session findings, SE spec
+	# gate-passed): section A — a close returns what the open
+	# took (focus never strands inside a hidden surface);
+	# section B — the four ScrollContainers follow focus;
+	# section C — a built-in on-screen keyboard behind the
+	# TextEntry seam for the LAN fields on pad.
+	var IS = root.get_node("InputSource")
+	var owner := func() -> Control:
+		return root.gui_get_focus_owner()
+	var in_tree_of := func(c: Control, anc: Node) -> bool:
+		var n: Node = c
+		while n != null:
+			if n == anc:
+				return true
+			n = n.get_parent()
+		return false
+	# ============ main_menu surfaces (section A + B + C) ====
+	var mm = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(mm)
+	# --- A: Settings — B/Close returns to the Settings button.
+	var settings_btn = mm.get_node("%SettingsButton")
+	settings_btn.grab_focus()
+	mm.call("_on_settings_pressed")
+	var s_overlay = mm.get("_settings_overlay")
+	_assert(s_overlay != null and bool(s_overlay.visible) and owner.call() != null
+			and bool(in_tree_of.call(owner.call(), s_overlay)),
+		"191(A): opening Settings moves focus INTO the overlay (the standing behavior)")
+	mm.call("_close_settings")
+	_assert(owner.call() == settings_btn,
+		"191(A): closing Settings returns focus to the Settings button (Jesse's repro — the rule's first instance)")
+	# --- A: the overwrite/delete confirm — Cancel returns to
+	# the surface underneath (SoloPhase here).
+	mm.call("_show_phase", "SoloPhase")
+	mm.call("_show_overwrite_confirm", "solo", 0)
+	var c_overlay = mm.get("_confirm_overlay")
+	_assert(owner.call() != null and bool(in_tree_of.call(owner.call(), c_overlay)),
+		"191(A): the confirm modal takes focus on open")
+	mm.call("_on_overwrite_cancelled")
+	_assert(owner.call() != null and bool(in_tree_of.call(owner.call(), mm.get_node("%SoloPhase"))),
+		"191(A): cancelling the confirm returns focus to the phase underneath (not the hidden modal, not nowhere)")
+	# --- A: the solo class popup — Cancel returns to Solo.
+	mm.call("_show_solo_class_popup", 0)
+	var popup = mm.get("_solo_popup")
+	_assert(popup != null and owner.call() != null and bool(in_tree_of.call(owner.call(), popup)),
+		"191(A): the solo class popup takes focus on open")
+	mm.call("_close_solo_class_popup")
+	_assert(owner.call() != null and bool(in_tree_of.call(owner.call(), mm.get_node("%SoloPhase"))),
+		"191(A): closing the solo popup returns focus to the Solo phase")
+	# --- B: the three code-built menu ScrollContainers.
+	mm.call("_build_host_tabs")
+	var scrolls: Array = []
+	var stack: Array = [mm]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is ScrollContainer:
+			scrolls.append(n)
+		for ch in n.get_children():
+			stack.append(ch)
+	var follow_count := 0
+	for sc in scrolls:
+		if bool(sc.get("follow_focus")):
+			follow_count += 1
+	_assert(scrolls.size() >= 3 and follow_count == scrolls.size(),
+		"191(B): every menu ScrollContainer follows focus (solo wrap, host saves, lobby tabs — found %d, following %d)" % [scrolls.size(), follow_count])
+	# --- C: the OSK on the TextEntry seam.
+	mm.call("_build_join_lan_ui")
+	var ip_field = mm.get("_lan_ip_field")
+	# The summon is wired on focus_entered and the open itself
+	# defers a frame (an engine focus-notification constraint,
+	# see the seam) — the pins drive the seam function, the
+	# site's own entry, and pin the wiring beside it.
+	var wired := false
+	for conn in ip_field.focus_entered.get_connections():
+		if str(conn["callable"].get_method()) == "_request_text_entry":
+			wired = true
+	_assert(wired, "191(C): the IP field's focus_entered is wired to the TextEntry seam")
+	IS.call("set_source", 0)
+	mm.call("_summon_text_entry", ip_field)
+	var osk = mm.get("_osk_overlay")
+	_assert(osk == null or not bool(osk.visible),
+		"191(C): on KEYBOARD, the seam opens no OSK (typing is native)")
+	IS.call("set_source", 1)
+	mm.call("_summon_text_entry", ip_field)
+	osk = mm.get("_osk_overlay")
+	_assert(osk != null and bool(osk.visible),
+		"191(C): on PAD, focusing the LAN IP field summons the built-in OSK")
+	_assert(owner.call() != null and bool(in_tree_of.call(owner.call(), osk)),
+		"191(C): the OSK takes focus on open (pad-navigable)")
+	var press := func(label: String) -> bool:
+		if osk == null or not is_instance_valid(osk):
+			return false
+		var st2: Array = [osk]
+		while not st2.is_empty():
+			var n2: Node = st2.pop_back()
+			if n2 is Button and (n2 as Button).text == label:
+				(n2 as Button).pressed.emit()
+				return true
+			for ch2 in n2.get_children():
+				st2.append(ch2)
+		return false
+	ip_field.text = ""
+	_assert(bool(press.call("1")) and bool(press.call("9")) and bool(press.call("2")),
+		"191(C): the OSK carries digit keys")
+	_assert(ip_field.text == "192",
+		"191(C): OSK keys write into the bound field (live, like Steam's keyboard)")
+	press.call("Back")
+	_assert(ip_field.text == "19", "191(C): the OSK's Back key deletes a character")
+	press.call("Done")
+	_assert(not (osk != null and bool(osk.visible)) and owner.call() == ip_field,
+		"191(C): Done closes the OSK and focus returns to the field (section A's rule, applied to the OSK itself)")
+	# --- C: the password field's echo is MASKED (hard pin).
+	mm.call("_show_phase", "HostPhase")
+	var pw_field = mm.get("_host_pw_field")
+	var pw_toggle = mm.get("_host_pw_toggle")
+	if pw_toggle != null:
+		(pw_toggle as CheckButton).button_pressed = true
+		mm.call("_on_host_pw_toggled", true)
+	mm.call("_summon_text_entry", pw_field)
+	osk = mm.get("_osk_overlay")
+	_assert(osk != null and bool(osk.visible),
+		"191(C): the OSK also serves the host password field")
+	pw_field.text = ""
+	press.call("s")
+	press.call("e")
+	press.call("c")
+	_assert(pw_field.text == "sec", "191(C): keys land in the password field itself")
+	var echo = (osk.find_child("OskEcho", true, false) as Label) if osk != null else null
+	_assert(echo != null and not echo.text.contains("sec") and not echo.text.contains("s"),
+		"191(C): HARD PIN — the OSK echo NEVER shows the password in clear (masked echo only)")
+	press.call("Done")
+	IS.call("set_source", 0)
+	mm.free()
+	# ============ HUD surfaces (section A + B) ==============
+	var FC = load("res://scripts/ui/focus_chain.gd")
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	root.add_child(hud)
+	var p = load("res://scenes/player/player.tscn").instantiate()
+	root.add_child(p)
+	hud.setup(p)
+	root.gui_release_focus()
+	# --- B: PauseScroll follows focus.
+	var pause_scroll = hud.get_node_or_null("PausePanel/PauseMain/PauseScroll") as ScrollContainer
+	if pause_scroll == null:
+		pause_scroll = hud.get_node_or_null("PausePanel/PauseScroll") as ScrollContainer
+	_assert(pause_scroll != null and pause_scroll.follow_focus,
+		"191(B): PauseScroll (hud.tscn) follows focus")
+	# --- A: the class panel is menu-over-menu — its close
+	# re-applies into the pause surface.
+	hud.show_pause()
+	var pause_primary = hud.call("_pause_primary")
+	hud.call("_on_class_pressed")
+	_assert(owner.call() != null and bool(in_tree_of.call(owner.call(), hud.get_node("%ClassPanel"))),
+		"191(A): the class panel takes focus on open")
+	hud.call("_on_class_cancel")
+	_assert(owner.call() == pause_primary,
+		"191(A): closing the class panel re-applies focus into the PAUSE surface (menu over menu — Resume)")
+	# --- A: pause itself closes over gameplay — release.
+	hud.hide_pause()
+	_assert(owner.call() == null,
+		"191(A): closing pause RELEASES focus (gameplay owns the pad again; nothing strands in the hidden panel)")
+	# --- A: the death screen — hide releases.
+	hud.show_death_screen({"cause": "Slime", "kills": 1})
+	_assert(owner.call() != null and bool(in_tree_of.call(owner.call(), hud.get_node("%DeathPanel"))),
+		"191(A): the death screen takes focus on open")
+	hud.hide_death_screen()
+	_assert(owner.call() == null,
+		"191(A): hiding the death screen releases focus (no owner stranded on a hidden button)")
+	# --- A: popups over gameplay — close releases.
+	var vb := VBoxContainer.new()
+	var vb_btn := Button.new()
+	vb_btn.text = "OK"
+	vb.add_child(vb_btn)
+	hud.call("_open_cipher_popup", vb)
+	_assert(owner.call() != null, "191(A): the cipher popup seeds focus on open")
+	hud.call("close_cipher_popup")
+	_assert(owner.call() == null,
+		"191(A): closing the cipher popup leaves focus released over gameplay")
+	hud.free()
+	p.free()
+	print("[Playtest] Menu pad usability (issue #191) done")
 
 
 func _test_ability_matrix_162() -> void:

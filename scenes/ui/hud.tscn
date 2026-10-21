@@ -384,6 +384,7 @@ theme_override_styles/panel = SubResource("PanelDark")
 
 [node name="PauseScroll" type="ScrollContainer" parent="PausePanel"]
 layout_mode = 2
+follow_focus = true
 horizontal_scroll_mode = 0
 
 [node name="PauseVBox" type="VBoxContainer" parent="PausePanel/PauseScroll"]

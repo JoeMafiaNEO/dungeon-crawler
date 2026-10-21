@@ -1346,6 +1346,9 @@ func close_cipher_popup() -> void:
 		AudioManager.sfx("vault_close")
 	if not is_paused:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	# Issue #191 (section A): the popup closes over gameplay —
+	# focus is released.
+	_release_focus()
 
 
 ## Destination board popup (issue #29): 2D menu replacing the 3D
@@ -1416,6 +1419,9 @@ func close_destination_popup() -> void:
 	dest_popup_open = false
 	if not is_paused and not cipher_popup_open:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	# Issue #191 (section A): the popup closes over gameplay —
+	# focus is released.
+	_release_focus()
 
 
 ## Rebuild the destination buttons with current vote tallies.
@@ -1607,11 +1613,23 @@ func show_pause() -> void:
 	FocusChain.apply(_pause_surface(), _pause_primary())
 
 
+## Issue #191 (section A): release focus on a close over
+## gameplay. Null-safe: suite fixtures (and teardown paths)
+## call the close functions with the HUD out of tree.
+func _release_focus() -> void:
+	var vp := get_viewport()
+	if vp != null:
+		vp.gui_release_focus()
+
+
 func hide_pause() -> void:
 	is_paused = false
 	%PausePanel.visible = false
 	%ClassPanel.visible = false
 	%TopRight.visible = true
+	# Issue #191 (section A): pause closes over GAMEPLAY —
+	# focus is released, never stranded in the hidden panel.
+	_release_focus()
 
 
 func _on_resume_pressed() -> void:
@@ -1828,10 +1846,15 @@ func _on_class_pressed() -> void:
 
 func _on_class_cancel() -> void:
 	%ClassPanel.visible = false
+	# Issue #191 (section A): the class panel is menu over
+	# menu — its close re-applies focus into the pause surface.
+	FocusChain.apply(_pause_surface(), _pause_primary())
 
 
 func _on_class_chosen(new_class: String) -> void:
 	%ClassPanel.visible = false
+	# Issue #191 (section A): menu over menu — re-apply into pause.
+	FocusChain.apply(_pause_surface(), _pause_primary())
 	var player := _my_player()
 	if player == null:
 		return
@@ -2461,6 +2484,9 @@ func show_death_screen(stats: Dictionary) -> void:
 
 func hide_death_screen() -> void:
 	%DeathPanel.visible = false
+	# Issue #191 (section A): the death screen closes over
+	# gameplay — focus is released.
+	_release_focus()
 
 
 func _fmt_run_time(secs: int) -> String:
