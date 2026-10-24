@@ -35,6 +35,7 @@ const CONE_COS := 0.4226 ## cos(65 deg): the view-cone priority band
 
 const WorldGen := preload("res://scripts/world/world_gen.gd")
 const ChunkData := preload("res://scripts/world/chunk_data.gd")
+const BuildingGen := preload("res://scripts/world/building_gen.gd")
 
 ## Building palette by style index (ChunkData style 0..5).
 const STYLE_COLORS: Array = [
@@ -55,6 +56,7 @@ var _vis := {}
 
 var _box_mesh: BoxMesh = null
 var _building_mat: StandardMaterial3D = null
+var _interior_mat: StandardMaterial3D = null
 var _terrain_mat: StandardMaterial3D = null
 
 
@@ -89,7 +91,9 @@ func debug_chunk_state(cx: int, cz: int) -> Dictionary:
 			"vis": int(_vis.get(k, -1))}
 	var rec: Dictionary = _active[k]
 	return {"built": true, "has_buildings": rec["buildings"] != null,
-		"vis": int(_vis.get(k, -1))}
+		"vis": int(_vis.get(k, -1)),
+		"shell_pieces": int(rec.get("shell_pieces", 0)),
+		"interior_pieces": int(rec.get("interior_pieces", 0))}
 
 
 func _process(_delta: float) -> void:
@@ -224,6 +228,8 @@ func _update_buildings(tcx: int, tcz: int, now: int) -> void:
 		if rec["buildings"] != null and (not in_ring or hidden_long):
 			(rec["buildings"] as Node).queue_free()
 			rec["buildings"] = null
+			rec["shell_pieces"] = 0
+			rec["interior_pieces"] = 0
 		elif rec["buildings"] == null and in_ring and vis != 0 and budget > 0:
 			rec["buildings"] = _make_buildings(rec)
 			budget -= 1
@@ -261,15 +267,19 @@ func _build_chunk(cx: int, cz: int) -> void:
 	notifier.screen_entered.connect(_note_visible.bind(cx, cz))
 	notifier.screen_exited.connect(_note_hidden.bind(cx, cz))
 	_active[_key(cx, cz)] = {"node": node, "data": data,
-		"buildings": null, "off_since": -1}
+		"buildings": null, "off_since": -1, "plans": {},
+		"shell_pieces": 0, "interior_pieces": 0}
 	if _scouts.has(_key(cx, cz)):
 		(_scouts[_key(cx, cz)] as Node).queue_free()
 		_scouts.erase(_key(cx, cz))
 
 
-## The chunk's building MultiMesh as a node (null when the chunk
-## has no buildings). Built from the CACHED ChunkData — despawn and
-## rematerialize never re-derive anything.
+## The chunk's buildings as ONE node holding two MultiMeshes
+## (#199): shell pieces under the exterior window material,
+## interior pieces under a plain material — every building in the
+## chunk planned by BuildingGen from the CACHED ChunkData, plans
+## themselves cached in the chunk record, so a despawn /
+## rematerialize cycle rebuilds the identical structures.
 func _make_buildings(rec: Dictionary) -> Node:
 	var data: RefCounted = rec["data"]
 	if data.buildings.is_empty():
@@ -279,31 +289,57 @@ func _make_buildings(rec: Dictionary) -> Node:
 	(rec["node"] as Node).add_child(node)
 	var cx: int = data.cx
 	var cz: int = data.cz
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = true
-	mm.mesh = _box_mesh
-	mm.instance_count = data.buildings.size()
-	for i in data.buildings.size():
-		var b: Array = data.buildings[i]
+	var shell_xforms: Array = []
+	var shell_colors: Array = []
+	var int_xforms: Array = []
+	for b in data.buildings:
 		var lx := int(b[0])
 		var lz := int(b[1])
 		var floors := int(b[2])
 		var style := int(b[3])
+		var pkey := "%d,%d" % [lx, lz]
+		var plans: Dictionary = rec["plans"]
+		if not plans.has(pkey):
+			plans[pkey] = BuildingGen.plan_for(WorldGen.WORLD_SEED,
+				cx * 16 + lx, cz * 16 + lz, floors, style)
+		var plan: Dictionary = plans[pkey]
 		var wx := (float(cx * 16 + lx) + 0.5) * WorldGen.LOT_SIZE
 		var wz := (float(cz * 16 + lz) + 0.5) * WorldGen.LOT_SIZE
 		var ground := WorldGen.height_at(WorldGen.WORLD_SEED, wx, wz)
-		var h := float(floors) * WorldGen.FLOOR_HEIGHT
-		var basis := Basis.from_scale(Vector3(6.4, h, 6.4))
-		var origin := Vector3((float(lx) + 0.5) * WorldGen.LOT_SIZE,
-			ground + h * 0.5, (float(lz) + 0.5) * WorldGen.LOT_SIZE)
-		mm.set_instance_transform(i, Transform3D(basis, origin))
-		mm.set_instance_color(i, STYLE_COLORS[style % STYLE_COLORS.size()])
+		var origin := Vector3((float(lx) + 0.5) * WorldGen.LOT_SIZE, ground,
+			(float(lz) + 0.5) * WorldGen.LOT_SIZE)
+		for p in plan["pieces"]:
+			var xf := Transform3D(Basis.from_scale(p["s"]), origin + (p["c"] as Vector3))
+			if bool(p["shell"]):
+				shell_xforms.append(xf)
+				shell_colors.append(STYLE_COLORS[style % STYLE_COLORS.size()])
+			else:
+				int_xforms.append(xf)
+	rec["shell_pieces"] = shell_xforms.size()
+	rec["interior_pieces"] = int_xforms.size()
+	if not shell_xforms.is_empty():
+		node.add_child(_piece_multimesh(shell_xforms, shell_colors, _building_mat))
+	if not int_xforms.is_empty():
+		var whites: Array = []
+		for i in int_xforms.size():
+			whites.append(Color.WHITE)
+		node.add_child(_piece_multimesh(int_xforms, whites, _interior_mat))
+	return node
+
+
+func _piece_multimesh(xforms: Array, colors: Array, mat: Material) -> MultiMeshInstance3D:
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = _box_mesh
+	mm.instance_count = xforms.size()
+	for i in xforms.size():
+		mm.set_instance_transform(i, xforms[i])
+		mm.set_instance_color(i, colors[i])
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
-	mmi.material_override = _building_mat
-	node.add_child(mmi)
-	return node
+	mmi.material_override = mat
+	return mmi
 
 
 func _terrain_mesh(data: RefCounted) -> ArrayMesh:
@@ -376,18 +412,21 @@ func _ensure_assets() -> void:
 	_building_mat = StandardMaterial3D.new()
 	_building_mat.albedo_texture = _window_texture()
 	_building_mat.roughness = 0.9
+	_interior_mat = StandardMaterial3D.new()
+	_interior_mat.albedo_color = Color(0.84, 0.80, 0.74)
+	_interior_mat.roughness = 1.0
 
 
-## A window-band texture: rows of lit/unlit windows give the
-## multi-story read on the unit-box instances.
+## A ONE-FLOOR window band (#199): shell pieces are single-story
+## boxes now, so each carries one row of windows and a tower reads
+## as stacked stories from outside.
 func _window_texture() -> ImageTexture:
-	var img := Image.create(64, 256, false, Image.FORMAT_RGBA8)
+	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0.92, 0.90, 0.86))
-	for floor_i in 16:
-		for wx_i in 4:
-			var lit := (floor_i * 7 + wx_i * 13) % 3 != 0
-			var c := Color(0.15, 0.18, 0.25) if not lit else Color(0.85, 0.78, 0.55)
-			for y in range(floor_i * 16 + 4, floor_i * 16 + 12):
-				for x in range(wx_i * 16 + 3, wx_i * 16 + 13):
-					img.set_pixel(x, y, c)
+	for wx_i in 4:
+		var lit := wx_i % 3 != 0
+		var c := Color(0.15, 0.18, 0.25) if not lit else Color(0.85, 0.78, 0.55)
+		for y in range(22, 44):
+			for x in range(wx_i * 16 + 3, wx_i * 16 + 13):
+				img.set_pixel(x, y, c)
 	return ImageTexture.create_from_image(img)

@@ -129,6 +129,7 @@ func _run() -> void:
 	_test_pad_input_193()
 	_test_health_bar_depth_195()
 	_test_world_gen_197()
+	_test_building_gen_199()
 	_test_world_streamer_198()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
@@ -19300,6 +19301,154 @@ func _test_health_bar_depth_195() -> void:
 ## Determinism, settlement shapes, road continuity, bounds, and
 ## streamer bookkeeping, all on the pure generator + the streamer's
 ## data-level API. Jesse playtests streaming visuals himself.
+func _test_building_gen_199() -> void:
+	print("[Playtest] Building gen (issue #199)...")
+	var BG = load("res://scripts/world/building_gen.gd")
+	var WG = load("res://scripts/world/world_gen.gd")
+	var seed: int = WG.WORLD_SEED
+	# --- plan determinism -------------------------------------------
+	var plan_a: Dictionary = BG.plan_for(seed, 40, -17, 3, 2)
+	var plan_b: Dictionary = BG.plan_for(seed, 40, -17, 3, 2)
+	_assert(BG.serialize_plan(plan_a) == BG.serialize_plan(plan_b),
+		"199: the same inputs plan identically")
+	_assert(BG.serialize_plan(BG.plan_for(seed + 1, 40, -17, 3, 2)) != BG.serialize_plan(plan_a),
+		"199: a different seed plans differently")
+	_assert(BG.serialize_plan(BG.plan_for(seed, 41, -17, 3, 2)) != BG.serialize_plan(plan_a),
+		"199: a different lot plans differently")
+	# --- door gap: exactly one, never covered -------------------------
+	var dw := int(plan_a["door_wall"])
+	var dc := float(plan_a["door_center"])
+	var pw := float(plan_a["w"])
+	var pd := float(plan_a["d"])
+	var gap_lo := dc - 0.6
+	var gap_hi := dc + 0.6
+	var flank_lo := false
+	var flank_hi := false
+	var covered := false
+	for p in plan_a["pieces"]:
+		if not bool(p["shell"]) or str(p["k"]) != "wall":
+			continue
+		var c: Vector3 = p["c"]
+		var sz: Vector3 = p["s"]
+		if c.y - sz.y * 0.5 > 0.01:
+			continue # not the ground floor band
+		# Is this piece on the door wall's plane?
+		var on_door := false
+		var a0 := 0.0
+		var a1 := 0.0
+		match dw:
+			0:
+				on_door = absf(c.z - (pd * 0.5 - 0.15)) < 0.02
+				a0 = c.x - sz.x * 0.5
+				a1 = c.x + sz.x * 0.5
+			1:
+				on_door = absf(c.z + (pd * 0.5 - 0.15)) < 0.02
+				a0 = c.x - sz.x * 0.5
+				a1 = c.x + sz.x * 0.5
+			2:
+				on_door = absf(c.x - (pw * 0.5 - 0.15)) < 0.02
+				a0 = c.z - sz.z * 0.5
+				a1 = c.z + sz.z * 0.5
+			3:
+				on_door = absf(c.x + (pw * 0.5 - 0.15)) < 0.02
+				a0 = c.z - sz.z * 0.5
+				a1 = c.z + sz.z * 0.5
+		if not on_door:
+			continue
+		if c.y - sz.y * 0.5 < 2.2 - 0.001:
+			# A piece occupying space below the door head (the
+			# lintel starts AT 2.2 and is excluded): it must not
+			# intrude into the gap span, and the two flanks of
+			# the gap must exist.
+			if a1 > gap_lo + 0.001 and a0 < gap_hi - 0.001:
+				covered = true
+			if a1 <= gap_lo + 0.01:
+				flank_lo = true
+			if a0 >= gap_hi - 0.01:
+				flank_hi = true
+	_assert(not covered and flank_lo and flank_hi,
+		"199: exactly one ground-floor door gap, walled on both sides, never covered")
+	# --- slab openings + stairs ---------------------------------------
+	var plan4: Dictionary = BG.plan_for(seed, 7, 21, 4, 0)
+	var hole_c: Vector2 = (plan4["hole"] as Rect2).get_center()
+	var openings_ok := true
+	var roof_ok := false
+	var stairs_ok := true
+	for f in 4:
+		var py := float(f) * 3.0 + 2.75 + 0.125
+		var q := Vector3(hole_c.x, py, hole_c.y)
+		var hit := false
+		for p in plan4["pieces"]:
+			var c: Vector3 = p["c"]
+			var sz: Vector3 = p["s"]
+			if absf(q.x - c.x) < sz.x * 0.5 - 0.01 \
+					and absf(q.y - c.y) < sz.y * 0.5 - 0.01 \
+					and absf(q.z - c.z) < sz.z * 0.5 - 0.01:
+				hit = true
+		if f < 3:
+			if hit:
+				openings_ok = false
+			var n_stairs := 0
+			for p in plan4["pieces"]:
+				if str(p["k"]) == "stair" \
+						and (p["c"] as Vector3).y > float(f) * 3.0 \
+						and (p["c"] as Vector3).y < float(f + 1) * 3.0:
+					n_stairs += 1
+			if n_stairs != 10:
+				stairs_ok = false
+		else:
+			roof_ok = hit
+	_assert(openings_ok,
+		"199: every intermediate plate has a real opening over the stairwell")
+	_assert(roof_ok, "199: the roof plate is whole over the stairwell")
+	_assert(stairs_ok, "199: a 10-tread flight climbs between every floor pair")
+	# --- piece bounds ---------------------------------------------------
+	var tower: Dictionary = BG.plan_for(seed, 3, 3, 12, 1)
+	var house1: Dictionary = BG.plan_for(seed, 4, 4, 1, 1)
+	var house2: Dictionary = BG.plan_for(seed, 5, 5, 2, 1)
+	_assert((tower["pieces"] as Array).size() <= 400,
+		"199: a 12-story tower stays in the low hundreds of pieces (got %d)"
+			% (tower["pieces"] as Array).size())
+	_assert((house1["pieces"] as Array).size() <= 30,
+		"199: a 1-floor house stays in the teens of pieces (got %d)"
+			% (house1["pieces"] as Array).size())
+	_assert((house2["pieces"] as Array).size() <= 60,
+		"199: a 2-floor house stays bounded (got %d)"
+			% (house2["pieces"] as Array).size())
+	# --- materialize / despawn plan identity (streamer level) ---------
+	var StreamerB = load("res://scripts/world/world_streamer.gd")
+	var holder := Node3D.new()
+	holder.name = "BuildingGen199Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var stb = StreamerB.new()
+	holder.add_child(stb)
+	stb.call("set_target_position", Vector3(362.5, 0, -1097.8))
+	var gb := 0
+	while not bool(stb.call("debug_chunk_state", 2, -9)["has_buildings"]) and gb < 40:
+		stb.call("update_streaming", 1000)
+		gb += 1
+	var st_first: Dictionary = stb.call("debug_chunk_state", 2, -9)
+	_assert(bool(st_first["has_buildings"])
+		and int(st_first["shell_pieces"]) > 0
+		and int(st_first["interior_pieces"]) > 0,
+		"199: a materialized city chunk has shell AND interior pieces (got %d/%d)"
+			% [int(st_first["shell_pieces"]), int(st_first["interior_pieces"])])
+	stb.call("_note_hidden", 2, -9, 1000)
+	stb.call("update_streaming", 6001)
+	_assert(not bool(stb.call("debug_chunk_state", 2, -9)["has_buildings"]),
+		"199: the interior despawn follows the #198 hysteresis")
+	stb.call("_note_visible", 2, -9)
+	stb.call("update_streaming", 6002)
+	var st_second: Dictionary = stb.call("debug_chunk_state", 2, -9)
+	_assert(bool(st_second["has_buildings"])
+		and int(st_second["shell_pieces"]) == int(st_first["shell_pieces"])
+		and int(st_second["interior_pieces"]) == int(st_first["interior_pieces"]),
+		"199: rematerialization rebuilds the identical structures (plan identity)")
+	holder.queue_free()
+	print("[Playtest] Building gen test done.")
+
+
 func _test_world_streamer_198() -> void:
 	print("[Playtest] World streamer winding (issue #198)...")
 	var holder := Node3D.new()
