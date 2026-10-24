@@ -127,6 +127,8 @@ func _run() -> void:
 	_test_atk_spd_retune_192()
 	_test_menu_pad_191()
 	_test_pad_input_193()
+	_test_voice_chat_196()
+	_test_world_gen_197()
 	_test_health_bar_depth_195()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
@@ -15076,7 +15078,7 @@ func _test_input_vocabulary_144() -> void:
 	for a in InputMap.get_actions():
 		if not str(a).begins_with("ui_"):
 			custom += 1
-	_assert(custom == 30, "144: exactly 30 project actions (26 verbs + 4 look)")
+	_assert(custom == 32, "144: exactly 32 project actions (28 verbs + 4 look; +2 voice actions, #196)")
 	_assert(InputMap.has_action("ui_accept") and not InputMap.action_get_events("ui_accept").is_empty(),
 		"144: built-in ui actions intact")
 	# Byte-for-byte spot check: the raw poll the game used to read and
@@ -19534,6 +19536,726 @@ class _FakeBackend193:
 	func glyph_for_origin(_o: int) -> String: return ""
 	func string_for_origin(o: int) -> String: return "origin_%d" % o
 	func show_binding_panel(_c: int) -> bool: return true
+
+
+## Issue #196 fake capture backend: scripted blobs in, scripted PCM
+## out; records starts/stops/speaking brackets for the gating pins.
+class _FakeVoiceBackend196:
+	extends RefCounted
+	var avail := true
+	var ready := true
+	var start_calls := 0
+	var stop_calls := 0
+	var speaking_log: Array = []
+	var scripted_blobs: Array = []
+	var pcm_by_blob := {}
+	var rate := 48000
+	func available() -> bool: return avail
+	func session_ready() -> bool: return ready
+	func start_capture() -> bool:
+		start_calls += 1
+		return true
+	func stop_capture() -> void: stop_calls += 1
+	func poll_capture() -> Array:
+		var out := scripted_blobs.duplicate()
+		scripted_blobs.clear()
+		return out
+	func decompress(blob: PackedByteArray) -> Dictionary:
+		var key := blob.hex_encode()
+		if pcm_by_blob.has(key):
+			return {"pcm": pcm_by_blob[key], "rate": rate}
+		return {"pcm": PackedByteArray(), "rate": rate}
+	func set_speaking(b: bool) -> void: speaking_log.append(b)
+	func output_rate() -> int: return rate
+
+
+## Issue #196 RTS fixture: carries the faction map the audibility
+## resolver reads, without standing up a real RTSManager.
+class _RtsFixture196:
+	extends Node
+	var faction_peers := {}
+
+
+## Issue #196 (Phase A): spatial voice chat on the fake-backend seam —
+## packet routing + sequence discipline, gap silence accounting, mute/
+## volume application, PTT/VA gating, settings persistence, solo
+## inertness, the PROVISIONAL §4 audibility rule on fixtures, and the
+## lobby/world rig shapes. Live audio is hardware-held by design.
+## Issue #197: procedural world generation prototype — the brief's
+## chunk checks (pins 1-7; pin 8 is the suite run itself).
+## Determinism, settlement shapes, road continuity, bounds, and
+## streamer bookkeeping, all on the pure generator + the streamer's
+## data-level API. Jesse playtests streaming visuals himself.
+func _test_world_gen_197() -> void:
+	print("[Playtest] Procedural world gen (issue #197)...")
+	var holder := Node3D.new()
+	holder.name = "WorldGen197Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var WG = load("res://scripts/world/world_gen.gd")
+	var seed: int = WG.WORLD_SEED
+	# --- pin 1: determinism + seed sensitivity ----------------------
+	var d1 = WG.generate_chunk(3, -7)
+	var d2 = WG.generate_chunk(3, -7)
+	_assert(d1.serialize() == d2.serialize(),
+		"197(1): same coords generate identical ChunkData")
+	_assert(WG.generate_chunk(3, -7, seed + 1).serialize() != d1.serialize(),
+		"197(1): a different seed generates different data")
+	_assert(WG.generate_chunk(-7, 3).serialize() != d1.serialize(),
+		"197(1): different coords generate different data")
+	# Settlement scan shared by pins 2/3/5 (deterministic order).
+	var city := {}
+	var village := {}
+	for r in range(0, 13):
+		for gx in range(-r, r + 1):
+			for gz in range(-r, r + 1):
+				var s: Dictionary = WG.settlement_in_cell(seed, gx, gz)
+				if s.is_empty():
+					continue
+				if str(s["kind"]) == "city" and city.is_empty():
+					city = s
+				if str(s["kind"]) == "village" and village.is_empty():
+					village = s
+		if not city.is_empty() and not village.is_empty():
+			break
+	_assert(not city.is_empty() and not village.is_empty(),
+		"197: the lattice scan finds a city and a village")
+	# --- pin 2: city shape ------------------------------------------
+	var ccx := int(floor((city["center"] as Vector2).x / 128.0))
+	var ccz := int(floor((city["center"] as Vector2).y / 128.0))
+	var city_chunk = WG.generate_chunk(ccx, ccz)
+	_assert(city_chunk.building_count() >= 40,
+		"197(2): the city-center chunk has >= 40 buildings (got %d)"
+			% city_chunk.building_count())
+	_assert(city_chunk.max_floors() >= 8,
+		"197(2): the city-center chunk reaches >= 8 floors (got %d)"
+			% city_chunk.max_floors())
+	# --- pin 3: village shape ---------------------------------------
+	var vcx := int(floor((village["center"] as Vector2).x / 128.0))
+	var vcz := int(floor((village["center"] as Vector2).y / 128.0))
+	var village_chunk = WG.generate_chunk(vcx, vcz)
+	_assert(village_chunk.building_count() >= 1,
+		"197(3): the village-center chunk has buildings")
+	_assert(village_chunk.max_floors() <= 3,
+		"197(3): village buildings are all <= 3 floors (got %d)"
+			% village_chunk.max_floors())
+	# --- pin 4: wilderness ------------------------------------------
+	var wild = null
+	var scan_n := 0
+	while wild == null and scan_n < 20000:
+		var wx0 := 500 + (scan_n % 140)
+		var wz0 := -900 + (scan_n / 140) * 3
+		scan_n += 1
+		var clear := true
+		var gcx := int(floor(float(wx0) / 8.0))
+		var gcz := int(floor(float(wz0) / 8.0))
+		for ogx in range(gcx - 1, gcx + 2):
+			for ogz in range(gcz - 1, gcz + 2):
+				if not WG.settlement_in_cell(seed, ogx, ogz).is_empty():
+					clear = false
+		if clear:
+			wild = WG.generate_chunk(wx0, wz0)
+	_assert(wild != null, "197(4): a settlement-free chunk exists to test")
+	if wild != null:
+		_assert(wild.building_count() == 0 and wild.road_lot_count() == 0,
+			"197(4): wilderness has 0 buildings and 0 road lots")
+	# --- pin 5: roads ------------------------------------------------
+	var targets: Array = WG.road_targets(seed, city)
+	_assert(targets.size() >= 1, "197(5): the city has a road target")
+	if not targets.is_empty():
+		var p0: Vector2 = city["center"]
+		var p1: Vector2 = targets[0]["center"]
+		var steps := int(p0.distance_to(p1) / 4.0)
+		var seen := {}
+		var all_have_roads := true
+		for i in range(steps + 1):
+			var p := p0.lerp(p1, float(i) / float(maxi(steps, 1)))
+			var kx := int(floor(p.x / 128.0))
+			var kz := int(floor(p.y / 128.0))
+			var key := "%d,%d" % [kx, kz]
+			if seen.has(key):
+				continue
+			seen[key] = true
+			if WG.generate_chunk(kx, kz).road_lot_count() < 1:
+				all_have_roads = false
+		_assert(all_have_roads and seen.size() >= 2,
+			"197(5): every chunk the segment crosses reports road lots")
+		# Border leg: the segment crosses a vertical chunk border;
+		# both sides carry road lots beside the shared edge.
+		var border_ok := false
+		if absf(p1.x - p0.x) > 1.0:
+			var bx: float = (floor(minf(p0.x, p1.x) / 128.0) + 1.0) * 128.0
+			var t: float = (bx - p0.x) / (p1.x - p0.x)
+			if t > 0.0 and t < 1.0:
+				var bz := lerpf(p0.y, p1.y, t)
+				var rz := int(floor(bz / 128.0))
+				var row := int(floor((bz - float(rz) * 128.0) / 8.0))
+				var left = WG.generate_chunk(int(bx / 128.0) - 1, rz)
+				var right = WG.generate_chunk(int(bx / 128.0), rz)
+				var l_has := false
+				var r_has := false
+				for rr in range(maxi(row - 1, 0), mini(row + 2, 16)):
+					if left.lot_class(15, rr) == 1:
+						l_has = true
+					if right.lot_class(0, rr) == 1:
+						r_has = true
+				border_ok = l_has and r_has
+		_assert(border_ok,
+			"197(5): a border on a road has road lots on BOTH sides")
+	# --- pin 6: bounds ------------------------------------------------
+	var t0 := Time.get_ticks_msec()
+	var far1 = WG.generate_chunk(100000, -100000)
+	var far2 = WG.generate_chunk(-100000, 100000)
+	_assert(far1.lots.size() == 256 and far1.heights.size() == 289
+		and far2.lots.size() == 256 and far2.heights.size() == 289,
+		"197(6): +-100000 chunks return full valid data")
+	_assert(Time.get_ticks_msec() - t0 < 5000,
+		"197(6): far generation is bounded-time (no unbounded scans)")
+	# --- addendum legs: the gate's key problem points ----------------
+	# (1b) Origin straddle: the four chunks around (0,0) are valid —
+	# no seam or failure along the axes.
+	var origin_ok := true
+	for oc in [Vector2i(0, 0), Vector2i(-1, 0), Vector2i(0, -1), Vector2i(-1, -1)]:
+		var od = WG.generate_chunk(oc.x, oc.y)
+		if od.lots.size() != 256 or od.heights.size() != 289:
+			origin_ok = false
+	_assert(origin_ok, "197(A1): origin-straddling chunks generate validly")
+	# (1c) Negative-quadrant city held to the pin-2 shape thresholds.
+	var neg_city := {}
+	for gx in range(-1, -15, -1):
+		for gz in range(-1, -15, -1):
+			var ns: Dictionary = WG.settlement_in_cell(seed, gx, gz)
+			if not ns.is_empty() and str(ns["kind"]) == "city":
+				neg_city = ns
+				break
+		if not neg_city.is_empty():
+			break
+	_assert(not neg_city.is_empty(), "197(A1): a negative-quadrant city exists")
+	if not neg_city.is_empty():
+		var ncx := int(floor((neg_city["center"] as Vector2).x / 128.0))
+		var ncz := int(floor((neg_city["center"] as Vector2).y / 128.0))
+		var neg_chunk = WG.generate_chunk(ncx, ncz)
+		_assert(neg_chunk.building_count() >= 40 and neg_chunk.max_floors() >= 8,
+			"197(A1): negative city chunk matches the city shape (got %d buildings, %d floors)"
+				% [neg_chunk.building_count(), neg_chunk.max_floors()])
+	# (2) Border seams: heights agree EXACTLY on a shared edge and on
+	# a four-chunk corner (world-space sampling, identical inputs).
+	var sA = WG.generate_chunk(2, 3)
+	var sB = WG.generate_chunk(3, 3)
+	var sC = WG.generate_chunk(2, 4)
+	var sD = WG.generate_chunk(3, 4)
+	var edge_ok := true
+	for iz in 17:
+		if sA.heights[iz * 17 + 16] != sB.heights[iz * 17 + 0]:
+			edge_ok = false
+		if sA.heights[16 * 17 + iz] != sC.heights[iz]:
+			edge_ok = false
+	_assert(edge_ok, "197(A2): shared chunk edges agree EXACTLY on heights")
+	_assert(sA.heights[16 * 17 + 16] == sB.heights[16 * 17 + 0]
+		and sB.heights[16 * 17 + 0] == sD.heights[0]
+		and sD.heights[0] == sC.heights[16],
+		"197(A2): a four-chunk corner agrees EXACTLY on height")
+	# (3) Straddle: a settlement center near a chunk border raises
+	# buildings in the chunk ACROSS the border, density continuous.
+	var settlements_all: Array = []
+	var sseen := {}
+	for r in range(0, 9):
+		for gx in range(-r, r + 1):
+			for gz in range(-r, r + 1):
+				var skey := "%d,%d" % [gx, gz]
+				if sseen.has(skey):
+					continue
+				sseen[skey] = true
+				var ss: Dictionary = WG.settlement_in_cell(seed, gx, gz)
+				if not ss.is_empty():
+					settlements_all.append(ss)
+	var straddle := {}
+	var straddle_bx := 0.0
+	for want_kind in ["city", "village"]:
+		for s in settlements_all:
+			if str(s["kind"]) != want_kind:
+				continue
+			var cxw: float = (s["center"] as Vector2).x
+			var bx: float = round(cxw / 128.0) * 128.0
+			var off := absf(cxw - bx)
+			if off >= 8.0 and off <= 48.0:
+				straddle = s
+				straddle_bx = bx
+				break
+		if not straddle.is_empty():
+			break
+	_assert(not straddle.is_empty(),
+		"197(A3): a border-straddling settlement exists to test")
+	if not straddle.is_empty():
+		var sc: Vector2 = straddle["center"]
+		var sgn := 1.0 if sc.x > straddle_bx else -1.0
+		var other_cx := int(straddle_bx / 128.0) - (1 if sc.x > straddle_bx else 0)
+		var across = WG.generate_chunk(other_cx, int(floor(sc.y / 128.0)))
+		var need := 5 if str(straddle["kind"]) == "city" else 1
+		_assert(across.building_count() >= need,
+			"197(A3): the chunk across the border has buildings (got %d)"
+				% across.building_count())
+		var d_here := float(WG.density_at_world(seed, straddle_bx + 2.0 * sgn, sc.y)["density"])
+		var d_there := float(WG.density_at_world(seed, straddle_bx - 2.0 * sgn, sc.y)["density"])
+		_assert(absf(d_here - d_there) <= 0.05,
+			"197(A3): density is continuous across the straddled border")
+	# (4) Margin, explicit: a crossed chunk whose FAR endpoint
+	# settlement sits outside its +-1 cell margin still gets roads.
+	var margin_ok := false
+	var margin_found := false
+	for s in settlements_all:
+		if margin_found:
+			break
+		for t in WG.road_targets(seed, s):
+			var q0: Vector2 = s["center"]
+			var q1: Vector2 = t["center"]
+			var qsteps := int(q0.distance_to(q1) / 4.0)
+			var qseen := {}
+			for i in range(qsteps + 1):
+				var qp := q0.lerp(q1, float(i) / float(maxi(qsteps, 1)))
+				var kx := int(floor(qp.x / 128.0))
+				var kz := int(floor(qp.y / 128.0))
+				var qkey := "%d,%d" % [kx, kz]
+				if qseen.has(qkey):
+					continue
+				qseen[qkey] = true
+				var cell_dx := absi(int(floor(float(kx) / 8.0)) - int(s["gx"]))
+				var cell_dz := absi(int(floor(float(kz) / 8.0)) - int(s["gz"]))
+				if maxi(cell_dx, cell_dz) >= 2:
+					margin_found = true
+					margin_ok = WG.generate_chunk(kx, kz).road_lot_count() >= 1
+					break
+			if margin_found:
+				break
+	_assert(margin_found and margin_ok,
+		"197(A4): a road crosses correctly with its far endpoint outside the chunk's margin")
+	# (5b) Regeneration identity: generate -> wander -> regenerate
+	# is byte-identical, at the extremes and in settled land (the
+	# unload/revisit case).
+	var far_ser: String = WG.generate_chunk(100000, -100000).serialize()
+	var city_ser: String = city_chunk.serialize()
+	WG.generate_chunk(5, 5)
+	WG.generate_chunk(-40, 17)
+	_assert(WG.generate_chunk(100000, -100000).serialize() == far_ser
+		and WG.generate_chunk(ccx, ccz).serialize() == city_ser,
+		"197(A5): discard-and-regenerate is byte-identical")
+	# (1d) Determinism at a FULLY negative chunk.
+	_assert(WG.generate_chunk(-3, -7).serialize()
+		== WG.generate_chunk(-3, -7).serialize(),
+		"197(A1): a fully negative chunk generates deterministically")
+	# (3b) Corner straddle: the settlement nearest a chunk corner
+	# (deterministic scan) raises buildings in at least 2 of the 4
+	# chunks touching that corner.
+	var corner_s := {}
+	var corner_d := 1.0e9
+	for r in range(0, 18):
+		for gx in range(-r, r + 1):
+			for gz in range(-r, r + 1):
+				var cs: Dictionary = WG.settlement_in_cell(seed, gx, gz)
+				if cs.is_empty():
+					continue
+				var cc: Vector2 = cs["center"]
+				var cdx := absf(cc.x - round(cc.x / 128.0) * 128.0)
+				var cdz := absf(cc.y - round(cc.y / 128.0) * 128.0)
+				var cd := Vector2(cdx, cdz).length()
+				if cd < corner_d:
+					corner_d = cd
+					corner_s = cs
+	_assert(not corner_s.is_empty() and corner_d <= 24.0,
+		"197(A3): a settlement sits within 24 m of a chunk corner (got %.1f m)"
+			% corner_d)
+	if not corner_s.is_empty():
+		var cc2: Vector2 = corner_s["center"]
+		var kx := int(round(cc2.x / 128.0))
+		var kz := int(round(cc2.y / 128.0))
+		var with_buildings := 0
+		for ox in [-1, 0]:
+			for oz in [-1, 0]:
+				if WG.generate_chunk(kx + ox, kz + oz).building_count() >= 1:
+					with_buildings += 1
+		_assert(with_buildings >= 2,
+			"197(A3): >= 2 of the 4 corner chunks contain buildings (got %d)"
+				% with_buildings)
+	# --- pin 7: streamer bookkeeping ----------------------------------
+	var Streamer = load("res://scripts/world/world_streamer.gd")
+	var st = Streamer.new()
+	holder.add_child(st)
+	st.call("set_target_position", Vector3(64, 0, 64))
+	st.call("update_streaming")
+	_assert(st.call("active_chunks").size() <= 2,
+		"197(7): at most 2 chunks build per step (budget)")
+	var guard := 0
+	while st.call("active_chunks").size() < 169 and guard < 200:
+		st.call("update_streaming")
+		guard += 1
+	var want := {}
+	for dx in range(-6, 7):
+		for dz in range(-6, 7):
+			want["%d,%d" % [dx, dz]] = true
+	var got := {}
+	for c in st.call("active_chunks"):
+		got["%d,%d" % [(c as Vector2i).x, (c as Vector2i).y]] = true
+	_assert(got == want,
+		"197(7): the active set is exactly the load-radius set (169)")
+	st.call("set_target_position", Vector3(200.0 * 128.0, 0, 200.0 * 128.0))
+	st.call("update_streaming")
+	var after_jump: Array = st.call("active_chunks")
+	var old_gone := true
+	for c in after_jump:
+		if absi((c as Vector2i).x) <= 8 and absi((c as Vector2i).y) <= 8:
+			old_gone = false
+	_assert(old_gone and after_jump.size() <= 2,
+		"197(7): jumping far unloads the old set on the first step")
+	guard = 0
+	while st.call("active_chunks").size() < 169 and guard < 200:
+		st.call("update_streaming")
+		guard += 1
+	_assert(st.call("active_chunks").size() == 169,
+		"197(7): the new neighborhood builds out to the full set")
+	holder.queue_free()
+	print("[Playtest] Procedural world gen test done.")
+
+
+func _test_voice_chat_196() -> void:
+	print("[Playtest] Voice chat Phase A (issue #196)...")
+	# Profile backup: this section drives profile-writing setters.
+	var prof_path := "user://profile_local.cfg"
+	var prof_bytes := FileAccess.get_file_as_bytes(prof_path) \
+		if FileAccess.file_exists(prof_path) else PackedByteArray()
+	var holder := Node3D.new()
+	holder.name = "Voice196Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var VM = load("res://scripts/autoload/voice_manager.gd")
+	var IS = root.get_node("InputSource")
+	var prior_source: int = IS.call("current_source")
+	var mk_pcm := func(frames: int, val: int) -> PackedByteArray:
+		var b := PackedByteArray()
+		b.resize(frames * 2)
+		for i in frames:
+			b[2 * i] = val & 0xFF
+			b[2 * i + 1] = (val >> 8) & 0xFF
+		return b
+	var mk_packet := func(seq: int, blob: PackedByteArray) -> PackedByteArray:
+		var p := PackedByteArray()
+		p.resize(2 + blob.size())
+		p[0] = seq & 0xFF
+		p[1] = (seq >> 8) & 0xFF
+		for i in blob.size():
+			p[2 + i] = blob[i]
+		return p
+	var mk_vm := func(fake: RefCounted) -> Node:
+		var vm = VM.new()
+		holder.add_child(vm)
+		vm.call("set_backend", fake)
+		return vm
+	# ---------- pure functions ----------
+	var probe = mk_vm.call(_FakeVoiceBackend196.new())
+	var pa := PackedByteArray([1, 2, 3])
+	var pb := PackedByteArray([9, 9])
+	_assert(VM.extract_payload({"voice_data": pa, "other": pb}) == pa,
+		"196: extract_payload prefers the voice_data key")
+	_assert(VM.extract_payload({"other": pb}) == pb,
+		"196: extract_payload falls back to the first byte-array value")
+	_assert(VM.extract_payload({}).is_empty(),
+		"196: extract_payload of an empty Dictionary is empty")
+	_assert(VM.extract_rate({"sample_rate": 24000}, 48000) == 24000,
+		"196: extract_rate reads sample_rate")
+	_assert(VM.extract_rate({}, 48000) == 48000,
+		"196: extract_rate falls back when sample_rate is absent")
+	# The actions' ACTUAL bound events (gate catch: button_index 5
+	# is MOUSE wheel-down, XBUTTON1 is 8 — the gating pins below
+	# drive the actions programmatically and can never see a
+	# binding-value regression, so it is pinned here).
+	var ptt_mouse := -1
+	var ptt_key := -1
+	for ev in InputMap.action_get_events("voice_ptt"):
+		if ev is InputEventMouseButton:
+			ptt_mouse = int((ev as InputEventMouseButton).button_index)
+		elif ev is InputEventKey:
+			ptt_key = int((ev as InputEventKey).physical_keycode)
+	_assert(ptt_mouse == 8,
+		"196: voice_ptt binds mouse XBUTTON1 (index 8), not the wheel")
+	_assert(ptt_key == 67, "196: voice_ptt binds key C (physical 67)")
+	var mute_key := -1
+	for ev in InputMap.action_get_events("voice_mute"):
+		if ev is InputEventKey:
+			mute_key = int((ev as InputEventKey).physical_keycode)
+	_assert(mute_key == 77, "196: voice_mute binds key M (physical 77)")
+	# Relation literals: PARTY = 0, ENEMY = 1 (the manager's enum).
+	_assert(VM.audibility_for(3, 0, 100.0) == 1.0,
+		"196: audibility (iii) — party audible at any distance")
+	_assert(VM.audibility_for(3, 1, 5.0) == 0.5,
+		"196: audibility (iii) PROVISIONAL — enemy inside 8 m is ducked")
+	_assert(VM.audibility_for(3, 1, 20.0) == 0.0,
+		"196: audibility (iii) PROVISIONAL — enemy beyond 8 m is silent")
+	_assert(VM.audibility_for(1, 1, 20.0) == 1.0,
+		"196: audibility (i) — open proximity hears enemies")
+	_assert(VM.audibility_for(2, 1, 5.0) == 0.0,
+		"196: audibility (ii) — faction-private silences enemies")
+	_assert(VM.audibility_for(2, 0, 5.0) == 1.0,
+		"196: audibility (ii) — party still audible")
+	_assert(VM._pcm_level_db(mk_pcm.call(480, 30000)) > -3.0,
+		"196: PCM level of a loud signal reads near 0 dB")
+	_assert(VM._pcm_level_db(mk_pcm.call(480, 0)) < -100.0,
+		"196: PCM level of silence reads as silence")
+	_assert(VM._pcm_to_frames(mk_pcm.call(2, 16384)).size() == 2,
+		"196: PCM16 converts frame-per-sample")
+	probe.free()
+	# ---------- solo / session-less inertness ----------
+	var fake0 := _FakeVoiceBackend196.new()
+	var vm0 = mk_vm.call(fake0)
+	vm0.set("transmit_enabled", true)
+	vm0.call("_housekeeping")
+	vm0.call("_capture_tick", 0.016)
+	_assert(fake0.start_calls == 0,
+		"196: no session — the capture backend never starts (inert)")
+	_assert(vm0.call("get_rig_state", 77).is_empty(),
+		"196: no session — no speaker rigs exist")
+	vm0.call("_handle_voice_packet", 77, mk_packet.call(0, PackedByteArray([7, 7, 7])))
+	_assert(vm0.call("get_rig_state", 77).is_empty(),
+		"196: a packet with no session is discarded, no rig appears")
+	vm0.free()
+	# ---------- receive: routing, sequence, gaps, mute, rate cap ----
+	var fake1 := _FakeVoiceBackend196.new()
+	var blob_a := PackedByteArray([11, 12, 13, 14])
+	var blob_b := PackedByteArray([21, 22, 23, 24])
+	fake1.pcm_by_blob[blob_a.hex_encode()] = mk_pcm.call(4800, 12000)
+	fake1.pcm_by_blob[blob_b.hex_encode()] = mk_pcm.call(2400, 12000)
+	var vm1 = mk_vm.call(fake1)
+	vm1.call("debug_set_session", [77, 78], "world", 99)
+	var st: Dictionary = vm1.call("get_rig_state", 77)
+	_assert(not st.is_empty() and bool(st["spatial"]),
+		"196: a world session builds a SPATIAL rig per remote peer")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(0, blob_a))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["queued_frames"]) == 4800 and int(st["last_seq"]) == 0,
+		"196: a received packet decodes into ITS speaker's rig only")
+	_assert(int(vm1.call("get_rig_state", 78)["queued_frames"]) == 0,
+		"196: the other peer's rig stays empty (routing is per-peer)")
+	vm1.call("_feed_rigs")
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["frames_fed"]) == 4800 and bool(st["primed"]),
+		"196: the jitter buffer primes at 100 ms and feeds the generator")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(2, blob_b))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["silence_frames"]) == 4800,
+		"196: a one-step sequence gap inserts one packet of silence")
+	_assert(int(st["queued_frames"]) == 4800 + 2400,
+		"196: the gap packet's audio queues AFTER the inserted silence")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(2, blob_b))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["queued_frames"]) == 7200,
+		"196: a duplicate packet is dropped, never played twice")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(1, blob_b))
+	_assert(int(vm1.call("get_rig_state", 77)["queued_frames"]) == 7200,
+		"196: a stale (late) packet is dropped, never played late")
+	vm1.call("set_peer_muted", 77, true)
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(3, blob_b))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["last_seq"]) == 2 and int(st["queued_frames"]) == 7200,
+		"196: a muted peer's packet drops PRE-DECODE (sequence untouched)")
+	vm1.call("set_peer_muted", 77, false)
+	vm1.call("_handle_voice_packet", 99, mk_packet.call(0, blob_a))
+	_assert(vm1.call("get_rig_state", 99).is_empty(),
+		"196: the local player's own voice is never played back")
+	# Rate cap on a fresh peer: 40 packets land, the 41st drops.
+	for i in range(40):
+		vm1.call("_handle_voice_packet", 78, mk_packet.call(100 + i, blob_b))
+	vm1.call("_handle_voice_packet", 78, mk_packet.call(140, blob_b))
+	_assert(int(vm1.call("get_rig_state", 78)["last_seq"]) == 139,
+		"196: the per-sender rate cap drops a flood packet")
+	# ---------- §4 live resolver (fixtures) --------------------------
+	var displaced: Array = []
+	for n in get_nodes_in_group("rts_manager"):
+		n.remove_from_group("rts_manager")
+		displaced.append(n)
+	var rts_fix := _RtsFixture196.new()
+	rts_fix.name = "RtsFixture196"
+	rts_fix.faction_peers = {1: 99, 2: 77}
+	holder.add_child(rts_fix)
+	rts_fix.add_to_group("rts_manager")
+	var me_fix := Node3D.new()
+	me_fix.set_multiplayer_authority(99)
+	holder.add_child(me_fix)
+	me_fix.global_position = Vector3.ZERO
+	me_fix.add_to_group("players")
+	var foe_fix := Node3D.new()
+	foe_fix.set_multiplayer_authority(77)
+	holder.add_child(foe_fix)
+	foe_fix.global_position = Vector3(5, 0, 0)
+	foe_fix.add_to_group("players")
+	_assert(is_equal_approx(float(vm1.call("_audibility_gain", 77)), 0.5),
+		"196: live resolver — an enemy 5 m away is ducked (provisional iii)")
+	foe_fix.global_position = Vector3(20, 0, 0)
+	_assert(float(vm1.call("_audibility_gain", 77)) == 0.0,
+		"196: live resolver — an enemy 20 m away is inaudible")
+	var q_before := int(vm1.call("get_rig_state", 77)["queued_frames"])
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(3, blob_b))
+	_assert(int(vm1.call("get_rig_state", 77)["queued_frames"]) == q_before,
+		"196: an inaudible enemy's packet drops at receipt")
+	me_fix.remove_from_group("players")
+	foe_fix.remove_from_group("players")
+	me_fix.free()
+	foe_fix.free()
+	rts_fix.remove_from_group("rts_manager")
+	rts_fix.free()
+	for n in displaced:
+		n.add_to_group("rts_manager")
+	# ---------- lobby rigs are flat; context flip flushes ------------
+	vm1.call("debug_set_session", [77], "lobby", 99)
+	st = vm1.call("get_rig_state", 77)
+	_assert(not st.is_empty() and not bool(st["spatial"]),
+		"196: the lobby builds FLAT rigs (no player nodes there)")
+	_assert(int(st["last_seq"]) == -1 and int(st["queued_frames"]) == 0,
+		"196: a scene-context flip rebuilds rigs with buffers flushed")
+	vm1.call("debug_end_session")
+	vm1.free()
+	# ---------- send path: PTT gating + the 512 B / 50 ms cadence ----
+	var fake2 := _FakeVoiceBackend196.new()
+	var vm2 = mk_vm.call(fake2)
+	vm2.call("debug_set_session", [77], "world", 99)
+	vm2.call("set_transmit_enabled", true)
+	vm2.call("set_mode", "ptt")
+	var sent: Array = []
+	vm2.connect("packet_broadcast", func(d: PackedByteArray) -> void: sent.append(d))
+	var big := PackedByteArray()
+	big.resize(600)
+	for i in 600:
+		big[i] = 5
+	fake2.scripted_blobs = [big]
+	Input.action_press("voice_ptt")
+	vm2.call("_capture_tick", 0.016)
+	_assert(fake2.start_calls == 1,
+		"196: PTT held starts capture exactly once")
+	_assert(sent.size() == 1 and int(sent[0][0]) == 0 and int(sent[0][1]) == 0
+		and sent[0].slice(2) == big,
+		"196: a >=512 B drain flushes at once, seq 0, payload intact")
+	_assert(fake2.speaking_log == [true],
+		"196: setInGameVoiceSpeaking brackets the transmission (on)")
+	var small := PackedByteArray([3, 3, 3])
+	small.resize(100)
+	fake2.scripted_blobs = [small]
+	vm2.call("_capture_tick", 0.016)
+	_assert(sent.size() == 1,
+		"196: a small drain waits (under 512 B and under 50 ms)")
+	vm2.call("_capture_tick", 0.04)
+	_assert(sent.size() == 2 and int(sent[1][0]) == 1,
+		"196: the 50 ms wait flushes the small packet with the next seq")
+	Input.action_release("voice_ptt")
+	vm2.call("_capture_tick", 0.016)
+	_assert(fake2.stop_calls == 1 and fake2.speaking_log == [true, false],
+		"196: PTT released stops capture and closes the speaking bracket")
+	vm2.call("debug_end_session")
+	vm2.free()
+	# ---------- send path: VA gating on scripted levels --------------
+	var fake3 := _FakeVoiceBackend196.new()
+	var loud := PackedByteArray([31, 32, 33])
+	var quiet := PackedByteArray([41, 42, 43])
+	fake3.pcm_by_blob[loud.hex_encode()] = mk_pcm.call(480, 30000)
+	fake3.pcm_by_blob[quiet.hex_encode()] = mk_pcm.call(480, 0)
+	var vm3 = mk_vm.call(fake3)
+	vm3.call("debug_set_session", [77], "world", 99)
+	vm3.call("set_transmit_enabled", true)
+	vm3.call("set_mode", "va")
+	vm3.call("set_va_threshold_db", -40.0)
+	var sent3: Array = []
+	vm3.connect("packet_broadcast", func(d: PackedByteArray) -> void: sent3.append(d))
+	fake3.scripted_blobs = [quiet]
+	vm3.call("_capture_tick", 0.016)
+	_assert(fake3.start_calls == 1 and sent3.is_empty(),
+		"196: VA captures to meter, but silence sends nothing")
+	fake3.scripted_blobs = [loud]
+	vm3.call("_capture_tick", 0.06)
+	_assert(sent3.size() == 1 and fake3.speaking_log == [true],
+		"196: VA above the threshold opens the gate and sends")
+	fake3.scripted_blobs = [quiet]
+	vm3.call("_capture_tick", 0.05)
+	_assert(sent3.size() == 2,
+		"196: the 250 ms hangover keeps the gate open across a syllable gap")
+	vm3.call("_capture_tick", 0.30)
+	_assert(fake3.speaking_log == [true, false],
+		"196: after the hangover the gate closes (speaking bracket off)")
+	# Auto resolution per input source.
+	vm3.call("set_mode", "auto")
+	IS.call("set_source", 1) # PAD
+	_assert(str(vm3.call("effective_mode")) == "va",
+		"196: Auto resolves to VA on pad (no free pad button)")
+	IS.call("set_source", 0) # KB_MOUSE
+	_assert(str(vm3.call("effective_mode")) == "ptt",
+		"196: Auto resolves to PTT on keyboard/mouse")
+	vm3.call("debug_end_session")
+	vm3.free()
+	# ---------- persistence round-trips ------------------------------
+	var fake4 := _FakeVoiceBackend196.new()
+	var vm4 = mk_vm.call(fake4)
+	vm4.call("set_transmit_enabled", true)
+	vm4.call("set_mode", "va")
+	vm4.call("set_va_threshold_db", -30.0)
+	vm4.call("set_mic_muted", true)
+	vm4.call("set_peer_volume", 77, 0.5)
+	vm4.call("set_peer_muted", 78, true)
+	var SM = root.get_node("SaveManager")
+	_assert(bool(SM.call("get_profile_setting", "voice", "transmit_enabled", false))
+		and str(SM.call("get_profile_setting", "voice", "mode", "")) == "va"
+		and is_equal_approx(float(SM.call("get_profile_setting", "voice", "va_threshold_db", 0.0)), -30.0)
+		and bool(SM.call("get_profile_setting", "voice", "mic_muted", false)),
+		"196: voice settings persist to the profile voice section")
+	var vm5 = mk_vm.call(_FakeVoiceBackend196.new())
+	vm5.call("_load_settings")
+	vm5.call("_load_peer_settings")
+	_assert(bool(vm5.get("transmit_enabled")) and str(vm5.get("mode")) == "va"
+		and is_equal_approx(float(vm5.get("va_threshold_db")), -30.0)
+		and bool(vm5.get("mic_muted")),
+		"196: a fresh manager loads the persisted voice settings")
+	_assert(is_equal_approx(float(vm5.call("peer_volume", 77)), 0.5)
+		and bool(vm5.call("is_peer_muted", 78)),
+		"196: per-player volume + mute persist across managers")
+	vm5.free()
+	vm4.free()
+	var AM = root.get_node("AudioManager")
+	AM.call("set_voice_vol", 0.4)
+	_assert(is_equal_approx(float(SM.call("get_profile_setting", "settings", "voice_vol", 1.0)), 0.4),
+		"196: voice playback volume persists beside Music/SFX")
+	_assert(absf(AudioServer.get_bus_volume_db(AudioServer.get_bus_index("Voice"))
+		- linear_to_db(0.4)) < 0.1,
+		"196: the Voice bus volume applies the playback setting")
+	AM.call("set_voice_vol", 1.0)
+	# Mic failure surface: an unavailable backend reports, never loops.
+	var fake6 := _FakeVoiceBackend196.new()
+	fake6.avail = false
+	var vm6 = mk_vm.call(fake6)
+	_assert(str(vm6.call("mic_status_text")).begins_with("Microphone unavailable"),
+		"196: mic failure surfaces as settings text (reception unaffected)")
+	vm6.call("debug_set_session", [77], "world", 99)
+	vm6.call("set_transmit_enabled", true)
+	vm6.call("_capture_tick", 0.016)
+	_assert(fake6.start_calls == 0,
+		"196: an unavailable mic never starts and never retry-loops")
+	vm6.call("debug_end_session")
+	vm6.free()
+	# ---------- settings surface rows exist --------------------------
+	var mm = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(mm)
+	_assert(mm.get("_voice_transmit_tog") != null
+		and mm.get("_voice_mode_opt") != null
+		and int(mm.get("_voice_mode_opt").call("get_item_count")) == 3
+		and mm.get("_voice_status_label") != null,
+		"196: the settings panel carries the voice rows (transmit/mode/status)")
+	var so: Control = mm.get("_settings_overlay")
+	_assert(so != null and so.find_child("Val_voice_vol", true, false) != null,
+		"196: a Voice slider joins the settings volume family")
+	mm.queue_free()
+	# ---------- restore ----------
+	IS.call("set_source", prior_source)
+	if prof_bytes.size() > 0:
+		var f := FileAccess.open(prof_path, FileAccess.WRITE)
+		if f != null:
+			f.store_buffer(prof_bytes)
+			f.close()
+		SM.call("load_game")
+	holder.queue_free()
+	print("[Playtest] Voice chat test done.")
 
 
 func _test_menu_pad_191() -> void:
