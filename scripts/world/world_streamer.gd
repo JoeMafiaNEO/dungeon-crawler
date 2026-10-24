@@ -1,10 +1,23 @@
 extends Node3D
-## WorldStreamer (issue #197): the scene side of the procedural
-## world prototype. Keeps chunk nodes alive within LOAD_RADIUS of
-## the target and unloads beyond UNLOAD_RADIUS, building at most
-## BUILD_PER_FRAME chunks per step, nearest first. A chunk is
+## WorldStreamer (issues #197/#198): the scene side of the
+## procedural world prototype. Keeps chunk nodes alive within
+## LOAD_RADIUS of the target and unloads beyond UNLOAD_RADIUS,
+## building at most BUILD_PER_FRAME chunks per step. A chunk is
 ## generated ONLY when the target enters proximity — nothing here
 ## pre-generates the world.
+##
+## #198 presentation rules (ChunkData stays pure/deterministic —
+## all of this is scene-side state only):
+## - Build priority: VisibleOnScreenNotifier3D scouts watch the
+##   unbuilt desired chunks and built chunks carry their own
+##   notifiers; reported-visible and near chunks win the build
+##   budget, in-cone chunks next, reported-off-screen last but
+##   ALWAYS drained eventually (no starvation holes).
+## - Buildings materialize only for chunks within BUILDING_RADIUS
+##   that are not reported hidden, and despawn after
+##   BUILDING_DESPAWN_MSEC of sustained off-screen time (a tuning
+##   placeholder). Terrain is the wide ring; buildings are the
+##   near, visible ring.
 ##
 ## Per chunk node: one terrain mesh from the generator's height
 ## sampler (vertex colors mark road lots) + ONE MultiMeshInstance3D
@@ -13,9 +26,12 @@ extends Node3D
 ## Prototype visuals by design — Jesse is testing generation and
 ## culling, not art.
 
-const LOAD_RADIUS := 6
-const UNLOAD_RADIUS := 8
+const LOAD_RADIUS := 8
+const UNLOAD_RADIUS := 10
 const BUILD_PER_FRAME := 2
+const BUILDING_RADIUS := 3
+const BUILDING_DESPAWN_MSEC := 5000 ## tuning placeholder (#198)
+const CONE_COS := 0.4226 ## cos(65 deg): the view-cone priority band
 
 const WorldGen := preload("res://scripts/world/world_gen.gd")
 const ChunkData := preload("res://scripts/world/chunk_data.gd")
@@ -30,7 +46,12 @@ const STYLE_COLORS: Array = [
 var _target_node: Node3D = null
 var _target_pos := Vector3.ZERO
 var _has_target := false
-var _active := {} ## "cx,cz" -> Node3D
+## "cx,cz" -> {node, data, buildings (Node or null), off_since}
+var _active := {}
+## "cx,cz" -> Node3D scout (unbuilt chunks in the desired set)
+var _scouts := {}
+## "cx,cz" -> int visibility: 1 visible, 0 hidden, absent = unknown
+var _vis := {}
 
 var _box_mesh: BoxMesh = null
 var _building_mat: StandardMaterial3D = null
@@ -60,6 +81,17 @@ func active_chunks() -> Array:
 	return out
 
 
+## Data-level state for pins: {built, has_buildings, vis}.
+func debug_chunk_state(cx: int, cz: int) -> Dictionary:
+	var k := _key(cx, cz)
+	if not _active.has(k):
+		return {"built": false, "has_buildings": false,
+			"vis": int(_vis.get(k, -1))}
+	var rec: Dictionary = _active[k]
+	return {"built": true, "has_buildings": rec["buildings"] != null,
+		"vis": int(_vis.get(k, -1))}
+
+
 func _process(_delta: float) -> void:
 	if _target_node == null:
 		var rig := get_tree().get_first_node_in_group("fly_rig")
@@ -76,36 +108,139 @@ func _key(cx: int, cz: int) -> String:
 	return "%d,%d" % [cx, cz]
 
 
-## One streaming step: unload beyond UNLOAD_RADIUS (immediate),
-## then build up to BUILD_PER_FRAME missing chunks inside
-## LOAD_RADIUS, nearest first.
-func update_streaming() -> void:
+# ------------------------------------------------------------------
+# Visibility reporting (notifier signals AND pins enter here).
+# ------------------------------------------------------------------
+
+func _note_visible(cx: int, cz: int) -> void:
+	_vis[_key(cx, cz)] = 1
+	if _active.has(_key(cx, cz)):
+		_active[_key(cx, cz)]["off_since"] = -1
+
+
+func _note_hidden(cx: int, cz: int, at_msec: int = -1) -> void:
+	_vis[_key(cx, cz)] = 0
+	var k := _key(cx, cz)
+	if _active.has(k) and int(_active[k]["off_since"]) < 0:
+		_active[k]["off_since"] = at_msec if at_msec >= 0 \
+			else Time.get_ticks_msec()
+
+
+func _view_forward() -> Vector3:
+	if _target_node is Camera3D and is_instance_valid(_target_node):
+		var f := -(_target_node as Camera3D).global_transform.basis.z
+		f.y = 0
+		return f.normalized() if f.length() > 0.01 else Vector3.ZERO
+	return Vector3.ZERO
+
+
+## Build priority as a comparable key: [tier, chebyshev, cx, cz].
+## Tier 0: reported visible, or the near ring (about to be seen).
+## Tier 1: inside the view cone. Tier 2: unknown. Tier 3: reported
+## off-screen — last, but the queue always drains to it.
+func _priority_key(cx: int, cz: int, tcx: int, tcz: int) -> Array:
+	var cheb := maxi(absi(cx - tcx), absi(cz - tcz))
+	var vis := int(_vis.get(_key(cx, cz), -1))
+	var tier := 2
+	if vis == 1 or cheb <= 2:
+		tier = 0
+	elif vis == 0:
+		tier = 3
+	else:
+		var fwd := _view_forward()
+		if fwd != Vector3.ZERO:
+			var center := Vector2((float(cx) + 0.5) * WorldGen.CHUNK_SIZE,
+				(float(cz) + 0.5) * WorldGen.CHUNK_SIZE)
+			var to := center - Vector2(_target_pos.x, _target_pos.z)
+			if to.length() < 1.0 or \
+					to.normalized().dot(Vector2(fwd.x, fwd.z)) > CONE_COS:
+				tier = 1
+	return [tier, cheb, cx, cz]
+
+
+# ------------------------------------------------------------------
+# Streaming.
+# ------------------------------------------------------------------
+
+## One streaming step. `now_msec` is injectable so the building
+## hysteresis is pinnable headlessly; -1 uses the real clock.
+func update_streaming(now_msec: int = -1) -> void:
 	if not _has_target:
 		return
+	var now := now_msec if now_msec >= 0 else Time.get_ticks_msec()
 	var tcx := int(floor(_target_pos.x / WorldGen.CHUNK_SIZE))
 	var tcz := int(floor(_target_pos.z / WorldGen.CHUNK_SIZE))
+	# Unload chunks beyond UNLOAD_RADIUS (immediate).
+	for k in _active.keys():
+		var parts := str(k).split(",")
+		if maxi(absi(int(parts[0]) - tcx), absi(int(parts[1]) - tcz)) > UNLOAD_RADIUS:
+			(_active[k]["node"] as Node).queue_free()
+			_active.erase(k)
+			_vis.erase(k)
+	# Desired set + scouts for the unbuilt.
+	var desired := {}
+	for dx in range(-LOAD_RADIUS, LOAD_RADIUS + 1):
+		for dz in range(-LOAD_RADIUS, LOAD_RADIUS + 1):
+			desired[_key(tcx + dx, tcz + dz)] = Vector2i(tcx + dx, tcz + dz)
+	for k in _scouts.keys():
+		if not desired.has(k) or _active.has(k):
+			(_scouts[k] as Node).queue_free()
+			_scouts.erase(k)
+	for k in desired.keys():
+		if not _active.has(k) and not _scouts.has(k):
+			_make_scout(desired[k].x, desired[k].y)
+	# Build queue by priority, budget BUILD_PER_FRAME.
+	var missing: Array = []
+	for k in desired.keys():
+		if not _active.has(k):
+			missing.append(desired[k])
+	missing.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var ka := _priority_key(a.x, a.y, tcx, tcz)
+		var kb := _priority_key(b.x, b.y, tcx, tcz)
+		for i in 4:
+			if ka[i] != kb[i]:
+				return ka[i] < kb[i]
+		return false)
+	for i in mini(BUILD_PER_FRAME, missing.size()):
+		_build_chunk(missing[i].x, missing[i].y)
+	_update_buildings(tcx, tcz, now)
+
+
+## Buildings: materialize inside BUILDING_RADIUS when not reported
+## hidden; despawn outside the ring or after BUILDING_DESPAWN_MSEC
+## of sustained off-screen time.
+func _update_buildings(tcx: int, tcz: int, now: int) -> void:
+	var budget := 2
 	for k in _active.keys():
 		var parts := str(k).split(",")
 		var cx := int(parts[0])
 		var cz := int(parts[1])
-		if maxi(absi(cx - tcx), absi(cz - tcz)) > UNLOAD_RADIUS:
-			(_active[k] as Node).queue_free()
-			_active.erase(k)
-	var missing: Array = []
-	for dx in range(-LOAD_RADIUS, LOAD_RADIUS + 1):
-		for dz in range(-LOAD_RADIUS, LOAD_RADIUS + 1):
-			var cx := tcx + dx
-			var cz := tcz + dz
-			if not _active.has(_key(cx, cz)):
-				missing.append(Vector2i(cx, cz))
-	missing.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		var da := maxi(absi(a.x - tcx), absi(a.y - tcz))
-		var db := maxi(absi(b.x - tcx), absi(b.y - tcz))
-		if da != db:
-			return da < db
-		return a.x < b.x or (a.x == b.x and a.y < b.y))
-	for i in mini(BUILD_PER_FRAME, missing.size()):
-		_build_chunk(missing[i].x, missing[i].y)
+		var rec: Dictionary = _active[k]
+		var cheb := maxi(absi(cx - tcx), absi(cz - tcz))
+		var vis := int(_vis.get(k, -1))
+		var in_ring := cheb <= BUILDING_RADIUS
+		var hidden_long := vis == 0 and int(rec["off_since"]) >= 0 \
+			and now - int(rec["off_since"]) >= BUILDING_DESPAWN_MSEC
+		if rec["buildings"] != null and (not in_ring or hidden_long):
+			(rec["buildings"] as Node).queue_free()
+			rec["buildings"] = null
+		elif rec["buildings"] == null and in_ring and vis != 0 and budget > 0:
+			rec["buildings"] = _make_buildings(rec)
+			budget -= 1
+
+
+func _make_scout(cx: int, cz: int) -> void:
+	var node := Node3D.new()
+	node.name = "Scout_%d_%d" % [cx, cz]
+	node.position = Vector3((float(cx) + 0.5) * WorldGen.CHUNK_SIZE, 0,
+		(float(cz) + 0.5) * WorldGen.CHUNK_SIZE)
+	add_child(node)
+	var notifier := VisibleOnScreenNotifier3D.new()
+	notifier.aabb = AABB(Vector3(-68, -40, -68), Vector3(136, 160, 136))
+	node.add_child(notifier)
+	notifier.screen_entered.connect(_note_visible.bind(cx, cz))
+	notifier.screen_exited.connect(_note_hidden.bind(cx, cz))
+	_scouts[_key(cx, cz)] = node
 
 
 func _build_chunk(cx: int, cz: int) -> void:
@@ -116,39 +251,59 @@ func _build_chunk(cx: int, cz: int) -> void:
 	node.position = Vector3(float(cx) * WorldGen.CHUNK_SIZE, 0,
 		float(cz) * WorldGen.CHUNK_SIZE)
 	add_child(node)
-	_active[_key(cx, cz)] = node
-	# --- terrain ---
 	var terrain := MeshInstance3D.new()
 	terrain.name = "Terrain"
 	terrain.mesh = _terrain_mesh(data)
 	node.add_child(terrain)
-	# --- buildings: ONE MultiMesh of a unit box ---
-	if not data.buildings.is_empty():
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.use_colors = true
-		mm.mesh = _box_mesh
-		mm.instance_count = data.buildings.size()
-		for i in data.buildings.size():
-			var b: Array = data.buildings[i]
-			var lx := int(b[0])
-			var lz := int(b[1])
-			var floors := int(b[2])
-			var style := int(b[3])
-			var wx := (float(cx * 16 + lx) + 0.5) * WorldGen.LOT_SIZE
-			var wz := (float(cz * 16 + lz) + 0.5) * WorldGen.LOT_SIZE
-			var ground := WorldGen.height_at(WorldGen.WORLD_SEED, wx, wz)
-			var h := float(floors) * WorldGen.FLOOR_HEIGHT
-			var basis := Basis.from_scale(Vector3(6.4, h, 6.4))
-			var origin := Vector3((float(lx) + 0.5) * WorldGen.LOT_SIZE,
-				ground + h * 0.5, (float(lz) + 0.5) * WorldGen.LOT_SIZE)
-			mm.set_instance_transform(i, Transform3D(basis, origin))
-			mm.set_instance_color(i, STYLE_COLORS[style % STYLE_COLORS.size()])
-		var mmi := MultiMeshInstance3D.new()
-		mmi.name = "Buildings"
-		mmi.multimesh = mm
-		mmi.material_override = _building_mat
-		node.add_child(mmi)
+	var notifier := VisibleOnScreenNotifier3D.new()
+	notifier.aabb = AABB(Vector3(-4, -40, -4), Vector3(136, 160, 136))
+	node.add_child(notifier)
+	notifier.screen_entered.connect(_note_visible.bind(cx, cz))
+	notifier.screen_exited.connect(_note_hidden.bind(cx, cz))
+	_active[_key(cx, cz)] = {"node": node, "data": data,
+		"buildings": null, "off_since": -1}
+	if _scouts.has(_key(cx, cz)):
+		(_scouts[_key(cx, cz)] as Node).queue_free()
+		_scouts.erase(_key(cx, cz))
+
+
+## The chunk's building MultiMesh as a node (null when the chunk
+## has no buildings). Built from the CACHED ChunkData — despawn and
+## rematerialize never re-derive anything.
+func _make_buildings(rec: Dictionary) -> Node:
+	var data: RefCounted = rec["data"]
+	if data.buildings.is_empty():
+		return null
+	var node := Node3D.new()
+	node.name = "Buildings"
+	(rec["node"] as Node).add_child(node)
+	var cx: int = data.cx
+	var cz: int = data.cz
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = _box_mesh
+	mm.instance_count = data.buildings.size()
+	for i in data.buildings.size():
+		var b: Array = data.buildings[i]
+		var lx := int(b[0])
+		var lz := int(b[1])
+		var floors := int(b[2])
+		var style := int(b[3])
+		var wx := (float(cx * 16 + lx) + 0.5) * WorldGen.LOT_SIZE
+		var wz := (float(cz * 16 + lz) + 0.5) * WorldGen.LOT_SIZE
+		var ground := WorldGen.height_at(WorldGen.WORLD_SEED, wx, wz)
+		var h := float(floors) * WorldGen.FLOOR_HEIGHT
+		var basis := Basis.from_scale(Vector3(6.4, h, 6.4))
+		var origin := Vector3((float(lx) + 0.5) * WorldGen.LOT_SIZE,
+			ground + h * 0.5, (float(lz) + 0.5) * WorldGen.LOT_SIZE)
+		mm.set_instance_transform(i, Transform3D(basis, origin))
+		mm.set_instance_color(i, STYLE_COLORS[style % STYLE_COLORS.size()])
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.material_override = _building_mat
+	node.add_child(mmi)
+	return node
 
 
 func _terrain_mesh(data: RefCounted) -> ArrayMesh:
@@ -194,7 +349,10 @@ func _terrain_mesh(data: RefCounted) -> ArrayMesh:
 			var b := a + 1
 			var c := a + n
 			var d := c + 1
-			indices.append_array([a, c, b, b, c, d])
+			# Winding (#198): clockwise seen from above, matching the
+			# engine's own upward faces — the previous [a, c, b] /
+			# [b, c, d] order was backface-culled from above.
+			indices.append_array([a, b, c, b, d, c])
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts

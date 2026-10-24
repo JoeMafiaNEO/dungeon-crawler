@@ -129,6 +129,7 @@ func _run() -> void:
 	_test_pad_input_193()
 	_test_health_bar_depth_195()
 	_test_world_gen_197()
+	_test_world_streamer_198()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -19299,6 +19300,100 @@ func _test_health_bar_depth_195() -> void:
 ## Determinism, settlement shapes, road continuity, bounds, and
 ## streamer bookkeeping, all on the pure generator + the streamer's
 ## data-level API. Jesse playtests streaming visuals himself.
+func _test_world_streamer_198() -> void:
+	print("[Playtest] World streamer winding (issue #198)...")
+	var holder := Node3D.new()
+	holder.name = "WorldStreamer198Holder"
+	root.add_child(holder)
+	current_scene = holder
+	# Item 2: terrain triangle orientation. The reference is the
+	# engine's own upward face: a PlaneMesh's triangles define the
+	# cross-product sign that renders from above in this engine —
+	# no convention is assumed, the sign is read off the primitive.
+	var plane := PlaneMesh.new()
+	var parrays: Array = plane.get_mesh_arrays()
+	var pverts: PackedVector3Array = parrays[Mesh.ARRAY_VERTEX]
+	var pindex: PackedInt32Array = parrays[Mesh.ARRAY_INDEX]
+	var ref_cross := (pverts[pindex[1]] - pverts[pindex[0]]).cross(
+		pverts[pindex[2]] - pverts[pindex[0]])
+	var ChunkDataW = load("res://scripts/world/chunk_data.gd")
+	var StreamerW = load("res://scripts/world/world_streamer.gd")
+	var stw = StreamerW.new()
+	holder.add_child(stw)
+	var flat = ChunkDataW.new()
+	flat.lots.resize(256)
+	flat.heights.resize(289)
+	var mesh: ArrayMesh = stw.call("_terrain_mesh", flat)
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var index: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	_assert(index.size() == 512 * 3,
+		"198(2): the terrain mesh has 512 triangles")
+	var all_match := true
+	for t in range(0, index.size(), 3):
+		var cr := (verts[index[t + 1]] - verts[index[t]]).cross(
+			verts[index[t + 2]] - verts[index[t]])
+		if sign(cr.y) != sign(ref_cross.y):
+			all_match = false
+	_assert(all_match,
+		"198(2): every terrain triangle winds like the engine's upward face (renders from above, culling ON)")
+	# Item 3: build priority. A Camera3D target gives the streamer
+	# a view forward (-Z here): an in-cone chunk outranks an
+	# equidistant chunk behind; reported-visible wins outright;
+	# reported-hidden falls behind unknown — and still drains.
+	var cam := Camera3D.new()
+	holder.add_child(cam)
+	cam.global_position = Vector3(64, 10, 64)
+	var stp = StreamerW.new()
+	holder.add_child(stp)
+	stp.call("set_target_node", cam)
+	stp.call("set_target_position", Vector3(64, 0, 64))
+	var k_front: Array = stp.call("_priority_key", 0, -3, 0, 0)
+	var k_back: Array = stp.call("_priority_key", 0, 3, 0, 0)
+	var k_near: Array = stp.call("_priority_key", 1, 0, 0, 0)
+	_assert(int(k_near[0]) == 0 and int(k_front[0]) < int(k_back[0]),
+		"198(3): near ring and view cone outrank chunks behind the camera")
+	stp.call("_note_visible", 0, 5)
+	stp.call("_note_hidden", 0, -5)
+	var k_vis: Array = stp.call("_priority_key", 0, 5, 0, 0)
+	var k_hid: Array = stp.call("_priority_key", 0, -5, 0, 0)
+	var k_unk: Array = stp.call("_priority_key", 5, 5, 0, 0)
+	_assert(int(k_vis[0]) == 0 and int(k_hid[0]) > int(k_unk[0]),
+		"198(3): reported-visible wins; reported-hidden ranks below unknown")
+	# Item 4: building ring + despawn hysteresis (synthetic clock).
+	# The stage is the #197 city-center chunk (2,-9) — it HAS
+	# buildings (57) to materialize, unlike the origin chunk.
+	var st4 = StreamerW.new()
+	holder.add_child(st4)
+	st4.call("set_target_position", Vector3(362.5, 0, -1097.8))
+	var guard4 := 0
+	while not bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]) and guard4 < 40:
+		st4.call("update_streaming", 1000)
+		guard4 += 1
+	_assert(bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
+		"198(4): a near chunk materializes its buildings")
+	guard4 = 0
+	while not bool(st4.call("debug_chunk_state", 7, -9)["built"]) and guard4 < 300:
+		st4.call("update_streaming", 1000)
+		guard4 += 1
+	_assert(bool(st4.call("debug_chunk_state", 7, -9)["built"])
+		and not bool(st4.call("debug_chunk_state", 7, -9)["has_buildings"]),
+		"198(4): a built chunk outside the building ring has NO buildings")
+	st4.call("_note_hidden", 2, -9, 1000)
+	st4.call("update_streaming", 5999)
+	_assert(bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
+		"198(4): buildings survive a <5 s off-screen (hysteresis)")
+	st4.call("update_streaming", 6001)
+	_assert(not bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
+		"198(4): buildings despawn after ~5 s sustained off-screen")
+	st4.call("_note_visible", 2, -9)
+	st4.call("update_streaming", 6002)
+	_assert(bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
+		"198(4): buildings rematerialize when the chunk is seen again")
+	holder.queue_free()
+	print("[Playtest] World streamer winding test done.")
+
+
 func _test_world_gen_197() -> void:
 	print("[Playtest] Procedural world gen (issue #197)...")
 	var holder := Node3D.new()
@@ -19598,18 +19693,21 @@ func _test_world_gen_197() -> void:
 	_assert(st.call("active_chunks").size() <= 2,
 		"197(7): at most 2 chunks build per step (budget)")
 	var guard := 0
-	while st.call("active_chunks").size() < 169 and guard < 200:
+	while st.call("active_chunks").size() < 289 and guard < 300:
 		st.call("update_streaming")
 		guard += 1
+	# (#198 widened the terrain ring 6 -> 8: the exact set is the
+	# 289-chunk load set now — a disclosed, dispatch-ordered
+	# retarget of this pin, not a silent move.)
 	var want := {}
-	for dx in range(-6, 7):
-		for dz in range(-6, 7):
+	for dx in range(-8, 9):
+		for dz in range(-8, 9):
 			want["%d,%d" % [dx, dz]] = true
 	var got := {}
 	for c in st.call("active_chunks"):
 		got["%d,%d" % [(c as Vector2i).x, (c as Vector2i).y]] = true
 	_assert(got == want,
-		"197(7): the active set is exactly the load-radius set (169)")
+		"197(7): the active set is exactly the load-radius set (289)")
 	st.call("set_target_position", Vector3(200.0 * 128.0, 0, 200.0 * 128.0))
 	st.call("update_streaming")
 	var after_jump: Array = st.call("active_chunks")
@@ -19620,10 +19718,10 @@ func _test_world_gen_197() -> void:
 	_assert(old_gone and after_jump.size() <= 2,
 		"197(7): jumping far unloads the old set on the first step")
 	guard = 0
-	while st.call("active_chunks").size() < 169 and guard < 200:
+	while st.call("active_chunks").size() < 289 and guard < 300:
 		st.call("update_streaming")
 		guard += 1
-	_assert(st.call("active_chunks").size() == 169,
+	_assert(st.call("active_chunks").size() == 289,
 		"197(7): the new neighborhood builds out to the full set")
 	holder.queue_free()
 	print("[Playtest] Procedural world gen test done.")
