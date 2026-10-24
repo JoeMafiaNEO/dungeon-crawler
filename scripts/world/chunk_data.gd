@@ -17,7 +17,9 @@ var cz := 0
 ## 16x16 lot classes, index = lz * 16 + lx (PackedByteArray of the
 ## class constants above).
 var lots := PackedByteArray()
-## Buildings: Array of [lot_x, lot_z, floors, style_index].
+## Buildings: Array of [lot_x, lot_z, floors, style_index,
+## span_x, span_z, massing] (span/massing added by issue #200;
+## the anchor lot is the span's min corner).
 var buildings: Array = []
 ## Terrain heights at lot corners: 17x17, index = iz * 17 + ix,
 ## sampled from the generator's world-space height function.
@@ -55,7 +57,11 @@ func serialize() -> String:
 	parts.append(lots.hex_encode())
 	var bs: Array = []
 	for b in buildings:
-		bs.append("%d:%d:%d:%d" % [int(b[0]), int(b[1]), int(b[2]), int(b[3])])
+		bs.append("%d:%d:%d:%d:%d:%d:%d" % [int(b[0]), int(b[1]),
+			int(b[2]), int(b[3]),
+			int(b[4]) if b.size() > 4 else 1,
+			int(b[5]) if b.size() > 5 else 1,
+			int(b[6]) if b.size() > 6 else 0])
 	parts.append(";".join(bs))
 	var hs: Array = []
 	for h in heights:

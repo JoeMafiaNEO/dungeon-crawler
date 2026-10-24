@@ -33,6 +33,9 @@ const SALT_LOT_ROLL := 200
 const SALT_LOT_CLASS := 201
 const SALT_FLOORS := 202
 const SALT_STYLE := 203
+const SALT_MERGE := 204
+const SALT_MERGE_SHAPE := 205
+const SALT_MASSING := 206
 
 const ChunkData := preload("res://scripts/world/chunk_data.gd")
 
@@ -286,6 +289,7 @@ static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED) -> RefCount
 	# WORLD lot coordinate, so a lot's fate never depends on which
 	# chunk generation encountered it (chunks never share lots, but
 	# the discipline keeps the rule uniform across layers).
+	var seg_cache := {"%d,%d" % [cx, cz]: segments}
 	for lz in LOTS_PER_CHUNK:
 		for lx in LOTS_PER_CHUNK:
 			var wlx := cx * LOTS_PER_CHUNK + lx
@@ -304,24 +308,13 @@ static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED) -> RefCount
 			if dens <= 0.02:
 				data.lots[idx] = ChunkData.EMPTY
 				continue
-			# Buildings hug roads: the build threshold scales with
-			# density squared and falls with road distance.
-			var road_factor := 1.0
-			if dist_road > 32.0:
-				road_factor = 0.15
-			elif dist_road > 16.0:
-				road_factor = 0.45
-			var roll := rand01(seed, wlx, wlz, SALT_LOT_ROLL)
-			if roll < dens * dens * road_factor * 1.4:
+			var b := building_at(seed, wlx, wlz,
+				{"dist_road": dist_road, "dinfo": dinfo}, seg_cache)
+			if not b.is_empty():
 				data.lots[idx] = ChunkData.BUILDING
-				var cap := 12
-				if str(dinfo["kind"]) == "village":
-					cap = 2 ## villages stay low (brief: 1-2 floors)
-				var span := lerpf(1.0, float(cap), pow(dens, 1.5))
-				var froll := rand01(seed, wlx, wlz, SALT_FLOORS)
-				var floors := clampi(1 + int(pow(froll, 0.6) * span), 1, cap)
-				var style := int(rand01(seed, wlx, wlz, SALT_STYLE) * 6.0)
-				data.buildings.append([lx, lz, floors, mini(style, 5)])
+				data.buildings.append([lx, lz, int(b["floors"]),
+					int(b["style"]), int(b["span_x"]), int(b["span_z"]),
+					int(b["massing"])])
 			else:
 				var croll := rand01(seed, wlx, wlz, SALT_LOT_CLASS)
 				if croll < 0.25:
@@ -331,3 +324,164 @@ static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED) -> RefCount
 				else:
 					data.lots[idx] = ChunkData.EMPTY
 	return data
+
+
+# ------------------------------------------------------------------
+# Buildings (issue #200): anchors, merged lots, massing — all pure
+# functions of world lot coordinates, so any chunk (or the suite)
+# resolves any lot identically. A building decision never depends
+# on which chunk generation encountered the lot.
+# ------------------------------------------------------------------
+
+## Floor cap by settlement kind and density: cities taper from 8
+## at the fringe to 30 at the core; villages stay <= 3.
+static func _cap_for(kind: String, dens: float) -> int:
+	if kind == "village":
+		return 3
+	if kind == "city":
+		var t := clampf((dens - 0.40) / 0.60, 0.0, 1.0)
+		return clampi(int(round(lerpf(8.0, 30.0, t))), 8, 30)
+	return 1
+
+
+## Road distance + density info for one world lot. `seg_cache`
+## memoizes road_segments_near_chunk per chunk for the duration of
+## one top-level call (a pure memo — results are identical).
+static func _lot_context(seed: int, wlx: int, wlz: int, seg_cache: Dictionary) -> Dictionary:
+	var ccx := wlx >> 4
+	var ccz := wlz >> 4
+	var key := "%d,%d" % [ccx, ccz]
+	if not seg_cache.has(key):
+		seg_cache[key] = road_segments_near_chunk(seed, ccx, ccz)
+	var center := Vector2((float(wlx) + 0.5) * LOT_SIZE,
+		(float(wlz) + 0.5) * LOT_SIZE)
+	var dist_road := 1.0e9
+	for seg in seg_cache[key]:
+		dist_road = minf(dist_road, _dist_to_segment(center, seg[0], seg[1]))
+	return {"dist_road": dist_road,
+		"dinfo": density_at_world(seed, center.x, center.y)}
+
+
+static func _lot_is_road(seed: int, wlx: int, wlz: int, seg_cache: Dictionary) -> bool:
+	return float(_lot_context(seed, wlx, wlz, seg_cache)["dist_road"]) <= ROAD_HALF_WIDTH
+
+
+## The anchor candidacy of one lot (the #197 building rule with
+## the #200 caps): {} when the lot carries no building of its own,
+## else {floors, style, dens}.
+static func _anchor_candidate(seed: int, wlx: int, wlz: int, ctx: Dictionary) -> Dictionary:
+	if float(ctx["dist_road"]) <= ROAD_HALF_WIDTH:
+		return {}
+	var dinfo: Dictionary = ctx["dinfo"]
+	var dens := float(dinfo["density"])
+	if dens <= 0.02:
+		return {}
+	# Buildings hug roads: the build threshold scales with density
+	# squared and falls with road distance.
+	var dist_road := float(ctx["dist_road"])
+	var road_factor := 1.0
+	if dist_road > 32.0:
+		road_factor = 0.15
+	elif dist_road > 16.0:
+		road_factor = 0.45
+	var roll := rand01(seed, wlx, wlz, SALT_LOT_ROLL)
+	if roll >= dens * dens * road_factor * 1.4:
+		return {}
+	var cap := _cap_for(str(dinfo["kind"]), dens)
+	var span := lerpf(1.0, float(cap), pow(dens, 1.5))
+	var froll := rand01(seed, wlx, wlz, SALT_FLOORS)
+	var floors := clampi(1 + int(pow(froll, 0.6) * span), 1, cap)
+	var style := mini(int(rand01(seed, wlx, wlz, SALT_STYLE) * 6.0), 5)
+	return {"floors": floors, "style": style, "dens": dens}
+
+
+## The merge shape a lot ROLLS for (before claim resolution):
+## probability rises with density; extension is +x/+z only, so a
+## lot's possible claimants are exactly its -x, -z, and -x-z
+## neighbors.
+static func _raw_span(seed: int, wlx: int, wlz: int, dens: float) -> Vector2i:
+	if rand01(seed, wlx, wlz, SALT_MERGE) >= 0.5 * dens * dens:
+		return Vector2i(1, 1)
+	var shape := rand01(seed, wlx, wlz, SALT_MERGE_SHAPE)
+	if shape < 0.45:
+		return Vector2i(2, 1)
+	if shape < 0.85:
+		return Vector2i(1, 2)
+	return Vector2i(2, 2)
+
+
+static func _span_covers(span: Vector2i, dx: int, dz: int) -> bool:
+	return dx >= 0 and dz >= 0 and dx < span.x and dz < span.y
+
+
+## Claim resolution. The rolled span VOIDS to 1x1 when any lot it
+## would claim is a road lot, is itself an anchor candidate, or is
+## already claimed (by raw span) by a lexicographically smaller
+## anchor candidate. Every check reads raw rolls only, so the
+## resolution is acyclic and identical from either side of any
+## border.
+static func _resolve_span(seed: int, wlx: int, wlz: int, dens: float,
+		seg_cache: Dictionary) -> Vector2i:
+	var span := _raw_span(seed, wlx, wlz, dens)
+	if span == Vector2i(1, 1):
+		return span
+	for dz in span.y:
+		for dx in span.x:
+			if dx == 0 and dz == 0:
+				continue
+			var mx := wlx + dx
+			var mz := wlz + dz
+			if _lot_is_road(seed, mx, mz, seg_cache):
+				return Vector2i(1, 1)
+			var mctx := _lot_context(seed, mx, mz, seg_cache)
+			if not _anchor_candidate(seed, mx, mz, mctx).is_empty():
+				return Vector2i(1, 1)
+			# Other claimants of the covered lot: the anchors that
+			# could reach it are at m-(1,0), m-(0,1), m-(1,1).
+			for c in [Vector2i(mx - 1, mz), Vector2i(mx, mz - 1),
+					Vector2i(mx - 1, mz - 1)]:
+				if c.x == wlx and c.y == wlz:
+					continue
+				if c.x > wlx or (c.x == wlx and c.y >= wlz):
+					continue # only SMALLER anchors can steal the lot
+				var cctx := _lot_context(seed, c.x, c.y, seg_cache)
+				var ccand := _anchor_candidate(seed, c.x, c.y, cctx)
+				if ccand.is_empty():
+					continue
+				if _span_covers(_raw_span(seed, c.x, c.y,
+						float(ccand["dens"])), mx - c.x, mz - c.y):
+					return Vector2i(1, 1)
+	return span
+
+
+## Massing: 0 straight, 1 setbacks, 2 podium + tower. Tall
+## buildings vary most; low buildings stay straight.
+static func _massing_for(seed: int, wlx: int, wlz: int, floors: int) -> int:
+	var roll := rand01(seed, wlx, wlz, SALT_MASSING)
+	if floors >= 10:
+		if roll < 0.40:
+			return 0
+		return 1 if roll < 0.75 else 2
+	if floors >= 4:
+		return 0 if roll < 0.6 else 1
+	return 0
+
+
+## The full building decision for one world lot: {} when the lot
+## carries no anchor, else {floors, style, span_x, span_z,
+## massing}. Pure: same lot, same answer, from any caller.
+static func building_at(seed: int, wlx: int, wlz: int,
+		ctx: Dictionary = {}, seg_cache: Dictionary = {}) -> Dictionary:
+	var cache := seg_cache
+	var my_ctx := ctx
+	if my_ctx.is_empty():
+		my_ctx = _lot_context(seed, wlx, wlz, cache)
+	var cand := _anchor_candidate(seed, wlx, wlz, my_ctx)
+	if cand.is_empty():
+		return {}
+	var dens := float(cand["dens"])
+	var span := _resolve_span(seed, wlx, wlz, dens, cache)
+	var floors := int(cand["floors"])
+	return {"floors": floors, "style": int(cand["style"]),
+		"span_x": span.x, "span_z": span.y,
+		"massing": _massing_for(seed, wlx, wlz, floors)}

@@ -297,17 +297,26 @@ func _make_buildings(rec: Dictionary) -> Node:
 		var lz := int(b[1])
 		var floors := int(b[2])
 		var style := int(b[3])
+		var span_x := int(b[4]) if b.size() > 4 else 1
+		var span_z := int(b[5]) if b.size() > 5 else 1
+		var massing := int(b[6]) if b.size() > 6 else 0
 		var pkey := "%d,%d" % [lx, lz]
 		var plans: Dictionary = rec["plans"]
 		if not plans.has(pkey):
 			plans[pkey] = BuildingGen.plan_for(WorldGen.WORLD_SEED,
-				cx * 16 + lx, cz * 16 + lz, floors, style)
+				cx * 16 + lx, cz * 16 + lz, floors, style,
+				span_x, span_z, massing)
 		var plan: Dictionary = plans[pkey]
-		var wx := (float(cx * 16 + lx) + 0.5) * WorldGen.LOT_SIZE
-		var wz := (float(cz * 16 + lz) + 0.5) * WorldGen.LOT_SIZE
+		# The plan is centered on the merged span's center (#200):
+		# the anchor lot is the span's min corner, so the origin
+		# shifts half the extra lots in +x/+z, and the ground is
+		# sampled at the span center.
+		var wx := (float(cx * 16 + lx) + float(span_x) * 0.5) * WorldGen.LOT_SIZE
+		var wz := (float(cz * 16 + lz) + float(span_z) * 0.5) * WorldGen.LOT_SIZE
 		var ground := WorldGen.height_at(WorldGen.WORLD_SEED, wx, wz)
-		var origin := Vector3((float(lx) + 0.5) * WorldGen.LOT_SIZE, ground,
-			(float(lz) + 0.5) * WorldGen.LOT_SIZE)
+		var origin := Vector3(
+			(float(lx) + float(span_x) * 0.5) * WorldGen.LOT_SIZE, ground,
+			(float(lz) + float(span_z) * 0.5) * WorldGen.LOT_SIZE)
 		for p in plan["pieces"]:
 			var xf := Transform3D(Basis.from_scale(p["s"]), origin + (p["c"] as Vector3))
 			if bool(p["shell"]):
@@ -417,16 +426,26 @@ func _ensure_assets() -> void:
 	_interior_mat.roughness = 1.0
 
 
-## A ONE-FLOOR window band (#199): shell pieces are single-story
-## boxes now, so each carries one row of windows and a tower reads
-## as stacked stories from outside.
+## A ONE-FLOOR window band (#199; contrast bumped #200): shell
+## pieces are single-story boxes, so each carries one row of
+## windows and a tower reads as stacked stories from outside.
+## The #199 acceptance found the band averaged out pale at
+## distance — the windows are TALLER and the glass DARKER now,
+## with a structural band above and below the row, so the
+## features survive mip averaging from the air.
 func _window_texture() -> ImageTexture:
 	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.92, 0.90, 0.86))
+	img.fill(Color(0.84, 0.80, 0.74))
+	for y in range(6, 12):
+		for x in 64:
+			img.set_pixel(x, y, Color(0.52, 0.49, 0.45))
+	for y in range(52, 58):
+		for x in 64:
+			img.set_pixel(x, y, Color(0.52, 0.49, 0.45))
 	for wx_i in 4:
 		var lit := wx_i % 3 != 0
-		var c := Color(0.15, 0.18, 0.25) if not lit else Color(0.85, 0.78, 0.55)
-		for y in range(22, 44):
+		var c := Color(0.07, 0.09, 0.16) if not lit else Color(0.98, 0.88, 0.62)
+		for y in range(14, 50):
 			for x in range(wx_i * 16 + 3, wx_i * 16 + 13):
 				img.set_pixel(x, y, c)
 	return ImageTexture.create_from_image(img)

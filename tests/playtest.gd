@@ -129,6 +129,7 @@ func _run() -> void:
 	_test_pad_input_193()
 	_test_health_bar_depth_195()
 	_test_world_gen_197()
+	_test_building_variety_200()
 	_test_building_gen_199()
 	_test_world_streamer_198()
 	_test_hotbar_scaling_194()
@@ -19447,6 +19448,201 @@ func _test_building_gen_199() -> void:
 		"199: rematerialization rebuilds the identical structures (plan identity)")
 	holder.queue_free()
 	print("[Playtest] Building gen test done.")
+
+
+func _test_building_variety_200() -> void:
+	print("[Playtest] Building variety (issue #200)...")
+	var WG = load("res://scripts/world/world_gen.gd")
+	var BG = load("res://scripts/world/building_gen.gd")
+	var seed: int = WG.WORLD_SEED
+	# --- determinism incl. the span/massing fields --------------------
+	var d1 = WG.generate_chunk(2, -9, seed)
+	var d2 = WG.generate_chunk(2, -9, seed)
+	_assert(d1.serialize() == d2.serialize(),
+		"200: chunk generation is deterministic incl. span/massing fields")
+	var seven := true
+	for b in d1.buildings:
+		if (b as Array).size() != 7:
+			seven = false
+	_assert(seven, "200: building records carry [lot, floors, style, span, massing]")
+	# --- border claim agreement ---------------------------------------
+	# Gather every anchor (world-lot rect) from a 3x3 chunk patch
+	# around the city core: resolved spans must NEVER overlap —
+	# that is the cross-chunk agreement property — and merged
+	# buildings must actually occur (the pin is not vacuous).
+	var rects: Array = []
+	var merged := 0
+	for ccx in range(1, 4):
+		for ccz in range(-10, -7):
+			var dd = WG.generate_chunk(ccx, ccz, seed)
+			for b in dd.buildings:
+				var r := Rect2i(ccx * 16 + int(b[0]), ccz * 16 + int(b[1]),
+					int(b[4]), int(b[5]))
+				rects.append(r)
+				if r.size.x > 1 or r.size.y > 1:
+					merged += 1
+	var overlap := false
+	for i in rects.size():
+		for j in range(i + 1, rects.size()):
+			if (rects[i] as Rect2i).intersects(rects[j]):
+				overlap = true
+	_assert(not overlap,
+		"200: resolved claim spans never overlap across chunk borders")
+	_assert(merged > 0,
+		"200: merged (multi-lot) buildings occur in the city (got %d)" % merged)
+	# building_at resolves the same lot identically on repeat calls.
+	var probe_lot := Vector2i(-999, -999)
+	for r in rects:
+		if (r as Rect2i).size.x > 1:
+			probe_lot = (r as Rect2i).position
+			break
+	if probe_lot.x != -999:
+		var ba1: Dictionary = WG.building_at(seed, probe_lot.x, probe_lot.y)
+		var ba2: Dictionary = WG.building_at(seed, probe_lot.x, probe_lot.y)
+		_assert(str(ba1) == str(ba2) and int(ba1.get("span_x", 1)) > 1,
+			"200: building_at resolves a merged anchor identically, twice")
+	# --- caps ------------------------------------------------------------
+	var city_max := 0
+	for ccx in range(0, 5):
+		for ccz in range(-11, -6):
+			city_max = maxi(city_max, WG.generate_chunk(ccx, ccz, seed).max_floors())
+	_assert(city_max <= 30 and city_max >= 13,
+		"200: city towers reach past the old 12 cap but never past 30 (got %d)" % city_max)
+	var vil_max := 0
+	var vil_any := false
+	for ccx in range(0, 3):
+		for ccz in range(5, 8):
+			var vd = WG.generate_chunk(ccx, ccz, seed)
+			vil_max = maxi(vil_max, vd.max_floors())
+			vil_any = vil_any or not vd.buildings.is_empty()
+	_assert(vil_any and vil_max <= 3,
+		"200: villages stay at or under 3 floors (got %d)" % vil_max)
+	# --- massing validity + the #199 proofs on the new shapes -----------
+	for spec in [[2, 2, 1, 20], [2, 1, 2, 14], [1, 2, 1, 9], [2, 2, 0, 12]]:
+		var plan: Dictionary = BG.plan_for(seed, 11, 13, int(spec[3]), 1,
+			int(spec[0]), int(spec[1]), int(spec[2]))
+		# Per-floor wall extent is non-increasing with height.
+		var ex: Array = []
+		var ez: Array = []
+		for f in int(spec[3]):
+			ex.append(0.0)
+			ez.append(0.0)
+		for p in plan["pieces"]:
+			if str(p["k"]) != "wall":
+				continue
+			var c: Vector3 = p["c"]
+			var szv: Vector3 = p["s"]
+			var band := int(c.y / 3.0)
+			if band >= 0 and band < ex.size():
+				ex[band] = maxf(float(ex[band]), absf(c.x) + szv.x * 0.5)
+				ez[band] = maxf(float(ez[band]), absf(c.z) + szv.z * 0.5)
+		var mono := true
+		for f in range(1, ex.size()):
+			if float(ex[f]) > float(ex[f - 1]) + 0.02 or float(ez[f]) > float(ez[f - 1]) + 0.02:
+				mono = false
+		_assert(mono,
+			"200: massing %d (%dx%d) footprint never grows with height"
+				% [int(spec[2]), int(spec[0]), int(spec[1])])
+		if int(spec[2]) == 1:
+			_assert(float(ex[ex.size() - 1]) < float(ex[0]) - 0.5,
+				"200: a setback tower's top floor is narrower than its base")
+		if int(spec[2]) == 2:
+			_assert(float(ex[2]) < float(ex[0]) - 0.5,
+				"200: a podium building's tower is narrower than its podium")
+		# Door proof (the #199 geometry) on this shape.
+		var dw := int(plan["door_wall"])
+		var dcg := float(plan["door_center"])
+		var pw := float(plan["w"])
+		var pd := float(plan["d"])
+		var covered := false
+		var flank_lo := false
+		var flank_hi := false
+		for p in plan["pieces"]:
+			if not bool(p["shell"]) or str(p["k"]) != "wall":
+				continue
+			var c: Vector3 = p["c"]
+			var szv: Vector3 = p["s"]
+			if c.y - szv.y * 0.5 > 0.01 or c.y - szv.y * 0.5 >= 2.2 - 0.001:
+				continue
+			var on_door := false
+			var a0 := 0.0
+			var a1 := 0.0
+			match dw:
+				0:
+					on_door = absf(c.z - (pd * 0.5 - 0.15)) < 0.02
+					a0 = c.x - szv.x * 0.5
+					a1 = c.x + szv.x * 0.5
+				1:
+					on_door = absf(c.z + (pd * 0.5 - 0.15)) < 0.02
+					a0 = c.x - szv.x * 0.5
+					a1 = c.x + szv.x * 0.5
+				2:
+					on_door = absf(c.x - (pw * 0.5 - 0.15)) < 0.02
+					a0 = c.z - szv.z * 0.5
+					a1 = c.z + szv.z * 0.5
+				3:
+					on_door = absf(c.x + (pw * 0.5 - 0.15)) < 0.02
+					a0 = c.z - szv.z * 0.5
+					a1 = c.z + szv.z * 0.5
+			if not on_door:
+				continue
+			if a1 > dcg - 0.6 + 0.001 and a0 < dcg + 0.6 - 0.001:
+				covered = true
+			if a1 <= dcg - 0.6 + 0.01:
+				flank_lo = true
+			if a0 >= dcg + 0.6 - 0.01:
+				flank_hi = true
+		_assert(not covered and flank_lo and flank_hi,
+			"200: the door proof holds on span/massing shape %s" % str(spec))
+		# Opening/stair proof (the #199 geometry) on this shape.
+		var hole_c: Vector2 = (plan["hole"] as Rect2).get_center()
+		var nf := int(spec[3])
+		var open_ok := true
+		var roof_ok := false
+		var stairs_ok := true
+		for f in nf:
+			var py := float(f) * 3.0 + 2.75 + 0.125
+			var q := Vector3(hole_c.x, py, hole_c.y)
+			var hit := false
+			for p in plan["pieces"]:
+				var c: Vector3 = p["c"]
+				var szv: Vector3 = p["s"]
+				if absf(q.x - c.x) < szv.x * 0.5 - 0.01 \
+						and absf(q.y - c.y) < szv.y * 0.5 - 0.01 \
+						and absf(q.z - c.z) < szv.z * 0.5 - 0.01:
+					hit = true
+			if f < nf - 1:
+				if hit:
+					open_ok = false
+				var n_st := 0
+				for p in plan["pieces"]:
+					if str(p["k"]) == "stair" \
+							and (p["c"] as Vector3).y > float(f) * 3.0 \
+							and (p["c"] as Vector3).y < float(f + 1) * 3.0:
+						n_st += 1
+				if n_st != 10:
+					stairs_ok = false
+			else:
+				roof_ok = hit
+		_assert(open_ok and roof_ok and stairs_ok,
+			"200: the slab/stair proof holds on span/massing shape %s" % str(spec))
+	# --- worst-case piece budget ----------------------------------------
+	var worst: Dictionary = BG.plan_for(seed, 9, 9, 30, 1, 2, 2, 1)
+	var worst_n := (worst["pieces"] as Array).size()
+	_assert(worst_n <= 700 and worst_n >= 400,
+		"200: the worst case (30 floors, 2x2, setbacks) is bounded (got %d pieces)" % worst_n)
+	# --- contrast band ----------------------------------------------------
+	var StreamerC = load("res://scripts/world/world_streamer.gd")
+	var stc = StreamerC.new()
+	var img: Image = (stc.call("_window_texture") as ImageTexture).get_image()
+	var glass := img.get_pixel(8, 30)
+	var wallp := img.get_pixel(32, 2)
+	var lum_g := 0.2126 * glass.r + 0.7152 * glass.g + 0.0722 * glass.b
+	var lum_w := 0.2126 * wallp.r + 0.7152 * wallp.g + 0.0722 * wallp.b
+	_assert(lum_g < 0.2 and lum_w > 0.6,
+		"200: the window band carries real contrast (glass %.2f vs wall %.2f)" % [lum_g, lum_w])
+	stc.free()
+	print("[Playtest] Building variety test done.")
 
 
 func _test_world_streamer_198() -> void:

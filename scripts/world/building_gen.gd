@@ -1,12 +1,22 @@
 extends RefCounted
-## BuildingGen (issue #199): the PURE procedural building planner.
+## BuildingGen (issues #199/#200): the PURE procedural building
+## planner.
 ##
-## plan_for(seed, world_lot_x, world_lot_z, floors, style) returns
-## a building as box pieces — perimeter walls per floor, floor
-## plates, partitions with door gaps, and stair treads — every
-## choice derived from the integer-hash discipline (no global RNG
-## state), so a plan is a pure function of its inputs and identical
-## on any machine, in any order.
+## plan_for(seed, world_lot_x, world_lot_z, floors, style,
+## span_x, span_z, massing) returns a building as box pieces —
+## perimeter walls per floor, floor plates, partitions with door
+## gaps, and stair treads — every choice derived from the
+## integer-hash discipline (no global RNG state), so a plan is a
+## pure function of its inputs and identical on any machine, in
+## any order.
+##
+## Size & shape (#200): the footprint is the merged lot span
+## (span_x x span_z lots), and the massing shapes it per floor —
+## 0 straight extrusion, 1 setbacks (the footprint only shrinks
+## with height), 2 podium + tower. Interiors follow each floor's
+## ACTUAL footprint; the stairwell rect derives from the smallest
+## (top) footprint, so the stair column stays inside every floor
+## while lower floors gain room around it.
 ##
 ## Enterable by construction: exactly ONE ground-floor exterior
 ## door — the door wall is BUILT as segments + a lintel around the
@@ -18,8 +28,8 @@ extends RefCounted
 ## is exactly floors x 3.0 — the #197 exterior read is preserved.
 ##
 ## Pieces are Dictionaries: {k: "wall"/"plate"/"stair"/"part",
-## c: Vector3 center (building-local, ground at y=0, lot center at
-## x/z 0), s: Vector3 size, shell: bool}. Shell pieces render
+## c: Vector3 center (building-local, ground at y=0, span center
+## at x/z 0), s: Vector3 size, shell: bool}. Shell pieces render
 ## under the exterior window material; interior pieces are plain.
 
 const PITCH := 3.0 ## floor-to-floor height (== WorldGen.FLOOR_HEIGHT)
@@ -34,6 +44,7 @@ const PART_DOOR_H := 2.1
 const STAIR_RUN := 3.4
 const STAIR_W := 1.1
 const STEPS_PER_FLIGHT := 10
+const MIN_FOOT := 3.4 ## a floor's footprint never shrinks below this
 
 const S_DOOR_WALL := 301
 const S_DOOR_OFF := 302
@@ -41,6 +52,9 @@ const S_STAIR := 303
 const S_W := 304
 const S_D := 305
 const S_PART := 310
+const S_STEP_A := 320
+const S_STEP_B := 321
+const S_PODIUM := 322
 
 
 static func _mix32(h: int) -> int:
@@ -66,7 +80,8 @@ static func _piece(k: String, c: Vector3, s: Vector3, shell: bool) -> Dictionary
 
 
 ## Append a wall spanning axis-interval [a0, a1] on one exterior
-## side, at floor band [y0, y0 + WALL_H]. side: 0:+Z 1:-Z 2:+X 3:-X.
+## side of the (w x d) floor rect, at floor band [y0, y0 + WALL_H].
+## side: 0:+Z 1:-Z 2:+X 3:-X.
 static func _wall_side(pieces: Array, side: int, a0: float, a1: float,
 		y0: float, w: float, d: float) -> void:
 	if a1 - a0 < 0.05:
@@ -88,9 +103,10 @@ static func _wall_side(pieces: Array, side: int, a0: float, a1: float,
 				Vector3(WALL_T, WALL_H, len), true))
 
 
-## Decompose the plate rect (interior of the walls) minus the hole
-## rect (pass an empty-span rect for a whole plate) into boxes at
-## plate band [py, py + PLATE_T]. Guillotine split, <= 4 pieces.
+## Decompose the plate rect (interior of the walls of a w x d
+## floor) minus the hole rect (pass an empty-span rect for a whole
+## plate) into boxes at plate band [py, py + PLATE_T]. Guillotine
+## split, <= 4 pieces.
 static func _plate(pieces: Array, w: float, d: float, py: float,
 		hole: Rect2, shell: bool) -> void:
 	var ix := w * 0.5 - WALL_T
@@ -116,54 +132,73 @@ static func _plate(pieces: Array, w: float, d: float, py: float,
 			Vector3(rr.size.x, PLATE_T, rr.size.y), shell))
 
 
-static func plan_for(seed: int, wlx: int, wlz: int, floors: int, style: int) -> Dictionary:
-	var w := 5.6 + 0.8 * float(int(_rand01(seed, wlx, wlz, S_W) * 3.0) % 3)
-	var d := 5.6 + 0.8 * float(int(_rand01(seed, wlx, wlz, S_D) * 3.0) % 3)
+static func plan_for(seed: int, wlx: int, wlz: int, floors: int, style: int,
+		span_x: int = 1, span_z: int = 1, massing: int = 0) -> Dictionary:
+	var bw := float(span_x) * 8.0 - 0.8 \
+		- 0.8 * float(int(_rand01(seed, wlx, wlz, S_W) * 3.0) % 3)
+	var bd := float(span_z) * 8.0 - 0.8 \
+		- 0.8 * float(int(_rand01(seed, wlx, wlz, S_D) * 3.0) % 3)
 	var door_wall := int(_rand01(seed, wlx, wlz, S_DOOR_WALL) * 4.0) % 4
-	var door_len := w if door_wall < 2 else d
+	var door_len := bw if door_wall < 2 else bd
 	var door_center := -door_len * 0.5 \
 		+ (0.3 + 0.4 * _rand01(seed, wlx, wlz, S_DOOR_OFF)) * door_len
+	# Massing shape parameters (hash-derived, floor-independent).
+	var step_a := floors + 1
+	var step_b := floors + 1
+	if massing == 1 and floors >= 3:
+		step_a = clampi(1 + int(_rand01(seed, wlx, wlz, S_STEP_A)
+			* float(maxi(1, floors / 3))), 1, floors - 1)
+		step_b = clampi(step_a + 1 + int(_rand01(seed, wlx, wlz, S_STEP_B)
+			* float(maxi(1, floors / 3))), step_a + 1, floors)
+	var podium_h := 0
+	if massing == 2:
+		podium_h = 1 + int(_rand01(seed, wlx, wlz, S_PODIUM) * 2.0) % 2
 	var corner := int(_rand01(seed, wlx, wlz, S_STAIR) * 4.0) % 4
 	var sx := 1.0 if corner == 0 or corner == 3 else -1.0
 	var sz := 1.0 if corner < 2 else -1.0
-	# Stairwell rect (x/z), tucked into the chosen corner, running
-	# along X. Flights ascend toward the corner's x side.
-	var zx1 := sx * (w * 0.5 - WALL_T)
+	# The footprint of each floor, and the stairwell rect derived
+	# from the SMALLEST (top) footprint (see the header).
+	var top_size := _floor_size(floors - 1, floors, bw, bd, massing,
+		step_a, step_b, podium_h)
+	var zx1 := sx * (top_size.x * 0.5 - WALL_T)
 	var zx0 := zx1 - sx * STAIR_RUN
-	var zz1 := sz * (d * 0.5 - WALL_T)
+	var zz1 := sz * (top_size.y * 0.5 - WALL_T)
 	var zz0 := zz1 - sz * STAIR_W
 	var hole := Rect2(Vector2(minf(zx0, zx1), minf(zz0, zz1)),
 		Vector2(STAIR_RUN, STAIR_W))
 	var pieces: Array = []
 	# Ground plate (top at y = -0.05, sunk just under grade).
-	_plate(pieces, w, d, -0.3, Rect2(), false)
+	_plate(pieces, bw, bd, -0.3, Rect2(), false)
 	for f in floors:
 		var y0 := float(f) * PITCH
-		# --- exterior walls ---
+		var fs := _floor_size(f, floors, bw, bd, massing, step_a, step_b, podium_h)
+		var fw := fs.x
+		var fd := fs.y
+		# --- exterior walls (this floor's footprint) ---
 		for side in 4:
-			var slen := w if side < 2 else d
+			var slen := fw if side < 2 else fd
 			if f == 0 and side == door_wall:
-				_wall_side(pieces, side, -slen * 0.5, door_center - DOOR_W * 0.5, y0, w, d)
-				_wall_side(pieces, side, door_center + DOOR_W * 0.5, slen * 0.5, y0, w, d)
+				_wall_side(pieces, side, -slen * 0.5, door_center - DOOR_W * 0.5, y0, fw, fd)
+				_wall_side(pieces, side, door_center + DOOR_W * 0.5, slen * 0.5, y0, fw, fd)
 				# Lintel over the door gap.
 				var lc := Vector3.ZERO
 				var ls := Vector3.ZERO
 				match side:
 					0:
-						lc = Vector3(door_center, y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, d * 0.5 - WALL_T * 0.5)
+						lc = Vector3(door_center, y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, fd * 0.5 - WALL_T * 0.5)
 						ls = Vector3(DOOR_W, WALL_H - DOOR_H, WALL_T)
 					1:
-						lc = Vector3(door_center, y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, -(d * 0.5 - WALL_T * 0.5))
+						lc = Vector3(door_center, y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, -(fd * 0.5 - WALL_T * 0.5))
 						ls = Vector3(DOOR_W, WALL_H - DOOR_H, WALL_T)
 					2:
-						lc = Vector3(w * 0.5 - WALL_T * 0.5, y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, door_center)
+						lc = Vector3(fw * 0.5 - WALL_T * 0.5, y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, door_center)
 						ls = Vector3(WALL_T, WALL_H - DOOR_H, DOOR_W)
 					3:
-						lc = Vector3(-(w * 0.5 - WALL_T * 0.5), y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, door_center)
+						lc = Vector3(-(fw * 0.5 - WALL_T * 0.5), y0 + DOOR_H + (WALL_H - DOOR_H) * 0.5, door_center)
 						ls = Vector3(WALL_T, WALL_H - DOOR_H, DOOR_W)
 				pieces.append(_piece("wall", lc, ls, true))
 			else:
-				_wall_side(pieces, side, -slen * 0.5, slen * 0.5, y0, w, d)
+				_wall_side(pieces, side, -slen * 0.5, slen * 0.5, y0, fw, fd)
 		# --- partitions (door-gapped, stairwell-truncated) ---
 		var pcount := int(_rand01(seed, wlx, wlz, S_PART + f * 3) * 3.0) % 3
 		for p in pcount:
@@ -172,8 +207,8 @@ static func plan_for(seed: int, wlx: int, wlz: int, floors: int, style: int) -> 
 			# orientation/position/gap — coplanar duplicates.
 			var pbase := 400 + f * 8 + p * 4
 			var along_x := _rand01(seed, wlx, wlz, pbase) < 0.5
-			var span := (w - 2.0 * WALL_T) if along_x else (d - 2.0 * WALL_T)
-			var cross := (d - 2.0 * WALL_T) if along_x else (w - 2.0 * WALL_T)
+			var span := (fw - 2.0 * WALL_T) if along_x else (fd - 2.0 * WALL_T)
+			var cross := (fd - 2.0 * WALL_T) if along_x else (fw - 2.0 * WALL_T)
 			var fixed := (randf_range_s(seed, wlx, wlz, pbase + 1, -0.3, 0.3)) * cross
 			var gap_c := (0.3 + 0.4 * _rand01(seed, wlx, wlz, pbase + 2)) * span - span * 0.5
 			# Wall spans along its axis: full span minus the door
@@ -219,10 +254,10 @@ static func plan_for(seed: int, wlx: int, wlz: int, floors: int, style: int) -> 
 					lintel_c = Vector3(fixed, y0 + PART_DOOR_H + (WALL_H - PART_DOOR_H) * 0.5, gap_c)
 					lintel_s = Vector3(PART_T, WALL_H - PART_DOOR_H, PART_DOOR_W)
 				pieces.append(_piece("part", lintel_c, lintel_s, false))
-		# --- plate above this floor ---
+		# --- plate above this floor (this floor's footprint) ---
 		var py := y0 + WALL_H
 		if f < floors - 1:
-			_plate(pieces, w, d, py, hole, false)
+			_plate(pieces, fw, fd, py, hole, false)
 			# --- flight f -> f+1, ascending toward the corner ---
 			var zlo := minf(zx0, zx1)
 			var tread := STAIR_RUN / float(STEPS_PER_FLIGHT)
@@ -234,10 +269,30 @@ static func plan_for(seed: int, wlx: int, wlz: int, floors: int, style: int) -> 
 					Vector3(xc, tread_top - 0.09, (zz0 + zz1) * 0.5),
 					Vector3(tread, 0.18, STAIR_W), false))
 		else:
-			_plate(pieces, w, d, py, Rect2(), true)
-	return {"pieces": pieces, "w": w, "d": d, "floors": floors,
+			_plate(pieces, fw, fd, py, Rect2(), true)
+	return {"pieces": pieces, "w": bw, "d": bd, "floors": floors,
 		"door_wall": door_wall, "door_center": door_center,
-		"hole": hole, "style": style}
+		"hole": hole, "style": style, "span_x": span_x,
+		"span_z": span_z, "massing": massing}
+
+
+## The footprint of floor f under the building's massing. Every
+## floor's rect is centered on the span center, and the size is
+## NON-INCREASING in f (straight: constant; setbacks: two steps
+## down; podium: full base, then a narrower tower).
+static func _floor_size(f: int, floors: int, bw: float, bd: float,
+		massing: int, step_a: int, step_b: int, podium_h: int) -> Vector2:
+	if massing == 1 and floors >= 3:
+		var shrink := 0.0
+		if f >= step_b:
+			shrink = 2.4
+		elif f >= step_a:
+			shrink = 1.2
+		return Vector2(maxf(bw - shrink, MIN_FOOT), maxf(bd - shrink, MIN_FOOT))
+	if massing == 2 and f >= podium_h:
+		return Vector2(minf(maxf(bw * 0.62, MIN_FOOT), bw),
+			minf(maxf(bd * 0.62, MIN_FOOT), bd))
+	return Vector2(bw, bd)
 
 
 static func _subtract_span(spans: Array, a: float, b: float) -> Array:
@@ -263,10 +318,11 @@ static func randf_range_s(seed: int, x: int, z: int, salt: int, lo: float, hi: f
 ## Canonical serialization for the determinism pins.
 static func serialize_plan(plan: Dictionary) -> String:
 	var parts: Array = []
-	parts.append("w=%.2f d=%.2f f=%d door=%d@%.2f hole=%.2f,%.2f" % [
+	parts.append("w=%.2f d=%.2f f=%d door=%d@%.2f hole=%.2f,%.2f span=%dx%d m=%d" % [
 		float(plan["w"]), float(plan["d"]), int(plan["floors"]),
 		int(plan["door_wall"]), float(plan["door_center"]),
-		(plan["hole"] as Rect2).position.x, (plan["hole"] as Rect2).position.y])
+		(plan["hole"] as Rect2).position.x, (plan["hole"] as Rect2).position.y,
+		int(plan["span_x"]), int(plan["span_z"]), int(plan["massing"])])
 	for p in plan["pieces"]:
 		var c: Vector3 = p["c"]
 		var s: Vector3 = p["s"]
