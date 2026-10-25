@@ -105,6 +105,7 @@ func _run() -> void:
 	_test_baked_runtime()
 	_test_act1_axis_201()
 	_test_elevator_cab_201()
+	_test_sky_dome_202()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -6202,6 +6203,108 @@ func _test_elevator_cab_201() -> void:
 	CabScript.set("ride_theme_id", "village")
 	CabScript.set("ride_seconds", 8.0)
 	print("[Playtest] Elevator cab test done.")
+
+
+# Issue #202: the P2 dome skybox pass. Parameter work on the existing
+# ProceduralSkyMaterial, driven by LevelTheme fields whose defaults
+# equal the pre-#202 effective values — so untouched themes render
+# identically, and each treated theme carries its treatment in its own
+# .tres. Pins cover the non-visual parts honestly (parameters, wiring,
+# the child census); believability is the frames' judgment, not a pin's.
+func _test_sky_dome_202() -> void:
+	print("[Playtest] Sky dome test (issue #202)...")
+	var DungeonScript: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	# field order: sky_curve, sky_energy, ground_curve, ground_energy,
+	# horizon_lighten, sun_angle_max, sun_curve, fog_sky_affect
+	const FIELD_NAMES := ["sky_curve", "sky_energy_multiplier",
+		"ground_curve", "ground_energy_multiplier", "horizon_lighten",
+		"sun_angle_max", "sun_curve", "fog_sky_affect"]
+	const DEFAULTS := [0.15, 1.0, 0.02, 1.0, 0.25, 30.0, 0.15, 1.0]
+	const TREATED := {
+		"village": [0.50, 1.05, 0.02, 1.0, 0.35, 12.0, 0.40, 0.6],
+		"supermarket": [0.45, 1.0, 0.02, 1.0, 0.10, 14.0, 0.35, 0.7],
+		"warlord": [0.70, 1.1, 0.02, 1.0, 0.50, 10.0, 0.45, 0.55],
+		"misty_docks": [0.25, 1.0, 0.02, 1.0, 0.12, 30.0, 0.15, 0.45],
+	}
+	const PATHS := {
+		"village": "res://data/levels/theme_village.tres",
+		"supermarket": "res://data/levels/theme_supermarket.tres",
+		"warlord": "res://data/levels/theme_warlord.tres",
+		"misty_docks": "res://data/levels/theme_misty_docks.tres",
+		"apex": "res://data/levels/theme_apex.tres",
+		"mason_vault": "res://data/levels/theme_mason_vault.tres",
+		"dungeon": "res://data/levels/theme_dungeon.tres",
+		"depths": "res://data/levels/theme_depths.tres",
+	}
+	for tid in PATHS:
+		var t: Resource = load(PATHS[tid])
+		_assert(t != null, "202: theme loads: " + tid)
+		# The theme's own fields: treated themes carry the locked
+		# treatment literals; every other theme carries the defaults
+		# (== the pre-#202 effective values, probed from the engine).
+		var expect: Array = TREATED.get(tid, DEFAULTS)
+		for i in FIELD_NAMES.size():
+			_assert(absf(float(t.get(FIELD_NAMES[i])) - float(expect[i])) < 0.0001,
+				"202: %s field %s == %s" % [tid, FIELD_NAMES[i], str(expect[i])])
+		# Build the environment exactly as a level does.
+		var d = DungeonScript.new()
+		d.set("theme", t)
+		d.call("_build_environment")
+		# No-new-geometry census: environment building adds exactly
+		# the env/sun pair it has always added, nothing more.
+		_assert(d.get_child_count() == 2,
+			"202: %s environment adds exactly 2 children (env + sun)" % tid)
+		var we: Node = d.get_node_or_null("WorldEnvironment")
+		_assert(we != null, "202: %s WorldEnvironment carries the stable name" % tid)
+		_assert(d.get("world_environment_node") == we,
+			"202: %s Dungeon holds the WorldEnvironment reference (P3)" % tid)
+		var env: Environment = we.get("environment")
+		_assert(d.get("level_environment") == env,
+			"202: %s Dungeon holds the Environment resource (P3)" % tid)
+		_assert(absf(env.fog_density - t.get("fog_density")) < 0.000001
+			and env.fog_light_color == t.get("fog_color"),
+			"202: %s fog color/density wired from the theme" % tid)
+		_assert(absf(env.fog_sky_affect - float(t.get("fog_sky_affect"))) < 0.0001,
+			"202: %s fog_sky_affect wired from the theme" % tid)
+		if float(t.get("sun_energy")) > 0.0:
+			_assert(env.background_mode == Environment.BG_SKY,
+				"202: %s sunlit theme builds a sky" % tid)
+			var mat: ProceduralSkyMaterial = env.sky.sky_material
+			_assert(mat.sky_top_color == t.get("sky_color"),
+				"202: %s sky top == theme sky_color" % tid)
+			_assert(mat.sky_horizon_color
+				== (t.get("sky_color") as Color).lightened(float(t.get("horizon_lighten"))),
+				"202: %s sky horizon == sky_color.lightened(field)" % tid)
+			_assert(mat.ground_horizon_color == t.get("ground_color")
+				and mat.ground_bottom_color
+					== (t.get("ground_color") as Color).darkened(0.4),
+				"202: %s ground colors wired as before" % tid)
+			_assert(absf(mat.sky_curve - float(t.get("sky_curve"))) < 0.0001
+				and absf(mat.sky_energy_multiplier
+					- float(t.get("sky_energy_multiplier"))) < 0.0001
+				and absf(mat.ground_curve - float(t.get("ground_curve"))) < 0.0001
+				and absf(mat.ground_energy_multiplier
+					- float(t.get("ground_energy_multiplier"))) < 0.0001
+				and absf(mat.sun_angle_max - float(t.get("sun_angle_max"))) < 0.0001
+				and absf(mat.sun_curve - float(t.get("sun_curve"))) < 0.0001,
+				"202: %s material params == theme fields" % tid)
+		else:
+			# Indoor themes: the flat presentation is identical in
+			# kind and parameters to the pre-#202 build.
+			_assert(env.background_mode == Environment.BG_COLOR
+				and env.background_color == t.get("sky_color"),
+				"202: %s indoor theme keeps its flat background" % tid)
+		d.free()
+	# Universal scope (gate ruling): environment building never reads
+	# the Act 1 axis — the sky is a property of the theme.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var env_fn := dsrc.substr(dsrc.find("func _build_environment()"),
+		dsrc.find("func _flat_mat(") - dsrc.find("func _build_environment()"))
+	_assert(not env_fn.contains("act1"),
+		"202: _build_environment reads no Act 1 axis state")
+	_assert(env_fn.contains("fog_sky_affect") and env_fn.contains("horizon_lighten"),
+		"202: _build_environment wires the dome fields")
+	print("[Playtest] Sky dome test done.")
 
 
 func _test_annex_departure() -> void:

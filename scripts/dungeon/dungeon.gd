@@ -354,6 +354,14 @@ enum WaveState { INTERMISSION, ACTIVE, CLEARED }
 
 var theme: LevelTheme
 var level_number := 1
+## Issue #202 (the P3 interface): _build_environment publishes its
+## products here — the WorldEnvironment node (also findable by its
+## stable name "WorldEnvironment") and the Environment resource
+## itself — so P3's reveal sequence can swap the level's background
+## in a single call (level_environment.background_mode / .sky = ...)
+## instead of reaching into the scene tree and rebuilding anything.
+var world_environment_node: WorldEnvironment = null
+var level_environment: Environment = null
 var mob_types: Array[MobData] = []
 var spawn_points: Array[Vector3] = []
 var peer_classes := {} # int peer_id -> String class_id
@@ -3620,9 +3628,15 @@ func _build_environment() -> void:
 		var sky := Sky.new()
 		var sky_mat := ProceduralSkyMaterial.new()
 		sky_mat.sky_top_color = theme.sky_color
-		sky_mat.sky_horizon_color = theme.sky_color.lightened(0.25)
+		sky_mat.sky_horizon_color = theme.sky_color.lightened(theme.horizon_lighten)
+		sky_mat.sky_curve = theme.sky_curve
+		sky_mat.sky_energy_multiplier = theme.sky_energy_multiplier
 		sky_mat.ground_bottom_color = theme.ground_color.darkened(0.4)
 		sky_mat.ground_horizon_color = theme.ground_color
+		sky_mat.ground_curve = theme.ground_curve
+		sky_mat.ground_energy_multiplier = theme.ground_energy_multiplier
+		sky_mat.sun_angle_max = theme.sun_angle_max
+		sky_mat.sun_curve = theme.sun_curve
 		sky.sky_material = sky_mat
 		env.background_mode = Environment.BG_SKY
 		env.sky = sky
@@ -3635,9 +3649,13 @@ func _build_environment() -> void:
 	env.fog_enabled = true
 	env.fog_light_color = theme.fog_color
 	env.fog_density = theme.fog_density
+	env.fog_sky_affect = theme.fog_sky_affect
 	var world_env := WorldEnvironment.new()
+	world_env.name = "WorldEnvironment"
 	world_env.environment = env
 	add_child(world_env)
+	world_environment_node = world_env
+	level_environment = env
 
 	var sun := DirectionalLight3D.new()
 	sun.light_color = theme.sun_color

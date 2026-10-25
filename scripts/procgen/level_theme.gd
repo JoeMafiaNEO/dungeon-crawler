@@ -27,6 +27,27 @@ extends Resource
 @export var sun_energy: float = 1.1
 @export var sun_direction: Vector3 = Vector3(-0.45, -1.0, -0.35)
 
+# --- Sky dome (issue #202) ---
+## Procedural-sky shaping for sunlit themes, consumed by
+## dungeon.gd::_build_environment. EVERY default below equals the
+## value in effect before these fields existed — the engine defaults
+## of ProceduralSkyMaterial / Environment (probed first-hand on the
+## shipping engine build) plus the horizon lightening factor that
+## used to be hardcoded at 0.25 in _build_environment. A theme whose
+## .tres sets none of them renders exactly as the pre-#202 build did;
+## the four outdoor Act 1 themes carry their treatments as .tres data.
+@export var sky_curve: float = 0.15
+@export var sky_energy_multiplier: float = 1.0
+@export var ground_curve: float = 0.02
+@export var ground_energy_multiplier: float = 1.0
+## sky_horizon_color = sky_color.lightened(this factor).
+@export var horizon_lighten: float = 0.25
+@export var sun_angle_max: float = 30.0
+@export var sun_curve: float = 0.15
+## Environment.fog_sky_affect: how strongly the sky itself is fogged.
+## 1.0 (the engine default) = the sky fully takes the fog at distance.
+@export var fog_sky_affect: float = 1.0
+
 # --- Obstacles & props ---
 ## Each entry: { "type": "<prop builder type>", "weight": float, "size": int cells }.
 ## Obstacles block movement and are always convex (no mob traps).
