@@ -666,6 +666,24 @@ static func train_door_close() -> AudioStreamWAV:
 	]))
 
 
+# --- plain doors (issue #201: the Act 1 cab + waiting-room doors use
+# neutral cues, not the train's pneumatic pair) ---
+
+static func door_open() -> AudioStreamWAV:
+	# Plain sliding door: a soft mechanical slide, then a muted latch click.
+	return _wav(_mix([
+		_noise(0.35, 6.0, 0.35, 0.0, 0.50),
+		_tone(150.0, 110.0, 0.10, "square", 26.0, 0.25, 0.32),
+	]))
+
+static func door_close() -> AudioStreamWAV:
+	# Muted latch click first, then the slide settles shut.
+	return _wav(_mix([
+		_tone(160.0, 115.0, 0.10, "square", 26.0, 0.25, 0.0),
+		_noise(0.32, 6.0, 0.32, 0.08, 0.48),
+	]))
+
+
 # --- boarding + apex (issue #3 Phase 2, issue #5) ---
 
 static func all_aboard() -> AudioStreamWAV:

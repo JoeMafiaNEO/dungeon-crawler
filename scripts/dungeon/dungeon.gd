@@ -274,6 +274,11 @@ static var saved_player_states: Dictionary = {}
 ## played them at the platform) — the fade-in stays.
 static var spawn_in_annex := false
 static var arrived_by_train := false
+## Issue #201 (spec section 3): the elevator cab's disembark sets this
+## instead — the dungeon-entry beat treats it like a train arrival
+## (the cab already showed the name-alone banner), and Act 2's train
+## keeps its own flag.
+static var arrived_by_elevator := false
 ## Roster from a continued multiplayer save (empty for fresh runs).
 static var continued_roster: Array = []
 ## Host toggle: allow strangers to join a continued run as fresh characters.
@@ -1196,6 +1201,17 @@ func _do_spawn(peer_id: int, class_id: String, pos: Vector3, steam_id: int = 0) 
 		_local_hud.fade_in(1.5)
 		if arrived_by_train:
 			arrived_by_train = false
+		elif arrived_by_elevator:
+			# Issue #201 (spec section 3): the cab already announced
+			# the destination's name alone at its arrival — no second
+			# banner, no brake here.
+			arrived_by_elevator = false
+		elif act1_step >= 0:
+			# Issue #201 (fork 4): a direct Act 1 entry (run start,
+			# continue) announces the level's display name alone —
+			# no verb around it, and no train brake in Act 1.
+			_local_hud.announce(theme.display_name,
+				Dungeon.arrival_tint(theme.theme_id))
 		else:
 			_local_hud.announce("NOW ARRIVING: %s" % [theme.display_name],
 				Dungeon.arrival_tint(theme.theme_id))
@@ -3547,10 +3563,20 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 		Dungeon.act1_step = act1_step_next
 	else:
 		Dungeon.act1_step = derive_act1_step(theme_id, new_level)
-	# Runtime load: train_interior.gd references the Dungeon class, so a
-	# parse-time TrainInterior reference here would be a cyclic dependency
+	# Issue #201 (spec section 3): the vehicle is chosen by the
+	# DESTINATION's axis state, resolved just above — an Act 1 hop
+	# boards the elevator cab; a legacy hop (axis closed, incl. every
+	# departure out of the Warlord hub) boards the train interior,
+	# whose script and scene stay in-tree untouched for the interim
+	# flow and Act 2's real train. Both vehicles expose the same
+	# statics, so the handoff below is vehicle-agnostic.
+	# Runtime load: the vehicle scripts reference the Dungeon class,
+	# so a parse-time reference here would be a cyclic dependency
 	# (same pattern as the station.gd runtime load in _build_station_annex_content).
-	var InteriorScript: GDScript = load("res://scripts/station/train_interior.gd")
+	var to_cab := Dungeon.act1_step >= 0
+	var InteriorScript: GDScript = load(
+		"res://scripts/station/elevator_cab.gd" if to_cab
+		else "res://scripts/station/train_interior.gd")
 	InteriorScript.passenger_classes = classes
 	InteriorScript.passenger_steam_ids = peer_steam_ids.duplicate()
 	InteriorScript.ride_theme_id = theme_id
@@ -3560,7 +3586,10 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	# Issue #93 Phase 3: the depart lever completes the departure — the
 	# car doors stay closed + locked for the ride.
 	InteriorScript.doors_locked = true
-	get_tree().call_deferred("change_scene_to_file", "res://scenes/station/train_interior.tscn")
+	if to_cab:
+		get_tree().call_deferred("change_scene_to_file", "res://scenes/station/elevator_cab.tscn")
+	else:
+		get_tree().call_deferred("change_scene_to_file", "res://scenes/station/train_interior.tscn")
 
 
 ## Train disembark (issue #93 Phase 3): the party steps out of the car into

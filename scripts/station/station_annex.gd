@@ -61,6 +61,11 @@ const LOBBY_PANEL_T := 0.12
 ## Lobby door state (issue #93 Phase 2): server-authoritative, RPC-synced.
 ## Closed doors block the doorway via LobbyDoorBlocker; open doors free it.
 var doors_open := false
+## Issue #201 (spec section 4): in an Act 1 hub the lobby is a PLAIN
+## waiting room (neutral walls, no car dressing, neutral door cues).
+## Cached at build from the run statics — the Warlord hub and every
+## legacy hub keep the car dressing and the train door cues.
+var _plain_hub := false
 var _door_panels: Array = []
 var _door_blocker: StaticBody3D = null
 var _door_tween: Tween = null
@@ -240,6 +245,10 @@ func _visual(size: Vector3, pos: Vector3, mat: Material, node_name: String = "")
 
 
 func _build() -> void:
+	# Issue #201 (spec section 4): plain-hub test mirrors the station's
+	# linear rule (axis open, current level not Warlord's).
+	_plain_hub = Dungeon.act1_step >= 0 and Dungeon.next_theme_id != "" \
+		and Dungeon.next_theme_id != "warlord"
 	var h := arena_half
 	var ax := attach_x
 	var stone := _mat(Color(0.42, 0.40, 0.44))
@@ -325,8 +334,10 @@ func _build_lobby() -> void:
 	var hw := LOBBY_W * 0.5
 	var hd := LOBBY_D * 0.5
 	var wt := LOBBY_WALL_T
-	var car_wall := _mat(Color(0.48, 0.36, 0.24))   # warm wood paneling
-	var car_dark := _mat(Color(0.30, 0.21, 0.13))    # dark wood trim
+	# Issue #201 (spec section 4): plain waiting room in an Act 1 hub —
+	# neutral stone tones instead of the car's wood paneling.
+	var car_wall := _mat(Color(0.44, 0.42, 0.46)) if _plain_hub else _mat(Color(0.48, 0.36, 0.24))   # warm wood paneling
+	var car_dark := _mat(Color(0.30, 0.29, 0.33)) if _plain_hub else _mat(Color(0.30, 0.21, 0.13))    # dark wood trim
 	var brass := _mat(Color(0.72, 0.55, 0.25))
 	var lamp_glow := _mat(Color(1.0, 0.85, 0.55), Color(1.0, 0.75, 0.40), 3.0)
 	var win_glow := _mat(Color(1.0, 0.80, 0.45), Color(1.0, 0.68, 0.30), 2.0)
@@ -375,19 +386,22 @@ func _build_lobby() -> void:
 	# param): pre-add_child duplicate names get replaced with @Class@n and
 	# lose the Lobby* prefix, while post-add_child assignment auto-numbers
 	# them (LobbyRack2, ...) as the benches above already rely on.
-	for bx in [cx - hw + 0.5, cx + hw - 0.5]:
-		for bz in [cz - 1.25, cz + 1.25]:
-			_visual(Vector3(0.5, 0.08, 2.2), _hl(bx, 2.3, bz), car_dark).name = "LobbyRack"
-	for lx2 in [cx - hw + 0.5, cx + hw - 0.5]:
-		_visual(Vector3(0.4, 0.3, 0.6), _hl(lx2, 2.49, cz - 1.6), brass).name = "LobbyBag"
-		_visual(Vector3(0.4, 0.28, 0.55), _hl(lx2, 2.48, cz + 1.0), car_dark).name = "LobbyBag"
+	# Issue #201 (spec section 4): racks, bags and straps are train-car
+	# dressing — a plain waiting room does not have them.
+	if not _plain_hub:
+		for bx in [cx - hw + 0.5, cx + hw - 0.5]:
+			for bz in [cz - 1.25, cz + 1.25]:
+				_visual(Vector3(0.5, 0.08, 2.2), _hl(bx, 2.3, bz), car_dark).name = "LobbyRack"
+		for lx2 in [cx - hw + 0.5, cx + hw - 0.5]:
+			_visual(Vector3(0.4, 0.3, 0.6), _hl(lx2, 2.49, cz - 1.6), brass).name = "LobbyBag"
+			_visual(Vector3(0.4, 0.28, 0.55), _hl(lx2, 2.48, cz + 1.0), car_dark).name = "LobbyBag"
 
-	# Hanging straps from the ceiling (visual).
-	var strap_mat := _mat(Color(0.25, 0.16, 0.10))
-	for sx in [cx - 2.0, cx, cx + 2.0]:
-		for strap_z in [cz - 1.0, cz + 1.0]:
-			_visual(Vector3(0.05, 0.5, 0.05), _hl(sx, 2.95, strap_z), strap_mat).name = "LobbyStrap"
-			_visual(Vector3(0.08, 0.25, 0.18), _hl(sx, 2.58, strap_z), strap_mat).name = "LobbyStrapHandle"
+		# Hanging straps from the ceiling (visual).
+		var strap_mat := _mat(Color(0.25, 0.16, 0.10))
+		for sx in [cx - 2.0, cx, cx + 2.0]:
+			for strap_z in [cz - 1.0, cz + 1.0]:
+				_visual(Vector3(0.05, 0.5, 0.05), _hl(sx, 2.95, strap_z), strap_mat).name = "LobbyStrap"
+				_visual(Vector3(0.08, 0.25, 0.18), _hl(sx, 2.58, strap_z), strap_mat).name = "LobbyStrapHandle"
 
 	# Warm ceiling lamps (appended to lamps so station dressing can tint them).
 	for lz2 in [cz - 1.25, cz + 1.25]:
@@ -408,12 +422,15 @@ func _build_lobby() -> void:
 		lamps.append(lamp)
 
 	# Windows: warm glowing panes on the north segments + south wall.
-	for wx in [(cx - hw - wt + door_l) * 0.5, (door_r + cx + hw + wt) * 0.5]:
-		_visual(Vector3(1.8, 1.1, 0.12), _hl(wx, 1.8, nz), car_dark).name = "LobbyWinFrame"
-		_visual(Vector3(1.5, 0.8, 0.14), _hl(wx, 1.8, nz), win_glow).name = "LobbyWindow"
-	for wx in [cx - 2.0, cx + 2.0]:
-		_visual(Vector3(1.8, 1.1, 0.12), _hl(wx, 1.8, cz + hd + wt * 0.5), car_dark).name = "LobbyWinFrame"
-		_visual(Vector3(1.5, 0.8, 0.14), _hl(wx, 1.8, cz + hd + wt * 0.5), win_glow).name = "LobbyWindow"
+	# Issue #201 (spec section 4): no window panes in a plain waiting
+	# room either — the walls are unadorned.
+	if not _plain_hub:
+		for wx in [(cx - hw - wt + door_l) * 0.5, (door_r + cx + hw + wt) * 0.5]:
+			_visual(Vector3(1.8, 1.1, 0.12), _hl(wx, 1.8, nz), car_dark).name = "LobbyWinFrame"
+			_visual(Vector3(1.5, 0.8, 0.14), _hl(wx, 1.8, nz), win_glow).name = "LobbyWindow"
+		for wx in [cx - 2.0, cx + 2.0]:
+			_visual(Vector3(1.8, 1.1, 0.12), _hl(wx, 1.8, cz + hd + wt * 0.5), car_dark).name = "LobbyWinFrame"
+			_visual(Vector3(1.5, 0.8, 0.14), _hl(wx, 1.8, cz + hd + wt * 0.5), win_glow).name = "LobbyWindow"
 
 	_build_lobby_doors(car_dark, brass)
 	_build_depart_lever()
@@ -512,7 +529,12 @@ func _apply_lobby_doors(open: bool) -> void:
 	if doors_open == open:
 		return
 	doors_open = open
-	AudioManager.sfx("train_door_open" if open else "train_door_close")
+	# Issue #201 (spec section 4): neutral door cues in an Act 1 hub;
+	# the train's pneumatic pair stays with the legacy hubs.
+	if _plain_hub:
+		AudioManager.sfx("door_open" if open else "door_close")
+	else:
+		AudioManager.sfx("train_door_open" if open else "train_door_close")
 	if _door_tween != null and _door_tween.is_valid():
 		_door_tween.kill()
 	_door_tween = null

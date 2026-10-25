@@ -1672,7 +1672,10 @@ func _on_host_create_pressed() -> void:
 				NetworkManager.continued_session_roster = run.get("roster", []).duplicate()
 				if bool(run.get("at_station", false)):
 					Station.next_level_number = int(run.get("level_number", 1))
-					get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
+					# Issue #201: resume in the run's vehicle (axis restored above).
+					get_tree().change_scene_to_file(
+						"res://scenes/station/elevator_cab.tscn" if Dungeon.act1_step >= 0
+						else "res://scenes/station/train_interior.tscn")
 				else:
 					get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 				return

@@ -540,10 +540,14 @@ func load_dungeon(theme_id: String, level_seed: int, level_number: int, baked_ha
 
 
 ## Jesse 2026-10-11: clients load the station for continued station saves.
+## Issue #201: an Act 1 station save resumes in the elevator cab, not
+## the train car — the host says which via the cab flag.
 @rpc("any_peer", "call_local")
-func load_station(level_number: int) -> void:
+func load_station(level_number: int, cab: bool = false) -> void:
 	Station.next_level_number = level_number
-	get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
+	get_tree().change_scene_to_file(
+		"res://scenes/station/elevator_cab.tscn" if cab
+		else "res://scenes/station/train_interior.tscn")
 
 
 # --- Joining ---
@@ -854,9 +858,13 @@ func continue_run(mode: String, slot: int) -> bool:
 	Dungeon.act1_step = Dungeon.act1_step_for_run(run)
 	Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
 	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
+	# Issue #201: in the run's vehicle — cab for Act 1, train otherwise
+	# (the axis was restored just above).
 	if bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
-		get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
+		get_tree().change_scene_to_file(
+			"res://scenes/station/elevator_cab.tscn" if Dungeon.act1_step >= 0
+			else "res://scenes/station/train_interior.tscn")
 	else:
 		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 	return true
@@ -942,7 +950,9 @@ func start_continued_run() -> void:
 	# Without this the host loads alone and clients sit in staging forever.
 	# Jesse 2026-10-11: station saves resume AT the station.
 	if bool(run.get("at_station", false)):
-		rpc("load_station", int(run.get("level_number", 1)))
+		# Issue #201: clients resume in the run's vehicle too.
+		rpc("load_station", int(run.get("level_number", 1)),
+			Dungeon.act1_step_for_run(run) >= 0)
 	else:
 		var c_theme := str(run.get("theme_id", "village"))
 		var c_seed := int(run.get("seed", randi()))
@@ -1000,9 +1010,12 @@ func _continue_load_level() -> void:
 	# Issue #140: the session store the dungeon captures its roster from.
 	continued_session_roster = run.get("roster", []).duplicate()
 	# Jesse 2026-10-11: station saves resume AT the station.
+	# Issue #201: in the run's vehicle (axis restored just above).
 	if bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
-		get_tree().change_scene_to_file("res://scenes/station/train_interior.tscn")
+		get_tree().change_scene_to_file(
+			"res://scenes/station/elevator_cab.tscn" if Dungeon.act1_step >= 0
+			else "res://scenes/station/train_interior.tscn")
 	else:
 		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 

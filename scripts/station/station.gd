@@ -712,15 +712,16 @@ func play_departure_ride(theme_id: String, spots: Dictionary) -> void:
 	# keeps the current level's dressing through the ride.
 	if not _linear_mode():
 		apply_dressing(theme_id)
-	# Jesse's whistle recording (assets/audio/sfx/train_whistle.mp3) overrides
-	# the synth via the file-override path, so this always plays his sound.
-	AudioManager.sfx("train_whistle")
+	# Jesse's whistle recording (train_whistle.mp3, file-override) — legacy
+	# only under #201: the Act 1 beat has no whistle, chug or rumble.
+	if not _linear_mode():
+		AudioManager.sfx("train_whistle")
 	pull_aboard(spots) # moves players, toasts "All aboard!", hides the timer
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("fade_out"):
 		hud.fade_out(1.2)
 	await get_tree().create_timer(1.0).timeout
-	if TrainInterior.USE_SYNTH_TRAIN_CUES:
+	if TrainInterior.USE_SYNTH_TRAIN_CUES and not _linear_mode():
 		AudioManager.sfx("train_chug")
 		AudioManager.sfx("rumble")
 
@@ -739,7 +740,9 @@ func pull_aboard(spots: Dictionary) -> void:
 		me.global_position = spot
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null:
-		if hud.has_method("toast"):
+		# Issue #201 (spec section 7): the "All aboard!" toast is
+		# retired in Act 1 — the pull itself is unchanged.
+		if hud.has_method("toast") and not _linear_mode():
 			hud.toast("All aboard!")
 		if hud.has_method("hide_station_timer"):
 			hud.hide_station_timer()
@@ -829,14 +832,19 @@ func _build_station_embedded() -> void:
 	var heal_glow := _mat(Color(0.25, 0.95, 0.45), Color(0.20, 0.90, 0.40), 2.0)
 	var ring_gold := _mat(Color(1.0, 0.80, 0.30), Color(1.0, 0.70, 0.20), 1.8)
 
-	# Tracks: two steel rails along the north strip + wooden sleepers.
-	_box(self, Vector3(19, 0.14, 0.14), Vector3(-1.5, 0.10, -5.3), steel)
-	_box(self, Vector3(19, 0.14, 0.14), Vector3(-1.5, 0.10, -3.7), steel)
-	var sleepers := Node3D.new()
-	sleepers.name = "Sleepers"
-	add_child(sleepers)
-	for x in range(-11, 9, 2):
-		_box(sleepers, Vector3(0.5, 0.08, 3.4), Vector3(x, 0.05, -4.5), wood_dark)
+	# North strip. Legacy: two steel rails + wooden sleepers.
+	# Issue #201 (spec section 4): in an Act 1 hub a plain elevator
+	# bank stands in an unadorned wall where the tracks were.
+	if _linear_mode():
+		_build_elevator_bank()
+	else:
+		_box(self, Vector3(19, 0.14, 0.14), Vector3(-1.5, 0.10, -5.3), steel)
+		_box(self, Vector3(19, 0.14, 0.14), Vector3(-1.5, 0.10, -3.7), steel)
+		var sleepers := Node3D.new()
+		sleepers.name = "Sleepers"
+		add_child(sleepers)
+		for x in range(-11, 9, 2):
+			_box(sleepers, Vector3(0.5, 0.08, 3.4), Vector3(x, 0.05, -4.5), wood_dark)
 
 	# Issue #97: old green-box train prop removed (Jesse). The #93 rework
 	# retired the old boarding flow; the prop was never deleted.
@@ -860,17 +868,23 @@ func _build_station_embedded() -> void:
 	_ring.mesh = torus
 	_ring.position = Vector3(-1, 0.06, 3.0)
 	add_child(_ring)
-	var board_label := Label3D.new()
-	board_label.text = "BOARD HERE"
-	board_label.font_size = 96
-	board_label.modulate = Color(1.0, 0.85, 0.40)
-	board_label.outline_size = 12
-	# resolves the lintel-face z-fighting the coplanar 3.0 placement showed
-	# in Xvfb captures; visually identical in-game.
-	board_label.position = Vector3(-1, 2.8, 2.95)
-	board_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	add_child(board_label)
-	_board_label = board_label
+	# Issue #201 slice 2, gate amendment: the BOARD HERE label is NOT
+	# built in an Act 1 hub — under Jesse's no-clues rule there is no
+	# boarding in Act 1, and "board" is the root of the forbidden
+	# token family. The ring (pure ambience) stays; the legacy marker
+	# is untouched (its writers null-guard _board_label).
+	if not _linear_mode():
+		var board_label := Label3D.new()
+		board_label.text = "BOARD HERE"
+		board_label.font_size = 96
+		board_label.modulate = Color(1.0, 0.85, 0.40)
+		board_label.outline_size = 12
+		# resolves the lintel-face z-fighting the coplanar 3.0 placement showed
+		# in Xvfb captures; visually identical in-game.
+		board_label.position = Vector3(-1, 2.8, 2.95)
+		board_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		add_child(board_label)
+		_board_label = board_label
 
 	# Heal pad (Phase 4): glowing green disc + REST sign + heal trigger.
 	_cyl(self, 2.0, 2.0, 0.10, Vector3(-9.5, 0.06, 3.5), heal_glow)
@@ -939,17 +953,43 @@ func _build_station_embedded() -> void:
 
 	# NOW BOARDING sign (Phase 5): big gold label above the train.
 	# Issue #63: wide enough for full destination names (no truncation).
-	_boarding_sign = Label3D.new()
-	_boarding_sign.font_size = 84
-	_boarding_sign.width = 1200.0
-	_boarding_sign.modulate = Color(1.0, 0.82, 0.35)
-	_boarding_sign.outline_size = 12
-	_boarding_sign.position = Vector3(-1, 3.9, -3.6)
-	_boarding_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	add_child(_boarding_sign)
+	# Issue #201 (spec sections 4/7): not built in an Act 1 hub at all —
+	# apply_dressing's write is null-guarded.
+	if not _linear_mode():
+		_boarding_sign = Label3D.new()
+		_boarding_sign.font_size = 84
+		_boarding_sign.width = 1200.0
+		_boarding_sign.modulate = Color(1.0, 0.82, 0.35)
+		_boarding_sign.outline_size = 12
+		_boarding_sign.position = Vector3(-1, 3.9, -3.6)
+		_boarding_sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		add_child(_boarding_sign)
 
 	# Per-theme dressing props (Phase 5); only the active set is visible.
 	_build_dressing()
+
+
+## Issue #201 (spec section 4): the Act 1 north strip — a plain bank
+## of closed doors in an unadorned wall panel, where the tracks were.
+## No signage, no text, no theme tint: three identical door pairs with
+## a small indicator lamp each. Visual only, like the tracks were.
+func _build_elevator_bank() -> void:
+	var bank := Node3D.new()
+	bank.name = "ElevatorBank"
+	add_child(bank)
+	var panel_mat := _mat(Color(0.44, 0.42, 0.46))
+	var steel := _mat(Color(0.58, 0.59, 0.62))
+	var dark := _mat(Color(0.22, 0.21, 0.24))
+	var lamp_glow := _mat(Color(1.0, 0.75, 0.35), Color(1.0, 0.62, 0.22), 2.0)
+	# The unadorned wall panel spanning the strip.
+	_box(bank, Vector3(15.0, 3.4, 0.4), Vector3(-1.5, 1.7, -5.55), panel_mat)
+	for dx in [-6.5, -1.5, 3.5]:
+		# Frame + two closed slabs with a center seam.
+		_box(bank, Vector3(2.7, 2.95, 0.14), Vector3(dx, 1.475, -5.32), dark)
+		_box(bank, Vector3(1.16, 2.75, 0.10), Vector3(dx - 0.60, 1.375, -5.26), steel)
+		_box(bank, Vector3(1.16, 2.75, 0.10), Vector3(dx + 0.60, 1.375, -5.26), steel)
+		# Indicator lamp above the pair (a plain glowing block, no text).
+		_box(bank, Vector3(0.18, 0.18, 0.06), Vector3(dx, 3.12, -5.28), lamp_glow)
 
 
 ## Dress the station for a destination theme: tint the lamps, show that

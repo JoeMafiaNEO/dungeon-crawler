@@ -104,6 +104,7 @@ func _run() -> void:
 	_test_bake_integrity()
 	_test_baked_runtime()
 	_test_act1_axis_201()
+	_test_elevator_cab_201()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -5852,6 +5853,357 @@ func _test_act1_axis_201() -> void:
 	print("[Playtest] Act 1 axis test done.")
 
 
+## Signature of a built cab (issue #201 slice 2, spec section 7 pin
+## 2): every node's path, type, mesh size and material color. Auto
+## names (@Class@N, a global counter) are normalized away — the
+## STRUCTURE is what must be identical between rides.
+func _cab_signature(cab_root: Node) -> String:
+	var parts: Array = []
+	_cab_signature_walk(cab_root, cab_root.name, parts)
+	return "\n".join(parts)
+
+
+func _cab_signature_walk(node: Node, path: String, parts: Array) -> void:
+	var desc := path + "|" + node.get_class()
+	if node is MeshInstance3D and (node as MeshInstance3D).mesh is BoxMesh:
+		var bm := (node as MeshInstance3D).mesh as BoxMesh
+		desc += "|box" + str(bm.size)
+		if bm.material is StandardMaterial3D:
+			desc += "|" + str((bm.material as StandardMaterial3D).albedo_color)
+	if node is OmniLight3D:
+		desc += "|lamp" + str((node as OmniLight3D).light_color)
+	parts.append(desc)
+	for child in node.get_children():
+		var cname := child.name
+		if cname.begins_with("@"):
+			cname = "<auto>"
+		_cab_signature_walk(child, path + "/" + cname, parts)
+
+
+## Every player-facing text in a built tree (issue #201 slice 2,
+## spec section 7 pin 1): Label3D signs and UI Labels.
+func _collect_label_texts(node: Node, out: Array) -> void:
+	if node is Label3D:
+		out.append((node as Label3D).text)
+	if node is Label:
+		out.append((node as Label).text)
+	for child in node.get_children():
+		_collect_label_texts(child, out)
+
+
+## Issue #201 slice 2 (spec sections 3/4/7 + fork 4): the elevator
+## cab carries Act 1 — same contract surface as the train interior,
+## byte-identical dressing, the 8s ride + hum, the name-alone arrival
+## banner — and the annex/hall lose their train dressing in Act 1
+## hubs only. The section ends with the no-clues census over the
+## built Act 1 trees.
+func _test_elevator_cab_201() -> void:
+	print("[Playtest] Elevator cab + no-clues census (issue #201 slice 2)...")
+	var CabScript := load("res://scripts/station/elevator_cab.gd")
+	var StationScript := load("res://scripts/station/station.gd")
+	var AnnexScript := load("res://scripts/station/station_annex.gd")
+	var ProcGenScript := load("res://scripts/procgen/procgen.gd")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	_assert(CabScript != null, "201s2: cab script loads")
+	var ctscn: PackedScene = load("res://scenes/station/elevator_cab.tscn")
+	_assert(ctscn != null, "201s2: cab scene loads")
+	_assert(CabScript.RIDE_SECONDS == 8.0, "201s2: 8s ride placeholder (fork 3)")
+
+	# Snapshot the shared statics this section mutates.
+	var snap_step: int = DungeonScript.get("act1_step")
+	var snap_theme: String = DungeonScript.get("next_theme_id")
+	CabScript.set("doors_locked", false)
+	CabScript.set("ride_active", false)
+
+	# --- The cab shell (bare build: no tree, no network) ---
+	var cab = CabScript.new()
+	cab._build_cab()
+	cab._build_skip_button()
+	cab._build_disembark_zone()
+	cab._build_hum()
+	_assert(cab.get_node_or_null("CabFloor") != null, "201s2: cab floor built")
+	_assert(cab.get_node_or_null("WallNorth") != null
+		and cab.get_node_or_null("WallSouth") != null, "201s2: cab side walls built")
+	_assert(cab.get_node_or_null("CabCeiling") != null, "201s2: cab ceiling built")
+	_assert(cab.get_node_or_null("DoorBlocker") != null, "201s2: cab doorway blocked")
+	# No windows, no scenery, no platform, NO signage of any kind —
+	# the cab does not carry a single Label3D.
+	_assert(cab.find_children("*", "Label3D", true, false).is_empty(),
+		"201s2: cab carries no labels or signage")
+	_assert(cab.find_children("Window*", "", true, false).is_empty(),
+		"201s2: cab has no window nodes")
+	_assert(cab.find_children("Scenery*", "", true, false).is_empty()
+		and cab.find_children("Platform*", "", true, false).is_empty()
+		and cab.find_children("Dressing*", "", true, false).is_empty(),
+		"201s2: cab has no scenery/platform/dressing nodes")
+	_assert(not cab.has_method("apply_dressing")
+		and not cab.has_method("_build_dressing")
+		and not cab.has_method("_build_scenery")
+		and not cab.has_method("_build_platform"),
+		"201s2: cab has no dressing machinery (invariance by construction)")
+	var shaped := 0
+	for n in cab.find_children("*", "StaticBody3D", true, false):
+		for c in n.get_children():
+			if c is CollisionShape3D and (c as CollisionShape3D).shape is BoxShape3D:
+				shaped += 1
+				break
+	_assert(shaped >= 8, "201s2: cab collision bodies with box shapes")
+	# Doors: two sliding panels + the state machine.
+	_assert(cab._doors.size() == 2, "201s2: two door panels")
+	_assert(not cab._doors_open, "201s2: doors start closed")
+	cab.open_doors()
+	_assert(cab._doors_open, "201s2: open_doors flips state")
+	for d in cab._doors:
+		_assert(is_equal_approx(d.position.z, float(d.get_meta("open_z"))),
+			"201s2: open panels reach open_z")
+	cab.close_doors()
+	_assert(not cab._doors_open, "201s2: close_doors flips state")
+	# Spawn points inside the cab.
+	var spots: Array = cab.spawn_points()
+	_assert(spots.size() == 4, "201s2: 4 spawn points (empty roster)")
+	for s in spots:
+		_assert(absf(s.x) < 4.5 and absf(s.z) < 2.5 and s.y >= 0.0,
+			"201s2: spawn inside cab bounds")
+	# Skip button: the train lever's group, its own prompt, hidden.
+	var btn = cab.get_node_or_null("SkipButton")
+	_assert(btn != null and btn.is_in_group("skip_lever"), "201s2: skip button in interact group")
+	_assert(btn.prompt_text() == "Press to skip", "201s2: skip button prompt literal")
+	_assert(not btn.visible, "201s2: skip button hidden until ride start")
+	cab._ride_left = 20.0
+	cab._apply_skip()
+	_assert(cab._ride_left == 2.0, "201s2: skip jumps clock to 2s")
+	cab._ride_left = 1.0
+	cab._apply_skip()
+	_assert(cab._ride_left == 1.0, "201s2: skip never pushes past arrival")
+	# The hum: looping stream, SFX bus, subtle volume.
+	_assert(cab._hum_player != null, "201s2: hum player built")
+	var hstream := cab._hum_player.stream as AudioStreamWAV
+	_assert(hstream != null and hstream.loop_mode == AudioStreamWAV.LOOP_FORWARD,
+		"201s2: hum stream loops seamlessly")
+	_assert(cab._hum_player.bus == "SFX", "201s2: hum rides the SFX bus")
+	_assert(cab._hum_player.volume_db <= -15.0, "201s2: hum is subtle (fork 3)")
+	# Ride start: hum on, button visible; the banner is the name alone.
+	CabScript.set("ride_dest_name", "Misty Docks")
+	cab._apply_ride_started()
+	_assert(cab._riding and cab._hum_on and btn.visible,
+		"201s2: ride start runs the hum + shows the button")
+	_assert(cab._arrival_banner() == "Misty Docks",
+		"201s2: arrival banner is the display name alone (fork 4)")
+	# Arrival (from locked): hum off, doors unlocked + open, zone live.
+	CabScript.set("doors_locked", true)
+	cab._apply_arrival()
+	_assert(cab._arrived and not cab._hum_on, "201s2: arrival stops the hum")
+	_assert(not CabScript.get("doors_locked") and cab._doors_open,
+		"201s2: arrival unlocks + opens the doors")
+	_assert(cab._disembark_area.monitoring and cab._door_blocker == null,
+		"201s2: arrival arms disembark + clears the blocker")
+	cab._apply_arrival() # idempotent
+	_assert(cab._arrived and cab._doors_open and cab._disembark_area.monitoring,
+		"201s2: arrival applied twice ends in the same state")
+	cab.free()
+
+	# --- Cab invariance (section 7 pin 2): identical structure with
+	# a different destination staged — dressing never reads it. ---
+	var sig_a := ""
+	var sig_b := ""
+	for pair in [["village", 0], ["warlord", 1]]:
+		var c2 = CabScript.new()
+		CabScript.set("ride_theme_id", pair[0])
+		c2._build_cab()
+		c2._build_skip_button()
+		c2._build_disembark_zone()
+		c2._build_hum()
+		if int(pair[1]) == 0:
+			sig_a = _cab_signature(c2)
+		else:
+			sig_b = _cab_signature(c2)
+		c2.free()
+	_assert(sig_a != "" and sig_a == sig_b,
+		"201s2: cab identical across destinations (invariance pin)")
+
+	# --- The #135 pull, mirrored on the cab ---
+	CabScript.set("doors_locked", true)
+	var late = CabScript.new()
+	late._build_cab()
+	late._build_skip_button()
+	late._build_disembark_zone()
+	late._build_hum()
+	_assert(not late._arrived and not late._doors_open
+		and not late._disembark_area.monitoring, "201s2: late cab starts sealed")
+	late._apply_ride_state(true, false, "Misty Docks", 0.0)
+	_assert(late._arrived and not CabScript.get("doors_locked") and late._doors_open
+		and late._disembark_area.monitoring and late._door_blocker == null,
+		"201s2: sync (arrived) applies the cab arrival in full")
+	late._apply_ride_state(true, false, "Misty Docks", 0.0)
+	_assert(late._arrived and late._doors_open, "201s2: cab arrival via sync is idempotent")
+	late.free()
+	var mid = CabScript.new()
+	mid._build_cab()
+	mid._build_skip_button()
+	mid._build_disembark_zone()
+	mid._build_hum()
+	mid._apply_ride_state(false, true, "The Depths", 5.5)
+	_assert(mid._riding and absf(mid._ride_left - 5.5) < 0.001 and mid._hum_on,
+		"201s2: sync (riding) takes the server clock + starts the hum")
+	mid.free()
+	CabScript.set("doors_locked", false)
+	CabScript.set("ride_dest_name", "")
+
+	# --- Wiring (source) ---
+	var esrc := FileAccess.get_file_as_string("res://scripts/station/elevator_cab.gd")
+	_assert(esrc.contains("func request_ride_state")
+		and esrc.contains('rpc_id(sender, "ride_state_sync"'),
+		"201s2: cab ride-state pull wired (issue #135)")
+	_assert(esrc.contains("func scrub_passenger"), "201s2: cab scrub_passenger exists")
+	var dpos := esrc.find("func do_disembark")
+	_assert(dpos > 0, "201s2: cab do_disembark exists")
+	var dblock := esrc.substr(dpos, 1200)
+	_assert(dblock.contains("Dungeon.arrived_by_elevator = true"),
+		"201s2: disembark flags the elevator arrival")
+	_assert(dblock.contains("Dungeon.spawn_in_annex = true"),
+		"201s2: disembark flags the annex spawn")
+	_assert(not esrc.contains("NOW ARRIVING"), "201s2: no NOW ARRIVING anywhere in the cab")
+	_assert(not esrc.contains("play_music"), "201s2: the cab plays no music")
+	_assert(not esrc.contains("train_brake") and not esrc.contains("train_chug")
+		and not esrc.contains("train_whistle"),
+		"201s2: the cab uses no train cues")
+	_assert(esrc.contains('sfx("door_open")') and esrc.contains('sfx("door_close")'),
+		"201s2: cab doors use the neutral cues")
+	var SoundScript := load("res://scripts/audio/sound_synth.gd")
+	_assert(SoundScript.door_open() is AudioStreamWAV
+		and SoundScript.door_close() is AudioStreamWAV,
+		"201s2: neutral door sfx builders synthesize")
+	var amsrc := FileAccess.get_file_as_string("res://scripts/autoload/audio_manager.gd")
+	_assert(amsrc.contains('"door_open", "door_close"'),
+		"201s2: neutral door cues registered")
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("static var arrived_by_elevator"),
+		"201s2: dungeon carries the elevator arrival flag")
+	_assert(dsrc.contains("elif arrived_by_elevator:"),
+		"201s2: dungeon skips its beat for cab arrivals")
+	_assert(dsrc.contains("announce(theme.display_name,"),
+		"201s2: Act 1 direct entry announces the name alone (fork 4)")
+	var bpos := dsrc.find("func board_train_interior")
+	_assert(bpos > 0, "201s2: boarding handler found")
+	var bblock := dsrc.substr(bpos, 6000)
+	_assert(bblock.contains("elevator_cab.tscn"), "201s2: boarding can load the cab scene")
+	_assert(bblock.contains("train_interior.tscn"), "201s2: boarding keeps the train for legacy")
+	_assert(bblock.contains("var to_cab := Dungeon.act1_step >= 0"),
+		"201s2: vehicle choice keyed on the destination's axis state")
+	var nmsrc := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	_assert(nmsrc.contains("func load_station(level_number: int, cab: bool = false)"),
+		"201s2: station-resume RPC carries the vehicle")
+	_assert(nmsrc.contains("elevator_cab.tscn"),
+		"201s2: continues resume Act 1 runs in the cab")
+
+	# --- Annex re-dress (section 4): plain hub vs legacy hub ---
+	DungeonScript.set("act1_step", 0)
+	DungeonScript.set("next_theme_id", "village")
+	var theme_v: Resource = load("res://data/levels/theme_village.tres")
+	var layout1: Variant = ProcGenScript.generate(theme_v, 777)
+	var plan1: Dictionary = AnnexScript.plan(777, layout1)
+	var holder1 := Node3D.new()
+	root.add_child(holder1)
+	var annex_p: Variant = AnnexScript.build(holder1, plan1, layout1)
+	_assert(annex_p._plain_hub, "201s2: annex is plain in an Act 1 hub")
+	_assert(annex_p.find_children("LobbyStrap*", "", true, false).is_empty(),
+		"201s2: no hanging straps in the plain waiting room")
+	_assert(annex_p.find_children("LobbyWindow*", "", true, false).is_empty()
+		and annex_p.find_children("LobbyWinFrame*", "", true, false).is_empty(),
+		"201s2: no window panes in the plain waiting room")
+	_assert(annex_p.find_children("LobbyRack*", "", true, false).is_empty()
+		and annex_p.find_children("LobbyBag*", "", true, false).is_empty(),
+		"201s2: no luggage racks or bags in the plain waiting room")
+	_assert(not annex_p.find_children("LobbyBench*", "", true, false).is_empty(),
+		"201s2: waiting-room benches stay")
+	var asrc := FileAccess.get_file_as_string("res://scripts/station/station_annex.gd")
+	_assert(asrc.contains('sfx("door_open" if open else "door_close")'),
+		"201s2: plain hub doors use the neutral cues")
+	_assert(asrc.contains('sfx("train_door_open" if open else "train_door_close")'),
+		"201s2: legacy hub doors keep the train cues")
+	DungeonScript.set("act1_step", -1)
+	var layout2: Variant = ProcGenScript.generate(theme_v, 777)
+	var plan2: Dictionary = AnnexScript.plan(777, layout2)
+	var holder2 := Node3D.new()
+	root.add_child(holder2)
+	var annex_l: Variant = AnnexScript.build(holder2, plan2, layout2)
+	_assert(not annex_l._plain_hub, "201s2: annex keeps car dressing in a legacy hub")
+	_assert(not annex_l.find_children("LobbyStrap*", "", true, false).is_empty()
+		and not annex_l.find_children("LobbyWindow*", "", true, false).is_empty(),
+		"201s2: legacy lobby keeps its straps + windows")
+	holder2.queue_free()
+
+	# --- Hall re-dress (section 4): bank vs tracks, sign on/off ---
+	DungeonScript.set("act1_step", 0)
+	var holder_s := Node3D.new()
+	root.add_child(holder_s)
+	var st = StationScript.new()
+	st.annex = annex_p
+	st.current_theme_id = "village"
+	holder_s.add_child(st)
+	_assert(st.get_node_or_null("ElevatorBank") != null,
+		"201s2: elevator bank stands in the Act 1 hall")
+	_assert(st.get_node_or_null("Sleepers") == null,
+		"201s2: no tracks or sleepers in the Act 1 hall")
+	_assert(st._boarding_sign == null,
+		"201s2: NOW BOARDING sign not built in the Act 1 hall")
+	# The census runs over THIS station tree + the plain annex tree.
+	var census_texts: Array = []
+	_collect_label_texts(st, census_texts)
+	_collect_label_texts(annex_p, census_texts)
+	holder_s.queue_free()
+	holder1.queue_free()
+	DungeonScript.set("act1_step", -1)
+	var holder_s2 := Node3D.new()
+	root.add_child(holder_s2)
+	var st2 = StationScript.new()
+	st2.annex = annex_l
+	st2.current_theme_id = "village"
+	holder_s2.add_child(st2)
+	_assert(st2.get_node_or_null("Sleepers") != null
+		and st2.get_node_or_null("ElevatorBank") == null,
+		"201s2: legacy hall keeps its tracks, no bank")
+	_assert(st2._boarding_sign != null, "201s2: legacy hall keeps its sign")
+	holder_s2.queue_free()
+
+	# --- Section 7 census: every player-facing text in the built
+	# Act 1 hub is free of the forbidden tokens — and the cab
+	# carries no text at all. ---
+	var cab2 = CabScript.new()
+	cab2._build_cab()
+	cab2._build_skip_button()
+	cab2._build_disembark_zone()
+	cab2._build_hum()
+	var cab_texts: Array = []
+	_collect_label_texts(cab2, cab_texts)
+	_assert(cab_texts.is_empty(), "201s2 census: the cab carries no text at all")
+	cab2.free()
+	_assert(not census_texts.is_empty(), "201s2 census: hub texts collected")
+	# Gate amendment: the Act 1 hub carries EXACTLY the four ruled
+	# texts — the BOARD HERE doorway label is not built in linear
+	# mode, and "board" joins the forbidden tokens below.
+	var uniq_texts: Array = []
+	for t0 in census_texts:
+		if not uniq_texts.has(t0):
+			uniq_texts.append(t0)
+	uniq_texts.sort()
+	_assert(uniq_texts == ["DEPART", "RELIC VAULT", "REST", "VENDOR"],
+		"201s2 census: the Act 1 hub carries exactly the four ruled texts")
+	const FORBIDDEN := ["train", "station", "platform", "aboard",
+		"boarding", "board", "floor", "building", "upstairs", "downstairs"]
+	for t in census_texts:
+		for tok in FORBIDDEN:
+			_assert(not str(t).to_lower().contains(tok),
+				"201s2 census: hub text %s free of '%s'" % [str(t), tok])
+
+	# Restore the snapshotted statics.
+	DungeonScript.set("act1_step", snap_step)
+	DungeonScript.set("next_theme_id", snap_theme)
+	CabScript.set("ride_theme_id", "village")
+	CabScript.set("ride_seconds", 8.0)
+	print("[Playtest] Elevator cab test done.")
+
+
 func _test_annex_departure() -> void:
 	print("[Playtest] Annex departure trigger + ride (issue #2 phase 3)...")
 	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
@@ -5890,8 +6242,9 @@ func _test_annex_departure() -> void:
 	# Window widened 2200 -> 2850 for #138 Phase 2: board_train_interior
 	# grew a content-hash handshake block at its head; every pin below
 	# still reads the same function body. Widened again for #201 (the
-	# act1_step handoff block at its tail).
-	var hop := dsrc.substr(hop_start, 3400)
+	# act1_step handoff block at its tail), and for #201 slice 2 (the
+	# vehicle choice at its tail).
+	var hop := dsrc.substr(hop_start, 4800)
 	_assert(hop.contains("saved_player_state = me.get_state()"), "boarding: captures player state")
 	_assert(hop.contains("Dungeon.next_theme_id = theme_id"), "boarding: sets next theme")
 	_assert(hop.contains("Dungeon.next_seed = new_seed"), "boarding: sets next seed")
