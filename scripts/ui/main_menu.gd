@@ -1665,6 +1665,8 @@ func _on_host_create_pressed() -> void:
 				# Issue #201: restore the run's Act 1 axis state.
 				Dungeon.act1_step = Dungeon.act1_step_for_run(run)
 				Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
+				# Issue #203: restore the reveal state beside the axis.
+				Dungeon.restore_reveal_state(run)
 				Dungeon.continued_roster = run.get("roster", [])
 				NetworkManager.host_lan()
 				# Issue #140: the session store the dungeon captures from

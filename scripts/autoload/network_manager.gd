@@ -801,6 +801,7 @@ func play_solo(slot: int = 0) -> void:
 	Dungeon.saved_player_state = {}
 	# Issue #201: a fresh run opens the Act 1 axis at step 0.
 	Dungeon.act1_step = 0
+	Dungeon.reset_reveal_state()
 	Dungeon.vault_return_theme = ""
 	Dungeon.next_theme_id = "village"
 	# Issue #138 Phase 2: fresh solo entry takes the pinned seed
@@ -818,6 +819,7 @@ func play_daily() -> void:
 	Dungeon.saved_player_state = {}
 	# Issue #201: a fresh run opens the Act 1 axis at step 0.
 	Dungeon.act1_step = 0
+	Dungeon.reset_reveal_state()
 	Dungeon.vault_return_theme = ""
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = DailyRun.get_today_seed()
@@ -857,6 +859,8 @@ func continue_run(mode: String, slot: int) -> bool:
 	# key, else the legacy derivation).
 	Dungeon.act1_step = Dungeon.act1_step_for_run(run)
 	Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
+	# Issue #203: restore the reveal state beside the axis.
+	Dungeon.restore_reveal_state(run)
 	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
 	# Issue #201: in the run's vehicle — cab for Act 1, train otherwise
 	# (the axis was restored just above).
@@ -1005,6 +1009,8 @@ func _continue_load_level() -> void:
 	# key, else the legacy derivation).
 	Dungeon.act1_step = Dungeon.act1_step_for_run(run)
 	Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
+	# Issue #203: restore the reveal state beside the axis.
+	Dungeon.restore_reveal_state(run)
 	# Stash the roster for the staging UI.
 	Dungeon.continued_roster = run.get("roster", [])
 	# Issue #140: the session store the dungeon captures its roster from.

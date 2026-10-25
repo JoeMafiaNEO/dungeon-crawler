@@ -97,6 +97,92 @@ static var act1_step := -1
 ## Stored as an additive run-save key alongside act1_step.
 static var vault_return_theme := ""
 
+## Issue #203 (P3): the reveal state. Set once, server-side, on
+## the Warlord clear that ends the ascent; carried as additive
+## run-save keys (revealed / buildings_cleared / home_anchor) and
+## restored beside act1_step. `revealed` retires the interim's
+## departure machinery for the run; `buildings_cleared` is Act
+## 2's counter (the home building satisfies the clear rule the
+## moment the reveal lands, so it starts at 1); `home_anchor` is
+## the world placement record P4/P5 re-derive the vista from.
+static var revealed := false
+static var buildings_cleared := 0
+static var home_anchor := {}
+
+## Jesse's verbatim toast (design paper section 1, P3 spec
+## section 1 beat 2) — lowercase as written, no punctuation
+## added. Pinned literally in the suite.
+const REVEAL_TOAST := "congratulations on beating warlords domain, welcome to the real world."
+## P3 pacing (fork F3): the toast holds at most this long while
+## the inner ring builds behind it — on the bound the drop
+## proceeds anyway and the ring streams in (never a soft-lock).
+const REVEAL_RING_BOUND_S := 3.0
+## The walls sink over this window; the RTS clutter fades in it.
+const REVEAL_SINK_S := 2.5
+## The home building's floors: the six Act 1 levels (Jesse's
+## continuity ruling — the first building is exactly six floors).
+const REVEAL_FLOORS := 6
+
+
+## P3 arming (fork F1 — PROXY ARM, ruled by Jesse): P1-native
+## runs arm at the sixth step (act1_step == 5, the Warlord level
+## in progress); axis-closed unrevealed runs arm on the level-6
+## proxy (the ascent happened in some earlier loop). Below 6 an
+## axis-closed run does NOT arm — a beelined early Warlord clear
+## is not an ascent.
+static func reveal_armed(step: int, lvl: int) -> bool:
+	if step == 5:
+		return true
+	if step < 0 and lvl >= 6:
+		return true
+	return false
+
+
+## The exterior shaft's height: six floor-bands to street level.
+static func reveal_shaft_height() -> float:
+	return float(REVEAL_FLOORS) * RevealWorldGen.FLOOR_HEIGHT
+
+
+## The deterministic world anchor (P3 spec section 2): the
+## nearest settlement center to the world origin, by a fixed
+## search over the generator's own settlement functions — pure
+## data, identical on every peer. The reserved rect is the arena
+## footprint centered on that anchor. `footprint` is the current
+## arena's width in meters (grid_size * cell_size).
+static func compute_home_anchor(footprint: float) -> Dictionary:
+	var best: Dictionary = {}
+	var best_d := INF
+	for gx in range(-2, 3):
+		for gz in range(-2, 3):
+			var s: Dictionary = RevealWorldGen.settlement_in_cell(
+				RevealWorldGen.WORLD_SEED, gx, gz)
+			if s.is_empty():
+				continue
+			var c: Vector2 = s["center"]
+			if c.length() < best_d:
+				best_d = c.length()
+				best = s
+	var c: Vector2 = best.get("center", Vector2.ZERO)
+	return {"anchor_x": c.x, "anchor_z": c.y,
+		"rect_x": c.x - footprint * 0.5, "rect_z": c.y - footprint * 0.5,
+		"rect_w": footprint, "rect_d": footprint,
+		"kind": str(best.get("kind", ""))}
+
+
+## Continues restore the reveal state from the run's additive
+## keys (absent = unrevealed, the pre-P3 shape).
+static func restore_reveal_state(run: Dictionary) -> void:
+	revealed = bool(run.get("revealed", false))
+	buildings_cleared = int(run.get("buildings_cleared", 0))
+	home_anchor = (run.get("home_anchor", {}) as Dictionary).duplicate()
+
+
+## Fresh runs open unrevealed.
+static func reset_reveal_state() -> void:
+	revealed = false
+	buildings_cleared = 0
+	home_anchor = {}
+
 ## The ONE loop-index read (amended spec section 1): 0 while the
 ## Act 1 axis is open, the legacy formula value otherwise. Every
 ## formula-cycle site in the stretch reads through here, so no
@@ -421,6 +507,13 @@ var _director: Node = null
 ## Preloaded (not class_name) so this script compiles even when the global
 ## class cache is stale on a fresh clone (Eng 5's false-positive red).
 const BountySys := preload("res://scripts/systems/bounty.gd")
+## Issue #203 (P3): the reveal's world machinery — the generator's
+## pure data (anchor derivation only; its functions are never
+## modified) and the streamer's build layer (the vista + the
+## reserved-rect suppression live there).
+const RevealWorldGen := preload("res://scripts/world/world_gen.gd")
+const RevealWorldStreamer := preload("res://scripts/world/world_streamer.gd")
+const RooftopDoorScript := preload("res://scripts/dungeon/rooftop_door.gd")
 var _bounty: BountySys = null
 ## Team goals (Jesse 2026-10-19): bounty progress is the PARTY's, not
 ## each player's. This one server-side dictionary is the source of
@@ -3208,6 +3301,278 @@ func complete_level_objective() -> void:
 	rpc("announce_text", "Level cleared — gains secured.")
 	# Bounty Board (issue #7): surviving no_death bounties complete now.
 	_bounty_level_cleared()
+	# Issue #203 (P3): the reveal check rides the clear spine,
+	# server-side only. Every clear path reaches here (keys,
+	# market gate, the Warlord winner), but only an armed Warlord
+	# clear fires it — and only once: `revealed` is the latch.
+	if multiplayer.is_server() and not revealed and theme != null \
+			and theme.theme_id == "warlord" \
+			and reveal_armed(act1_step, level_number):
+		_server_begin_reveal()
+
+
+# -------------------------------------------------------------------
+# Issue #203 (P3): the reveal sequence. The server arms it on the
+# clear spine above; ONE server-origin broadcast starts the same
+# local sequence on every peer — presence, not posture: wherever
+# a peer stands in the arena, downed or not, the moment happens
+# to the whole party at once.
+# -------------------------------------------------------------------
+
+var _reveal_played := false
+var _vista_streamer: Node3D = null
+
+
+## Server-only: latch the state, persist it, broadcast. The
+## anchor record rides the broadcast — every peer builds the
+## identical vista from it.
+func _server_begin_reveal() -> void:
+	revealed = true
+	buildings_cleared = 1
+	var footprint := 96.0
+	if _layout != null:
+		footprint = float(_layout.grid_size) * _layout.cell_size
+	home_anchor = compute_home_anchor(footprint)
+	_fire_reveal_save()
+	rpc("begin_reveal", home_anchor)
+
+
+## The reveal save: a save fires at the reveal (transitions are
+## when this game saves). Loaded-dict-first, like every run
+## write since #111 — only the three additive keys change; the
+## run otherwise continues exactly where it stands.
+func _fire_reveal_save() -> void:
+	var mode: String = NetworkManager.active_run_mode
+	var slot: int = NetworkManager.active_run_slot
+	var run: Dictionary = SaveManager.load_run(mode, slot).duplicate(true)
+	if run.is_empty():
+		run = {"theme_id": theme.theme_id if theme != null else next_theme_id,
+			"level_number": level_number, "seed": next_seed}
+	run["revealed"] = true
+	run["buildings_cleared"] = 1
+	run["home_anchor"] = home_anchor.duplicate(true)
+	SaveManager.save_run(run, mode, slot)
+
+
+## Server-origin, idempotent (the #135 discipline): a forged or
+## repeated application is a no-op.
+@rpc("any_peer", "call_local")
+func begin_reveal(anchor: Dictionary) -> void:
+	if multiplayer.get_remote_sender_id() not in [0, 1]:
+		return
+	if _reveal_played:
+		return
+	_reveal_played = true
+	revealed = true
+	buildings_cleared = 1
+	home_anchor = anchor.duplicate(true)
+	_play_reveal()
+
+
+## The beats (P3 spec section 1): the toast while the inner ring
+## builds behind it (bounded — the drop never waits on a slow
+## machine); the RTS clutter fading in the same window; then the
+## walls sink into the slab and are freed, the dome swaps through
+## the P2 interface, and the rooftop door appears in the annex
+## hall. The shaft is built with the vista, under the slab,
+## before anything can be seen over an edge.
+func _play_reveal() -> void:
+	announce(REVEAL_TOAST)
+	_build_reveal_vista()
+	_fade_reveal_clutter()
+	var t0 := Time.get_ticks_msec()
+	while not _reveal_ring_ready() \
+			and Time.get_ticks_msec() - t0 < int(REVEAL_RING_BOUND_S * 1000.0):
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+	_swap_reveal_sky()
+	var sink := _sink_reveal_walls()
+	if sink != null:
+		await sink.finished
+		if not is_inside_tree():
+			return
+	_create_rooftop_door()
+
+
+## The vista: the world streamer rooted so the anchor lands on
+## the arena and street level sits one shaft-height below the
+## slab (spec section 2: the streamer's root at y = -18 relative
+## to the arena floor). The reserved rect suppresses stock
+## buildings on the home plot at the build layer. The streamer
+## stays attached when the sequence ends — P4 takes it over.
+func _build_reveal_vista() -> void:
+	if _vista_streamer != null:
+		return
+	var ax := float(home_anchor.get("anchor_x", 0.0))
+	var az := float(home_anchor.get("anchor_z", 0.0))
+	var streamer := RevealWorldStreamer.new() as Node3D
+	streamer.name = "WorldVista"
+	streamer.position = Vector3(-ax, -reveal_shaft_height(), -az)
+	streamer.set("suppress_rect", Rect2(
+		float(home_anchor.get("rect_x", 0.0)),
+		float(home_anchor.get("rect_z", 0.0)),
+		float(home_anchor.get("rect_w", 0.0)),
+		float(home_anchor.get("rect_d", 0.0))))
+	streamer.set("suppress_enabled", true)
+	add_child(streamer)
+	streamer.call("set_target_position", Vector3(ax, 0.0, az))
+	_vista_streamer = streamer
+	_build_reveal_shaft()
+
+
+## Is the inner ring (the 5x5 chunks around the anchor chunk)
+## built? The predicate behind the bounded wait.
+func _reveal_ring_ready() -> bool:
+	if _vista_streamer == null:
+		return true
+	var acx := int(floor(float(home_anchor.get("anchor_x", 0.0)) \
+		/ RevealWorldGen.CHUNK_SIZE))
+	var acz := int(floor(float(home_anchor.get("anchor_z", 0.0)) \
+		/ RevealWorldGen.CHUNK_SIZE))
+	var active: Array = _vista_streamer.call("active_chunks")
+	for dx in range(-2, 3):
+		for dz in range(-2, 3):
+			if not active.has(Vector2i(acx + dx, acz + dz)):
+				return false
+	return true
+
+
+## The home building's exterior shaft under the arena slab: six
+## plain floor-bands of exterior wall (6 x FLOOR_HEIGHT = 18 m)
+## down to a street-level base, so looking over any edge reads
+## as a building side, never a floating platform. Visual only in
+## P3 — descent mechanics are P4/P5's.
+func _build_reveal_shaft() -> void:
+	if get_node_or_null("HomeShaft") != null:
+		return
+	var root := Node3D.new()
+	root.name = "HomeShaft"
+	add_child(root)
+	var half := 48.0
+	if _layout != null:
+		half = _layout.arena_half_size()
+	var fh: float = RevealWorldGen.FLOOR_HEIGHT
+	var thick := 1.5
+	var span := half * 2.0 + thick
+	var mat := _flat_mat(theme.wall_color.darkened(0.3)) \
+		if theme != null else _flat_mat(Color(0.4, 0.38, 0.36))
+	for f in REVEAL_FLOORS:
+		var y := -(float(f) + 0.5) * fh
+		for spec in [
+				[Vector3(0, y, -half), Vector3(span, fh, thick)],
+				[Vector3(0, y, half), Vector3(span, fh, thick)],
+				[Vector3(-half, y, 0), Vector3(thick, fh, span)],
+				[Vector3(half, y, 0), Vector3(thick, fh, span)]]:
+			var mi := MeshInstance3D.new()
+			var bm := BoxMesh.new()
+			bm.size = spec[1]
+			bm.material = mat
+			mi.mesh = bm
+			mi.position = spec[0]
+			root.add_child(mi)
+	var base := MeshInstance3D.new()
+	var bb := BoxMesh.new()
+	bb.size = Vector3(span, 0.4, span)
+	bb.material = mat
+	base.mesh = bb
+	base.position = Vector3(0, -reveal_shaft_height() - 0.2, 0)
+	root.add_child(base)
+
+
+## Fork F4 (ruled): the match's clutter — its units and
+## buildings, everything under the RTS holder — fades during
+## the toast, so the rooftop reads clean. The arena's own
+## trees/rocks stay (post-reveal they are rooftop landscaping).
+func _fade_reveal_clutter() -> void:
+	var holder := get_node_or_null("RTS")
+	if holder == null:
+		return
+	var roots: Array = []
+	var geos: Array = []
+	for child in holder.get_children():
+		roots.append(child)
+		_collect_geometry(child, geos)
+	if geos.is_empty():
+		return
+	var tw := create_tween()
+	tw.set_parallel(true)
+	for g in geos:
+		tw.tween_property(g, "transparency", 1.0, REVEAL_SINK_S)
+	tw.set_parallel(false)
+	tw.tween_callback(func() -> void:
+		for r in roots:
+			if is_instance_valid(r):
+				r.queue_free())
+
+
+static func _collect_geometry(n: Node, out: Array) -> void:
+	if n is GeometryInstance3D:
+		out.append(n)
+	for c in n.get_children():
+		_collect_geometry(c, out)
+
+
+## Fork F2 (ruled): the walls SINK into the slab over the sink
+## window and are freed. Each wall drops by its own box height
+## plus a margin, so terrain-adjusted walls clear fully too.
+func _sink_reveal_walls() -> Tween:
+	var walls := collect_arena_walls(_arena)
+	if walls.is_empty():
+		return null
+	var tw := create_tween()
+	tw.set_parallel(true)
+	for w in walls:
+		var body := w as Node3D
+		var drop := 6.0
+		for sub in body.get_children():
+			var cs := sub as CollisionShape3D
+			if cs != null and cs.shape is BoxShape3D:
+				drop = (cs.shape as BoxShape3D).size.y + 2.0
+				break
+		tw.tween_property(body, "position:y",
+			body.position.y - drop, REVEAL_SINK_S)
+	tw.set_parallel(false)
+	tw.tween_callback(func() -> void:
+		for w2 in walls:
+			if is_instance_valid(w2):
+				w2.queue_free())
+	return tw
+
+
+## The dome swap, through the P2 interface and nothing else:
+## one assignment on the Dungeon-held Environment. At P3 the
+## real-world sky is a plain presentation of the same palette —
+## the dome's strengthened gradient is gone, the horizon is
+## open. P4 finalizes the real-world treatment's values.
+func _swap_reveal_sky() -> void:
+	if level_environment == null or theme == null:
+		return
+	var mat := ProceduralSkyMaterial.new()
+	mat.sky_top_color = theme.sky_color
+	mat.sky_horizon_color = theme.sky_color.lightened(0.25)
+	mat.ground_bottom_color = theme.ground_color.darkened(0.4)
+	mat.ground_horizon_color = theme.ground_color
+	var sky := Sky.new()
+	sky.sky_material = mat
+	level_environment.sky = sky
+
+
+## Beat 5: the rooftop exit door, created in the annex hall at
+## the reveal — never before (a pre-existing door would be a
+## clue). It stands on the hall's north wall, facing the hall.
+func _create_rooftop_door() -> void:
+	if get_node_or_null("RooftopDoor") != null:
+		return
+	var annex := get_node_or_null("StationAnnex")
+	if annex == null:
+		return
+	var hc: Vector3 = annex.call("hall_center")
+	var door := RooftopDoorScript.new() as Node3D
+	door.name = "RooftopDoor"
+	door.position = Vector3(float(annex.get("attach_x")), 0.0,
+		hc.z - StationAnnex.HALL_D * 0.5 + StationAnnex.WALL_T + 0.15)
+	add_child(door)
 
 
 # --- Arena construction from the procedural layout ---
@@ -3361,6 +3726,12 @@ var _ride_running := false
 func _on_station_departure_resolved(theme_id: String) -> void:
 	if not multiplayer.is_server() or _ride_running:
 		return
+	# Issue #203 (P3): a revealed run's departure machinery is
+	# retired — the interim's post-Warlord board flow never runs
+	# for it, and there is no departure from the rooftop in the
+	# old sense. The party stays.
+	if revealed:
+		return
 	_ride_running = true
 	# Station annex (issue #2 Phase 4): leaving before the level is cleared
 	# forfeits everything gained in it. Restore first, then ride and save.
@@ -3429,6 +3800,10 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 			solo_base["seed"] = seed
 			solo_base["act1_step"] = dest_step
 			solo_base["vault_return_theme"] = vault_return_theme
+			# Issue #203: the reveal keys ride every run write.
+			solo_base["revealed"] = revealed
+			solo_base["buildings_cleared"] = buildings_cleared
+			solo_base["home_anchor"] = home_anchor
 			SaveManager.save_run(solo_base, SaveManager.MODE_SOLO,
 				NetworkManager.active_run_slot)
 	# Jesse 2026-10-10 fix: send the collected states with the boarding RPC
@@ -3809,6 +4184,42 @@ func _build_floor() -> void:
 	_arena_add(body)
 
 
+## Issue #203 (P3): the arena's play walls, collected
+## geometrically. Name-based collection is impossible: only the
+## first wall keeps the name "Wall" — the rest carry engine
+## @-names from the global auto-name counter, identically in the
+## baked scenes (saved from this same build; verified first-hand
+## in theme_warlord.tscn: "Wall" + "@StaticBody3D@25/28/31/34").
+## A wall is a StaticBody3D arena child holding a long, thin,
+## tall box: one horizontal axis is wall-length, the other is
+## wall thickness (<= 2.5 m), height >= 3 m. The length bound
+## is 8 m, not arena-spanning: the north wall splits around the
+## annex doorway and the annex plan's attach range can leave a
+## segment as short as ~11.75 m (the shipped warlord bake's
+## short segment measures 18.75 m) — while prop-scale collision
+## (a few meters at most) stays below the bound. The floor body
+## (both axes long), the obstacles body (prop-scale shapes) and
+## stall bodies (small) all fall outside the predicate.
+static func collect_arena_walls(arena: Node) -> Array:
+	var out: Array = []
+	if arena == null:
+		return out
+	for child in arena.get_children():
+		var body := child as StaticBody3D
+		if body == null:
+			continue
+		for sub in body.get_children():
+			var cs := sub as CollisionShape3D
+			if cs == null or not (cs.shape is BoxShape3D):
+				continue
+			var sz := (cs.shape as BoxShape3D).size
+			if maxf(sz.x, sz.z) >= 8.0 and minf(sz.x, sz.z) <= 2.5 \
+					and sz.y >= 3.0:
+				out.append(body)
+				break
+	return out
+
+
 func _build_walls() -> void:
 	var half := _layout.arena_half_size()
 	var wall_h := 4.0
@@ -4040,6 +4451,10 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	# continues read them via act1_step_for_run).
 	_save_base["act1_step"] = act1_step
 	_save_base["vault_return_theme"] = vault_return_theme
+	# Issue #203: the reveal keys ride every run write.
+	_save_base["revealed"] = revealed
+	_save_base["buildings_cleared"] = buildings_cleared
+	_save_base["home_anchor"] = home_anchor
 	_save_base["host_difficulty"] = NetworkManager.host_difficulty
 	_save_base["host_loot_mult"] = NetworkManager.host_loot_mult
 	var lobby: Dictionary = (_save_base.get("lobby", {}) as Dictionary).duplicate(true)

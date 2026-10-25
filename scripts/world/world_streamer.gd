@@ -54,6 +54,14 @@ var _scouts := {}
 ## "cx,cz" -> int visibility: 1 visible, 0 hidden, absent = unknown
 var _vis := {}
 
+## Issue #203 (P3): building construction inside this rect is
+## suppressed (the reserved home-building plot around the reveal
+## anchor). Build-layer only — the generator's deterministic data
+## is never modified; the skip is a scene-side choice, identical
+## on every peer because the rect derives from the same record.
+var suppress_rect := Rect2()
+var suppress_enabled := false
+
 var _box_mesh: BoxMesh = null
 var _building_mat: StandardMaterial3D = null
 var _interior_mat: StandardMaterial3D = null
@@ -300,6 +308,14 @@ func _make_buildings(rec: Dictionary) -> Node:
 		var span_x := int(b[4]) if b.size() > 4 else 1
 		var span_z := int(b[5]) if b.size() > 5 else 1
 		var massing := int(b[6]) if b.size() > 6 else 0
+		if suppress_enabled:
+			# The building's world lot rect vs the reserved plot
+			# (issue #203): an intersecting building never builds.
+			var brect := Rect2(
+				Vector2(float(cx * 16 + lx), float(cz * 16 + lz)) * WorldGen.LOT_SIZE,
+				Vector2(float(span_x), float(span_z)) * WorldGen.LOT_SIZE)
+			if suppress_rect.intersects(brect):
+				continue
 		var pkey := "%d,%d" % [lx, lz]
 		var plans: Dictionary = rec["plans"]
 		if not plans.has(pkey):

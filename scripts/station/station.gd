@@ -337,6 +337,10 @@ func record_vote(peer_id: int, theme_id: String, living_override: Array = []) ->
 	# popup (board-driven) never opens. Legacy flow untouched.
 	if _linear_mode():
 		return {"ok": false, "reason": "linear"}
+	# Issue #203 (P3): a revealed run's board is retired — votes
+	# are refused, so no departure can ever resolve from it.
+	if Dungeon.revealed:
+		return {"ok": false, "reason": "revealed"}
 	# Votes must name a destination the board actually offers: on apex cycles
 	# (issue #5) warlord is swapped for the APEX ARENA.
 	if not theme_id in Dungeon.board_destinations(next_level_number):
@@ -526,6 +530,10 @@ func vote_reset_notice() -> void:
 ## of players.
 func depart(living_override: Array = []) -> void:
 	if _departing or not multiplayer.is_server():
+		return
+	# Issue #203 (P3): a revealed run has no departure — the
+	# board flow is retired for it, wherever this station sits.
+	if Dungeon.revealed:
 		return
 	var living := living_override if not living_override.is_empty() else _living_peer_ids()
 	var theme_id := resolve_destination(votes, living)

@@ -106,6 +106,7 @@ func _run() -> void:
 	_test_act1_axis_201()
 	_test_elevator_cab_201()
 	_test_sky_dome_202()
+	_test_reveal_203()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -6307,6 +6308,235 @@ func _test_sky_dome_202() -> void:
 	print("[Playtest] Sky dome test done.")
 
 
+# Issue #203 (P3, the reveal sequence): the arming matrix (fork
+# F1 proxy arm, both sides of level 6), Jesse's toast as a
+# literal, the deterministic anchor + reserved rect, the shaft
+# height, wall-set parity between the procgen and shipped baked
+# warlord arenas, broadcast idempotence, the reveal save's three
+# keys, the reserved-rect suppression at the streamer's build
+# layer, and the retired departure machinery. Statics the
+# section mutates are snapshot/restored.
+func _test_reveal_203() -> void:
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var ProcGenRes := load("res://scripts/procgen/procgen.gd")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var saved_revealed: bool = DungeonScript.get("revealed")
+	var saved_cleared: int = DungeonScript.get("buildings_cleared")
+	var saved_anchor: Dictionary = (DungeonScript.get("home_anchor") as Dictionary).duplicate()
+
+	# 1. The arming matrix (pure predicate, fixtures).
+	_assert(DungeonScript.reveal_armed(5, 1), "203: step 5 arms (P1-native)")
+	_assert(DungeonScript.reveal_armed(5, 6), "203: step 5 arms at any level")
+	_assert(not DungeonScript.reveal_armed(0, 6), "203: step 0 does not arm")
+	_assert(not DungeonScript.reveal_armed(4, 9), "203: step 4 does not arm")
+	_assert(DungeonScript.reveal_armed(-1, 6), "203: proxy arm at level 6 (axis-closed)")
+	_assert(DungeonScript.reveal_armed(-1, 12), "203: proxy arm above 6")
+	_assert(not DungeonScript.reveal_armed(-1, 5), "203: no proxy arm at level 5")
+	_assert(not DungeonScript.reveal_armed(-1, 2), "203: no proxy arm on a beelined level 2")
+
+	# 2. The toast, literally Jesse's text.
+	var cmap: Dictionary = DungeonScript.get_script_constant_map()
+	_assert(str(cmap.get("REVEAL_TOAST", "")) \
+		== "congratulations on beating warlords domain, welcome to the real world.",
+		"203: REVEAL_TOAST is Jesse's literal text")
+
+	# 3. Anchor + reserved rect: deterministic, and equal to an
+	# independent brute-force nearest-center search over a WIDER
+	# cell range than the SUT's fixed search.
+	var a1: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	var a2: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	_assert(a1 == a2, "203: home anchor derivation is deterministic")
+	var best_c := Vector2(INF, INF)
+	for gx in range(-3, 4):
+		for gz in range(-3, 4):
+			var s: Dictionary = WorldGenRes.settlement_in_cell(
+				WorldGenRes.WORLD_SEED, gx, gz)
+			if s.is_empty():
+				continue
+			var c: Vector2 = s["center"]
+			if c.length() < best_c.length():
+				best_c = c
+	_assert(is_equal_approx(float(a1["anchor_x"]), best_c.x) \
+		and is_equal_approx(float(a1["anchor_z"]), best_c.y),
+		"203: anchor is the nearest settlement center to the origin")
+	_assert(is_equal_approx(float(a1["rect_w"]), 96.0) \
+		and is_equal_approx(float(a1["rect_x"]), best_c.x - 48.0) \
+		and is_equal_approx(float(a1["rect_z"]), best_c.y - 48.0),
+		"203: reserved rect is the arena footprint centered on the anchor")
+
+	# 4. Shaft height == 6 x FLOOR_HEIGHT.
+	var fh := float(WorldGenRes.get_script_constant_map().get("FLOOR_HEIGHT", 0.0))
+	_assert(is_equal_approx(DungeonScript.reveal_shaft_height(), 6.0 * fh),
+		"203: shaft height == 6 x FLOOR_HEIGHT")
+	_assert(is_equal_approx(DungeonScript.reveal_shaft_height(), 18.0),
+		"203: shaft height is 18 m")
+
+	# 5. Wall-set parity: procgen-built warlord arena vs the
+	# shipped baked scene, through the SUT's own collection.
+	var warlord: Resource = load("res://data/levels/theme_warlord.tres")
+	var fx = DungeonScript.new()
+	fx.set("theme", warlord)
+	var layout = ProcGenRes.generate(warlord, 12345)
+	fx.set("_layout", layout)
+	fx.set("_annex_plan", {"attach_x": 8.0})
+	var fx_arena := Node3D.new()
+	fx_arena.name = "Arena"
+	fx.add_child(fx_arena)
+	fx.set("_arena", fx_arena)
+	fx.call("_build_walls")
+	var procgen_walls: Array = DungeonScript.collect_arena_walls(fx_arena)
+	_assert(procgen_walls.size() == 5,
+		"203: procgen warlord arena has 5 play walls (got %d)" % procgen_walls.size())
+	var baked_ps := load("res://scenes/levels/pregen/theme_warlord.tscn") as PackedScene
+	var baked_root = baked_ps.instantiate()
+	root.add_child(baked_root)
+	var baked_arena = baked_root.get_node_or_null("Arena")
+	var baked_walls: Array = DungeonScript.collect_arena_walls(baked_arena)
+	_assert(baked_walls.size() == procgen_walls.size(),
+		"203: wall-set parity procgen vs pregen (%d vs %d)" \
+			% [procgen_walls.size(), baked_walls.size()])
+	var baked_bodies := 0
+	for ch in baked_arena.get_children():
+		if ch is StaticBody3D:
+			baked_bodies += 1
+	_assert(baked_bodies > baked_walls.size(),
+		"203: the collection is selective (the floor body is not a wall)")
+	baked_root.queue_free()
+	fx.free()
+
+	# 6. Broadcast idempotence + the vista/shaft build exactly
+	# once. The fixture stays rooted (its bounded sequence tail
+	# finishes quietly against the live tree, harming nothing).
+	var d = DungeonScript.new()
+	d.set("theme", warlord)
+	root.add_child(d)
+	d.call("begin_reveal", a1)
+	d.call("begin_reveal", a1)
+	_assert(bool(d.get("_reveal_played")), "203: begin_reveal latches")
+	var vista_count := 0
+	var shaft_count := 0
+	for ch in d.get_children():
+		if ch.name == "WorldVista":
+			vista_count += 1
+		if ch.name == "HomeShaft":
+			shaft_count += 1
+	_assert(vista_count == 1, "203: double application builds one vista")
+	_assert(shaft_count == 1, "203: double application builds one shaft")
+	_assert(bool(DungeonScript.get("revealed")) \
+		and int(DungeonScript.get("buildings_cleared")) == 1,
+		"203: the broadcast sets the reveal state")
+	var shaft = d.get_node_or_null("HomeShaft")
+	_assert(shaft != null and shaft.get_child_count() == 25,
+		"203: the shaft is 24 floor-band boxes + the street base")
+
+	# 7. The reveal save carries exactly the three additive keys.
+	# The save reads the ACTIVE slot — point it at a scratch slot.
+	# (Autoload names are not visible to this script; root handles
+	# are the suite's established route to them.)
+	var SM = root.get_node("SaveManager")
+	var NM = root.get_node("NetworkManager")
+	var prior_mode: String = NM.active_run_mode
+	var prior_slot: int = NM.active_run_slot
+	NM.active_run_mode = SM.MODE_SOLO
+	NM.active_run_slot = 99
+	var prior_run: Dictionary = SM.load_run(
+		SM.MODE_SOLO, 99).duplicate(true)
+	d.call("_fire_reveal_save")
+	var run: Dictionary = SM.load_run(SM.MODE_SOLO, 99)
+	_assert(bool(run.get("revealed", false)), "203: reveal save sets revealed")
+	_assert(int(run.get("buildings_cleared", 0)) == 1,
+		"203: reveal save sets buildings_cleared == 1")
+	# (Per-key approx: the record round-trips through the save
+	# format's float serialization, so exact == would be a pin
+	# about the serializer, not about the record.)
+	var loaded_anchor: Dictionary = run.get("home_anchor", {})
+	var anchor_ok := loaded_anchor.size() == a1.size()
+	for k in a1.keys():
+		if not loaded_anchor.has(k):
+			anchor_ok = false
+		elif a1[k] is float:
+			anchor_ok = anchor_ok and absf(float(loaded_anchor[k]) - float(a1[k])) < 0.01
+		else:
+			anchor_ok = anchor_ok and str(loaded_anchor[k]) == str(a1[k])
+	_assert(anchor_ok, "203: reveal save carries the home anchor record")
+	if prior_run.is_empty():
+		SM.clear_run(SM.MODE_SOLO, 99)
+	else:
+		SM.save_run(prior_run, SM.MODE_SOLO, 99)
+	NM.active_run_mode = prior_mode
+	NM.active_run_slot = prior_slot
+
+	# 8. Reserved-rect suppression at the streamer's build layer:
+	# a rect drawn on one known building removes its pieces from
+	# the build; the generator's data is never consulted twice or
+	# modified — the same chunk builds fully without the rect.
+	var StreamerRes := load("res://scripts/world/world_streamer.gd")
+	var acx := int(floor(float(a1["anchor_x"]) / WorldGenRes.CHUNK_SIZE))
+	var acz := int(floor(float(a1["anchor_z"]) / WorldGenRes.CHUNK_SIZE))
+	var chunk = WorldGenRes.generate_chunk(acx, acz)
+	_assert(not chunk.buildings.is_empty(),
+		"203: the anchor chunk has buildings to suppress")
+	var b0: Array = chunk.buildings[0]
+	var lot := float(WorldGenRes.get_script_constant_map().get("LOT_SIZE", 8.0))
+	var span_x := int(b0[4]) if b0.size() > 4 else 1
+	var span_z := int(b0[5]) if b0.size() > 5 else 1
+	var brect := Rect2(
+		Vector2(float(acx * 16 + int(b0[0])), float(acz * 16 + int(b0[1]))) * lot,
+		Vector2(float(span_x), float(span_z)) * lot)
+	var s_open = StreamerRes.new()
+	root.add_child(s_open)
+	s_open.call("_build_chunk", acx, acz)
+	var rec_open: Dictionary = s_open.get("_active")["%d,%d" % [acx, acz]]
+	var node_open = s_open.call("_make_buildings", rec_open)
+	var pieces_open := int(rec_open.get("shell_pieces", 0)) \
+		+ int(rec_open.get("interior_pieces", 0))
+	_assert(node_open != null and pieces_open > 0,
+		"203: unsuppressed chunk builds pieces (%d)" % pieces_open)
+	var s_sup = StreamerRes.new()
+	root.add_child(s_sup)
+	s_sup.set("suppress_rect", brect)
+	s_sup.set("suppress_enabled", true)
+	s_sup.call("_build_chunk", acx, acz)
+	var rec_sup: Dictionary = s_sup.get("_active")["%d,%d" % [acx, acz]]
+	s_sup.call("_make_buildings", rec_sup)
+	var pieces_sup := int(rec_sup.get("shell_pieces", 0)) \
+		+ int(rec_sup.get("interior_pieces", 0))
+	_assert(pieces_sup < pieces_open,
+		"203: suppression removes the reserved building's pieces (%d < %d)" \
+			% [pieces_sup, pieces_open])
+	s_open.queue_free()
+	s_sup.queue_free()
+
+	# 9. The retired machinery: a revealed run's votes are
+	# refused at the station, and the dungeon's departure
+	# handler carries the revealed gate in source.
+	var StationRes := load("res://scripts/station/station.gd")
+	var st = StationRes.new()
+	root.add_child(st)
+	var saved_step: int = DungeonScript.get("act1_step")
+	DungeonScript.set("act1_step", -1) # axis closed: the linear gate stays out of the way
+	DungeonScript.set("revealed", true)
+	var res: Dictionary = st.call("record_vote", 1, "village")
+	_assert(str(res.get("reason", "")) == "revealed",
+		"203: a revealed run's votes are refused (got %s)" % str(res))
+	st.queue_free()
+	DungeonScript.set("act1_step", saved_step)
+	var dsrc: String = FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	var handler := dsrc.substr(dsrc.find("func _on_station_departure_resolved"),
+		400)
+	_assert(handler.contains("if revealed:"), \
+		"203: the departure handler is gated on revealed")
+	_assert(dsrc.contains("_save_base[\"revealed\"]") \
+		and dsrc.contains("solo_base[\"revealed\"]"),
+		"203: both save paths stamp the reveal keys")
+
+	DungeonScript.set("revealed", saved_revealed)
+	DungeonScript.set("buildings_cleared", saved_cleared)
+	DungeonScript.set("home_anchor", saved_anchor)
+	print("[Playtest] Reveal test done.")
+
+
 func _test_annex_departure() -> void:
 	print("[Playtest] Annex departure trigger + ride (issue #2 phase 3)...")
 	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
@@ -6322,7 +6552,7 @@ func _test_annex_departure() -> void:
 	# 2. Sequence order: ride rpc -> wait -> save -> interior boarding rpc.
 	var h_start := dsrc.find("func _on_station_departure_resolved")
 	_assert(h_start > 0, "departure: handler found")
-	var h := dsrc.substr(h_start, 4300) # widened for PF2; widened again for #201 (axis transition + save keys in the handler)
+	var h := dsrc.substr(h_start, 5200) # widened for PF2; again for #201 (axis transition + save keys); again for #203 (the revealed gate + reveal key stamps in the handler)
 	var p_ride := h.find("begin_annex_departure")
 	var p_wait := h.find("create_timer(3.5)")
 	var p_save := h.find("save_multiplayer_run")
@@ -6606,7 +6836,7 @@ func _test_train_interior() -> void:
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	var hpos := dsrc.find("func _on_station_departure_resolved")
 	_assert(hpos > 0, "interior: departure handler found")
-	var hblock := dsrc.substr(hpos, 4300) # widened for PF2; widened again for #201 (see departure test)
+	var hblock := dsrc.substr(hpos, 5200) # widened for PF2; widened again for #201; again for #203 (see departure test)
 	_assert(hblock.contains('rpc("board_train_interior"'), "interior: departure rpcs boarding")
 	_assert(not hblock.contains("hop_to_next_level"), "interior: direct hop gone from departure")
 
