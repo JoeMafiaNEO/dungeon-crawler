@@ -29,6 +29,13 @@ const TOTAL_WAVES := 5
 const INTERMISSION_TIME := 10.0
 const THEME_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket", "warlord"]
 
+## Issue #201 (P1 Slice 1): the Act 1 sequence — the six opening
+## levels in order. Misty Docks sits inside the sequence (it is
+## step 4, not an opt-in), and Warlord's Domain closes it. This
+## order keys Act 1 progression; THEME_ORDER above still keys the
+## legacy cycle rotation and is untouched.
+const ACT1_ORDER: Array[String] = ["village", "dungeon", "depths", "supermarket", "misty_docks", "warlord"]
+
 ## Danger model (Phase 3): base tier per theme × depth scaling.
 ## Single source of truth for mob HP/damage, XP, and loot sell values.
 ## (mason_vault's tier 2 is a PLACEHOLDER — Jesse tunes it at #182 P4.)
@@ -74,6 +81,115 @@ static var _last_apex_announce_cycle := -1
 ## when it is false the vault does not exist anywhere a player
 ## can see (secrecy is structural).
 static var vault_gate_open := false
+
+## Issue #201 (P1 Slice 1): Act 1 axis state for the current run.
+## act1_step = Act 1 levels completed (0-5) while the axis is
+## open; -1 = the axis is closed (legacy formula rules). It is
+## run state, set by run creation (0), by continues (the save's
+## stored key, else derived from the saved theme's position),
+## and by every departure (the destination's step). The default
+## is closed so out-of-run callers (menus, tooling, the suite)
+## see exactly the pre-P1 formula behavior.
+static var act1_step := -1
+## Issue #201 (P1 Slice 1, spec section 5): the successor a
+## Vault detour defers. Boarding to the Vault records it;
+## departing the Vault goes there, never to a Vault "successor".
+## Stored as an additive run-save key alongside act1_step.
+static var vault_return_theme := ""
+
+## The ONE loop-index read (amended spec section 1): 0 while the
+## Act 1 axis is open, the legacy formula value otherwise. Every
+## formula-cycle site in the stretch reads through here, so no
+## site keeps a private copy that can drift from the axis.
+static func loop_index_for(level_number: int) -> int:
+	if act1_step >= 0:
+		return 0
+	return (level_number - 1) / THEME_ORDER.size()
+
+
+## Whether (theme) takes the baked path's cycle test under the
+## axis: during the stretch, membership in the six is the test
+## (a baked theme's pin engages at ANY level number, so detour
+## drift can never un-pin a level); outside it, the legacy
+## formula-cycle-1 test, via the shared read.
+static func _bake_cycle_ok(theme_id: String, level_number: int) -> bool:
+	if act1_step >= 0:
+		return ACT1_ORDER.has(theme_id)
+	return loop_index_for(level_number) == 0
+
+
+## The departing theme's successor in the six ("" past Warlord).
+static func act1_successor(theme_id: String) -> String:
+	var i := ACT1_ORDER.find(theme_id)
+	if i < 0 or i >= ACT1_ORDER.size() - 1:
+		return ""
+	return ACT1_ORDER[i + 1]
+
+
+## The axis step in effect during the DESTINATION level of a
+## departure from current_theme to dest_theme. The axis closes
+## permanently at Warlord's departure; a Vault detour holds the
+## step (the Vault consumes a level number, not a step); entering
+## any six-level sets the step to that level's index — which is
+## what makes the Vault's exit land on its deferred successor's
+## step exactly.
+static func act1_step_after_departure(current_theme: String, dest_theme: String) -> int:
+	if act1_step < 0:
+		return -1
+	if current_theme == "warlord":
+		return -1
+	if dest_theme == "mason_vault":
+		return act1_step
+	var idx := ACT1_ORDER.find(dest_theme)
+	if idx >= 0:
+		return idx
+	return act1_step
+
+
+## Legacy-save derivation (spec section 1): a save with no
+## act1_step key derives its step from the saved theme's position
+## in the six. The drift tolerance covers the old rotation's
+## one-early Warlord (drift -1) and up to two opt-in detours
+## (the docks / the Vault each consumed a level number); a theme
+## repeated beyond that has looped past the axis — closed.
+static func derive_act1_step(theme_id: String, level_number: int) -> int:
+	var idx := ACT1_ORDER.find(theme_id)
+	if idx < 0:
+		return -1
+	var drift := (level_number - 1) - idx
+	if drift < -1 or drift > 2:
+		return -1
+	return idx
+
+
+## The step a continued run resumes with: the stored key when
+## the save carries one, the derivation for legacy saves.
+static func act1_step_for_run(run: Dictionary) -> int:
+	if run.has("act1_step"):
+		return int(run["act1_step"])
+	return derive_act1_step(str(run.get("theme_id", "")),
+		int(run.get("level_number", 1)))
+
+
+## Treated-site helpers (amended spec section 1 census): the
+## supermarket cash goal and mob cap, the solo Warlord AI count,
+## and the cycle-grown puzzle-key count, each reading the shared
+## loop index so the pins can drive the sites' own functions.
+static func supermarket_goal(level_number: int) -> int:
+	return 500 + loop_index_for(level_number) * 250
+
+
+static func supermarket_mob_cap(level_number: int) -> int:
+	return 8 + loop_index_for(level_number) * 4
+
+
+static func warlord_solo_ai_count(level_number: int) -> int:
+	return 2 if loop_index_for(level_number) >= 2 else 1
+
+
+static func puzzle_key_count_for(base_keys: int, level_number: int) -> int:
+	return mini(8, base_keys + loop_index_for(level_number))
+
 static func board_destinations(next_level: int) -> Array[String]:
 	var out: Array[String] = []
 	var cycle := int((next_level - 1) / THEME_ORDER.size()) + 1
@@ -171,7 +287,7 @@ static func is_on_water(pos: Vector3) -> bool:
 ## 1-based cycle number (1 = first run through the four themes).
 ## Used by the HUD and the death screen's run stats.
 func get_cycle_number() -> int:
-	return int((level_number - 1) / THEME_ORDER.size()) + 1
+	return loop_index_for(level_number) + 1
 
 
 ## Issue #154: the party size Warlord's Domain scales by, resolved
@@ -202,7 +318,7 @@ func _warlord_grid_size() -> int:
 ## qualify; a continued save carrying any other seed falls back to
 ## the untouched procgen path and loads exactly as it always has.
 static func select_baked(theme_id: String, level_number: int, seed: int) -> bool:
-	if int((level_number - 1) / THEME_ORDER.size()) + 1 != 1:
+	if not _bake_cycle_ok(theme_id, level_number):
 		return false
 	var pin := LevelData.pinned_seed(theme_id)
 	return pin >= 0 and seed == pin
@@ -214,7 +330,7 @@ static func select_baked(theme_id: String, level_number: int, seed: int) -> bool
 ## call this — they keep their own seed semantics).
 static func fresh_seed_for(theme_id: String, level_number: int, rolled: int) -> int:
 	var pin := LevelData.pinned_seed(theme_id)
-	if pin >= 0 and int((level_number - 1) / THEME_ORDER.size()) + 1 == 1:
+	if pin >= 0 and _bake_cycle_ok(theme_id, level_number):
 		return pin
 	return rolled
 
@@ -467,7 +583,7 @@ func _ready() -> void:
 	next_wave = 0
 	# Cycle scaling: each full loop (village->dungeon->depths) enlarges the
 	# map and adds keys. Duplicate the theme so the .tres stays pristine.
-	var cycle := (level_number - 1) / THEME_ORDER.size()
+	var cycle := loop_index_for(level_number)
 	if theme.theme_id == "warlord":
 		# Issue #154: Warlord's Domain scales by PLAYER COUNT at every
 		# cycle (Jesse's ruling) — the grid comes from the player-count
@@ -476,14 +592,14 @@ func _ready() -> void:
 		theme = theme.duplicate() as LevelTheme
 		theme.grid_size = _warlord_grid_size()
 		if cycle > 0:
-			theme.puzzle_key_count = mini(8, theme.puzzle_key_count + cycle)
+			theme.puzzle_key_count = puzzle_key_count_for(theme.puzzle_key_count, level_number)
 	elif cycle > 0:
 		theme = theme.duplicate() as LevelTheme
 		# Issue #49: the apex arena is a fixed colosseum layout — exempt it
 		# from endless grid enlargement (96x96 hangs ProcGen for 5+ minutes).
 		if theme.theme_id != "apex":
 			theme.grid_size = mini(96, theme.grid_size + cycle * 40)
-		theme.puzzle_key_count = mini(8, theme.puzzle_key_count + cycle)
+		theme.puzzle_key_count = puzzle_key_count_for(theme.puzzle_key_count, level_number)
 	# Apex arena (issue #5 Phase 1): the boss rotates by cycle. Apex cycles
 	# are always >= 3, so the theme is already a duplicate here — safe to
 	# mutate without touching the .tres.
@@ -519,8 +635,7 @@ func _ready() -> void:
 	# Supermarket mode: no waves, collect & sell to unlock the gate.
 	is_supermarket = theme.theme_id == "supermarket"
 	if is_supermarket:
-		var mkt_cycle := (level_number - 1) / THEME_ORDER.size()
-		market_cash_goal = 500 + mkt_cycle * 250
+		market_cash_goal = supermarket_goal(level_number)
 		market_earned_visit = 0
 		wave_state = WaveState.CLEARED  # skip wave logic
 		# Spawn checkout and potion shop immediately. (The brass
@@ -1318,9 +1433,8 @@ func _process(delta: float) -> void:
 
 ## Supermarket: continuous mob spawner + loot spawner. Runs on server.
 func _process_supermarket(delta: float) -> void:
-	var cycle := (level_number - 1) / THEME_ORDER.size()
 	# Mob capacity grows with cycle and map size.
-	var mob_cap := 8 + cycle * 4
+	var mob_cap := supermarket_mob_cap(level_number)
 	var mob_count := $Mobs.get_child_count()
 	if mob_count < mob_cap:
 		_market_spawn_tick -= delta
@@ -1484,10 +1598,7 @@ func _setup_warlord() -> void:
 	# AI warlord opponent(s): solo only (Jesse 2026-10-17: no AI in
 	# multiplayer RTS at any headcount).
 	if want_ai and faction_id == 1:
-		var ai_count := 1
-		var cycle := (level_number - 1) / THEME_ORDER.size()
-		if cycle >= 2:
-			ai_count = 2
+		var ai_count := warlord_solo_ai_count(level_number)
 		for i in ai_count:
 			_rts_manager.register_faction(faction_id, -1, ["warrior", "rogue", "mage"][randi() % 3])
 			_spawn_faction_base(faction_id, _faction_spawn_pos(faction_id))
@@ -1836,7 +1947,7 @@ var sim_time := 0.0
 func schedule_node_respawn(res_type: String) -> void:
 	if not multiplayer.is_server():
 		return
-	var cycle := (level_number - 1) / THEME_ORDER.size()
+	var cycle := loop_index_for(level_number)
 	var base := RTSTuning.get_float("map", "respawn_base", 75.0)
 	var per_cycle := RTSTuning.get_float("map", "respawn_cycle_reduction", 10.0)
 	var min_d := RTSTuning.get_float("map", "respawn_min", 30.0)
@@ -1846,7 +1957,7 @@ func schedule_node_respawn(res_type: String) -> void:
 
 func _spawn_resource_nodes() -> void:
 	var faction_count := maxi(2, _rts_manager.factions.size())
-	var cycle := (level_number - 1) / THEME_ORDER.size()
+	var cycle := loop_index_for(level_number)
 	# Nodes per resource per faction, +bonus per cycle so late cycles don't thin out.
 	var per_res: int = RTSTuning.get_int("map", "nodes_per_resource_per_faction", 8) + RTSTuning.get_int("map", "nodes_cycle_bonus", 2) * cycle
 	var types := ["wood", "food", "gold", "stone"]
@@ -3210,6 +3321,9 @@ func _build_station_annex_content() -> void:
 	# Handoff the departures board needs: recommended levels are computed
 	# against the upcoming level number (set before add_child / _ready).
 	StationScript.next_level_number = level_number + 1
+	# Issue #201: the station's linear flow keys off the CURRENT
+	# theme (the successor rule is theme-keyed, never number-keyed).
+	station.current_theme_id = theme.theme_id if theme != null else next_theme_id
 	station.departure_resolved.connect(_on_station_departure_resolved)
 	add_child(station)
 
@@ -3249,9 +3363,17 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	await get_tree().create_timer(3.5).timeout
 	# Save point (moved here from the old station's depart()): persist the
 	# run so it can be continued from the menu. Server-only.
-	var cycle := (new_level - 1) / THEME_ORDER.size() + 1
-	SaveManager.set_deepest_cycle(cycle)
+	# Issue #201 (census site 9): the deepest-cycle write reads the
+	# axis through the shared loop index — Act 1 writes 1, so no
+	# cycle-2 record accrues from Act 1 levels; legacy writes resume
+	# with the interim. Read BEFORE the axis transition below.
+	SaveManager.set_deepest_cycle(loop_index_for(new_level) + 1)
 	SaveManager.check_achievements()
+	# Issue #201: the axis transition for this departure. From here
+	# the static names the DESTINATION level's step: the saves below
+	# stamp it, and the boarding RPC carries it to every peer.
+	var dest_step := act1_step_after_departure(theme.theme_id, theme_id)
+	act1_step = dest_step
 	var me := _my_player()
 	if me != null:
 		# Jesse 2026-10-10: always start from a clean map — a stale one from
@@ -3281,6 +3403,8 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 			solo_base["class_id"] = me.class_id
 			solo_base["player_state"] = me.get_state()
 			solo_base["seed"] = seed
+			solo_base["act1_step"] = dest_step
+			solo_base["vault_return_theme"] = vault_return_theme
 			SaveManager.save_run(solo_base, SaveManager.MODE_SOLO,
 				NetworkManager.active_run_slot)
 	# Jesse 2026-10-10 fix: send the collected states with the boarding RPC
@@ -3290,7 +3414,7 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 	# the payload — every peer generates the same warlord grid.
 	var player_count := maxi(1, NetworkManager.lobby_members.size())
 	rpc("board_train_interior", theme_id, seed, new_level, peer_classes, saved_player_states,
-		expected_baked_hash(theme_id, new_level, seed), player_count)
+		expected_baked_hash(theme_id, new_level, seed), player_count, dest_step)
 
 
 ## Station annex (issue #2 Phase 4): on an early departure every player
@@ -3377,7 +3501,7 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 ## saved_player_state, so every departure reset progression. The old
 ## go_to_station_net/change_level handoff did capture it.
 @rpc("any_peer", "call_local")
-func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}, baked_hash: String = "", player_count: int = 0) -> void:
+func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}, baked_hash: String = "", player_count: int = 0, act1_step_next: int = -2) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
@@ -3415,6 +3539,14 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	Dungeon.next_level_number = new_level
 	# Issue #154: the host-counted party size rides the handoff.
 	Dungeon.next_player_count = player_count
+	# Issue #201: the destination's Act 1 step rides the handoff the
+	# same way — every peer's axis must agree, since level generation
+	# runs per-peer. -2 = not carried (a legacy caller): derive from
+	# the destination's identity instead of leaving a stale axis.
+	if act1_step_next != -2:
+		Dungeon.act1_step = act1_step_next
+	else:
+		Dungeon.act1_step = derive_act1_step(theme_id, new_level)
 	# Runtime load: train_interior.gd references the Dungeon class, so a
 	# parse-time TrainInterior reference here would be a cyclic dependency
 	# (same pattern as the station.gd runtime load in _build_station_annex_content).
@@ -3857,6 +3989,10 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	_save_base["is_multiplayer"] = true
 	_save_base["at_station"] = at_station
 	_save_base["wave"] = wave_number
+	# Issue #201: additive Act 1 axis keys (old builds ignore them;
+	# continues read them via act1_step_for_run).
+	_save_base["act1_step"] = act1_step
+	_save_base["vault_return_theme"] = vault_return_theme
 	_save_base["host_difficulty"] = NetworkManager.host_difficulty
 	_save_base["host_loot_mult"] = NetworkManager.host_loot_mult
 	var lobby: Dictionary = (_save_base.get("lobby", {}) as Dictionary).duplicate(true)

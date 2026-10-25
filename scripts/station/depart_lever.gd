@@ -10,12 +10,33 @@ func _ready() -> void:
 	_build()
 
 
+## The station this lever belongs to: the annex's sibling under
+## the dungeon (the build layout), falling back to the group —
+## a lever always talks to its own hub's station.
+func _station() -> Node:
+	var annex := get_parent()
+	if annex != null:
+		var host := annex.get_parent()
+		if host != null:
+			var sib: Node = host.get_node_or_null("Station")
+			if sib != null:
+				return sib
+	return get_tree().get_first_node_in_group("station")
+
+
 func prompt_text() -> String:
+	# Issue #201 (fork 2, LEVER ONLY): in the Act 1 stretch the
+	# prompt names the successor destination at the moment of use
+	# (the station builds that string); everywhere else the
+	# shipped prompt stands.
+	var station := _station()
+	if station != null and station.has_method("depart_prompt_text"):
+		return str(station.call("depart_prompt_text"))
 	return "Pull the depart lever"
 
 
 func interact(_player: Player) -> void:
-	var station := get_tree().get_first_node_in_group("station")
+	var station := _station()
 	if station != null and station.has_method("request_depart"):
 		station.rpc("request_depart")
 

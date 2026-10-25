@@ -1662,6 +1662,9 @@ func _on_host_create_pressed() -> void:
 				Dungeon.next_seed = int(run.get("seed", randi()))
 				Dungeon.next_level_number = int(run.get("level_number", 1))
 				Dungeon.next_wave = int(run.get("wave", 0))
+				# Issue #201: restore the run's Act 1 axis state.
+				Dungeon.act1_step = Dungeon.act1_step_for_run(run)
+				Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
 				Dungeon.continued_roster = run.get("roster", [])
 				NetworkManager.host_lan()
 				# Issue #140: the session store the dungeon captures from

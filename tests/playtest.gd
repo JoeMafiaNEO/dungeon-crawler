@@ -103,6 +103,7 @@ func _run() -> void:
 	_test_free_rod_161()
 	_test_bake_integrity()
 	_test_baked_runtime()
+	_test_act1_axis_201()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -5606,6 +5607,251 @@ func _test_station_embedded() -> void:
 	holder.queue_free()
 
 
+func _test_act1_axis_201() -> void:
+	print("[Playtest] Act 1 axis + linear flow (issue #201)...")
+	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
+	var DungeonScript: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	var StationScript: GDScript = load("res://scripts/station/station.gd")
+	var AnnexScript: GDScript = load("res://scripts/station/station_annex.gd")
+	var ProcGenScript: GDScript = load("res://scripts/procgen/procgen.gd")
+	# Snapshot the run-state statics; restore at the end (other
+	# sections assume the closed-axis default).
+	var snap_step = DungeonScript.get("act1_step")
+	var snap_gate = DungeonScript.get("vault_gate_open")
+	var snap_return = DungeonScript.get("vault_return_theme")
+	var snap_next_level = StationScript.get("next_level_number")
+
+	# --- The successor rule (spec section 1) ------------------------
+	var seq := ["village", "dungeon", "depths", "supermarket", "misty_docks", "warlord"]
+	for i in seq.size():
+		var want := str(seq[i + 1]) if i + 1 < seq.size() else ""
+		_assert(str(DungeonScript.act1_successor(seq[i])) == want,
+			"201 successor: %s -> %s" % [seq[i], want if want != "" else "(end)"])
+	_assert(str(DungeonScript.act1_successor("apex")) == "",
+		"201 successor: a non-sequence theme has no successor")
+
+	# --- The shared loop-index read ---------------------------------
+	DungeonScript.set("act1_step", -1)
+	_assert(int(DungeonScript.loop_index_for(1)) == 0, "201 loop: closed axis, level 1 -> 0")
+	_assert(int(DungeonScript.loop_index_for(5)) == 0, "201 loop: closed axis, level 5 -> 0")
+	_assert(int(DungeonScript.loop_index_for(6)) == 1, "201 loop: closed axis, level 6 -> 1 (formula)")
+	_assert(int(DungeonScript.loop_index_for(11)) == 2, "201 loop: closed axis, level 11 -> 2 (formula)")
+	DungeonScript.set("act1_step", 3)
+	_assert(int(DungeonScript.loop_index_for(8)) == 0,
+		"201 loop: axis open at step 3, a drifted level 8 still reads base")
+
+	# --- THE DRIFT FIXTURE (load-bearing): act1_step mid-sequence,
+	# Supermarket at level_number 8 (spec sections 1/7) --------------
+	_assert(int(DungeonScript.supermarket_goal(8)) == 500,
+		"201 drift: Supermarket at level 8 keeps the base goal 500")
+	_assert(int(DungeonScript.supermarket_mob_cap(8)) == 8,
+		"201 drift: Supermarket at level 8 keeps the base mob cap 8")
+	_assert(int(DungeonScript.loop_index_for(8)) + 1 == 1,
+		"201 drift: the cycle label reads 1 (no Cycle 2 suffix input)")
+	_assert(bool(DungeonScript.select_baked("supermarket", 8, 1)),
+		"201 drift: the bake pin ENGAGES at the drifted level number")
+	_assert(int(DungeonScript.fresh_seed_for("supermarket", 8, 999)) == 1,
+		"201 drift: a fresh entry at level 8 still forces the pinned seed")
+
+	# --- Warlord at step 5 -------------------------------------------
+	DungeonScript.set("act1_step", 5)
+	_assert(int(DungeonScript.warlord_solo_ai_count(6)) == 1,
+		"201 warlord: solo AI count is 1 at step 5")
+	_assert(int(DungeonScript.puzzle_key_count_for(0, 6)) == 0,
+		"201 warlord: puzzle keys stay at the base count (0) at step 5")
+	_assert(bool(DungeonScript.select_baked("warlord", 6, 1)),
+		"201 warlord: the bake pin engages at (warlord, 6) as at (warlord, 5)")
+	_assert(int(DungeonScript.loop_index_for(6)) + 1 == 1,
+		"201 warlord: the departure's deepest-cycle write stays 1")
+	_assert(int(DungeonScript.act1_step_after_departure("warlord", "village")) == -1,
+		"201 warlord: the axis closes permanently at Warlord's departure")
+
+	# --- Vault bookkeeping (spec section 5) ---------------------------
+	DungeonScript.set("act1_step", 2)
+	_assert(int(DungeonScript.act1_step_after_departure("depths", "mason_vault")) == 2,
+		"201 vault: a detour holds the step (the Vault consumes a number, not a step)")
+	_assert(int(DungeonScript.act1_step_after_departure("mason_vault", "supermarket")) == 3,
+		"201 vault: exiting to the deferred successor lands on ITS step")
+
+	# --- Legacy regression: the axis closed, today's values ----------
+	DungeonScript.set("act1_step", -1)
+	_assert(int(DungeonScript.supermarket_goal(7)) == 750,
+		"201 legacy: cycle-2 supermarket goal is 750, as today")
+	_assert(int(DungeonScript.supermarket_mob_cap(7)) == 12,
+		"201 legacy: cycle-2 supermarket cap is 12, as today")
+	_assert(int(DungeonScript.warlord_solo_ai_count(11)) == 2,
+		"201 legacy: cycle-3 warlord fields 2 solo AIs, as today")
+	_assert(int(DungeonScript.warlord_solo_ai_count(6)) == 1,
+		"201 legacy: cycle-2 warlord fields 1 solo AI, as today")
+	_assert(int(DungeonScript.puzzle_key_count_for(0, 7)) == 1,
+		"201 legacy: keys grow +1 at cycle 2, as today")
+	_assert(int(DungeonScript.puzzle_key_count_for(3, 11)) == 5,
+		"201 legacy: keys grow +2 at cycle 3, as today")
+	_assert(not bool(DungeonScript.select_baked("village", 6, 1)),
+		"201 legacy: cycle-2 village never selects baked, as today")
+	_assert(int(DungeonScript.fresh_seed_for("village", 6, 999)) == 999,
+		"201 legacy: cycle-2 entry keeps its rolled seed, as today")
+
+	# --- Continue derivation (spec sections 1/8) ----------------------
+	_assert(int(DungeonScript.derive_act1_step("supermarket", 4)) == 3,
+		"201 derive: an old-shape save at Supermarket derives step 3")
+	_assert(int(DungeonScript.derive_act1_step("warlord", 5)) == 5,
+		"201 derive: the old rotation's one-early Warlord derives step 5")
+	_assert(int(DungeonScript.derive_act1_step("misty_docks", 6)) == 4,
+		"201 derive: a legacy docks save (opt-in number spent) derives step 4")
+	_assert(int(DungeonScript.derive_act1_step("village", 6)) == -1,
+		"201 derive: a looped-past village (cycle 2) derives closed")
+	_assert(int(DungeonScript.derive_act1_step("mason_vault", 3)) == -1,
+		"201 derive: a legacy Vault save derives closed (its exit is the legacy flow)")
+	# A fixture save dict in the OLD shape (no act1_step key anywhere):
+	var old_save := {"theme_id": "supermarket", "level_number": 4, "seed": 777,
+		"class_id": "warrior", "player_state": {}, "is_multiplayer": false,
+		"at_station": false, "wave": 0}
+	_assert(int(DungeonScript.act1_step_for_run(old_save)) == 3,
+		"201 fixture: an old-shape save continues on the axis at step 3")
+	_assert(str(DungeonScript.act1_successor(str(old_save["theme_id"]))) == "misty_docks",
+		"201 fixture: the old-shape save departs to the correct successor")
+	var new_save := {"theme_id": "supermarket", "level_number": 8, "seed": 1,
+		"act1_step": 3, "vault_return_theme": ""}
+	_assert(int(DungeonScript.act1_step_for_run(new_save)) == 3,
+		"201 fixture: a stored key wins over drift (level 8, step 3)")
+
+	# --- The census, as source pins: ONE formula copy ---------------
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.count("(level_number - 1) / THEME_ORDER.size()") == 1,
+		"201 census: exactly one formula copy remains in dungeon.gd (inside loop_index_for)")
+	_assert(dsrc.contains("return loop_index_for(level_number) + 1"),
+		"201 census: get_cycle_number reads the shared loop index")
+	_assert(dsrc.contains("set_deepest_cycle(loop_index_for(new_level) + 1)"),
+		"201 census: the deepest-cycle write reads the shared loop index")
+	_assert(dsrc.contains("act1_step_after_departure(theme.theme_id, theme_id)"),
+		"201 census: the departure handler performs the axis transition")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("Dungeon.loop_index_for(level)")
+		and not hsrc.contains("(level - 1) / Dungeon.THEME_ORDER.size()"),
+		"201 census: the HUD wave label reads the shared loop index")
+
+	# --- Station fixtures ---------------------------------------------
+	var theme_v: Resource = load("res://data/levels/theme_village.tres")
+
+	# A. Linear hub at Supermarket (step 3, drifted level 8).
+	DungeonScript.set("act1_step", 3)
+	DungeonScript.set("vault_gate_open", false)
+	StationScript.set("next_level_number", 8)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var layout = ProcGenScript.generate(theme_v, 12345)
+	var annex = AnnexScript.build(holder, AnnexScript.plan(12345, layout), layout)
+	var st = StationScript.new()
+	st.name = "Station"
+	st.dungeon = holder
+	st.annex = annex
+	st.current_theme_id = "supermarket"
+	st.position = annex.hall_center()
+	holder.add_child(st)
+	_assert(bool(st.call("_linear_mode")), "201 linear: the Supermarket hub is in linear mode")
+	_assert(str(st.linear_destination()) == "misty_docks",
+		"201 linear: the destination is the theme-keyed successor")
+	_assert(st.get_node_or_null("DepartureBoard") == null,
+		"201 linear: the departure board is not built (no votes, no popup, no Vault row)")
+	_assert(bool(annex.get("doors_open")), "201 linear: the lobby doors stand open")
+	_assert(str(st.get("_depart_theme")) == "misty_docks",
+		"201 linear: the lever is armed with the successor from the start")
+	_assert(str(st.depart_prompt_text()) == "Depart for Misty Docks",
+		"201 linear (fork 2): the lever prompt names the successor, at the moment of use")
+	var lever = annex.get_node_or_null("DepartLever")
+	_assert(lever != null and str(lever.call("prompt_text")) == "Depart for Misty Docks",
+		"201 linear (fork 2): the physical lever carries the same prompt")
+	_assert(not bool(st.record_vote(10, "dungeon", [10, 11])["ok"]),
+		"201 linear: votes are refused (bypassed, not deleted)")
+	_assert((st.get("votes") as Dictionary).is_empty() and not bool(st.get("_timer_running")),
+		"201 linear: no vote recorded, the 45s timer never starts")
+	var captured: Array = []
+	st.departure_resolved.connect(func(tid): captured.append(tid))
+	_assert(bool(st.record_depart(10, [10, 11])["ok"]), "201 linear: the lever pull is accepted")
+	st._complete_departure()
+	_assert(captured == ["misty_docks"], "201 linear: the departure resolves to the successor")
+	holder.queue_free()
+
+	# B1. The Vault door with the gate CLOSED: built, invisible, refused.
+	DungeonScript.set("act1_step", 3)
+	DungeonScript.set("vault_gate_open", false)
+	StationScript.set("next_level_number", 8)
+	var holder_b := Node3D.new()
+	root.add_child(holder_b)
+	var annex_b = AnnexScript.build(holder_b, AnnexScript.plan(12345, layout), layout)
+	var stb = StationScript.new()
+	stb.name = "Station"
+	stb.dungeon = holder_b
+	stb.annex = annex_b
+	stb.current_theme_id = "supermarket"
+	stb.position = annex_b.hall_center()
+	holder_b.add_child(stb)
+	var door_b = stb.get_node_or_null("VaultDoor")
+	_assert(door_b != null and not door_b.visible,
+		"201 vault: gate closed — the door exists in the build but shows no trace")
+	_assert(not bool(stb.record_vault_entry(10, [10])["ok"]),
+		"201 vault: gate closed — entry refused")
+	holder_b.queue_free()
+
+	# B2. The Vault door with the gate OPEN: visible, entry resolves.
+	DungeonScript.set("vault_gate_open", true)
+	var holder_c := Node3D.new()
+	root.add_child(holder_c)
+	var annex_c = AnnexScript.build(holder_c, AnnexScript.plan(12345, layout), layout)
+	var stc = StationScript.new()
+	stc.name = "Station"
+	stc.dungeon = holder_c
+	stc.annex = annex_c
+	stc.current_theme_id = "supermarket"
+	stc.position = annex_c.hall_center()
+	holder_c.add_child(stc)
+	var door_c = stc.get_node_or_null("VaultDoor")
+	_assert(door_c != null and door_c.visible,
+		"201 vault: gate open — the plain hub door is present")
+	DungeonScript.set("vault_return_theme", "")
+	var captured_c: Array = []
+	stc.departure_resolved.connect(func(tid): captured_c.append(tid))
+	_assert(bool(stc.record_vault_entry(10, [10])["ok"]), "201 vault: the door use is accepted")
+	_assert(str(DungeonScript.get("vault_return_theme")) == "misty_docks",
+		"201 vault: boarding records the deferred successor")
+	_assert(str(stc.get("_depart_theme")) == "mason_vault",
+		"201 vault: the departure is armed for the Vault")
+	stc._complete_departure()
+	_assert(captured_c == ["mason_vault"], "201 vault: the departure resolves to the Vault")
+	holder_c.queue_free()
+
+	# C. The Warlord hub: the axis is open (step 5) but the interim
+	# owns departures FROM Warlord — the board flow stands.
+	DungeonScript.set("act1_step", 5)
+	DungeonScript.set("vault_gate_open", false)
+	StationScript.set("next_level_number", 6)
+	var holder_w := Node3D.new()
+	root.add_child(holder_w)
+	var annex_w = AnnexScript.build(holder_w, AnnexScript.plan(12345, layout), layout)
+	var stw = StationScript.new()
+	stw.name = "Station"
+	stw.dungeon = holder_w
+	stw.annex = annex_w
+	stw.current_theme_id = "warlord"
+	stw.position = annex_w.hall_center()
+	holder_w.add_child(stw)
+	_assert(not bool(stw.call("_linear_mode")),
+		"201 interim: the Warlord hub is NOT in linear mode (section 10)")
+	_assert(stw.get_node_or_null("DepartureBoard") != null,
+		"201 interim: the board stands in the Warlord hub, as the interim requires")
+	_assert(bool(stw.record_vote(10, "village", [10])["ok"]),
+		"201 interim: votes record in the Warlord hub (legacy flow intact)")
+	holder_w.queue_free()
+
+	# Restore the snapshotted statics.
+	DungeonScript.set("act1_step", snap_step)
+	DungeonScript.set("vault_gate_open", snap_gate)
+	DungeonScript.set("vault_return_theme", snap_return)
+	StationScript.set("next_level_number", snap_next_level)
+	print("[Playtest] Act 1 axis test done.")
+
+
 func _test_annex_departure() -> void:
 	print("[Playtest] Annex departure trigger + ride (issue #2 phase 3)...")
 	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
@@ -5621,7 +5867,7 @@ func _test_annex_departure() -> void:
 	# 2. Sequence order: ride rpc -> wait -> save -> interior boarding rpc.
 	var h_start := dsrc.find("func _on_station_departure_resolved")
 	_assert(h_start > 0, "departure: handler found")
-	var h := dsrc.substr(h_start, 3400) # widened for PF2: the solo producer grew (loaded-dict-first)
+	var h := dsrc.substr(h_start, 4300) # widened for PF2; widened again for #201 (axis transition + save keys in the handler)
 	var p_ride := h.find("begin_annex_departure")
 	var p_wait := h.find("create_timer(3.5)")
 	var p_save := h.find("save_multiplayer_run")
@@ -5643,8 +5889,9 @@ func _test_annex_departure() -> void:
 		"departure: old direct hop rpc removed")
 	# Window widened 2200 -> 2850 for #138 Phase 2: board_train_interior
 	# grew a content-hash handshake block at its head; every pin below
-	# still reads the same function body.
-	var hop := dsrc.substr(hop_start, 2850)
+	# still reads the same function body. Widened again for #201 (the
+	# act1_step handoff block at its tail).
+	var hop := dsrc.substr(hop_start, 3400)
 	_assert(hop.contains("saved_player_state = me.get_state()"), "boarding: captures player state")
 	_assert(hop.contains("Dungeon.next_theme_id = theme_id"), "boarding: sets next theme")
 	_assert(hop.contains("Dungeon.next_seed = new_seed"), "boarding: sets next seed")
@@ -5903,7 +6150,7 @@ func _test_train_interior() -> void:
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
 	var hpos := dsrc.find("func _on_station_departure_resolved")
 	_assert(hpos > 0, "interior: departure handler found")
-	var hblock := dsrc.substr(hpos, 3400) # widened for PF2 (see departure test)
+	var hblock := dsrc.substr(hpos, 4300) # widened for PF2; widened again for #201 (see departure test)
 	_assert(hblock.contains('rpc("board_train_interior"'), "interior: departure rpcs boarding")
 	_assert(not hblock.contains("hop_to_next_level"), "interior: direct hop gone from departure")
 
@@ -11720,8 +11967,10 @@ func _test_warlord_spawn_avoids_river() -> void:
 func _test_issue22_23_fixes() -> void:
 	print("[Playtest] issues #22/#23 fixes...")
 	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("Dungeon.THEME_ORDER.size()"),
-		"#22: cycle uses THEME_ORDER.size()")
+	# Issue #201: the HUD's cycle read moved behind Dungeon's shared
+	# loop-index read (the formula lives there now, single copy).
+	_assert(hsrc.contains("Dungeon.loop_index_for(level)"),
+		"#22: cycle uses THEME_ORDER.size() (via Dungeon.loop_index_for since #201)")
 	_assert(hsrc.contains("get_string_size"),
 		"#52: announce uses pixel-accurate shrink-to-fit")
 	print("[Playtest] issues #22/#23 fixes done")

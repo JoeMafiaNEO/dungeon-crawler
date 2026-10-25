@@ -512,7 +512,7 @@ func start_game() -> void:
 
 
 @rpc("any_peer", "call_local")
-func load_dungeon(theme_id: String, level_seed: int, level_number: int, baked_hash: String = "") -> void:
+func load_dungeon(theme_id: String, level_seed: int, level_number: int, baked_hash: String = "", act1_step_next: int = -2) -> void:
 	# Issue #138 Phase 2: MP content-hash handshake (spec section 8).
 	# A peer whose shipped baked scene differs from the host's (or
 	# who ships none) refuses the load LOUDLY instead of desyncing
@@ -528,6 +528,14 @@ func load_dungeon(theme_id: String, level_seed: int, level_number: int, baked_ha
 	Dungeon.next_theme_id = theme_id
 	Dungeon.next_seed = level_seed
 	Dungeon.next_level_number = level_number
+	# Issue #201: the Act 1 axis state rides the level load like
+	# the other handoff statics — level generation runs per-peer,
+	# so every peer's axis must agree. -2 = not carried (a fresh
+	# start): derive from the destination's identity.
+	if act1_step_next != -2:
+		Dungeon.act1_step = act1_step_next
+	else:
+		Dungeon.act1_step = Dungeon.derive_act1_step(theme_id, level_number)
 	get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
 
@@ -787,6 +795,9 @@ func play_solo(slot: int = 0) -> void:
 	active_run_slot = slot
 	SaveManager.clear_run(active_run_mode, active_run_slot)
 	Dungeon.saved_player_state = {}
+	# Issue #201: a fresh run opens the Act 1 axis at step 0.
+	Dungeon.act1_step = 0
+	Dungeon.vault_return_theme = ""
 	Dungeon.next_theme_id = "village"
 	# Issue #138 Phase 2: fresh solo entry takes the pinned seed
 	# when a baked village ships (the baked path engages in _ready).
@@ -801,6 +812,9 @@ func play_daily() -> void:
 	is_host = true
 	# Daily is a fresh run; class saves are untouched.
 	Dungeon.saved_player_state = {}
+	# Issue #201: a fresh run opens the Act 1 axis at step 0.
+	Dungeon.act1_step = 0
+	Dungeon.vault_return_theme = ""
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = DailyRun.get_today_seed()
 	Dungeon.next_level_number = 1
@@ -835,6 +849,10 @@ func continue_run(mode: String, slot: int) -> bool:
 	Dungeon.next_seed = int(run.get("seed", randi()))
 	Dungeon.next_level_number = int(run.get("level_number", 1))
 	Dungeon.next_wave = int(run.get("wave", 0))
+	# Issue #201: restore the run's Act 1 axis state (the stored
+	# key, else the legacy derivation).
+	Dungeon.act1_step = Dungeon.act1_step_for_run(run)
+	Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
 	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
 	if bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
@@ -930,7 +948,8 @@ func start_continued_run() -> void:
 		var c_seed := int(run.get("seed", randi()))
 		var c_level := int(run.get("level_number", 1))
 		rpc("load_dungeon", c_theme, c_seed, c_level,
-			Dungeon.expected_baked_hash(c_theme, c_level, c_seed))
+			Dungeon.expected_baked_hash(c_theme, c_level, c_seed),
+			Dungeon.act1_step_for_run(run))
 	_continue_load_level()
 
 
@@ -972,6 +991,10 @@ func _continue_load_level() -> void:
 	Dungeon.next_seed = int(run.get("seed", randi()))
 	Dungeon.next_level_number = int(run.get("level_number", 1))
 	Dungeon.next_wave = int(run.get("wave", 0))
+	# Issue #201: restore the run's Act 1 axis state (the stored
+	# key, else the legacy derivation).
+	Dungeon.act1_step = Dungeon.act1_step_for_run(run)
+	Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
 	# Stash the roster for the staging UI.
 	Dungeon.continued_roster = run.get("roster", [])
 	# Issue #140: the session store the dungeon captures its roster from.

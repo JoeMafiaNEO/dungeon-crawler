@@ -10,6 +10,7 @@ extends Node3D
 ##   station.dungeon / station.annex (instance vars)
 
 const DepartureBoardScript := preload("res://scripts/station/departure_board.gd")
+const VaultDoorScript := preload("res://scripts/station/vault_door.gd")
 const VendorStallScript := preload("res://scripts/station/vendor_stall.gd")
 const BountyBoardScript := preload("res://scripts/station/bounty_board.gd")
 const RelicVaultScript := preload("res://scripts/station/relic_vault.gd")
@@ -59,6 +60,11 @@ const DRESSING_LAMPS := {
 
 ## Owning dungeon: player roster + departure hop target.
 var dungeon: Node = null
+## Issue #201: the theme of the level this station lives in,
+## handed off by the dungeon before _ready (the linear successor
+## rule is theme-keyed). "" = unknown (tooling) — linear mode
+## stays off, exactly the legacy behavior.
+var current_theme_id := ""
 ## The annex shell built by StationAnnex: provides floor, walls, roof, and
 ## the 4 lamp posts that apply_dressing tints.
 var annex: StationAnnex = null
@@ -93,6 +99,46 @@ var votes := {}
 var _lamps: Array = []
 var _boarding_sign: Label3D
 var _dressing: Node3D
+## Issue #201 (spec section 5): the Mason's Vault hub door.
+## Built only in linear mode; visible only while the vault gate
+## is open — closed, there is no door, no sign, no trace.
+var _vault_door: Node3D = null
+
+
+## Issue #201 (P1 Slice 1): the Act 1 linear flow. The axis is
+## open (Dungeon.act1_step >= 0) and this level is not Warlord's —
+## departures FROM Warlord belong to the legacy board flow (the
+## spec section 10 interim), so the Warlord hub keeps its board.
+func _linear_mode() -> bool:
+	return Dungeon.act1_step >= 0 and _current_theme() != "" \
+		and _current_theme() != "warlord"
+
+
+func _current_theme() -> String:
+	if current_theme_id != "":
+		return current_theme_id
+	return Dungeon.next_theme_id
+
+
+## Where the depart lever goes in linear mode: the current
+## theme's successor in the six — or, inside the Vault, the
+## successor the detour deferred (vault_return_theme).
+func linear_destination() -> String:
+	if not _linear_mode():
+		return ""
+	if _current_theme() == "mason_vault":
+		return Dungeon.vault_return_theme
+	return Dungeon.act1_successor(_current_theme())
+
+
+## Issue #201 (fork 2, LEVER ONLY): the next level is named only
+## here — in the depart lever's prompt, at the moment of use.
+## No plaque, no board label, no standing signage.
+func depart_prompt_text() -> String:
+	var dest := linear_destination()
+	if dest != "":
+		return "Depart for " + theme_display_name(dest)
+	return "Pull the depart lever"
 
 
 func _ready() -> void:
@@ -116,7 +162,21 @@ func _ready() -> void:
 	var rot_cycle := int((next_level_number - 1) / Dungeon.THEME_ORDER.size()) + 1
 	if Dungeon.is_apex_cycle(rot_cycle):
 		rot_id = "apex"
+	if _linear_mode():
+		# Issue #201 (spec section 2): the hub keeps the CURRENT
+		# level's own dressing in linear mode — re-dressing to the
+		# departure theme is legacy-only.
+		rot_id = _current_theme()
 	apply_dressing(rot_id)
+	if _linear_mode() and linear_destination() != "":
+		# Issue #201 (spec section 2): no vote, no timer — the
+		# lobby doors stand open and the depart lever is armed
+		# with the successor from the start. The lever pull and
+		# the door-close chain are the shipped ones, unchanged.
+		_depart_theme = linear_destination()
+		_departing = true
+		if annex != null:
+			annex.set_lobby_doors(true)
 
 
 func _process(delta: float) -> void:
@@ -131,6 +191,10 @@ func _process(delta: float) -> void:
 	if _heal_tick <= 0.0:
 		_heal_tick = HEAL_TICK
 		_process_heal_pad()
+	# Issue #201 (spec section 5): the hub door exists exactly
+	# while the gate is open (the static is the lan_sync mirror).
+	if _vault_door != null:
+		_vault_door.visible = Dungeon.vault_gate_open
 	if not multiplayer.is_server():
 		return
 	_process_pending_vendor()
@@ -267,6 +331,12 @@ static func theme_display_name(theme_id: String) -> String:
 ## handles networking + the all-voted early departure. living_override lets
 ## tests drive the flow without a scene tree. Returns {"ok": bool, ...}.
 func record_vote(peer_id: int, theme_id: String, living_override: Array = []) -> Dictionary:
+	# Issue #201 (spec section 2): in linear mode the vote is
+	# bypassed, not deleted — refused here, so no vote is ever
+	# recorded, the 45s timer never starts, and the destination
+	# popup (board-driven) never opens. Legacy flow untouched.
+	if _linear_mode():
+		return {"ok": false, "reason": "linear"}
 	# Votes must name a destination the board actually offers: on apex cycles
 	# (issue #5) warlord is swapped for the APEX ARENA.
 	if not theme_id in Dungeon.board_destinations(next_level_number):
@@ -531,6 +601,46 @@ func record_depart(peer_id: int, living_override: Array = []) -> Dictionary:
 	return {"ok": true}
 
 
+## Record a Vault-door use from a peer. Pure logic (no RPC): the
+## request_vault_entry RPC wrapper handles networking. Linear
+## mode only, gate open only, one departure in flight at most.
+## On success the deferred successor is recorded and the door
+## resolves a mason_vault departure through the identical chain
+## (door close -> departure_resolved) the lever uses.
+func record_vault_entry(peer_id: int, living_override: Array = []) -> Dictionary:
+	if not _linear_mode():
+		return {"ok": false, "reason": "not_linear"}
+	if not Dungeon.vault_gate_open:
+		return {"ok": false, "reason": "gate_closed"}
+	if _depart_requested or _current_theme() == "mason_vault":
+		return {"ok": false, "reason": "not_ready"}
+	var living := living_override if not living_override.is_empty() else _living_peer_ids()
+	if not peer_id in living:
+		return {"ok": false, "reason": "not_living"}
+	# Issue #201 (spec section 5): boarding to the Vault records
+	# the successor the party is deferring; the Vault's own
+	# departure goes there (see linear_destination).
+	Dungeon.vault_return_theme = Dungeon.act1_successor(_current_theme())
+	_depart_theme = "mason_vault"
+	_depart_requested = true
+	return {"ok": true}
+
+
+## Vault door used in the hub. Server validates; any living
+## player may use it (the lever pattern).
+@rpc("any_peer", "call_local")
+func request_vault_entry() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	var res: Dictionary = record_vault_entry(sender)
+	if not bool(res.get("ok", false)):
+		return
+	_begin_departure_close()
+
+
 ## Depart lever pulled in the lobby. Server validates; any living player may
 ## pull it. Stragglers outside are pulled into the lobby by the ride.
 @rpc("any_peer", "call_local")
@@ -544,7 +654,9 @@ func request_depart() -> void:
 	if not bool(res.get("ok", false)):
 		return
 	AudioManager.sfx("board_chime")
-	if _board_label != null:
+	# Issue #201 (spec section 2): station texts retire in Act 1 —
+	# the board label position carries nothing in linear mode.
+	if _board_label != null and not _linear_mode():
 		_board_label.text = "DEPARTING"
 	_begin_departure_close()
 
@@ -595,7 +707,11 @@ func announce_boarding(theme_id: String) -> void:
 ## resolved theme, whistle, pull stragglers aboard, chug + rumble, fade to
 ## black. Called on all peers via the dungeon's begin_annex_departure rpc.
 func play_departure_ride(theme_id: String, spots: Dictionary) -> void:
-	apply_dressing(theme_id)
+	# Issue #201 (spec section 2): the annex re-dress to the
+	# DEPARTURE theme is legacy-only; in linear mode the hub
+	# keeps the current level's dressing through the ride.
+	if not _linear_mode():
+		apply_dressing(theme_id)
 	# Jesse's whistle recording (assets/audio/sfx/train_whistle.mp3) overrides
 	# the synth via the file-override path, so this always plays his sound.
 	AudioManager.sfx("train_whistle")
@@ -793,10 +909,27 @@ func _build_station_embedded() -> void:
 	add_child(vault)
 
 	# Departure board (Phase 2): faces the corridor entrance (+z).
-	var board := DepartureBoardScript.new()
-	board.name = "DepartureBoard"
-	board.position = Vector3(7, 0, 4.2)
-	add_child(board)
+	# Issue #201 (spec sections 2/5): in linear mode the board is
+	# not built at all — no votes, no popup, no Vault row; the
+	# hub door below replaces the row.
+	if not _linear_mode():
+		var board := DepartureBoardScript.new()
+		board.name = "DepartureBoard"
+		board.position = Vector3(7, 0, 4.2)
+		add_child(board)
+
+	# Issue #201 (spec section 5): Mason's Vault hub door — a
+	# plain, unsigned door in the hub's north wall, present only
+	# while the gate is open (visibility follows the verdict in
+	# _process; the player's interact scan skips invisible nodes,
+	# so a closed gate leaves no trace at all).
+	if _linear_mode():
+		var vdoor := VaultDoorScript.new()
+		vdoor.name = "VaultDoor"
+		vdoor.position = Vector3(-6, 0, -6.5)
+		vdoor.visible = Dungeon.vault_gate_open
+		add_child(vdoor)
+		_vault_door = vdoor
 
 	# Bounty board (issue #7 Phase 2): E-interact opens the bounty panel.
 	var bounty_board := BountyBoardScript.new()

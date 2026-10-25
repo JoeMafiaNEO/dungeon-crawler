@@ -2287,7 +2287,9 @@ func _on_stat_pressed(stat: String) -> void:
 func set_wave(info: Dictionary) -> void:
 	var state := int(info.get("state", 0))
 	var level := int(info.get("level", 1))
-	var cycle := (level - 1) / Dungeon.THEME_ORDER.size()
+	# Issue #201 (census site 12): the shared loop-index read —
+	# during the Act 1 stretch the suffix never appears.
+	var cycle := Dungeon.loop_index_for(level)
 	var cycle_str := " · Cycle %d" % (cycle + 1) if cycle > 0 else ""
 	# Warlord mode: hide the wave cluster entirely (RTS uses its own HUD).
 	var is_warlord := str(info.get("theme_id", "")) == "warlord"
