@@ -36,6 +36,22 @@ const CONE_COS := 0.4226 ## cos(65 deg): the view-cone priority band
 const WorldGen := preload("res://scripts/world/world_gen.gd")
 const ChunkData := preload("res://scripts/world/chunk_data.gd")
 const BuildingGen := preload("res://scripts/world/building_gen.gd")
+const BuildingSelect := preload("res://scripts/world/building_select.gd")
+const ScatterGen := preload("res://scripts/world/scatter_gen.gd")
+const TransferTrigger := preload("res://scripts/world/transfer_trigger.gd")
+
+## Issue #204 (P4): Kenney nature pack, one mesh per scatter
+## type ("shipped scales" — instance scale jitters around 1).
+const SCATTER_MODELS := {
+	"oak": "res://assets/models/kenney/nature/tree_oak.glb",
+	"detailed": "res://assets/models/kenney/nature/tree_detailed.glb",
+	"pine": "res://assets/models/kenney/nature/tree_cone.glb",
+	"rock_big": "res://assets/models/kenney/nature/rock_largeA.glb",
+	"rock_small": "res://assets/models/kenney/nature/rock_smallA.glb",
+	"grass": "res://assets/models/kenney/nature/grass.glb",
+	"mushroom": "res://assets/models/kenney/nature/mushroom_red.glb",
+	"fence": "res://assets/models/kenney/nature/fence_simple.glb",
+}
 
 ## Building palette by style index (ChunkData style 0..5).
 const STYLE_COLORS: Array = [
@@ -66,6 +82,20 @@ var _box_mesh: BoxMesh = null
 var _building_mat: StandardMaterial3D = null
 var _interior_mat: StandardMaterial3D = null
 var _terrain_mat: StandardMaterial3D = null
+var _door_mat: StandardMaterial3D = null
+var _scatter_meshes := {}
+
+
+## Issue #204 (P4): is the chunk FULLY built — terrain,
+## buildings and scatter — for the world-entry ready-gate.
+## (A chunk with no buildings still counts once its detail
+## pass has run; the pass is what the gate waits on.)
+func chunk_fully_built(cx: int, cz: int) -> bool:
+	var k := _key(cx, cz)
+	if not _active.has(k):
+		return false
+	var rec: Dictionary = _active[k]
+	return bool(rec.get("detail_done", false))
 
 
 ## Pins + the test scene drive the target through here (the scene
@@ -101,7 +131,11 @@ func debug_chunk_state(cx: int, cz: int) -> Dictionary:
 	return {"built": true, "has_buildings": rec["buildings"] != null,
 		"vis": int(_vis.get(k, -1)),
 		"shell_pieces": int(rec.get("shell_pieces", 0)),
-		"interior_pieces": int(rec.get("interior_pieces", 0))}
+		"interior_pieces": int(rec.get("interior_pieces", 0)),
+		"collision_shapes": int(rec.get("collision_shapes", 0)),
+		"scatter_count": int(rec.get("scatter_count", 0)),
+		"playable_doors": int(rec.get("playable_doors", 0)),
+		"solid_buildings": int(rec.get("solid_buildings", 0))}
 
 
 func _process(_delta: float) -> void:
@@ -233,13 +267,34 @@ func _update_buildings(tcx: int, tcz: int, now: int) -> void:
 		var in_ring := cheb <= BUILDING_RADIUS
 		var hidden_long := vis == 0 and int(rec["off_since"]) >= 0 \
 			and now - int(rec["off_since"]) >= BUILDING_DESPAWN_MSEC
-		if rec["buildings"] != null and (not in_ring or hidden_long):
-			(rec["buildings"] as Node).queue_free()
-			rec["buildings"] = null
+		# The detail pass is DONE when detail_done is set —
+		# NOT when a Buildings node exists: a building-free
+		# chunk's _make_buildings legitimately returns null,
+		# and keying completion on the node would re-run the
+		# whole pass (scatter included) every tick for such
+		# chunks — starving the rest of the ring of detail
+		# budget and leaking the rebuilt scatter nodes.
+		# (Found by the #204 entry ready-gate pin.)
+		if bool(rec.get("detail_done", false)) \
+				and (not in_ring or hidden_long):
+			if rec["buildings"] != null:
+				(rec["buildings"] as Node).queue_free()
+				rec["buildings"] = null
 			rec["shell_pieces"] = 0
 			rec["interior_pieces"] = 0
-		elif rec["buildings"] == null and in_ring and vis != 0 and budget > 0:
+			rec["collision_shapes"] = 0
+			rec["scatter_count"] = 0
+			rec["playable_doors"] = 0
+			rec["solid_buildings"] = 0
+			if rec.get("scatter") != null:
+				(rec["scatter"] as Node).queue_free()
+				rec["scatter"] = null
+			rec["detail_done"] = false
+		elif not bool(rec.get("detail_done", false)) \
+				and in_ring and vis != 0 and budget > 0:
 			rec["buildings"] = _make_buildings(rec)
+			rec["scatter"] = _make_scatter(rec)
+			rec["detail_done"] = true
 			budget -= 1
 
 
@@ -269,25 +324,58 @@ func _build_chunk(cx: int, cz: int) -> void:
 	terrain.name = "Terrain"
 	terrain.mesh = _terrain_mesh(data)
 	node.add_child(terrain)
+	# Issue #204 (P4): the terrain collides — a heightfield
+	# shape over the chunk's own height grid, so the world is
+	# walkable (in P3's rooftop vista this body sits 18 m under
+	# the slab and is never touched; in the world scene it IS
+	# the ground).
+	var tbody := StaticBody3D.new()
+	tbody.name = "TerrainCollision"
+	tbody.collision_layer = 1
+	tbody.collision_mask = 0
+	var tshape := CollisionShape3D.new()
+	var hm := HeightMapShape3D.new()
+	hm.map_width = WorldGen.LOTS_PER_CHUNK + 1
+	hm.map_depth = WorldGen.LOTS_PER_CHUNK + 1
+	hm.map_data = data.heights
+	tshape.shape = hm
+	tshape.scale = Vector3(WorldGen.LOT_SIZE, 1.0,
+		WorldGen.LOT_SIZE)
+	tshape.position = Vector3(WorldGen.CHUNK_SIZE * 0.5, 0,
+		WorldGen.CHUNK_SIZE * 0.5)
+	tbody.add_child(tshape)
+	node.add_child(tbody)
 	var notifier := VisibleOnScreenNotifier3D.new()
 	notifier.aabb = AABB(Vector3(-4, -40, -4), Vector3(136, 160, 136))
 	node.add_child(notifier)
 	notifier.screen_entered.connect(_note_visible.bind(cx, cz))
 	notifier.screen_exited.connect(_note_hidden.bind(cx, cz))
 	_active[_key(cx, cz)] = {"node": node, "data": data,
-		"buildings": null, "off_since": -1, "plans": {},
-		"shell_pieces": 0, "interior_pieces": 0}
+		"buildings": null, "scatter": null, "off_since": -1,
+		"plans": {}, "shell_pieces": 0, "interior_pieces": 0,
+		"collision_shapes": 0, "scatter_count": 0,
+		"playable_doors": 0, "solid_buildings": 0,
+		"detail_done": false}
 	if _scouts.has(_key(cx, cz)):
 		(_scouts[_key(cx, cz)] as Node).queue_free()
 		_scouts.erase(_key(cx, cz))
 
 
-## The chunk's buildings as ONE node holding two MultiMeshes
-## (#199): shell pieces under the exterior window material,
-## interior pieces under a plain material — every building in the
-## chunk planned by BuildingGen from the CACHED ChunkData, plans
-## themselves cached in the chunk record, so a despawn /
-## rematerialize cycle rebuilds the identical structures.
+## The chunk's buildings as ONE node (issue #199's MultiMesh
+## batching, amended by #204): SHELLS ONLY — no building's
+## interior is ever assembled in-world (interiors live behind
+## P5's transfers); the plan still derives in full and the
+## assembly filters to shell pieces. Every building also gets
+## piece-derived collision (one StaticBody3D per building,
+## one box shape per shell piece — the shipped overlap hazard
+## closes: buildings are solid now). The selection roll
+## (BuildingSelect) decides the door: PLAYABLE buildings keep
+## the plan's door gap and gain a door slab + the P5
+## transfer-trigger stub at their doorstep; EMPTY buildings
+## get a filler piece over the gap and build SOLID — no gap,
+## no door, no trigger. Plans are cached in the chunk record,
+## so a despawn / rematerialize cycle rebuilds the identical
+## structures.
 func _make_buildings(rec: Dictionary) -> Node:
 	var data: RefCounted = rec["data"]
 	if data.buildings.is_empty():
@@ -299,7 +387,10 @@ func _make_buildings(rec: Dictionary) -> Node:
 	var cz: int = data.cz
 	var shell_xforms: Array = []
 	var shell_colors: Array = []
-	var int_xforms: Array = []
+	var door_xforms: Array = []
+	var collision_shapes := 0
+	var playable_doors := 0
+	var solid_buildings := 0
 	for b in data.buildings:
 		var lx := int(b[0])
 		var lz := int(b[1])
@@ -308,6 +399,8 @@ func _make_buildings(rec: Dictionary) -> Node:
 		var span_x := int(b[4]) if b.size() > 4 else 1
 		var span_z := int(b[5]) if b.size() > 5 else 1
 		var massing := int(b[6]) if b.size() > 6 else 0
+		var wlx := cx * 16 + lx
+		var wlz := cz * 16 + lz
 		if suppress_enabled:
 			# The building's world lot rect vs the reserved plot
 			# (issue #203): an intersecting building never builds.
@@ -333,22 +426,259 @@ func _make_buildings(rec: Dictionary) -> Node:
 		var origin := Vector3(
 			(float(lx) + float(span_x) * 0.5) * WorldGen.LOT_SIZE, ground,
 			(float(lz) + float(span_z) * 0.5) * WorldGen.LOT_SIZE)
+		var playable := BuildingSelect.is_playable(
+			WorldGen.WORLD_SEED, wlx, wlz)
+		var door := BuildingGen.door_world(plan, origin)
+		var body := StaticBody3D.new()
+		body.name = "Collision_%d_%d" % [lx, lz]
+		body.collision_layer = 1
+		body.collision_mask = 0
+		node.add_child(body)
 		for p in plan["pieces"]:
+			if not bool(p["shell"]):
+				continue
 			var xf := Transform3D(Basis.from_scale(p["s"]), origin + (p["c"] as Vector3))
-			if bool(p["shell"]):
-				shell_xforms.append(xf)
-				shell_colors.append(STYLE_COLORS[style % STYLE_COLORS.size()])
-			else:
-				int_xforms.append(xf)
+			shell_xforms.append(xf)
+			shell_colors.append(STYLE_COLORS[style % STYLE_COLORS.size()])
+			_add_box_shape(body, xf)
+			collision_shapes += 1
+		# The door beat: a slab in the gap (playable) or a
+		# filler over it (empty — the wall reads solid). Either
+		# way the doorway collides in P4: no interiors exist
+		# yet to walk into.
+		var gap_c: Vector3 = door["gap_center"]
+		var wall := int(door["wall"])
+		var slab_size := Vector3(BuildingGen.DOOR_W,
+			BuildingGen.DOOR_H, BuildingGen.WALL_T) if wall < 2 \
+			else Vector3(BuildingGen.WALL_T, BuildingGen.DOOR_H,
+				BuildingGen.DOOR_W)
+		var slab_xf := Transform3D(Basis.from_scale(slab_size),
+			gap_c + Vector3(0, BuildingGen.DOOR_H * 0.5, 0))
+		_add_box_shape(body, slab_xf)
+		collision_shapes += 1
+		if playable:
+			playable_doors += 1
+			door_xforms.append(Transform3D(
+				Basis.from_scale(slab_size * Vector3(1, 1, 0.3)),
+				slab_xf.origin - (door["normal"] as Vector3) * 0.05))
+			var step_local: Vector3 = door["doorstep"]
+			var step_world := Vector3(float(cx)
+				* WorldGen.CHUNK_SIZE, 0, float(cz)
+				* WorldGen.CHUNK_SIZE) + step_local + position
+			var trig := TransferTrigger.new()
+			trig.name = "TransferTrigger_%d_%d" % [lx, lz]
+			trig.building_key = "%d,%d" % [wlx, wlz]
+			trig.doorstep = step_world
+			trig.record = {"key": trig.building_key,
+				"floors": floors, "style": style,
+				"span_x": span_x, "span_z": span_z,
+				"massing": massing, "playable": true,
+				"doorstep": [step_world.x, step_world.y,
+					step_world.z]}
+			trig.position = step_local
+			trig.monitoring = false
+			trig.add_to_group("transfer_trigger")
+			var tshape := CollisionShape3D.new()
+			var tbox := BoxShape3D.new()
+			tbox.size = Vector3(2.6, 2.6, 2.6)
+			tshape.shape = tbox
+			tshape.position = Vector3(0, 1.1, 0)
+			trig.add_child(tshape)
+			node.add_child(trig)
+		else:
+			solid_buildings += 1
+			shell_xforms.append(slab_xf)
+			shell_colors.append(STYLE_COLORS[style
+				% STYLE_COLORS.size()])
 	rec["shell_pieces"] = shell_xforms.size()
-	rec["interior_pieces"] = int_xforms.size()
+	rec["interior_pieces"] = 0
+	rec["collision_shapes"] = collision_shapes
+	rec["playable_doors"] = playable_doors
+	rec["solid_buildings"] = solid_buildings
 	if not shell_xforms.is_empty():
 		node.add_child(_piece_multimesh(shell_xforms, shell_colors, _building_mat))
-	if not int_xforms.is_empty():
+	if not door_xforms.is_empty():
 		var whites: Array = []
-		for i in int_xforms.size():
+		for i in door_xforms.size():
 			whites.append(Color.WHITE)
-		node.add_child(_piece_multimesh(int_xforms, whites, _interior_mat))
+		node.add_child(_piece_multimesh(door_xforms, whites,
+			_door_mat))
+	return node
+
+
+## Issue #204 (P4): assemble ONE building standalone, in the
+## caller's frame at `origin` — the home building on the
+## reveal's reserved plot, which the chunk system suppresses
+## and the world root therefore builds itself. The same
+## shells-only / collision / door treatment as a chunk
+## building (the chunk path batches across buildings for
+## draw calls; this path serves a single building). Returns
+## the node; the caller adds it.
+func build_standalone_building(plan: Dictionary,
+		origin: Vector3, playable: bool, key: String) -> Node3D:
+	_ensure_assets()
+	var style := int(plan["style"])
+	var node := Node3D.new()
+	node.name = "Building_" + key.replace(",", "_")
+	var body := StaticBody3D.new()
+	body.name = "Collision"
+	body.collision_layer = 1
+	body.collision_mask = 0
+	node.add_child(body)
+	var shell_xforms: Array = []
+	var shell_colors: Array = []
+	for p in plan["pieces"]:
+		if not bool(p["shell"]):
+			continue
+		var xf := Transform3D(Basis.from_scale(p["s"]),
+			origin + (p["c"] as Vector3))
+		shell_xforms.append(xf)
+		shell_colors.append(STYLE_COLORS[style
+			% STYLE_COLORS.size()])
+		_add_box_shape(body, xf)
+	var door := BuildingGen.door_world(plan, origin)
+	var gap_c: Vector3 = door["gap_center"]
+	var wall := int(door["wall"])
+	var slab_size := Vector3(BuildingGen.DOOR_W,
+		BuildingGen.DOOR_H, BuildingGen.WALL_T) if wall < 2 \
+		else Vector3(BuildingGen.WALL_T, BuildingGen.DOOR_H,
+			BuildingGen.DOOR_W)
+	var slab_xf := Transform3D(Basis.from_scale(slab_size),
+		gap_c + Vector3(0, BuildingGen.DOOR_H * 0.5, 0))
+	_add_box_shape(body, slab_xf)
+	if playable:
+		var door_xf := Transform3D(Basis.from_scale(
+			slab_size * Vector3(1, 1, 0.3)),
+			slab_xf.origin - (door["normal"] as Vector3) * 0.05)
+		node.add_child(_piece_multimesh([door_xf], [Color.WHITE],
+			_door_mat))
+		var step: Vector3 = door["doorstep"]
+		var trig := TransferTrigger.new()
+		trig.name = "TransferTrigger"
+		trig.building_key = key
+		trig.doorstep = step
+		trig.record = {"key": key,
+			"floors": int(plan["floors"]), "style": style,
+			"span_x": int(plan["span_x"]),
+			"span_z": int(plan["span_z"]),
+			"massing": int(plan["massing"]), "playable": true,
+			"doorstep": [step.x, step.y, step.z]}
+		trig.position = step
+		trig.monitoring = false
+		trig.add_to_group("transfer_trigger")
+		var tshape := CollisionShape3D.new()
+		var tbox := BoxShape3D.new()
+		tbox.size = Vector3(2.6, 2.6, 2.6)
+		tshape.shape = tbox
+		tshape.position = Vector3(0, 1.1, 0)
+		trig.add_child(tshape)
+		node.add_child(trig)
+	else:
+		shell_xforms.append(slab_xf)
+		shell_colors.append(STYLE_COLORS[style
+			% STYLE_COLORS.size()])
+	if not shell_xforms.is_empty():
+		node.add_child(_piece_multimesh(shell_xforms,
+			shell_colors, _building_mat))
+	return node
+
+
+## One collision box on a building body, from a piece transform
+## (the building-piece collision path — scatter's collidables
+## use the same helper).
+func _add_box_shape(body: StaticBody3D, xf: Transform3D) -> void:
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = xf.basis.get_scale()
+	cs.shape = box
+	cs.transform = xf
+	body.add_child(cs)
+
+
+## Issue #204 (P4): the chunk's nature scatter — MultiMesh per
+## asset type from ScatterGen's pure output, plus collision
+## for the collidable kinds (N6: large trees + big rocks on
+## the building-piece path; grass / mushrooms / fences /
+## small rocks are visual-only). Spill rects come from the
+## west / north neighbors' buildings (their +x/+z spans can
+## cross into this chunk) when those chunks are loaded.
+func _make_scatter(rec: Dictionary) -> Node:
+	_ensure_assets()
+	var data: RefCounted = rec["data"]
+	var cx: int = data.cx
+	var cz: int = data.cz
+	var spill: Array = []
+	for off in [Vector2i(-1, 0), Vector2i(0, -1),
+			Vector2i(-1, -1)]:
+		var nk := _key(cx + off.x, cz + off.y)
+		if not _active.has(nk):
+			continue
+		var ndata: RefCounted = _active[nk]["data"]
+		for b in ndata.buildings:
+			var bx := float((cx + off.x) * 16 + int(b[0])) \
+				* WorldGen.LOT_SIZE
+			var bz := float((cz + off.y) * 16 + int(b[1])) \
+				* WorldGen.LOT_SIZE
+			spill.append(Rect2(bx - 0.6, bz - 0.6,
+				float(int(b[4])) * WorldGen.LOT_SIZE + 1.2,
+				float(int(b[5])) * WorldGen.LOT_SIZE + 1.2))
+	if suppress_enabled:
+		spill.append(Rect2(suppress_rect.position - Vector2(0.6,
+			0.6), suppress_rect.size + Vector2(1.2, 1.2)))
+	var scatter := ScatterGen.scatter_for_chunk(
+		WorldGen.WORLD_SEED, cx, cz, data, spill)
+	var node := Node3D.new()
+	node.name = "Scatter"
+	(rec["node"] as Node).add_child(node)
+	var chunk_origin := Vector3(float(cx) * WorldGen.CHUNK_SIZE,
+		0, float(cz) * WorldGen.CHUNK_SIZE)
+	var body := StaticBody3D.new()
+	body.name = "ScatterCollision"
+	body.collision_layer = 1
+	body.collision_mask = 0
+	node.add_child(body)
+	var shapes := 0
+	var total := 0
+	for t in ScatterGen.TYPES:
+		var items: Array = scatter[t]
+		if items.is_empty():
+			continue
+		total += items.size()
+		var mesh: Mesh = _scatter_meshes.get(t)
+		if mesh == null:
+			continue
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		mm.instance_count = items.size()
+		for i in items.size():
+			var it: Dictionary = items[i]
+			var local := (it["p"] as Vector3) - chunk_origin
+			var basis := Basis(Vector3.UP, float(it["r"])) \
+				.scaled(Vector3.ONE * float(it["s"]))
+			mm.set_instance_transform(i, Transform3D(basis,
+				local))
+			if t == "oak" or t == "detailed" or t == "pine":
+				var cs := CollisionShape3D.new()
+				var cyl := CylinderShape3D.new()
+				cyl.radius = 0.35
+				cyl.height = 2.2
+				cs.shape = cyl
+				cs.position = local + Vector3(0, 1.1, 0)
+				body.add_child(cs)
+				shapes += 1
+			elif t == "rock_big":
+				_add_box_shape(body, Transform3D(
+					Basis.from_scale(Vector3(1.6, 1.2, 1.6)
+						* float(it["s"])),
+					local + Vector3(0, 0.5, 0)))
+				shapes += 1
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		node.add_child(mmi)
+	rec["scatter_count"] = total
+	rec["collision_shapes"] = int(rec.get("collision_shapes", 0)) \
+		+ shapes
 	return node
 
 
@@ -440,6 +770,32 @@ func _ensure_assets() -> void:
 	_interior_mat = StandardMaterial3D.new()
 	_interior_mat.albedo_color = Color(0.84, 0.80, 0.74)
 	_interior_mat.roughness = 1.0
+	_door_mat = StandardMaterial3D.new()
+	_door_mat.albedo_color = Color(0.36, 0.24, 0.14)
+	_door_mat.roughness = 0.95
+	for t in SCATTER_MODELS:
+		_scatter_meshes[t] = _glb_mesh(SCATTER_MODELS[t])
+
+
+## The render Mesh inside a Kenney GLB scene (the pack's
+## models are single-mesh scenes; the mesh's own surfaces
+## carry the authored materials).
+func _glb_mesh(path: String) -> Mesh:
+	var ps := load(path) as PackedScene
+	if ps == null:
+		return null
+	var inst := ps.instantiate()
+	var mesh: Mesh = null
+	var stack: Array = [inst]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+			mesh = (n as MeshInstance3D).mesh
+			break
+		for c in n.get_children():
+			stack.append(c)
+	inst.free()
+	return mesh
 
 
 ## A ONE-FLOOR window band (#199; contrast bumped #200): shell

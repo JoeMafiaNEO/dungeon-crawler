@@ -4,11 +4,12 @@ extends Node3D
 ## Created in the annex hall AT the reveal beat — never before:
 ## a door standing in the hub from the start would be a clue the
 ## no-clues rule forbids (and the RTS top-down camera can see
-## every pre-placed object near the arena). P3 creates it and
-## makes it present; where it mechanically leads (the descent to
-## the street) is the P4/P5 travel design, so using it does
-## nothing yet — deliberately, like the Vault door's shape:
-## plain, unsigned, a door and nothing more.
+## every pre-placed object near the arena). P3 created it and
+## made it present; issue #204 (P4) wires the descent: using it
+## is the world entry — a per-peer transition on the train's
+## do_disembark pattern (NOT server-collective: Act 2 splits
+## the party by design), arriving at the home building's
+## street door, on its doorstep.
 
 
 func _ready() -> void:
@@ -20,9 +21,34 @@ func prompt_text() -> String:
 	return "Open the door"
 
 
-func interact(_player: Player) -> void:
-	# P4 wires the descent. In P3 the door is present, not a path.
-	pass
+var _used := false
+
+
+## World entry (issue #204): capture this peer's state, stamp
+## the run's Act 2 record (the server's dungeon instance
+## executes the save), scrub this peer's body from the
+## dungeon for everyone staying behind, and hop — alone —
+## to the world scene. The world root spawns this peer at
+## the home building's doorstep.
+func interact(player: Player) -> void:
+	if _used or not Dungeon.revealed:
+		return
+	_used = true
+	var home := Dungeon.home_building()
+	if home.is_empty():
+		return
+	var dungeon := get_tree().current_scene
+	if dungeon != null and dungeon.has_method("rpc_act2_transition"):
+		dungeon.rpc("rpc_act2_transition", str(home["key"]),
+			home["doorstep"] as Vector3)
+	if dungeon != null and dungeon.has_method("scrub_departed_player"):
+		dungeon.rpc("scrub_departed_player",
+			multiplayer.get_unique_id())
+	Dungeon.saved_player_state = player.get_state()
+	Dungeon.act2_local_class = player.class_id
+	Dungeon.act2_spawn_at = "doorstep"
+	get_tree().call_deferred("change_scene_to_file",
+		Dungeon.WORLD_SCENE)
 
 
 func _mat(c: Color) -> StandardMaterial3D:

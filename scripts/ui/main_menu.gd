@@ -1667,12 +1667,16 @@ func _on_host_create_pressed() -> void:
 				Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
 				# Issue #203: restore the reveal state beside the axis.
 				Dungeon.restore_reveal_state(run)
+				Dungeon.restore_act2_state(run)
 				Dungeon.continued_roster = run.get("roster", [])
 				NetworkManager.host_lan()
 				# Issue #140: the session store the dungeon captures from
 				# (set after host_lan, whose fresh-session clear precedes it).
 				NetworkManager.continued_session_roster = run.get("roster", []).duplicate()
-				if bool(run.get("at_station", false)):
+				# Issue #204: an Act 2 run resumes in the world.
+				if Dungeon.act2_context == "world":
+					get_tree().change_scene_to_file(Dungeon.WORLD_SCENE)
+				elif bool(run.get("at_station", false)):
 					Station.next_level_number = int(run.get("level_number", 1))
 					# Issue #201: resume in the run's vehicle (axis restored above).
 					get_tree().change_scene_to_file(

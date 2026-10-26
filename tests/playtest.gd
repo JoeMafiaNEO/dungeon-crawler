@@ -107,6 +107,7 @@ func _run() -> void:
 	_test_elevator_cab_201()
 	_test_sky_dome_202()
 	_test_reveal_203()
+	_test_world_204()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -6535,6 +6536,492 @@ func _test_reveal_203() -> void:
 	DungeonScript.set("buildings_cleared", saved_cleared)
 	DungeonScript.set("home_anchor", saved_anchor)
 	print("[Playtest] Reveal test done.")
+
+
+func _test_world_204() -> void:
+	print("[Playtest] World entry + scatter + clock (issue #204)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var ChunkDataRes := load("res://scripts/world/chunk_data.gd")
+	var BuildingGenRes := load("res://scripts/world/building_gen.gd")
+	var SelectRes := load("res://scripts/world/building_select.gd")
+	var ScatterRes := load("res://scripts/world/scatter_gen.gd")
+	var ClockRes := load("res://scripts/world/world_clock.gd")
+	var StreamerRes := load("res://scripts/world/world_streamer.gd")
+	var seed: int = WorldGenRes.WORLD_SEED
+	var saved_revealed: bool = DungeonScript.get("revealed")
+	var saved_cleared_n: int = DungeonScript.get("buildings_cleared")
+	var saved_anchor: Dictionary = (DungeonScript.get("home_anchor") as Dictionary).duplicate()
+	var saved_act2: Dictionary = DungeonScript.act2_record()
+	var saved_wt: float = DungeonScript.get("world_time")
+
+	# 1. The F1 probability curve, literally: fringe 0.5,
+	# core 0.2, linear in density.
+	_assert(is_equal_approx(SelectRes.probability(0.0), 0.5),
+		"204: selection probability at the fringe is 0.5")
+	_assert(is_equal_approx(SelectRes.probability(1.0), 0.2),
+		"204: selection probability at the core is 0.2")
+	_assert(is_equal_approx(SelectRes.probability(0.5), 0.35),
+		"204: selection probability is linear in density")
+
+	# 2. Village guarantee: the anchor building of a village
+	# is always playable, and the SUT's anchor equals a
+	# cache-free brute-force nearest-building scan.
+	var village: Dictionary = {}
+	for gx in range(-3, 4):
+		for gz in range(-3, 4):
+			var s: Dictionary = WorldGenRes.settlement_in_cell(seed, gx, gz)
+			if not s.is_empty() and str(s["kind"]) == "village":
+				village = s
+				break
+		if not village.is_empty():
+			break
+	_assert(not village.is_empty(), "204: fixture village found")
+	var v_anchor: Vector2i = SelectRes.village_anchor_lot(seed, village)
+	_assert(v_anchor.x != 2147483647,
+		"204: the fixture village has buildings (anchor exists)")
+	_assert(SelectRes.is_playable(seed, v_anchor.x, v_anchor.y),
+		"204: village anchor building is playable (the guarantee)")
+	var vc: Vector2 = village["center"]
+	var vr := float(village["radius_chunks"]) * float(WorldGenRes.CHUNK_SIZE)
+	var brute := Vector2i(2147483647, 2147483647)
+	var brute_d := 1.0e18
+	var seg_cache := {}
+	for wlz in range(int(floor((vc.y - vr) / 8.0)), int(floor((vc.y + vr) / 8.0)) + 1):
+		for wlx in range(int(floor((vc.x - vr) / 8.0)), int(floor((vc.x + vr) / 8.0)) + 1):
+			var lc := Vector2((float(wlx) + 0.5) * 8.0, (float(wlz) + 0.5) * 8.0)
+			if lc.distance_to(vc) > vr:
+				continue
+			if WorldGenRes.building_at(seed, wlx, wlz, {}, seg_cache).is_empty():
+				continue
+			var dd := lc.distance_squared_to(vc)
+			if dd < brute_d - 0.001 or (absf(dd - brute_d) <= 0.001
+					and (wlx < brute.x or (wlx == brute.x and wlz < brute.y))):
+				brute_d = dd
+				brute = Vector2i(wlx, wlz)
+	_assert(brute == v_anchor,
+		"204: village anchor == independent nearest-building scan")
+
+	# 3. Selection determinism + non-buildings never playable.
+	var town_anchor: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	var tcx := int(floor(float(town_anchor["anchor_x"]) / 128.0))
+	var tcz := int(floor(float(town_anchor["anchor_z"]) / 128.0))
+	var town_data: RefCounted = WorldGenRes.generate_chunk(tcx, tcz, seed)
+	_assert(town_data.buildings.size() > 0, "204: town fixture chunk has buildings")
+	var first_b: Array = town_data.buildings[0]
+	var fb_lot := Vector2i(tcx * 16 + int(first_b[0]), tcz * 16 + int(first_b[1]))
+	_assert(SelectRes.is_playable(seed, fb_lot.x, fb_lot.y)
+			== SelectRes.is_playable(seed, fb_lot.x, fb_lot.y),
+		"204: the selection roll is deterministic")
+	var empty_lot := Vector2i(2147483647, 0)
+	for lz in range(tcz * 16, tcz * 16 + 16):
+		for lx in range(tcx * 16, tcx * 16 + 16):
+			if WorldGenRes.building_at(seed, lx, lz).is_empty():
+				empty_lot = Vector2i(lx, lz)
+				break
+		if empty_lot.x != 2147483647:
+			break
+	_assert(empty_lot.x != 2147483647, "204: a building-free lot exists in the town chunk")
+	_assert(not SelectRes.is_playable(seed, empty_lot.x, empty_lot.y),
+		"204: a lot with no building is never playable")
+
+	# 4. The clock: deterministic presentation, the phase
+	# keyframes, the bright entry, the moonlit floor.
+	var p_a: Dictionary = ClockRes.params_at(200.0)
+	var p_b: Dictionary = ClockRes.params_at(200.0)
+	_assert(is_equal_approx(float(p_a["sun_energy"]), float(p_b["sun_energy"]))
+			and (p_a["sky_top_color"] as Color) == (p_b["sky_top_color"] as Color),
+		"204: same world_time -> identical environment params")
+	_assert(str(ClockRes.phase_of(ClockRes.ENTRY_TIME)) == "day",
+		"204: the entry time is in the day phase")
+	_assert(float(ClockRes.params_at(ClockRes.ENTRY_TIME)["sun_energy"]) >= 1.0,
+		"204: entry's first look is the bright-clear day state")
+	_assert(str(ClockRes.phase_of(6.0)) == "dawn"
+			and str(ClockRes.phase_of(360.0)) == "dusk"
+			and str(ClockRes.phase_of(510.0)) == "night",
+		"204: dawn/dusk/night keyframe phases land where specced")
+	var cmap2: Dictionary = ClockRes.get_script_constant_map()
+	var night_p: Dictionary = ClockRes.params_at(510.0)
+	_assert(is_equal_approx(float(night_p["sun_energy"]),
+				float(cmap2["MOON_SUN_ENERGY"]))
+			and is_equal_approx(float(night_p["ambient_energy"]),
+				float(cmap2["MOON_AMBIENT_ENERGY"])),
+		"204: v1 nights are moonlit (energy floors, never full dark)")
+	_assert((ClockRes.params_at(180.0)["sky_top_color"] as Color)
+			!= (night_p["sky_top_color"] as Color),
+		"204: day and night skies differ")
+
+	# 5. Scatter fixtures: a wilderness chunk (sparse density,
+	# real scatter) found by a fixed scan.
+	var wild := Vector2i(2147483647, 0)
+	var wild_data: RefCounted = null
+	for ccx in range(4, 12):
+		for ccz in range(4, 12):
+			var d: RefCounted = WorldGenRes.generate_chunk(ccx, ccz, seed)
+			var ctr := Vector2((float(ccx) + 0.5) * 128.0, (float(ccz) + 0.5) * 128.0)
+			if float(WorldGenRes.density_at_world(seed, ctr.x, ctr.y)["density"]) < 0.05:
+				var sc: Dictionary = ScatterRes.scatter_for_chunk(seed, ccx, ccz, d)
+				if ScatterRes.total_count(sc) > 40:
+					wild = Vector2i(ccx, ccz)
+					wild_data = d
+					break
+		if wild.x != 2147483647:
+			break
+	_assert(wild.x != 2147483647, "204: wilderness fixture chunk found")
+	var wild_scatter: Dictionary = ScatterRes.scatter_for_chunk(seed, wild.x, wild.y, wild_data)
+	_assert(ScatterRes.serialize(wild_scatter)
+			== ScatterRes.serialize(ScatterRes.scatter_for_chunk(seed, wild.x, wild.y, wild_data)),
+		"204: scatter is deterministic for (seed, chunk)")
+	_assert(ScatterRes.serialize(wild_scatter)
+			!= ScatterRes.serialize(ScatterRes.scatter_for_chunk(seed + 1, wild.x, wild.y, wild_data)),
+		"204: scatter is seed-sensitive")
+
+	# 6. Scatter legality on both fixtures: lot classes,
+	# building footprints, grove-only mushrooms, slope limits,
+	# and the type-by-place rule (N1/N2/N3/N5 as data).
+	var scmap: Dictionary = ScatterRes.get_script_constant_map()
+	for fx in [[wild.x, wild.y, wild_data], [tcx, tcz, town_data]]:
+		var fcx: int = fx[0]
+		var fcz: int = fx[1]
+		var fdata: RefCounted = fx[2]
+		var sc: Dictionary = ScatterRes.scatter_for_chunk(seed, fcx, fcz, fdata)
+		var rects: Array = []
+		for b in fdata.buildings:
+			rects.append(Rect2(
+				float(fcx * 16 + int(b[0])) * 8.0 - 0.6,
+				float(fcz * 16 + int(b[1])) * 8.0 - 0.6,
+				float(int(b[4])) * 8.0 + 1.2, float(int(b[5])) * 8.0 + 1.2))
+		for t in ScatterRes.TYPES:
+			for it in sc[t]:
+				var p: Vector3 = it["p"]
+				var llx := int(floor((p.x - float(fcx) * 128.0) / 8.0))
+				var llz := int(floor((p.z - float(fcz) * 128.0) / 8.0))
+				var cls: int = fdata.lot_class(llx, llz)
+				_assert(cls != ChunkDataRes.ROAD and cls != ChunkDataRes.BUILDING
+						and cls != ChunkDataRes.PLAZA,
+					"204: no scatter on road/building/plaza lots (%s)" % t)
+				var in_rect := false
+				for r in rects:
+					if (r as Rect2).has_point(Vector2(p.x, p.z)):
+						in_rect = true
+				_assert(not in_rect, "204: no scatter inside a building footprint (%s)" % t)
+				if t == "mushroom":
+					_assert(ScatterRes.grove_at(seed, p.x, p.z),
+						"204: mushrooms are grove-only")
+				if t == "oak" or t == "detailed" or t == "pine" \
+						or t == "rock_big" or t == "rock_small":
+					_assert(ScatterRes.slope_at(seed, p.x, p.z)
+							<= float(scmap["MAX_SLOPE"]) + 0.001,
+						"204: trees/rocks refuse steep slopes (%s)" % t)
+				if t == "oak" or t == "detailed" or t == "pine":
+					var lotc := Vector2(float(fcx) * 128.0 + (float(llx) + 0.5) * 8.0,
+						float(fcz) * 128.0 + (float(llz) + 0.5) * 8.0)
+					var ld := float(WorldGenRes.density_at_world(seed, lotc.x, lotc.y)["density"])
+					if ld >= float(scmap["NEAR_DENSITY"]):
+						_assert(t != "pine", "204: near settlements the mix is oak/detailed")
+					else:
+						_assert(t == "pine", "204: far wilderness grows cone pines")
+
+	# 7. N1 falloff + N4 budget across a fixture set.
+	var town_scatter: Dictionary = ScatterRes.scatter_for_chunk(seed, tcx, tcz, town_data)
+	_assert(ScatterRes.total_count(wild_scatter) > ScatterRes.total_count(town_scatter),
+		"204: N1 falloff — wilderness out-scatters the town core")
+	for fx in [[wild.x, wild.y], [tcx, tcz], [wild.x + 1, wild.y],
+			[wild.x, wild.y + 1], [tcx + 1, tcz], [tcx, tcz + 1]]:
+		var d2: RefCounted = WorldGenRes.generate_chunk(int(fx[0]), int(fx[1]), seed)
+		var sc2: Dictionary = ScatterRes.scatter_for_chunk(seed, int(fx[0]), int(fx[1]), d2)
+		_assert(ScatterRes.total_count(sc2) <= int(scmap["CAP_TOTAL"]),
+			"204: per-chunk scatter budget holds (total cap)")
+		_assert((sc2["grass"] as Array).size() <= int(scmap["CAP_GRASS"]),
+			"204: grass is capped hardest")
+		_assert((sc2["oak"] as Array).size() + (sc2["detailed"] as Array).size()
+				+ (sc2["pine"] as Array).size() <= int(scmap["CAP_TREE"]),
+			"204: tree budget holds")
+
+	# 8. Border continuity: ownership by half-open chunk rect,
+	# and border-strip trees satisfy the world-addressed grove
+	# rule from both sides.
+	var east_data: RefCounted = WorldGenRes.generate_chunk(wild.x + 1, wild.y, seed)
+	var east_scatter: Dictionary = ScatterRes.scatter_for_chunk(seed, wild.x + 1, wild.y, east_data)
+	var border := float(wild.x + 1) * 128.0
+	for t in ScatterRes.TYPES:
+		for it in wild_scatter[t]:
+			_assert((it["p"] as Vector3).x < border,
+				"204: west chunk owns only its own points")
+		for it in east_scatter[t]:
+			_assert((it["p"] as Vector3).x >= border,
+				"204: east chunk owns only its own points")
+		if t == "oak" or t == "detailed" or t == "pine":
+			for it in (wild_scatter[t] as Array) + (east_scatter[t] as Array):
+				var p2: Vector3 = it["p"]
+				if absf(p2.x - border) <= 2.0:
+					_assert(ScatterRes.grove_at(seed, p2.x, p2.z),
+						"204: border trees stand in world-addressed groves")
+	print("[Playtest] World test part 1 done (pure layers).")
+
+	# 9. Assembly: shells-only + collision + the door rule,
+	# on a chunk holding BOTH a playable and an empty building
+	# (found by a fixed scan around the town chunk).
+	var asm := Vector2i(2147483647, 0)
+	var asm_data: RefCounted = null
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var d3: RefCounted = WorldGenRes.generate_chunk(tcx + dx, tcz + dz, seed)
+			var has_p := false
+			var has_e := false
+			for b in d3.buildings:
+				if SelectRes.is_playable(seed, (tcx + dx) * 16 + int(b[0]),
+						(tcz + dz) * 16 + int(b[1])):
+					has_p = true
+				else:
+					has_e = true
+			if has_p and has_e:
+				asm = Vector2i(tcx + dx, tcz + dz)
+				asm_data = d3
+				break
+		if asm.x != 2147483647:
+			break
+	_assert(asm.x != 2147483647,
+		"204: assembly fixture chunk (playable + empty) found")
+	var st = StreamerRes.new()
+	root.add_child(st)
+	st.call("_build_chunk", asm.x, asm.y)
+	var arec: Dictionary = (st.get("_active") as Dictionary)["%d,%d" % [asm.x, asm.y]]
+	# _make_buildings RETURNS the Buildings node (the rec's
+	# "buildings" slot is only assigned by _update_buildings).
+	var built_node: Node = st.call("_make_buildings", arec)
+	var astate: Dictionary = st.call("debug_chunk_state", asm.x, asm.y)
+	_assert(int(astate["interior_pieces"]) == 0,
+		"204: shells-only assembly (no interior pieces in-world)")
+	var exp_shells := 0
+	var exp_playable_keys := {}
+	var exp_empty_keys := {}
+	for b in asm_data.buildings:
+		var plan: Dictionary = BuildingGenRes.plan_for(seed,
+			asm.x * 16 + int(b[0]), asm.y * 16 + int(b[1]),
+			int(b[2]), int(b[3]),
+			int(b[4]) if b.size() > 4 else 1,
+			int(b[5]) if b.size() > 5 else 1,
+			int(b[6]) if b.size() > 6 else 0)
+		var sh := 0
+		for pc in plan["pieces"]:
+			if bool(pc["shell"]):
+				sh += 1
+		var bkey := "%d,%d" % [asm.x * 16 + int(b[0]), asm.y * 16 + int(b[1])]
+		if SelectRes.is_playable(seed, asm.x * 16 + int(b[0]), asm.y * 16 + int(b[1])):
+			exp_playable_keys[bkey] = true
+		else:
+			exp_empty_keys[bkey] = true
+			sh += 1 # the solid filler over the door gap
+		exp_shells += sh
+	_assert(int(astate["shell_pieces"]) == exp_shells,
+		"204: assembled shell count == plan shells (+1 filler per empty building)")
+	_assert(int(astate["collision_shapes"])
+			== exp_shells + exp_playable_keys.size(),
+		"204: collision == one shape per shell piece + the door slab")
+	_assert(int(astate["playable_doors"]) == exp_playable_keys.size()
+			and int(astate["solid_buildings"]) == exp_empty_keys.size(),
+		"204: playable + solid counts match the selection roll")
+	var bnode: Node = built_node
+	var trig_keys := {}
+	var shape_count := 0
+	var stack2: Array = [bnode]
+	while not stack2.is_empty():
+		var n: Node = stack2.pop_back()
+		if n is Area3D and n.has_method("activate"):
+			trig_keys[str(n.get("building_key"))] = true
+		# Only building-body shapes count as collision (the
+		# triggers carry their own shape, excluded by parent).
+		if n is CollisionShape3D and n.get_parent() is StaticBody3D:
+			shape_count += 1
+		for c in n.get_children():
+			stack2.append(c)
+	_assert(trig_keys.size() == exp_playable_keys.size(),
+		"204: one transfer-trigger stub per playable door")
+	for k in exp_playable_keys:
+		_assert(trig_keys.has(k),
+			"204: playable building %s carries its trigger" % k)
+	for k in exp_empty_keys:
+		_assert(not trig_keys.has(k),
+			"204: empty building %s has NO door (builds solid)" % k)
+	_assert(shape_count == int(astate["collision_shapes"]),
+		"204: the collision bodies in the tree match the count")
+	var pre_scatter_shapes := shape_count
+	st.call("_make_scatter", arec)
+	astate = st.call("debug_chunk_state", asm.x, asm.y)
+	# The fixture streamer loaded only this chunk, so the
+	# SUT's spill set was empty — the compare uses the same
+	# empty set (the pure layer's rect exclusion is pinned
+	# in part 1; the streamer's neighbor plumbing is a thin
+	# data pass over _active).
+	_assert(int(astate["scatter_count"]) == ScatterRes.total_count(
+			ScatterRes.scatter_for_chunk(seed, asm.x, asm.y, asm_data,
+				[])),
+		"204: assembled scatter == the pure function's output")
+	_assert(int(astate["collision_shapes"]) >= pre_scatter_shapes,
+		"204: scatter adds its collidables (N6)")
+	st.queue_free()
+
+	# 10. Per-peer streamers: two targets, two foci, no bleed.
+	var s1 = StreamerRes.new()
+	var s2 = StreamerRes.new()
+	root.add_child(s1)
+	root.add_child(s2)
+	s1.call("set_target_position", Vector3(0, 0, 0))
+	s2.call("set_target_position", Vector3(2560, 0, 2560))
+	for i in 80:
+		s1.call("update_streaming")
+		s2.call("update_streaming")
+	var c1: Array = s1.call("active_chunks")
+	var c2: Array = s2.call("active_chunks")
+	_assert(c1.has(Vector2i(0, 0)) and not c1.has(Vector2i(20, 20)),
+		"204: streamer A focuses its own player")
+	_assert(c2.has(Vector2i(20, 20)) and not c2.has(Vector2i(0, 0)),
+		"204: streamer B focuses its own player (no shared state)")
+	s1.queue_free()
+	s2.queue_free()
+
+	# 11. The home building: identity, floors, doorstep —
+	# and its standalone assembly carries the P5 interface.
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	var home: Dictionary = DungeonScript.home_building()
+	_assert(not home.is_empty(), "204: home building derives from the anchor")
+	_assert(int((home["plan"] as Dictionary)["floors"]) == 6,
+		"204: the home building has exactly six floors (the Act 1 levels)")
+	var hrect: Dictionary = DungeonScript.get("home_anchor")
+	_assert(str(home["key"]) == "%d,%d" % [
+			int(floor(float(hrect["rect_x"]) / 8.0)),
+			int(floor(float(hrect["rect_z"]) / 8.0))],
+		"204: home key == the reserved rect's min-corner lot")
+	var step_v: Vector3 = home["doorstep"]
+	var gap_v: Vector3 = home["gap_center"]
+	_assert(is_equal_approx(Vector2(step_v.x - gap_v.x,
+				step_v.z - gap_v.z).length(), 1.25),
+		"204: the doorstep stands just outside the door gap")
+	var st2 = StreamerRes.new()
+	root.add_child(st2)
+	var hnode: Node = st2.call("build_standalone_building",
+		home["plan"], home["origin"], true, str(home["key"]))
+	root.add_child(hnode)
+	var htrig: Node = null
+	var hshapes := 0
+	var stack3: Array = [hnode]
+	while not stack3.is_empty():
+		var n2: Node = stack3.pop_back()
+		if n2 is Area3D and n2.has_method("activate"):
+			htrig = n2
+		if n2 is CollisionShape3D and n2.get_parent() is StaticBody3D:
+			hshapes += 1
+		for hc in n2.get_children():
+			stack3.append(hc)
+	_assert(htrig != null and str(htrig.get("building_key")) == str(home["key"]),
+		"204: the home building's door carries its transfer stub")
+	var hshells := 0
+	for pc2 in (home["plan"] as Dictionary)["pieces"]:
+		if bool(pc2["shell"]):
+			hshells += 1
+	_assert(hshapes == hshells + 1,
+		"204: home collision == shell pieces + door slab")
+	hnode.queue_free()
+	st2.queue_free()
+
+	# 12. Act 2 record: the transition stamp (anchor default
+	# + update), the clock write, and the round-trip.
+	var nm = root.get_node("NetworkManager")
+	var sm = root.get_node("SaveManager")
+	var saved_mode: String = nm.get("active_run_mode")
+	var saved_slot: int = nm.get("active_run_slot")
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 99)
+	sm.call("save_run", {"theme_id": "warlord", "level_number": 6,
+		"seed": 12345}, "solo", 99)
+	DungeonScript.reset_act2_state()
+	var dfx = DungeonScript.new()
+	root.add_child(dfx)
+	dfx.call("rpc_act2_transition", str(home["key"]), step_v)
+	_assert(str(DungeonScript.get("act2_context")) == "world",
+		"204: the entry stamp sets the world context")
+	_assert(str(DungeonScript.get("act2_anchor_building")) == str(home["key"]),
+		"204: the respawn anchor defaults to the home building")
+	_assert((DungeonScript.get("act2_anchor_doorstep") as Vector3) == step_v,
+		"204: the anchor resolves to the home doorstep point")
+	_assert(is_equal_approx(float(DungeonScript.get("world_time")),
+			float(ClockRes.ENTRY_TIME)),
+		"204: first entry starts the clock at the bright entry time")
+	var loaded: Dictionary = sm.call("load_run", "solo", 99)
+	var la: Dictionary = loaded.get("act2", {})
+	_assert(str(la.get("context", "")) == "world"
+			and (la.get("cleared", []) as Array).has(str(home["key"])),
+		"204: the saved record carries context + the home entry")
+	dfx.call("rpc_act2_transition", "56,78", Vector3(4, 5, 6))
+	_assert(str(DungeonScript.get("act2_anchor_building")) == "56,78",
+		"204: a building entry updates the respawn anchor")
+	_assert((DungeonScript.act2_record()["cleared"] as Array).size() == 2,
+		"204: the cleared set accumulates entries")
+	DungeonScript.set("world_time", 222.0)
+	DungeonScript.save_act2_clock()
+	loaded = sm.call("load_run", "solo", 99)
+	_assert(is_equal_approx(float(loaded.get("world_time", 0.0)), 222.0),
+		"204: world_time round-trips through the run save")
+	DungeonScript.reset_act2_state()
+	DungeonScript.restore_act2_state(loaded)
+	_assert(str(DungeonScript.get("act2_anchor_building")) == "56,78"
+			and is_equal_approx(float(DungeonScript.get("world_time")), 222.0),
+		"204: restore rebuilds the act2 statics from the record")
+	dfx.queue_free()
+	sm.call("clear_run", "solo", 99)
+	nm.set("active_run_mode", saved_mode)
+	nm.set("active_run_slot", saved_slot)
+
+	# 13. The world scene: the ready-gate predicate starts
+	# closed and opens once the inner ring is built; the
+	# state-pull snapshot round-trips through the restores.
+	DungeonScript.set("act2_spawn_at", "doorstep")
+	var wroot = load("res://scenes/world/world.tscn").instantiate()
+	root.add_child(wroot)
+	_assert(not bool(wroot.call("_entry_ring_ready")),
+		"204: the entry ready-gate starts closed (no pop-in at the threshold)")
+	var wstreamer = wroot.get_node("WorldStreamer")
+	var tries := 0
+	while not bool(wroot.call("_entry_ring_ready")) and tries < 400:
+		wstreamer.call("update_streaming")
+		tries += 1
+	_assert(bool(wroot.call("_entry_ring_ready")),
+		"204: the ready-gate opens when the inner ring is fully built")
+	var snap: Dictionary = wroot.call("state_snapshot")
+	_assert(snap.has("home_anchor") and snap.has("act2")
+			and snap.has("world_time"),
+		"204: the join-pull snapshot carries the reveal + act2 + clock state")
+	root.remove_child(wroot)
+	wroot.queue_free()
+
+	# 14. Routing: continues and host broadcasts reach the
+	# world scene (source pins — the flows need live sessions).
+	var nmsrc: String = FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(nmsrc.count("WORLD_SCENE") >= 3
+			and nmsrc.contains("func load_world"),
+		"204: NM routes Act 2 continues + broadcasts to the world scene")
+	var mmsrc: String = FileAccess.get_file_as_string(
+		"res://scripts/ui/main_menu.gd")
+	_assert(mmsrc.contains("WORLD_SCENE"),
+		"204: the main-menu continue routes Act 2 runs to the world")
+	var dsrc2: String = FileAccess.get_file_as_string(
+		"res://scripts/dungeon/rooftop_door.gd")
+	_assert(dsrc2.contains("rpc_act2_transition")
+			and dsrc2.contains("WORLD_SCENE"),
+		"204: the rooftop door performs the world entry")
+
+	DungeonScript.set("revealed", saved_revealed)
+	DungeonScript.set("buildings_cleared", saved_cleared_n)
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.reset_act2_state()
+	DungeonScript.restore_act2_state({"act2": saved_act2,
+		"world_time": saved_wt})
+	print("[Playtest] World test done.")
+
 
 
 func _test_annex_departure() -> void:
@@ -20365,10 +20852,16 @@ func _test_building_gen_199() -> void:
 		stb.call("update_streaming", 1000)
 		gb += 1
 	var st_first: Dictionary = stb.call("debug_chunk_state", 2, -9)
+	# #204 AMENDMENT: in-world assembly is SHELLS-ONLY by
+	# design (interiors are never assembled in-world; they
+	# live in plan data, asserted at plan level above). The
+	# materialized chunk therefore reports interior_pieces
+	# == 0 — the pre-#204 expectation (shell AND interior)
+	# was superseded with the amendment.
 	_assert(bool(st_first["has_buildings"])
 		and int(st_first["shell_pieces"]) > 0
-		and int(st_first["interior_pieces"]) > 0,
-		"199: a materialized city chunk has shell AND interior pieces (got %d/%d)"
+		and int(st_first["interior_pieces"]) == 0,
+		"199/204: a materialized city chunk assembles shells only (got %d/%d)"
 			% [int(st_first["shell_pieces"]), int(st_first["interior_pieces"])])
 	stb.call("_note_hidden", 2, -9, 1000)
 	stb.call("update_streaming", 6001)

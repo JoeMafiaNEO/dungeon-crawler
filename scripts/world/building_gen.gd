@@ -315,6 +315,42 @@ static func randf_range_s(seed: int, x: int, z: int, salt: int, lo: float, hi: f
 	return lo + (hi - lo) * _rand01(seed, x, z, salt)
 
 
+## The street door of a plan placed at `origin` (the span
+## center at ground height): the gap's center on the ground
+## floor's door wall, the wall's outward normal, and the
+## DOORSTEP — the point just outside the gap where an arriving
+## player stands (issue #204: the P5 interface's doorstep
+## point; Act 2's respawn anchors resolve to doorsteps). The
+## ground floor's footprint is always the plan's full w x d
+## (massing steps apply from floor 1 up), so the plan's own
+## dims place the gap. Pure: every peer derives the identical
+## doorstep from the same plan + origin.
+static func door_world(plan: Dictionary, origin: Vector3) -> Dictionary:
+	var w := float(plan["w"])
+	var d := float(plan["d"])
+	var wall := int(plan["door_wall"])
+	var dc := float(plan["door_center"])
+	var gap := Vector3.ZERO
+	var normal := Vector3.ZERO
+	match wall:
+		0:
+			gap = Vector3(dc, 0.0, d * 0.5 - WALL_T * 0.5)
+			normal = Vector3(0, 0, 1)
+		1:
+			gap = Vector3(dc, 0.0, -(d * 0.5 - WALL_T * 0.5))
+			normal = Vector3(0, 0, -1)
+		2:
+			gap = Vector3(w * 0.5 - WALL_T * 0.5, 0.0, dc)
+			normal = Vector3(1, 0, 0)
+		_:
+			gap = Vector3(-(w * 0.5 - WALL_T * 0.5), 0.0, dc)
+			normal = Vector3(-1, 0, 0)
+	var gap_world := origin + gap
+	return {"gap_center": gap_world, "normal": normal,
+		"doorstep": gap_world + normal * (WALL_T * 0.5 + 1.1),
+		"wall": wall}
+
+
 ## Canonical serialization for the determinism pins.
 static func serialize_plan(plan: Dictionary) -> String:
 	var parts: Array = []

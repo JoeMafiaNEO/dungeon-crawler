@@ -183,6 +183,122 @@ static func reset_reveal_state() -> void:
 	buildings_cleared = 0
 	home_anchor = {}
 
+## Issue #204 (P4): the Act 2 record — where the run lives
+## once it has entered the real world. Mirrored as statics
+## (the reveal pattern), carried in the run save as the
+## additive `act2` dict plus `world_time`:
+##   context          "" (still Act 1) or "world"
+##   cleared          the cleared-buildings set as a container
+##                    of anchor-lot keys — the home building's
+##                    entry is written at world entry (it cleared
+##                    at the reveal; P3 counted it)
+##   anchor_building  the respawn anchor's building key
+##   anchor_doorstep  the anchor resolved to its DOORSTEP point
+##                    (the gate-confirmed section-4 reading:
+##                    street death respawns there)
+##   last_transition  {building, point} — continues land at
+##                    transition points, never mid-street.
+static var act2_context := ""
+static var act2_cleared: Array = []
+static var act2_anchor_building := ""
+static var act2_anchor_doorstep := Vector3.ZERO
+static var act2_last_transition := {}
+## How the local peer enters the world scene: "doorstep" after
+## a rooftop-door transition (arrive at the anchor's doorstep);
+## "" on a continue (arrive at the last transition point).
+static var act2_spawn_at := ""
+## The local peer's class, stashed at the rooftop door (the
+## world root spawns the local player with it — the train's
+## passenger-class pattern).
+static var act2_local_class := ""
+## Accumulated Act 2 play time (the world clock's input).
+static var world_time := 0.0
+
+
+## The world clock's persistence beat (issue #204): the
+## server writes world_time (and the act2 record, unchanged)
+## into the run save, loaded-dict-first. Called periodically
+## by the world root; the transition stamps remain the
+## record's main writers.
+static func save_act2_clock() -> void:
+	if act2_context == "":
+		return
+	var mode: String = NetworkManager.active_run_mode
+	var slot: int = NetworkManager.active_run_slot
+	var run: Dictionary = SaveManager.load_run(mode, slot).duplicate(true)
+	if run.is_empty():
+		return
+	run["act2"] = act2_record()
+	run["world_time"] = world_time
+	SaveManager.save_run(run, mode, slot)
+
+const WORLD_SCENE := "res://scenes/world/world.tscn"
+const Act2BuildingGen := preload("res://scripts/world/building_gen.gd")
+const Act2WorldClock := preload("res://scripts/world/world_clock.gd")
+
+
+## The home building's identity, derived from the reveal's
+## anchor record: its anchor lot is the reserved rect's
+## min-corner lot, its span is the rect in lots, its plan is
+## BuildingGen's at REVEAL_FLOORS — the six Act 1 levels.
+## Every peer derives the identical building (and doorstep)
+## from the save's record. {} until revealed.
+static func home_building() -> Dictionary:
+	if home_anchor.is_empty():
+		return {}
+	var rx := float(home_anchor["rect_x"])
+	var rz := float(home_anchor["rect_z"])
+	var rw := float(home_anchor["rect_w"])
+	var rd := float(home_anchor["rect_d"])
+	var wlx := int(floor(rx / RevealWorldGen.LOT_SIZE))
+	var wlz := int(floor(rz / RevealWorldGen.LOT_SIZE))
+	var span := maxi(1, int(round(rw / RevealWorldGen.LOT_SIZE)))
+	var plan := Act2BuildingGen.plan_for(RevealWorldGen.WORLD_SEED,
+		wlx, wlz, REVEAL_FLOORS, 1, span, span, 0)
+	var cx := rx + rw * 0.5
+	var cz := rz + rd * 0.5
+	var ground := RevealWorldGen.height_at(
+		RevealWorldGen.WORLD_SEED, cx, cz)
+	var origin := Vector3(cx, ground, cz)
+	var door := Act2BuildingGen.door_world(plan, origin)
+	return {"key": "%d,%d" % [wlx, wlz], "wlx": wlx, "wlz": wlz,
+		"span": span, "plan": plan, "origin": origin,
+		"doorstep": door["doorstep"],
+		"gap_center": door["gap_center"]}
+
+
+static func act2_record() -> Dictionary:
+	return {"context": act2_context,
+		"cleared": act2_cleared.duplicate(),
+		"anchor_building": act2_anchor_building,
+		"anchor_doorstep": [act2_anchor_doorstep.x,
+			act2_anchor_doorstep.y, act2_anchor_doorstep.z],
+		"last_transition": act2_last_transition.duplicate(true)}
+
+
+static func restore_act2_state(run: Dictionary) -> void:
+	var a: Dictionary = run.get("act2", {})
+	act2_context = str(a.get("context", ""))
+	act2_cleared = (a.get("cleared", []) as Array).duplicate()
+	act2_anchor_building = str(a.get("anchor_building", ""))
+	var ds: Array = a.get("anchor_doorstep", [])
+	act2_anchor_doorstep = Vector3(float(ds[0]), float(ds[1]),
+		float(ds[2])) if ds.size() == 3 else Vector3.ZERO
+	act2_last_transition = (a.get("last_transition", {})
+		as Dictionary).duplicate(true)
+	world_time = float(run.get("world_time", 0.0))
+
+
+## Fresh runs have no Act 2 record.
+static func reset_act2_state() -> void:
+	act2_context = ""
+	act2_cleared = []
+	act2_anchor_building = ""
+	act2_anchor_doorstep = Vector3.ZERO
+	act2_last_transition = {}
+	act2_spawn_at = ""
+	world_time = 0.0
+
 ## The ONE loop-index read (amended spec section 1): 0 while the
 ## Act 1 axis is open, the legacy formula value otherwise. Every
 ## formula-cycle site in the stretch reads through here, so no
@@ -3354,6 +3470,49 @@ func _fire_reveal_save() -> void:
 	SaveManager.save_run(run, mode, slot)
 
 
+## Issue #204 (P4): a transition-point stamp for the Act 2
+## record, fired by the transitioning peer (the rooftop door);
+## the server's dungeon instance executes the save. The record
+## moves as one unit: context, the cleared set (the entered
+## building's key joins it), the respawn anchor resolved to
+## the entered building's doorstep, and the last transition
+## point. First entry also starts the world clock at its
+## bright-day entry time.
+@rpc("any_peer", "call_local")
+func rpc_act2_transition(building_key: String,
+		doorstep: Vector3) -> void:
+	act2_context = "world"
+	if not act2_cleared.has(building_key):
+		act2_cleared.append(building_key)
+	act2_anchor_building = building_key
+	act2_anchor_doorstep = doorstep
+	act2_last_transition = {"building": building_key,
+		"point": [doorstep.x, doorstep.y, doorstep.z]}
+	if world_time <= 0.0:
+		world_time = Act2WorldClock.ENTRY_TIME
+	if not multiplayer.is_server():
+		return
+	var mode: String = NetworkManager.active_run_mode
+	var slot: int = NetworkManager.active_run_slot
+	var run: Dictionary = SaveManager.load_run(mode, slot).duplicate(true)
+	if run.is_empty():
+		return
+	run["act2"] = act2_record()
+	run["world_time"] = world_time
+	SaveManager.save_run(run, mode, slot)
+
+
+## Remove a world-bound peer's player node from this dungeon
+## (all peers): the rooftop-door counterpart of the train's
+## scrub_passenger — without it a ghost body is left standing
+## in the annex for everyone still inside.
+@rpc("any_peer", "call_local")
+func scrub_departed_player(peer_id: int) -> void:
+	var node := get_node_or_null("Players/Player_%d" % peer_id)
+	if node != null:
+		node.queue_free()
+
+
 ## Server-origin, idempotent (the #135 discipline): a forged or
 ## repeated application is a no-op.
 @rpc("any_peer", "call_local")
@@ -3804,6 +3963,10 @@ func _on_station_departure_resolved(theme_id: String) -> void:
 			solo_base["revealed"] = revealed
 			solo_base["buildings_cleared"] = buildings_cleared
 			solo_base["home_anchor"] = home_anchor
+			# Issue #204: the Act 2 record rides every run write.
+			if act2_context != "":
+				solo_base["act2"] = act2_record()
+				solo_base["world_time"] = world_time
 			SaveManager.save_run(solo_base, SaveManager.MODE_SOLO,
 				NetworkManager.active_run_slot)
 	# Jesse 2026-10-10 fix: send the collected states with the boarding RPC
@@ -4455,6 +4618,10 @@ func save_multiplayer_run(theme_id: String, level_number: int, level_seed: int) 
 	_save_base["revealed"] = revealed
 	_save_base["buildings_cleared"] = buildings_cleared
 	_save_base["home_anchor"] = home_anchor
+	# Issue #204: the Act 2 record rides every run write.
+	if act2_context != "":
+		_save_base["act2"] = act2_record()
+		_save_base["world_time"] = world_time
 	_save_base["host_difficulty"] = NetworkManager.host_difficulty
 	_save_base["host_loot_mult"] = NetworkManager.host_loot_mult
 	var lobby: Dictionary = (_save_base.get("lobby", {}) as Dictionary).duplicate(true)

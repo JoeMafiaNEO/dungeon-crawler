@@ -542,6 +542,13 @@ func load_dungeon(theme_id: String, level_seed: int, level_number: int, baked_ha
 ## Jesse 2026-10-11: clients load the station for continued station saves.
 ## Issue #201: an Act 1 station save resumes in the elevator cab, not
 ## the train car — the host says which via the cab flag.
+## Issue #204 (P4): clients load the world scene for a
+## continued Act 2 run.
+@rpc("any_peer", "call_local")
+func load_world() -> void:
+	get_tree().change_scene_to_file(Dungeon.WORLD_SCENE)
+
+
 @rpc("any_peer", "call_local")
 func load_station(level_number: int, cab: bool = false) -> void:
 	Station.next_level_number = level_number
@@ -802,6 +809,7 @@ func play_solo(slot: int = 0) -> void:
 	# Issue #201: a fresh run opens the Act 1 axis at step 0.
 	Dungeon.act1_step = 0
 	Dungeon.reset_reveal_state()
+	Dungeon.reset_act2_state()
 	Dungeon.vault_return_theme = ""
 	Dungeon.next_theme_id = "village"
 	# Issue #138 Phase 2: fresh solo entry takes the pinned seed
@@ -820,6 +828,7 @@ func play_daily() -> void:
 	# Issue #201: a fresh run opens the Act 1 axis at step 0.
 	Dungeon.act1_step = 0
 	Dungeon.reset_reveal_state()
+	Dungeon.reset_act2_state()
 	Dungeon.vault_return_theme = ""
 	Dungeon.next_theme_id = "village"
 	Dungeon.next_seed = DailyRun.get_today_seed()
@@ -861,10 +870,15 @@ func continue_run(mode: String, slot: int) -> bool:
 	Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
 	# Issue #203: restore the reveal state beside the axis.
 	Dungeon.restore_reveal_state(run)
+	Dungeon.restore_act2_state(run)
 	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
 	# Issue #201: in the run's vehicle — cab for Act 1, train otherwise
 	# (the axis was restored just above).
-	if bool(run.get("at_station", false)):
+	# Issue #204: an Act 2 run resumes in the world scene, at
+	# its last transition point — never mid-street.
+	if Dungeon.act2_context == "world":
+		get_tree().change_scene_to_file(Dungeon.WORLD_SCENE)
+	elif bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
 		get_tree().change_scene_to_file(
 			"res://scenes/station/elevator_cab.tscn" if Dungeon.act1_step >= 0
@@ -952,6 +966,13 @@ func start_continued_run() -> void:
 	# Broadcast the level load to all clients (they pull state via
 	# register_class, and the server matches them against the saved roster).
 	# Without this the host loads alone and clients sit in staging forever.
+	# Issue #204: an Act 2 run loads the WORLD for everyone;
+	# clients restore their act2 state from the world root's
+	# state pull, the #135 pattern.
+	var a2: Dictionary = run.get("act2", {})
+	if str(a2.get("context", "")) == "world":
+		rpc("load_world")
+		return
 	# Jesse 2026-10-11: station saves resume AT the station.
 	if bool(run.get("at_station", false)):
 		# Issue #201: clients resume in the run's vehicle too.
@@ -1011,13 +1032,18 @@ func _continue_load_level() -> void:
 	Dungeon.vault_return_theme = str(run.get("vault_return_theme", ""))
 	# Issue #203: restore the reveal state beside the axis.
 	Dungeon.restore_reveal_state(run)
+	Dungeon.restore_act2_state(run)
 	# Stash the roster for the staging UI.
 	Dungeon.continued_roster = run.get("roster", [])
 	# Issue #140: the session store the dungeon captures its roster from.
 	continued_session_roster = run.get("roster", []).duplicate()
 	# Jesse 2026-10-11: station saves resume AT the station.
 	# Issue #201: in the run's vehicle (axis restored just above).
-	if bool(run.get("at_station", false)):
+	# Issue #204: an Act 2 run resumes in the world scene, at
+	# its last transition point — never mid-street.
+	if Dungeon.act2_context == "world":
+		get_tree().change_scene_to_file(Dungeon.WORLD_SCENE)
+	elif bool(run.get("at_station", false)):
 		Station.next_level_number = int(run.get("level_number", 1))
 		get_tree().change_scene_to_file(
 			"res://scenes/station/elevator_cab.tscn" if Dungeon.act1_step >= 0
