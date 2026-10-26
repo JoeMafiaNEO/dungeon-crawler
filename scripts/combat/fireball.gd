@@ -148,6 +148,13 @@ func _explode() -> void:
 		# radius_add for the skill, beside Conflagration.
 		if caster != null:
 			radius += caster.tree_radius_add("barrage" if skill_tag == "barrage" else "fireball")
+		# Arcing Brand (issue #210 Amendment 1): barrage
+		# bolts only — the caster's barrage brand amp; zero
+		# means no brand is applied and no read takes
+		# effect (plain fireballs never brand).
+		var barrage_brand := 0.0
+		if skill_tag == "barrage" and caster != null:
+			barrage_brand = caster.tree_brand_amp("barrage")
 		for node in get_tree().get_nodes_in_group("mobs"):
 			var mob := node as Mob
 			if mob == null or not mob.alive:
@@ -156,10 +163,18 @@ func _explode() -> void:
 			var ma := Vector2(mob.global_position.x, mob.global_position.z)
 			var mb := Vector2(global_position.x, global_position.z)
 			if ma.distance_to(mb) < radius:
-				mob.take_damage(damage, owner_peer, global_position)
+				# Arcing Brand: a branded target takes the
+				# stored amp on a barrage hit; the hit then
+				# (re)brands it. Not consumed.
+				var dealt := damage
+				if barrage_brand > 0.0:
+					dealt *= 1.0 + mob.brand_amp_now()
+				mob.take_damage(dealt, owner_peer, global_position)
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
 					mob.apply_burn(3.0, damage * 0.3, owner_peer)
+				if barrage_brand > 0.0:
+					mob.apply_brand(3.0, barrage_brand, owner_peer)
 				# Affinity: fireball +2/hit max 10/cast; barrage +1/hit max 6/cast.
 				if caster != null:
 					if skill_tag == "barrage":

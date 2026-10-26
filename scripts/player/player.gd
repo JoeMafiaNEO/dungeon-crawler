@@ -108,7 +108,10 @@ func cooldown_mult() -> float:
 ## guest's copy divides by the guest's true investment.
 func atk_spd_mult() -> float:
 	if is_multiplayer_authority():
-		return 1.0 + bonus_atk_spd
+		# Issue #210 section 1.2 (settled): the owner's own
+		# cadence folds the tree — the same combined value
+		# that already rides the snapshot.
+		return 1.0 + bonus_atk_spd + _tree_stat("atk_spd")
 	return 1.0 + net_bonus_atk_spd
 ## Bounty Board (issue #7): server-authoritative per-player progress,
 ## {bounty_id: count} (-1 = failed). Synced via player snapshots.
@@ -235,6 +238,8 @@ var tree_last_claimed := {}
 ## the _buff_mult pattern — a var + a clock check at the
 ## read sites.
 var _tree_fuel_until := 0
+## Issue #210: Stormcharged's window (10 s after Tempest).
+var _tree_storm_until := 0
 ## Anti-cheese: per-enemy cooldowns for affinity gain.
 var _affinity_enemy_cd := {}  # "%s:%d" % [skill_id, enemy_id] -> msec
 ## Per-cast caps: cast_id -> points granted so far.
@@ -1264,6 +1269,54 @@ func _tree_variant(skill_id: String) -> String:
 		return ""
 	return str((tree_aggregates.get("variants", {})
 		as Dictionary).get(skill_id, ""))
+
+
+## Issue #210: the plain aggregate damage multiplier for a
+## skill (echoes + the skill's own dmg_pct nodes) — the
+## frost/storm cast expressions fold this beside
+## trait_damage_mult, closing the prototype's unwired-echo
+## disclosure for frost/blizzard/lightning/barrage.
+func _tree_mult(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "dmg_mult", 1.0)
+
+
+func _tree_behavior_pct(behavior_id: String) -> float:
+	if tree_aggregates.is_empty():
+		return 0.0
+	return float((tree_aggregates.get("behaviors", {})
+		as Dictionary).get(behavior_id, 0.0))
+
+
+## Frost's cast multiplier: the aggregate dmg_mult with
+## Permafrost Heart multiplying while the caster is above
+## 75% health (Emberheart's high-HP mirror). Shatterglass
+## is target-conditioned and reads at the hit sites.
+func _tree_frost_mult(skill_id: String) -> float:
+	var m := _tree_mult(skill_id)
+	var pct := _tree_behavior_pct("permafrost_heart")
+	if pct > 0.0 and hp > max_hp * 0.75:
+		m *= 1.0 + pct / 100.0
+	return m
+
+
+## Issue #210 Amendment 1: the caster's Arcing Brand amp
+## for a skill. Public: the Fireball explode loop reads
+## the barrage amp via the caster.
+func tree_brand_amp(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "brand_amp", 0.0)
+
+
+## Shatterglass (issue #210): frost damage against a
+## slowed or frozen target (the #173 status system's own
+## state — mob.is_slowed covers the frozen 0.0-mult case).
+## Public: the FrostShard hit site reads it via the caster.
+func tree_shatterglass_mult(mob: Variant) -> float:
+	var pct := _tree_behavior_pct("shatterglass")
+	if pct <= 0.0 or mob == null:
+		return 1.0
+	if bool(mob.call("is_slowed")):
+		return 1.0 + pct / 100.0
+	return 1.0
 
 
 ## Owner-side purchase entry (spec sections 4/8): local
@@ -2790,9 +2843,13 @@ func _activate_glacial_prison() -> void:
 			hud.toast("Glacial Prison on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["glacial_prison"] = (60.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["glacial_prison"] = (60.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("glacial_prison", "cd_mult", 1.0)
 	_cast_seq += 1
-	rpc("cast_glacial_prison", global_position, int(multiplayer.get_unique_id()), _cast_seq)
+	# Issue #210: Stasis Burst's authored damage — one full
+	# basic-skill hit (damage x 1.0), captured at activation.
+	var burst := damage if _tree_variant("glacial_prison") \
+		== "stasis_burst" else 0.0
+	rpc("cast_glacial_prison", global_position, int(multiplayer.get_unique_id()), _cast_seq, burst)
 	AudioManager.sfx("milestone")
 	if hud != null:
 		hud.toast("GLACIAL PRISON!")
@@ -2800,19 +2857,45 @@ func _activate_glacial_prison() -> void:
 
 
 @rpc("any_peer", "call_local")
-func cast_glacial_prison(center: Vector3, owner: int, seq: int) -> void:
-	Effects.telegraph_ring(get_parent(), center, 8.0, Color(0.6, 0.85, 1.0))
+func cast_glacial_prison(center: Vector3, owner: int, seq: int, burst: float = 0.0) -> void:
+	# Issue #210: radius_add + freeze_add read off the
+	# caster (this node) at cast.
+	var radius := 8.0 + _tree_skill_mod("glacial_prison",
+		"radius_add", 0.0)
+	var freeze := 3.0 + _tree_skill_mod("glacial_prison",
+		"freeze_add", 0.0)
+	Effects.telegraph_ring(get_parent(), center, radius, Color(0.6, 0.85, 1.0))
 	Effects.burst(get_parent(), center + Vector3(0, 1.0, 0), Color(0.7, 0.9, 1.0), 50, 9.0)
 	AudioManager.sfx("frost_hit", center)
 	AudioManager.sfx("blizzard_cast", center)
 	if multiplayer.is_server():
+		var frozen: Array = []
 		for n in get_tree().get_nodes_in_group("mobs"):
 			var m := n as Mob
 			if m == null or not m.alive:
 				continue
-			if m.global_position.distance_to(center) < 8.0:
+			if m.global_position.distance_to(center) < radius:
 				# 0.0 mult = frozen solid; also sets shatter for team synergy.
-				m.apply_slow(3.0, 0.0)
+				m.apply_slow(freeze, 0.0)
+				# Brittle Ice (Amendment 1): store the
+				# shatter — caster damage x the prison's
+				# shatter_pct aggregate, read on this node
+				# (the caster). Zero at zero aggregate.
+				m.prison_shatter = damage * _tree_skill_mod(
+					"glacial_prison", "shatter_pct", 0.0)
+				m.prison_shatter_owner = owner
+				frozen.append(m)
+		# Stasis Burst (issue #210): at freeze end the
+		# prison's targets take the authored burst damage.
+		if burst > 0.0 and not frozen.is_empty():
+			await get_tree().create_timer(freeze).timeout
+			if not is_inside_tree():
+				return
+			for m in frozen:
+				if is_instance_valid(m) and m.alive:
+					m.take_damage(burst, owner, center)
+			Effects.burst(get_parent(), center + Vector3(0, 1.0, 0), Color(0.7, 0.9, 1.0), 40, 8.0)
+			AudioManager.sfx("frost_hit", center)
 
 
 ## TEMPEST (storm signature): 6s channeled storm — lightning strikes random
@@ -2823,9 +2906,13 @@ func _activate_tempest() -> void:
 			hud.toast("Tempest on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["tempest"] = (90.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["tempest"] = (90.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("tempest", "cd_mult", 1.0)
 	_cast_seq += 1
-	var dmg := damage * _buff_mult("damage") * 0.8 * 1.5 * trait_damage_mult("lightning")
+	# Issue #210: Stormcharged's 10 s window arms here (the
+	# fuel_for_the_flame window shape).
+	if _tree_behavior_pct("stormcharged") > 0.0:
+		_tree_storm_until = Time.get_ticks_msec() + 10000
+	var dmg := damage * _buff_mult("damage") * 0.8 * 1.5 * trait_damage_mult("lightning") * _tree_mult("tempest")
 	rpc("cast_tempest", dmg, int(multiplayer.get_unique_id()), _cast_seq)
 	AudioManager.sfx("milestone")
 	if hud != null:
@@ -2835,10 +2922,16 @@ func _activate_tempest() -> void:
 
 @rpc("any_peer", "call_local")
 func cast_tempest(dmg: float, owner: int, seq: int) -> void:
+	# Issue #210: radius_add + duration_add (1 s = 2 strikes
+	# per step) read off the caster (this node) at cast.
+	var radius := 15.0 + _tree_skill_mod("tempest",
+		"radius_add", 0.0)
+	var strikes := 12 + int(round(_tree_skill_mod("tempest",
+		"duration_add", 0.0) / 0.5))
 	AudioManager.sfx("lightning_cast", global_position)
-	Effects.telegraph_ring(get_parent(), global_position, 15.0, Color(0.7, 0.9, 1.0))
-	# 12 strikes over 6 seconds; the storm follows the caster.
-	for i in 12:
+	Effects.telegraph_ring(get_parent(), global_position, radius, Color(0.7, 0.9, 1.0))
+	# 12 strikes over 6 seconds (stock); the storm follows the caster.
+	for i in strikes:
 		await get_tree().create_timer(0.5).timeout
 		if not is_inside_tree():
 			break
@@ -2846,7 +2939,7 @@ func cast_tempest(dmg: float, owner: int, seq: int) -> void:
 			var candidates: Array = []
 			for n in get_tree().get_nodes_in_group("mobs"):
 				var m := n as Mob
-				if m != null and m.alive and m.global_position.distance_to(global_position) < 15.0:
+				if m != null and m.alive and m.global_position.distance_to(global_position) < radius:
 					candidates.append(m)
 			if candidates.is_empty():
 				continue
@@ -2859,6 +2952,24 @@ func cast_tempest(dmg: float, owner: int, seq: int) -> void:
 				target.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, global_position)
 			rpc("chain_fx", sky, hit_pos)
 			AudioManager.sfx("lightning_zap", hit_pos)
+	# Eye of the Storm (issue #210): when the channel ends,
+	# a final strike at 200% on the nearest target.
+	if multiplayer.is_server() and is_inside_tree() \
+			and _tree_variant("tempest") == "eye_of_the_storm":
+		var nearest: Mob = null
+		var best := radius
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var m := n as Mob
+			if m == null or not m.alive:
+				continue
+			var d := m.global_position.distance_to(global_position)
+			if d < best:
+				best = d
+				nearest = m
+		if nearest != null:
+			nearest.take_damage(dmg * 2.0, owner, global_position)
+			rpc("chain_fx", nearest.global_position + Vector3(0, 8.0, 0), nearest.global_position + Vector3(0, 1.0, 0))
+			AudioManager.sfx("lightning_zap", nearest.global_position)
 
 
 ## Warrior: signature totems via T (uses totem charges).
@@ -4714,7 +4825,7 @@ func _cast_frost_shard() -> void:
 	var basis := _camera.global_transform.basis
 	var dir := -basis.z
 	var origin: Vector3 = _camera.global_position + dir * 0.7 + Vector3(0, -0.15, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("frost")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("frost") * _tree_frost_mult("frost")
 	rpc("cast_frost", origin, dir.normalized(), dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
@@ -4723,11 +4834,25 @@ func cast_frost(origin: Vector3, dir: Vector3, dmg: float, owner: int, seq: int)
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon == null:
 		return
-	var fs := FrostShard.new()
-	fs.name = "Frost_%d_%d" % [owner, seq]
-	fs.setup(dir * 22.0, dmg * 0.7, owner)
-	dungeon.get_node("Projectiles").add_child(fs)
-	fs.global_position = origin
+	# Issue #210: slow_add reads off the caster at shard
+	# spawn (the fireball-radius pattern); Splinter Volley
+	# (the twin_suns shape on the shard path) fires a second
+	# shard at 65%.
+	var volley := _tree_variant("frost") == "splinter_volley"
+	var dirs: Array = [dir]
+	var dmgs: Array = [dmg * 0.7]
+	if volley:
+		dirs = [dir.rotated(Vector3.UP, -0.07),
+			dir.rotated(Vector3.UP, 0.07)]
+		dmgs = [dmg * 0.7 * 0.65, dmg * 0.7 * 0.65]
+	for k in dirs.size():
+		var fs := FrostShard.new()
+		fs.name = "Frost_%d_%d" % [owner, seq + k * 500]
+		fs.setup(dirs[k] * 22.0, dmgs[k], owner)
+		fs.slow_duration += _tree_skill_mod("frost",
+			"slow_add", 0.0)
+		dungeon.get_node("Projectiles").add_child(fs)
+		fs.global_position = origin
 
 
 func _cast_chain_lightning() -> void:
@@ -4736,7 +4861,7 @@ func _cast_chain_lightning() -> void:
 	# stats (the snapshot does not replicate damage/buffs/traits, so
 	# the server cannot recompute it) and rides the cast intent,
 	# exactly like Fan of Knives / Hammer Smash.
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.8 * trait_damage_mult("lightning")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.8 * trait_damage_mult("lightning") * _tree_mult("lightning")
 	if multiplayer.is_server():
 		# Issue #170 (I6): the host cast routes through the
 		# validated endpoint — the Hammer Smash template's
@@ -4785,6 +4910,22 @@ func _execute_chain_lightning(dmg: float) -> void:
 	var cast_id := "lightning_%d" % _cast_seq
 	# Arc Conduit: lightning chains +1 target.
 	var max_chains := 4 if has_trait("arc_conduit") else 3
+	# Issue #210: chains_add (aggregate-clamped at +2) and
+	# Stormcharged's window fold in beside Arc Conduit's
+	# read; the Stormcall finisher below still sets its own
+	# designed total when it triggers.
+	max_chains += int(_tree_skill_mod("lightning",
+		"chains_add", 0.0))
+	if _tree_behavior_pct("stormcharged") > 0.0 \
+			and Time.get_ticks_msec() < _tree_storm_until:
+		max_chains += 1
+	var static_bloom := _tree_behavior_pct("static_bloom")
+	var forked := _tree_variant("lightning") == "forked_sky"
+	# Arcing Brand (Amendment 1): this caster's lightning
+	# brand amp; zero means the mechanic does not exist in
+	# this game (no application, no reads take effect).
+	var brand_amp := _tree_skill_mod("lightning",
+		"brand_amp", 0.0)
 	# Combo Finisher: Stormcall (issue #8) -- cast while standing inside a
 	# War Horn damage aura: chains 6 targets, +25% damage. Per-enemy cooldown
 	# is keyed to the first chain target (current is already selected above).
@@ -4800,8 +4941,26 @@ func _execute_chain_lightning(dmg: float) -> void:
 		var mob_pos: Vector3 = current.global_position + Vector3(0, 1.0, 0)
 		# Overcharge: 15% chance to double-strike.
 		var zap_dmg := dmg * 2.0 if has_trait("overcharge") and randf() < 0.15 else dmg
+		# Static Bloom (issue #210): every chain target
+		# beyond the first takes +X%.
+		if i >= 1 and static_bloom > 0.0:
+			zap_dmg *= 1.0 + static_bloom / 100.0
+		# Arcing Brand (Amendment 1): a branded target
+		# takes the stored amp on a storm hit — the brand
+		# is not consumed.
+		if brand_amp > 0.0:
+			zap_dmg *= 1.0 + current.brand_amp_now()
 		# _execute only ever runs on the server.
 		current.take_damage(zap_dmg, from, global_position)
+		# Forked Sky (issue #210): the first target is
+		# struck twice, the second strike at 70%.
+		if i == 0 and forked:
+			current.take_damage(zap_dmg * 0.7, from,
+				global_position)
+			rpc("chain_fx", last_pos, mob_pos)
+		# The hit brands its target for the next 3 s.
+		if brand_amp > 0.0:
+			current.apply_brand(3.0, brand_amp, from)
 		# Affinity: +2 per enemy zapped, max +8/cast.
 		gain_affinity_capped("lightning", 2.0, current.get_instance_id(), cast_id, 8.0)
 		rpc("chain_fx", last_pos, mob_pos)
@@ -4911,11 +5070,16 @@ func _cast_barrage() -> void:
 	var basis := _camera.global_transform.basis
 	var base_dir := -basis.z
 	var origin: Vector3 = _camera.global_position + base_dir * 0.7 + Vector3(0, -0.15, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.6 * trait_damage_mult("barrage")
-	for i in [-1, 0, 1]:
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.6 * trait_damage_mult("barrage") * _tree_mult("barrage")
+	# Issue #210: Tempest Fan — five bolts at 50%.
+	var fan := _tree_variant("barrage") == "tempest_fan"
+	var spread: Array = [-2, -1, 0, 1, 2] if fan else [-1, 0, 1]
+	for i in spread:
 		var dir := base_dir.rotated(Vector3.UP, i * 0.12).normalized()
 		# Overcharge: 15% chance per bolt to double-strike.
 		var bolt_dmg := dmg * 2.0 if has_trait("overcharge") and randf() < 0.15 else dmg
+		if fan:
+			bolt_dmg *= 0.5
 		rpc("cast_fireball", origin, dir, bolt_dmg, int(multiplayer.get_unique_id()), _cast_seq + i, "barrage")
 
 
@@ -4932,12 +5096,24 @@ func _cast_blizzard() -> void:
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
 	_cast_seq += 1
-	var blizz_dmg := damage * _buff_mult("damage") * rank_mult() * 0.4 * trait_damage_mult("blizzard")
+	var blizz_dmg := damage * _buff_mult("damage") * rank_mult() * 0.4 * trait_damage_mult("blizzard") * _tree_frost_mult("blizzard")
 	rpc("cast_blizzard", point, blizz_dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
 @rpc("any_peer", "call_local")
 func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
+	# Issue #210: radius_add + Whiteout (radius x1.5, tick
+	# dmg x1.4, ticks at 0.75 s) + duration_add (one 0.5 s
+	# tick per step) read off the caster (this node) at cast.
+	var radius := 4.0 + _tree_skill_mod("blizzard",
+		"radius_add", 0.0)
+	var whiteout := _tree_variant("blizzard") == "whiteout"
+	if whiteout:
+		radius *= 1.5
+	var tick_dmg := dmg * (1.4 if whiteout else 1.0)
+	var interval := 0.75 if whiteout else 0.5
+	var ticks := 8 + int(round(_tree_skill_mod("blizzard",
+		"duration_add", 0.0) / 0.5))
 	# Snowy visual: blue-white particles falling in the radius.
 	var storm := Effects.make_snow()
 	storm.amount = 60
@@ -4945,12 +5121,12 @@ func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 	storm.global_position = point + Vector3(0, 3.0, 0)
 	storm.emitting = true
 	AudioManager.sfx("blizzard_loop", point)
-	Effects.telegraph_ring(get_parent(), point, 4.0, Color(0.6, 0.85, 1.0))
-	# 8 ticks over 4 seconds.
+	Effects.telegraph_ring(get_parent(), point, radius, Color(0.6, 0.85, 1.0))
+	# 8 ticks over 4 seconds (stock).
 	var cast_id := "blizzard_%d" % seq
 	var granted_mobs := {}
-	for i in 8:
-		await get_tree().create_timer(0.5).timeout
+	for i in ticks:
+		await get_tree().create_timer(interval).timeout
 		if not is_inside_tree():
 			break
 		if multiplayer.is_server():
@@ -4960,11 +5136,14 @@ func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 				var m := n as Mob
 				if m == null or not m.alive:
 					continue
-				if m.global_position.distance_to(point) < 4.0:
+				if m.global_position.distance_to(point) < radius:
+					# Shatterglass reads the target's slow
+					# state at the tick (issue #210).
+					var dealt := tick_dmg * tree_shatterglass_mult(m)
 					if multiplayer.is_server():
-						m.take_damage(dmg, owner, point)
+						m.take_damage(dealt, owner, point)
 					else:
-						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, point)
+						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dealt, owner, point)
 					# Permafrost: slows last +2s.
 					var bdur := 1.0
 					if caster != null and caster.has_trait("permafrost"):

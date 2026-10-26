@@ -31,22 +31,64 @@ func _is_in_wall() -> bool:
 	return layout.is_solid_world(global_position)
 
 
+## Issue #210 (full build section 4): the caster's Deep
+## Tree look for this shard, or {} when the caster's set
+## doesn't govern it (stock construction, byte-for-byte).
+func _caster_look() -> Dictionary:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return {}
+	var caster = dungeon.get_player_node(owner_peer)
+	if caster == null:
+		return {}
+	var owned: Array = caster.get("tree_owned")
+	if owned.is_empty():
+		return {}
+	return DeepTree.look_for(int(caster.get("tree_seed")),
+		str(caster.get("class_id")), "frost", owned)
+
+
 func _ready() -> void:
-	# Icy core.
-	var core := MeshInstance3D.new()
-	var shard := BoxMesh.new()
-	shard.size = Vector3(0.12, 0.12, 0.5)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.6, 0.85, 1.0)
-	mat.emission_enabled = true
-	mat.emission = Color(0.4, 0.75, 1.0)
-	mat.emission_energy_multiplier = 3.0
-	shard.material = mat
-	core.mesh = shard
-	add_child(core)
+	var look := _caster_look()
+	var governed := not look.is_empty() \
+		and not bool(look.get("stock", true))
+	var shift := float(look.get("hue_shift", 0.0)) \
+		if governed else 0.0
+	if governed and bool(look.get("variant", false)):
+		# Variant-governed: the seeded grammar body
+		# replaces the stock shard (cached template), and
+		# the bundle carries its trail.
+		var tmpl := DeepTreeLooks.bundle_template(owner_peer,
+			"frost", look, Color(0.6, 0.85, 1.0),
+			Color(0.4, 0.75, 1.0))
+		add_child(tmpl.duplicate())
+		add_child(DeepTreeLooks.make_trail(look,
+			DeepTreeLooks.shifted(Color(0.6, 0.85, 1.0),
+				shift)))
+	else:
+		# Icy core (stock values when ungoverned; a
+		# governed non-variant shard keeps the stock
+		# silhouette with shifted palette/energies and no
+		# trail — the stock shard has none).
+		var core := MeshInstance3D.new()
+		var shard := BoxMesh.new()
+		shard.size = Vector3(0.12, 0.12, 0.5)
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = DeepTreeLooks.shifted(
+			Color(0.6, 0.85, 1.0), shift)
+		mat.emission_enabled = true
+		mat.emission = DeepTreeLooks.shifted(
+			Color(0.4, 0.75, 1.0), shift)
+		mat.emission_energy_multiplier = float(look.get(
+			"emission_energy", 3.0)) if governed else 3.0
+		shard.material = mat
+		core.mesh = shard
+		add_child(core)
 	var light := OmniLight3D.new()
-	light.light_color = Color(0.5, 0.8, 1.0)
-	light.light_energy = 1.2
+	light.light_color = DeepTreeLooks.shifted(
+		Color(0.5, 0.8, 1.0), shift)
+	light.light_energy = float(look.get("light_energy",
+		1.2)) if governed else 1.2
 	light.omni_range = 6.0
 	add_child(light)
 	if velocity.length() > 0.01:
@@ -79,10 +121,16 @@ func _physics_process(delta: float) -> void:
 			var a := Vector2(mob.global_position.x, mob.global_position.z)
 			var b := Vector2(global_position.x, global_position.z)
 			if a.distance_to(b) < 1.3:
+				# Shatterglass (issue #210): the caster's
+				# behavior reads the target's slow state
+				# at the hit.
+				var dealt := damage
+				if caster != null:
+					dealt *= caster.tree_shatterglass_mult(mob)
 				if multiplayer.is_server():
-					mob.take_damage(damage, owner_peer, global_position)
+					mob.take_damage(dealt, owner_peer, global_position)
 				else:
-					mob.rpc_id(NetworkManager.server_peer_id, "take_damage", damage, owner_peer, global_position)
+					mob.rpc_id(NetworkManager.server_peer_id, "take_damage", dealt, owner_peer, global_position)
 				# Permafrost: slows last +2s.
 				var sdur := slow_duration
 				if caster != null and caster.has_trait("permafrost"):

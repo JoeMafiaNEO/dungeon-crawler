@@ -159,9 +159,10 @@ static func branch_info(class_id: String, branch: int) -> Dictionary:
 	return {}
 
 
-## Only Fire generates purchasable content in the prototype.
+## Populated branches (the prototype populated Fire; issue
+## #210 slice B1 adds Frost and Storm).
 static func branch_populated(branch: int) -> bool:
-	return branch == BRANCH_FIRE
+	return branch in [1, 2, 3]
 
 
 # ----------------------------------------------------------------
@@ -263,16 +264,61 @@ const PARAM_TABLE := {
 	"fireball": ["dmg_pct", "radius_add"],
 	"meteor": ["dmg_pct", "radius_add"],
 	"inferno": ["dmg_pct", "cd_pct", "radius_add"],
+	# Issue #210 (full build section 2.1): glacial prison
+	# has NO dmg_pct; the exclusions are the table's own
+	# statement. (Amendment 1 adds shatter_pct — the
+	# authored Brittle Ice channel, not a dmg_pct.)
+	"frost": ["dmg_pct", "slow_add"],
+	"blizzard": ["dmg_pct", "radius_add", "duration_add"],
+	# Amendment 1 (section B.1): shatter_pct is the
+	# integrated Brittle Ice mechanic — the prison's only
+	# damage channel, and NOT a dmg_pct.
+	"glacial_prison": ["cd_pct", "radius_add", "freeze_add",
+		"shatter_pct"],
+	# Issue #210 (section 2.2): lightning has NO cd_pct —
+	# its 0.6 s server gate is a designed floor.
+	# Amendment 1 (section B.2): brand_amp is Arcing Brand.
+	"lightning": ["dmg_pct", "chains_add", "brand_amp"],
+	"barrage": ["dmg_pct", "brand_amp"],
+	"tempest": ["dmg_pct", "cd_pct", "radius_add",
+		"duration_add"],
 }
 const PARAM_UNIT := {"dmg_pct": 0.5, "cd_pct": 0.5,
-	"radius_add": 0.1}
+	"radius_add": 0.1, "slow_add": 0.25,
+	"duration_add": 0.5, "freeze_add": 0.25,
+	"chains_add": 1.0, "shatter_pct": 2.5,
+	"brand_amp": 2.0}
+## Per-target unit overrides: tempest's duration step is
+## 1 s (2 strikes), blizzard's is one 0.5 s tick.
+const PARAM_UNIT_TARGET := {"tempest": {"duration_add": 1.0}}
 const PARAM_BASE := {"dmg_pct": 4, "cd_pct": 4,
-	"radius_add": 2}
+	"radius_add": 2, "slow_add": 2, "duration_add": 2,
+	"freeze_add": 2, "chains_add": 1, "shatter_pct": 2,
+	"brand_amp": 3}
 const PARAM_SPAN := {"dmg_pct": 5, "cd_pct": 5,
-	"radius_add": 3}
+	"radius_add": 3, "slow_add": 3, "duration_add": 3,
+	"freeze_add": 3, "chains_add": 2, "shatter_pct": 3,
+	"brand_amp": 4}
 
-const BEHAVIORS := ["emberheart", "fuel_for_the_flame"]
+
+static func _param_unit(param: String, target: String) -> float:
+	var by_target: Dictionary = PARAM_UNIT_TARGET.get(
+		target, {})
+	if by_target.has(param):
+		return float(by_target[param])
+	return float(PARAM_UNIT[param])
+
+
 const BEHAVIOR_UNIT := 5.0 # percent per step
+## Authored behaviors per branch (the Fire pattern: two).
+const BEHAVIORS := {
+	1: ["emberheart", "fuel_for_the_flame"],
+	2: ["shatterglass", "permafrost_heart"],
+	3: ["stormcharged", "static_bloom"],
+}
+## The skill a branch's behavior nodes govern for looks.
+const BEHAVIOR_TARGET := {1: "fireball", 2: "frost",
+	3: "lightning"}
 
 const VARIANTS := {
 	"twin_suns": {"skill": "fireball",
@@ -281,12 +327,32 @@ const VARIANTS := {
 		"desc": "Meteor Shower: Meteor falls as three meteors at 45% in a triangle."},
 	"phoenix_pyre": {"skill": "inferno",
 		"desc": "Phoenix Pyre: Inferno's tick also heals allies in its radius."},
+	"splinter_volley": {"skill": "frost",
+		"desc": "Splinter Volley: Frost fires two shards at 65% damage each."},
+	"whiteout": {"skill": "blizzard",
+		"desc": "Whiteout: Blizzard's radius grows by half, its ticks hit 40% harder and land every 0.75 s."},
+	"stasis_burst": {"skill": "glacial_prison",
+		"desc": "Stasis Burst: when Glacial Prison's freeze ends, its targets take a burst of damage."},
+	"forked_sky": {"skill": "lightning",
+		"desc": "Forked Sky: chain lightning's first target is struck twice, the second strike at 70%."},
+	"tempest_fan": {"skill": "barrage",
+		"desc": "Tempest Fan: Barrage fires five bolts at 50% damage each."},
+	"eye_of_the_storm": {"skill": "tempest",
+		"desc": "Eye of the Storm: when Tempest ends, a final strike at 200% hits the nearest enemy."},
 }
-const VARIANT_IDS := ["twin_suns", "meteor_shower",
-	"phoenix_pyre"]
+const VARIANT_IDS := {
+	1: ["twin_suns", "meteor_shower", "phoenix_pyre"],
+	2: ["splinter_volley", "whiteout", "stasis_burst"],
+	3: ["forked_sky", "tempest_fan", "eye_of_the_storm"],
+}
 
-const ECHO_FAMILIES := ["frost", "storm"]
-const FAMILY_SKILLS := {"frost": ["frost", "blizzard"],
+const ECHO_FAMILIES := {
+	1: ["frost", "storm"],
+	2: ["fire", "storm"],
+	3: ["frost", "fire"],
+}
+const FAMILY_SKILLS := {"fire": ["fireball", "meteor"],
+	"frost": ["frost", "blizzard"],
 	"storm": ["lightning", "barrage"]}
 
 const NAME_ADJ := ["Kindled", "Ashen", "Ember", "Scorched",
@@ -295,6 +361,24 @@ const NAME_ADJ := ["Kindled", "Ashen", "Ember", "Scorched",
 const NAME_NOUN := ["Heart", "Crown", "Conflagration",
 	"Brand", "Tongue", "Mantle", "Gaze", "Pact", "Wick",
 	"Throne", "Veil", "Oath"]
+## Per-branch name vocabulary (#210); branch 1 keeps the
+## prototype tables above, so Fire's names never move.
+const NAME_ADJ_BY_BRANCH := {
+	2: ["Frozen", "Glacial", "Rime", "Hoarfrost", "Silent",
+		"Pale", "Winter", "Shivering", "Crystal", "Bitter",
+		"Northern", "Glass"],
+	3: ["Crackling", "Tempest", "Voltaic", "Howling",
+		"Charged", "Forked", "Rumbling", "Bright", "Wild",
+		"Stormborn", "Arc", "Thunder"],
+}
+const NAME_NOUN_BY_BRANCH := {
+	2: ["Shard", "Prison", "Veil", "Heart", "Crown",
+		"Mirror", "Gaze", "Pact", "Tomb", "Throne",
+		"Garden", "Oath"],
+	3: ["Arc", "Verdict", "Tongue", "Mantle", "Gaze",
+		"Pact", "Crown", "Throne", "Veil", "Oath",
+		"Choir", "Brand"],
+}
 
 const COST_BASE := {"stat": 10, "modifier": 16,
 	"behavior": 24, "capstone": 60}
@@ -358,7 +442,11 @@ static func _archetype(seed: int, branch: int, ring: int,
 static func _components(seed: int, branch: int, ring: int,
 		index: int, target: String, scale_num: int,
 		scale_den: int, force_single: bool) -> Array:
-	var table: Array = PARAM_TABLE[target]
+	var table: Array = (PARAM_TABLE[target] as Array).duplicate()
+	# Issue #210 section 2.2: chains_add generates only from
+	# the boughs band up (ring >= 5).
+	if target == "lightning" and ring < 5:
+		table.erase("chains_add")
 	var count := 1
 	if not force_single and ring >= 3 \
 			and roll(seed, S_COMPOSE, branch, ring, index,
@@ -410,22 +498,45 @@ static func _mod_desc(target: String, comps: Array) -> String:
 		elif param == "cd_pct":
 			parts.append("-%s %s cooldown" % [_fmt_pct(steps,
 				param), target])
-		else:
+		elif param == "radius_add":
 			parts.append("+%s m %s blast radius" % [
 				_fmt_num(float(steps)
 					* float(PARAM_UNIT[param])), target])
+		elif param == "slow_add":
+			parts.append("+%s s %s slow duration" % [
+				_fmt_num(float(steps)
+					* float(PARAM_UNIT[param])), target])
+		elif param == "duration_add":
+			parts.append("+%s s %s duration" % [
+				_fmt_num(float(steps)
+					* _param_unit(param, target)), target])
+		elif param == "freeze_add":
+			parts.append("+%s s %s freeze" % [
+				_fmt_num(float(steps)
+					* float(PARAM_UNIT[param])), target])
+		elif param == "chains_add":
+			parts.append("+%d %s chain(s)" % [steps, target])
+		elif param == "shatter_pct":
+			parts.append("+%s %s shatter (of caster damage)" % [
+				_fmt_pct(steps, param), target])
+		else: # brand_amp
+			parts.append("+%s %s brand amplification" % [
+				_fmt_pct(steps, param), target])
 	return "; ".join(parts)
 
 
 static func _name_for(seed: int, branch: int, ring: int,
 		index: int, composed: bool) -> String:
-	var adj := str(NAME_ADJ[roll(seed, S_NAME_A, branch, ring,
-		index * 2, NAME_ADJ.size())])
+	var adjs: Array = NAME_ADJ_BY_BRANCH.get(branch, NAME_ADJ)
+	var nouns: Array = NAME_NOUN_BY_BRANCH.get(branch,
+		NAME_NOUN)
+	var adj := str(adjs[roll(seed, S_NAME_A, branch, ring,
+		index * 2, adjs.size())])
 	if composed:
-		adj += " " + str(NAME_ADJ[roll(seed, S_NAME_A, branch,
-			ring, index * 2 + 1, NAME_ADJ.size())])
-	return adj + " " + str(NAME_NOUN[roll(seed, S_NAME_N,
-		branch, ring, index * 2, NAME_NOUN.size())])
+		adj += " " + str(adjs[roll(seed, S_NAME_A, branch,
+			ring, index * 2 + 1, adjs.size())])
+	return adj + " " + str(nouns[roll(seed, S_NAME_N,
+		branch, ring, index * 2, nouns.size())])
 
 
 # ----------------------------------------------------------------
@@ -467,15 +578,17 @@ static func node_for(seed: int, class_id: String,
 			desc = _mod_desc(target, params["components"])
 		elif kv < 80:
 			kind = "variant"
-			var vid := str(VARIANT_IDS[roll(seed, S_TARGET,
-				branch, ring, 0, VARIANT_IDS.size())])
+			var vids: Array = VARIANT_IDS[branch]
+			var vid := str(vids[roll(seed, S_TARGET,
+				branch, ring, 0, vids.size())])
 			target = str(VARIANTS[vid]["skill"])
 			params = {"variant": vid}
 			desc = str(VARIANTS[vid]["desc"])
 		else:
 			kind = "echo"
-			var fam := str(ECHO_FAMILIES[roll(seed, S_TARGET,
-				branch, ring, 0, ECHO_FAMILIES.size())])
+			var fams: Array = ECHO_FAMILIES[branch]
+			var fam := str(fams[roll(seed, S_TARGET,
+				branch, ring, 0, fams.size())])
 			target = fam
 			var steps := _steps(seed, branch, ring, index, 0,
 				int(PARAM_BASE["dmg_pct"]),
@@ -509,17 +622,29 @@ static func node_for(seed: int, class_id: String,
 			params = {"components": comps}
 			desc = _mod_desc(target, comps)
 		else: # behavior
-			var bid := str(BEHAVIORS[roll(seed, S_TARGET,
-				branch, ring, index, BEHAVIORS.size())])
+			var bids: Array = BEHAVIORS[branch]
+			var bid := str(bids[roll(seed, S_TARGET,
+				branch, ring, index, bids.size())])
 			var steps := _steps(seed, branch, ring, index, 0,
 				3, 3, s_num, s_den)
-			target = "fireball"
+			target = str(BEHAVIOR_TARGET[branch])
 			params = {"behavior": bid, "steps": steps}
 			var pct := int(steps * BEHAVIOR_UNIT)
-			if bid == "emberheart":
-				desc = "Emberheart: your fire skills deal +%d%% damage while you are below 35%% health." % pct
-			else:
-				desc = "Fuel for the Flame: casting Inferno grants +%d%% fire damage for 5 s." % pct
+			match bid:
+				"emberheart":
+					desc = "Emberheart: your fire skills deal +%d%% damage while you are below 35%% health." % pct
+				"fuel_for_the_flame":
+					desc = "Fuel for the Flame: casting Inferno grants +%d%% fire damage for 5 s." % pct
+				"shatterglass":
+					desc = "Shatterglass: your frost skills deal +%d%% damage to slowed or frozen targets." % pct
+				"permafrost_heart":
+					desc = "Permafrost Heart: your frost skills deal +%d%% damage while you are above 75%% health." % pct
+				"stormcharged":
+					desc = "Stormcharged: for 10 s after casting Tempest, your chain lightning gains +1 chain."
+				"static_bloom":
+					desc = "Static Bloom: your chain lightning deals +%d%% damage to every target beyond the first." % pct
+				_:
+					desc = bid
 	var composed: bool = params.has("components") \
 		and (params["components"] as Array).size() > 1
 	return {"id": id, "branch": branch, "ring": ring,
@@ -593,6 +718,12 @@ static func compute_aggregates(seed: int, class_id: String,
 	var dmg_steps := {} # skill -> dmg_pct steps
 	var cd_steps := {}
 	var rad_steps := {}
+	var slow_steps := {}
+	var dur_steps := {}
+	var freeze_steps := {}
+	var chain_steps := {}
+	var shatter_steps := {}
+	var brand_steps := {}
 	var behaviors := {}
 	var variants := {}
 	var sorted_owned := owned.duplicate()
@@ -636,9 +767,27 @@ static func compute_aggregates(seed: int, class_id: String,
 				elif param == "cd_pct":
 					cd_steps[tgt] = int(cd_steps.get(tgt, 0)) \
 						+ steps
-				else:
+				elif param == "radius_add":
 					rad_steps[tgt] = int(rad_steps.get(tgt,
 						0)) + steps
+				elif param == "slow_add":
+					slow_steps[tgt] = int(slow_steps.get(tgt,
+						0)) + steps
+				elif param == "duration_add":
+					dur_steps[tgt] = int(dur_steps.get(tgt,
+						0)) + steps
+				elif param == "freeze_add":
+					freeze_steps[tgt] = int(freeze_steps.get(
+						tgt, 0)) + steps
+				elif param == "chains_add":
+					chain_steps[tgt] = int(chain_steps.get(
+						tgt, 0)) + steps
+				elif param == "shatter_pct":
+					shatter_steps[tgt] = int(shatter_steps.get(
+						tgt, 0)) + steps
+				elif param == "brand_amp":
+					brand_steps[tgt] = int(brand_steps.get(
+						tgt, 0)) + steps
 	var stat_adds := {
 		"damage": minf(40.0, float(stat_steps["damage"])
 			* float(STAT_UNIT["damage"])),
@@ -658,8 +807,20 @@ static func compute_aggregates(seed: int, class_id: String,
 		touched[s] = true
 	for s in rad_steps:
 		touched[s] = true
+	for s in slow_steps:
+		touched[s] = true
+	for s in dur_steps:
+		touched[s] = true
+	for s in freeze_steps:
+		touched[s] = true
+	for s in chain_steps:
+		touched[s] = true
+	for s in shatter_steps:
+		touched[s] = true
+	for s in brand_steps:
+		touched[s] = true
 	for s in touched:
-		skill_mods[s] = {
+		var entry := {
 			"dmg_mult": minf(1.60, 1.0
 				+ float(dmg_steps.get(s, 0))
 				* float(PARAM_UNIT["dmg_pct"]) / 100.0),
@@ -669,6 +830,33 @@ static func compute_aggregates(seed: int, class_id: String,
 			"radius_add": minf(1.5, float(rad_steps.get(s,
 				0)) * float(PARAM_UNIT["radius_add"])),
 		}
+		# Issue #210 channels join the entry only when a
+		# producer wrote them (Fire's entries keep their
+		# prototype shape exactly). chains_add carries the
+		# table's aggregate clamp (+2).
+		if int(slow_steps.get(s, 0)) > 0:
+			entry["slow_add"] = float(slow_steps[s]) \
+				* float(PARAM_UNIT["slow_add"])
+		if int(dur_steps.get(s, 0)) > 0:
+			entry["duration_add"] = float(dur_steps[s]) \
+				* _param_unit("duration_add", s)
+		if int(freeze_steps.get(s, 0)) > 0:
+			entry["freeze_add"] = float(freeze_steps[s]) \
+				* float(PARAM_UNIT["freeze_add"])
+		if int(chain_steps.get(s, 0)) > 0:
+			entry["chains_add"] = mini(2, int(chain_steps[s]))
+		# Amendment 1 section D clamps: shatter_pct is a
+		# fraction of caster damage (<= 1.00); brand_amp is
+		# a damage fraction (<= 0.40 per skill).
+		if int(shatter_steps.get(s, 0)) > 0:
+			entry["shatter_pct"] = minf(1.0,
+				float(shatter_steps[s])
+				* float(PARAM_UNIT["shatter_pct"]) / 100.0)
+		if int(brand_steps.get(s, 0)) > 0:
+			entry["brand_amp"] = minf(0.40,
+				float(brand_steps[s])
+				* float(PARAM_UNIT["brand_amp"]) / 100.0)
+		skill_mods[s] = entry
 	return {"stat_adds": stat_adds, "skill_mods": skill_mods,
 		"behaviors": behaviors, "variants": variants}
 
@@ -719,6 +907,9 @@ static func look_for(seed: int, class_id: String,
 	var light_e := 0.8 + float(posmod(acc >> 24, 9)) / 10.0
 	if skill_id == "meteor":
 		light_e = 1.5 + float(posmod(acc >> 24, 16)) / 10.0
+	if skill_id == "frost":
+		# FrostShard's stock light burns at 1.2.
+		light_e = 0.9 + float(posmod(acc >> 24, 7)) / 10.0
 	var out := {
 		"stock": false,
 		"hue_shift": float(posmod(acc, 41) - 20),

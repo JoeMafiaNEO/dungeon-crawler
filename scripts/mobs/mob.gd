@@ -66,6 +66,18 @@ var is_champion := false
 ## Slow debuff (frost): _slow_t seconds remaining at _slow_mult speed.
 var _slow_t := 0.0
 var _slow_mult := 1.0
+## Issue #210 Amendment 1 (Brittle Ice): the shatter value
+## Glacial Prison stores on each mob it freezes. Zero for
+## every non-owner's game — the field is never read for
+## effect at zero.
+var prison_shatter := 0.0
+var prison_shatter_owner := 0
+## Issue #210 Amendment 1 (Arcing Brand): the branded
+## status — a storm caster's mark. Reapplication takes the
+## stronger amp and refreshes (the apply_burn precedent).
+var _brand_amp := 0.0
+var _brand_until := 0
+var _brand_owner := 0
 ## Stun (issue #113 Phase 4, Hammer Smash): while _stun_t > 0 the mob
 ## cannot move or attack. Server-side state, mirroring the slow pattern;
 ## boss special-think is NOT paused (movement/basic attacks only).
@@ -566,6 +578,28 @@ func apply_slow(duration: float, mult: float) -> void:
 ## Frost-slowed right now (combo-finisher world state).
 func is_slowed() -> bool:
 	return _slow_t > 0.0
+
+
+## Issue #210 Amendment 1: brand this mob for `duration`
+## seconds at `amp` (a damage fraction, e.g. 0.2 = +20%).
+func apply_brand(duration: float, amp: float,
+		attacker: int) -> void:
+	if not alive:
+		return
+	if not multiplayer.is_server():
+		return
+	var now := Time.get_ticks_msec()
+	_brand_amp = maxf(_brand_amp, amp) \
+		if now < _brand_until else amp
+	_brand_until = now + int(duration * 1000.0)
+	_brand_owner = attacker
+
+
+## The stored brand amp while the window is live, else 0.
+func brand_amp_now() -> float:
+	if Time.get_ticks_msec() < _brand_until:
+		return _brand_amp
+	return 0.0
 
 
 ## Applies blind (Smoke Bombard): the mob misses 50% of attacks while blind.
@@ -1830,6 +1864,20 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 	# Phaseshift: the apex Horror is untargetable during its 2s window.
 	if untargetable:
 		return
+	# Brittle Ice (issue #210 Amendment 1): a hit on a
+	# FROZEN mob (active slow multiplier 0.0) with a stored
+	# prison shatter breaks the ice — the shatter is added
+	# to the hit, the freeze is consumed (the expiry reset,
+	# applied early), and the value clears. One shatter per
+	# freeze application.
+	if prison_shatter > 0.0 and _slow_t > 0.0 \
+			and _slow_mult == 0.0:
+		amount += prison_shatter
+		prison_shatter = 0.0
+		prison_shatter_owner = 0
+		_slow_t = 0.0
+		_slow_mult = 1.0
+		_sprite.modulate = Color.WHITE
 	# Marked targets take +50% damage.
 	if _mark_t > 0.0:
 		amount *= 1.5

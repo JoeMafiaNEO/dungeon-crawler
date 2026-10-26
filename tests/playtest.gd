@@ -129,6 +129,7 @@ func _run() -> void:
 	_test_pad_input_193()
 	_test_health_bar_depth_195()
 	_test_deep_tree_206()
+	_test_deep_tree_b1_210()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -21555,7 +21556,9 @@ func _test_deep_tree_206() -> void:
 		"206: bridges exist exactly at r % 8 == 0 (ring 8 mutual, ring 7 plain)")
 
 	# --- Inert branches and foreign coordinates.
-	_assert(bool(DT.node_for(seed, "mage", 2, 1, 0).get("inert", false))
+	# (Branch 2 populated in #210 slice B1; the inert
+	# example is now branch 0, still unpopulated.)
+	_assert(bool(DT.node_for(seed, "mage", 0, 1, 0).get("inert", false))
 			and bool(DT.node_for(seed, "warrior", 1, 1, 0).get("inert", false)),
 		"206: unpopulated + foreign branches return the inert marker")
 	_assert(DT.node_for(seed, "mage", 1, 1, 5).is_empty(),
@@ -21971,3 +21974,617 @@ func _test_deep_tree_206() -> void:
 	current_scene = null
 	hold.free()
 	print("[Playtest] Deep Tree module test done.")
+
+
+func _test_deep_tree_b1_210() -> void:
+	print("[Playtest] Deep Tree B1 mage completion (issue #210)...")
+	var DT = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = DT.TREE_SEED
+
+	# (a) FIXTURE LITERALS, recorded from the module (the
+	# standing discipline): Frost rings 1-3, widths 3/3/1.
+	_assert(DT.width(seed, 2, 1) == 3 and DT.width(seed, 2, 2) == 3
+			and DT.width(seed, 2, 3) == 1,
+		"210: Frost fixture widths are 3/3/1")
+	var fx := [
+		[2, 1, 0, "modifier", "blizzard", {"components": [{"param": "duration_add", "steps": 2}]}, 16, "Hoarfrost Throne"],
+		[2, 1, 1, "modifier", "glacial_prison", {"components": [{"param": "freeze_add", "steps": 2}]}, 16, "Winter Throne"],
+		[2, 1, 2, "modifier", "blizzard", {"components": [{"param": "duration_add", "steps": 1}]}, 16, "Bitter Veil"],
+		[2, 2, 0, "modifier", "glacial_prison", {"components": [{"param": "freeze_add", "steps": 3}]}, 20, "Bitter Garden"],
+		[2, 2, 1, "stat", "", {"channel": "atk_spd", "steps": 1}, 12, "Silent Throne"],
+		[2, 2, 2, "modifier", "blizzard", {"components": [{"param": "dmg_pct", "steps": 4}]}, 20, "Crystal Prison"],
+		[2, 3, 0, "modifier", "frost", {"components": [{"param": "slow_add", "steps": 3}]}, 24, "Crystal Prison"],
+		[3, 1, 0, "modifier", "tempest", {"components": [{"param": "cd_pct", "steps": 5}]}, 16, "Bright Tongue"],
+		[3, 1, 1, "modifier", "tempest", {"components": [{"param": "duration_add", "steps": 2}]}, 16, "Forked Oath"],
+		[3, 1, 2, "modifier", "lightning", {"components": [{"param": "dmg_pct", "steps": 3}]}, 16, "Arc Brand"],
+		[3, 2, 0, "stat", "", {"channel": "damage", "steps": 3}, 12, "Charged Choir"],
+		[3, 3, 0, "modifier", "tempest", {"components": [{"param": "dmg_pct", "steps": 6}]}, 24, "Crackling Crown"],
+	]
+	for row in fx:
+		var nd: Dictionary = DT.node_for(seed, "mage",
+			int(row[0]), int(row[1]), int(row[2]))
+		_assert(str(nd["archetype"]) == str(row[3])
+				and str(nd["target"]) == str(row[4])
+				and nd["params"] == row[5]
+				and int(nd["cost"]) == int(row[6])
+				and str(nd["name"]) == str(row[7]),
+			"210: fixture %d/%d/%d is %s" % [row[0], row[1],
+				row[2], row[7]])
+	_assert(DT.width(seed, 3, 1) == 3 and DT.width(seed, 3, 2) == 1
+			and DT.width(seed, 3, 3) == 1,
+		"210: Storm fixture widths are 3/1/1")
+	# Section 1.3 invariance spot-checks: Fire's recorded
+	# literals stand (the full guard is the #206 section).
+	var fire10: Dictionary = DT.node_for(seed, "mage", 1, 1, 0)
+	_assert(str(fire10["name"]) == "Charred Oath"
+			and int(fire10["cost"]) == 16
+			and fire10["params"] == {"components": [{"param": "radius_add", "steps": 3}]},
+		"210: generation invariance — Fire ring 1 spine unchanged")
+	var fire30: Dictionary = DT.node_for(seed, "mage", 1, 3, 0)
+	_assert(str(fire30["name"]) == "Furnace Conflagration"
+			and int(fire30["cost"]) == 24,
+		"210: generation invariance — Fire ring 3 spine unchanged")
+
+	# (b) Determinism for the new branches, rings 1-12.
+	for b in [2, 3]:
+		var s1 := ""
+		var s2 := ""
+		for ring in range(1, 13):
+			for index in DT.width(seed, b, ring):
+				s1 += str(DT.node_for(seed, "mage", b, ring, index))
+				s2 += str(DT.node_for(seed, "mage", b, ring, index))
+		_assert(s1 == s2 and s1 != "",
+			"210: branch %d generates deterministically (rings 1-12)" % b)
+
+	# Aggregate exactness for the new channels (module level).
+	var agg1: Dictionary = DT.compute_aggregates(seed, "mage",
+		[DT.pack_id(2, 1, 0), DT.pack_id(2, 1, 1),
+		DT.pack_id(2, 2, 2), DT.pack_id(2, 2, 0),
+		DT.pack_id(2, 3, 0)])
+	var sm1: Dictionary = agg1["skill_mods"]
+	_assert(absf(float(sm1["blizzard"].get("duration_add", 0.0)) - 1.0) < 0.001
+			and absf(float(sm1["blizzard"]["dmg_mult"]) - 1.02) < 0.001,
+		"210: blizzard aggregates — duration_add 1.0 s, dmg_mult 1.02")
+	_assert(absf(float(sm1["glacial_prison"].get("freeze_add", 0.0)) - 1.25) < 0.001
+			and absf(float(sm1["frost"].get("slow_add", 0.0)) - 0.75) < 0.001,
+		"210: glacial freeze_add 1.25 s (2 + 3 steps), frost slow_add 0.75 s")
+	var agg2: Dictionary = DT.compute_aggregates(seed, "mage",
+		[DT.pack_id(3, 1, 0), DT.pack_id(3, 1, 1)])
+	_assert(absf(float(agg2["skill_mods"]["tempest"]["cd_mult"]) - 0.975) < 0.001
+			and absf(float(agg2["skill_mods"]["tempest"].get("duration_add", 0.0)) - 2.0) < 0.001,
+		"210: tempest aggregates — cd_mult 0.975, duration_add 2.0 s (1 s steps)")
+	# chains_add: the table's aggregate clamp (+2) binds.
+	var chain_ids: Array = []
+	for ring in range(5, 41):
+		for index in DT.width(seed, 3, ring):
+			var nd2: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			if str(nd2["target"]) == "lightning":
+				for comp in nd2["params"].get("components", []):
+					if str(comp["param"]) == "chains_add":
+						chain_ids.append(int(nd2["id"]))
+	_assert(chain_ids.size() >= 2,
+		"210: chains_add nodes exist from the boughs band up (scan)")
+	var agg3: Dictionary = DT.compute_aggregates(seed, "mage",
+		chain_ids)
+	_assert(int(agg3["skill_mods"]["lightning"].get("chains_add", 0)) == 2,
+		"210: chains_add aggregates clamp at +2")
+	# No chains_add below the boughs band, ever.
+	var low_chains := false
+	for ring in range(1, 5):
+		for index in DT.width(seed, 3, ring):
+			var nd3: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			for comp in nd3["params"].get("components", []):
+				if str(comp["param"]) == "chains_add":
+					low_chains = true
+	_assert(not low_chains,
+		"210: no chains_add generates below ring 5")
+	# Table exclusions stand: no glacial dmg_pct, no
+	# lightning cd_pct, anywhere in rings 1-12.
+	var excluded := false
+	for b2 in [2, 3]:
+		for ring in range(1, 13):
+			for index in DT.width(seed, b2, ring):
+				var nd4: Dictionary = DT.node_for(seed, "mage",
+					b2, ring, index)
+				for comp in nd4["params"].get("components", []):
+					if str(nd4["target"]) == "glacial_prison" \
+							and str(comp["param"]) == "dmg_pct":
+						excluded = true
+					if str(nd4["target"]) == "lightning" \
+							and str(comp["param"]) == "cd_pct":
+						excluded = true
+	_assert(not excluded,
+		"210: exclusions hold — glacial has no dmg_pct, lightning no cd_pct")
+
+	# Scans for the read-site legs.
+	var scan := {"glacial_cd": -1, "bloom": -1, "charged": -1,
+		"forked": -1, "splinter": -1, "shatter": -1, "echo": -1}
+	for ring in range(1, 13):
+		for index in DT.width(seed, 2, ring):
+			var nd5: Dictionary = DT.node_for(seed, "mage", 2,
+				ring, index)
+			if str(nd5["target"]) == "glacial_prison":
+				for comp in nd5["params"].get("components", []):
+					if str(comp["param"]) == "cd_pct" \
+							and scan["glacial_cd"] < 0:
+						scan["glacial_cd"] = int(nd5["id"])
+			if str(nd5["params"].get("behavior", "")) == "shatterglass" \
+					and scan["shatter"] < 0:
+				scan["shatter"] = int(nd5["id"])
+	for ring in [6, 12, 18, 24, 30, 36, 42, 48, 54, 60]:
+		var nd6: Dictionary = DT.node_for(seed, "mage", 2, ring, 0)
+		if str(nd6.get("kind", "")) == "variant" \
+				and str(nd6["params"].get("variant", "")) == "splinter_volley" \
+				and scan["splinter"] < 0:
+			scan["splinter"] = DT.pack_id(2, ring, 0)
+		if str(nd6.get("kind", "")) == "echo" \
+				and scan["echo"] < 0:
+			scan["echo"] = DT.pack_id(2, ring, 0)
+		var nd7: Dictionary = DT.node_for(seed, "mage", 3, ring, 0)
+		if str(nd7.get("kind", "")) == "variant" \
+				and str(nd7["params"].get("variant", "")) == "forked_sky" \
+				and scan["forked"] < 0:
+			scan["forked"] = DT.pack_id(3, ring, 0)
+	for ring in range(1, 61):
+		for index in DT.width(seed, 3, ring):
+			var nd8: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			if str(nd8["params"].get("behavior", "")) == "static_bloom" \
+					and scan["bloom"] < 0:
+				scan["bloom"] = int(nd8["id"])
+			if str(nd8["params"].get("behavior", "")) == "stormcharged" \
+					and scan["charged"] < 0:
+				scan["charged"] = int(nd8["id"])
+	for ring in range(13, 61):
+		for index in DT.width(seed, 2, ring):
+			var nd9: Dictionary = DT.node_for(seed, "mage", 2,
+				ring, index)
+			if str(nd9["params"].get("behavior", "")) == "shatterglass" \
+					and scan["shatter"] < 0:
+				scan["shatter"] = int(nd9["id"])
+	for k in scan:
+		_assert(int(scan[k]) > 0, "210: scan finds a %s node" % k)
+
+	# (c) Purchase legality + server validation for Frost
+	# (the #206 shapes, branch 2).
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold := Node3D.new()
+	root.add_child(hold)
+	current_scene = hold
+	var pf = PlayerScene.instantiate()
+	pf.set("class_id", "mage")
+	hold.add_child(pf)
+	pf.set("family_collection", {"frost": {"signature": true}})
+	pf.set("tree_lifetime", {"frost": 90.0, "blizzard": 60.0})
+	_assert(DT.wallet(pf, 2) == 150,
+		"210: the frost wallet derives from its own skills")
+	_assert(bool(pf.call("try_purchase", DT.pack_id(2, 1, 0))),
+		"210: buy the Frost ring-1 spine succeeds")
+	_assert(DT.wallet(pf, 2) == 134,
+		"210: wallet after the buy (150 - 16)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(2, 1, 0))),
+		"210: re-buying is refused")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(2, 2, 1))),
+		"210: a side node without its spine is refused (prereq)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(4, 1, 0))),
+		"210: a foreign branch node is refused")
+	var srv = PlayerScene.instantiate()
+	srv.set("class_id", "mage")
+	hold.add_child(srv)
+	srv.set("family_collection", {"frost": {"signature": true}})
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 3, 0), 1000, 1)) == "prereq",
+		"210: validator rejects an unmet Frost prereq")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 2, 7), 1000, 1)) == "inert",
+		"210: validator rejects a forged Frost id")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 1, 0), 10, 1)) == "insufficient",
+		"210: validator rejects an insufficient Frost claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 1, 0), 100, 1)) == "",
+		"210: validator accepts a legal Frost claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 1, 0), 100, 1)) == "duplicate",
+		"210: validator rejects a duplicate Frost claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 2, 0), 50, 1)) == "rollback",
+		"210: validator rejects a non-monotone Frost claim")
+
+	# (d) READ SITES LIVE.
+	# Section 1.2: the authority atk_spd fold — a Frost
+	# stat node's 0.5% moves the owner's own mult exactly.
+	var pa = PlayerScene.instantiate()
+	pa.set("class_id", "mage")
+	hold.add_child(pa)
+	pa.set("tree_owned", [DT.pack_id(2, 2, 1)])
+	pa.call("_recompute_tree_aggregates")
+	_assert(absf(float(pa.call("atk_spd_mult")) - 1.005) < 0.0001,
+		"210: section 1.2 — the owner's atk_spd_mult folds the tree (1.005)")
+	# Glacial cooldown: a scanned cd_pct node moves the
+	# activation's cd by exactly its aggregate cd_mult.
+	var pg = PlayerScene.instantiate()
+	pg.set("class_id", "mage")
+	hold.add_child(pg)
+	pg.set("tree_owned", [scan["glacial_cd"]])
+	pg.call("_recompute_tree_aggregates")
+	var gcd_mult := float(DT.compute_aggregates(seed, "mage",
+		[scan["glacial_cd"]])["skill_mods"]["glacial_prison"]["cd_mult"])
+	pg.call("_activate_glacial_prison")
+	_assert(absf(float(pg.get("ability_cds").get("glacial_prison", 0.0))
+			- 60.0 * gcd_mult) < 0.01,
+		"210: glacial cd site reads cd_mult exactly (60 x %.3f)" % gcd_mult)
+
+	# The bare-dungeon fixture (the #206 section 9.8 shape,
+	# with the shadow-Player_1 purge).
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	for c in dgn.get_node("Players").get_children():
+		c.free()
+	var pc = PlayerScene.instantiate()
+	pc.set("class_id", "mage")
+	pc.name = "Player_1"
+	dgn.get_node("Players").add_child(pc)
+	_assert(dgn.call("get_player_node", 1) == pc,
+		"210: fixture integrity — peer 1 resolves to the scripted player")
+	pc.set("damage", 100.0)
+	# Frost shard: slow_add at spawn + governed/stock looks.
+	pc.set("tree_owned", [DT.pack_id(2, 3, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_frost", Vector3(0, 1, 0), Vector3(0, 0, -1),
+		100.0, 1, 42)
+	var shard = dgn.get_node("Projectiles").get_node_or_null("Frost_1_42")
+	_assert(shard != null
+			and absf(float(shard.get("slow_duration")) - 3.25) < 0.001
+			and absf(float(shard.get("damage")) - 70.0) < 0.001,
+		"210: shard spawn reads slow_add exactly (2.5 + 0.75 = 3.25)")
+	pc.set("tree_owned", [scan["splinter"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_frost", Vector3(0, 1, 0), Vector3(0, 0, -1),
+		100.0, 1, 43)
+	var s1 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_43")
+	var s2 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_543")
+	_assert(s1 != null and s2 != null
+			and absf(float(s1.get("damage")) - 45.5) < 0.001
+			and absf(float(s2.get("damage")) - 45.5) < 0.001,
+		"210: Splinter Volley fires two shards at 65%")
+	var gram := false
+	for c in s1.get_children():
+		if str(c.name).begins_with("TreeGrammar"):
+			gram = true
+	_assert(gram,
+		"210: a variant-governed FrostShard builds its grammar body")
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_frost", Vector3(0, 1, 0), Vector3(0, 0, -1),
+		100.0, 1, 44)
+	var s3 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_44")
+	var stock_shard := false
+	for c in s3.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).mesh is BoxMesh:
+			stock_shard = true
+		if str(c.name).begins_with("TreeGrammar"):
+			stock_shard = false
+	_assert(stock_shard,
+		"210: an ungoverned FrostShard builds the stock box core")
+	for pr in dgn.get_node("Projectiles").get_children():
+		pr.free()
+	# Chain lightning legs: count + per-hop amounts through
+	# the REAL _execute_chain_lightning on lined-up mobs.
+	# Earlier sections leak mobs into the group (the chain
+	# would strike those instead) — purge first, the same
+	# discipline as the fixture-player purge above.
+	for stale in get_nodes_in_group("mobs"):
+		if stale is Node:
+			(stale as Node).get_parent().remove_child(stale)
+			(stale as Node).free()
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var sdata: Resource = load("res://data/mobs/slime.tres")
+	var mobs: Array = []
+	var chain_base: Vector3 = pc.global_position
+	for k in 6:
+		var m = MobScene.instantiate()
+		m.setup(1, sdata, 1.0, 1.0, false, 1.0)
+		hold.add_child(m)
+		m.set("hp", 10000.0)
+		m.set("max_hp", 10000.0)
+		m.global_position = chain_base + Vector3(4.0 * (k + 1), 0, 0)
+		mobs.append(m)
+	var losses := func() -> Array:
+		var out: Array = []
+		for m in mobs:
+			out.append(10000.0 - float(m.get("hp")))
+		return out
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	var l0: Array = losses.call()
+	_assert(l0 == [100.0, 75.0, 56.25, 0.0, 0.0, 0.0],
+		"210: stock chain hits exactly 3 targets (100 / 75 / 56.25 decay)")
+	for m in mobs:
+		m.set("hp", 10000.0)
+	pc.set("tree_owned", [chain_ids[0]])
+	pc.call("_recompute_tree_aggregates")
+	var one_chain := int(DT.compute_aggregates(seed, "mage",
+		[chain_ids[0]])["skill_mods"]["lightning"].get("chains_add", 0))
+	pc.call("_execute_chain_lightning", 100.0)
+	var l1: Array = losses.call()
+	var hit1 := 0
+	for v in l1:
+		if float(v) > 0.0:
+			hit1 += 1
+	_assert(hit1 == 3 + one_chain,
+		"210: chains_add moves the chain count by exactly its aggregate")
+	for m in mobs:
+		m.set("hp", 10000.0)
+	pc.set("tree_owned", [scan["forked"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	var l2: Array = losses.call()
+	_assert(absf(float(l2[0]) - 170.0) < 0.001
+			and absf(float(l2[1]) - 75.0) < 0.001,
+		"210: Forked Sky — the first target is struck twice (100 + 70)")
+	for m in mobs:
+		m.set("hp", 10000.0)
+	pc.set("tree_owned", [scan["bloom"]])
+	pc.call("_recompute_tree_aggregates")
+	var bloom_pct := float(DT.compute_aggregates(seed, "mage",
+		[scan["bloom"]])["behaviors"].get("static_bloom", 0.0))
+	pc.call("_execute_chain_lightning", 100.0)
+	var l3: Array = losses.call()
+	_assert(absf(float(l3[0]) - 100.0) < 0.001
+			and absf(float(l3[1]) - 75.0 * (1.0 + bloom_pct / 100.0)) < 0.001,
+		"210: Static Bloom — hops beyond the first gain exactly +pct%")
+	for m in mobs:
+		hold.remove_child(m)
+		m.free()
+	# Shatterglass at the shard hit site: a slowed target
+	# takes exactly +pct%; a clean target does not.
+	pc.set("tree_owned", [scan["shatter"]])
+	pc.call("_recompute_tree_aggregates")
+	var sh_pct := float(DT.compute_aggregates(seed, "mage",
+		[scan["shatter"]])["behaviors"].get("shatterglass", 0.0))
+	var sm1a = MobScene.instantiate()
+	sm1a.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(sm1a)
+	sm1a.set("hp", 10000.0)
+	sm1a.set("max_hp", 10000.0)
+	sm1a.global_position = Vector3(0, 0, -3.0)
+	sm1a.call("apply_slow", 5.0, 0.5)
+	pc.call("cast_frost", Vector3(0, 0, -1.5), Vector3(0, 0, -1),
+		100.0, 1, 45)
+	var sh1 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_45")
+	sh1.call("_physics_process", 0.016)
+	# The slowed mob also carries the base game's Shatter
+	# (+25%, the #173 layer) — the two frost synergies
+	# stack: 70 x (1 + tree pct) x 1.25.
+	_assert(absf(10000.0 - float(sm1a.get("hp"))
+			- 70.0 * (1.0 + sh_pct / 100.0) * 1.25) < 0.01,
+		"210: Shatterglass — a slowed target takes exactly +pct% at the hit (x the base Shatter layer)")
+	hold.remove_child(sm1a)
+	sm1a.free()
+	for pr in dgn.get_node("Projectiles").get_children():
+		pr.free()
+	# Echo wiring at the aggregate + an echo into fire.
+	var echo_node: Dictionary = DT.node_for(seed, "mage", 2,
+		DT.id_ring(scan["echo"]), 0)
+	var echo_fam := str(echo_node["params"].get("echo_family", ""))
+	var echo_steps := int(echo_node["params"].get("steps", 0))
+	var agg_e: Dictionary = DT.compute_aggregates(seed, "mage",
+		[scan["echo"]])
+	var fam_skills: Dictionary = {"fire": "fireball",
+		"storm": "lightning"}
+	var expect_mult := 1.0 + float(echo_steps) * 0.5 / 100.0
+	_assert(absf(float(agg_e["skill_mods"][fam_skills[echo_fam]]["dmg_mult"])
+			- expect_mult) < 0.001,
+		"210: a Frost echo writes its family's dmg steps (x0.5 scale)")
+
+	# --- Amendment 1 (section B): Brittle Ice + Arcing
+	# Brand. Scans for the new channels' nodes.
+	var shatter_ids: Array = []
+	var brand_l_ids: Array = []
+	var brand_b_ids: Array = []
+	for ring in range(1, 25):
+		for index in DT.width(seed, 2, ring):
+			var ndA: Dictionary = DT.node_for(seed, "mage", 2,
+				ring, index)
+			if str(ndA["target"]) == "glacial_prison":
+				for comp in ndA["params"].get("components", []):
+					if str(comp["param"]) == "shatter_pct":
+						shatter_ids.append(int(ndA["id"]))
+		for index in DT.width(seed, 3, ring):
+			var ndB: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			for comp in ndB["params"].get("components", []):
+				if str(comp["param"]) == "brand_amp":
+					if str(ndB["target"]) == "lightning":
+						brand_l_ids.append(int(ndB["id"]))
+					elif str(ndB["target"]) == "barrage":
+						brand_b_ids.append(int(ndB["id"]))
+	_assert(not shatter_ids.is_empty()
+			and not brand_l_ids.is_empty()
+			and not brand_b_ids.is_empty(),
+		"210A: shatter_pct / brand_amp nodes generate (scans)")
+	# Section D envelope: the clamps bind under full sets.
+	var agg_sh: Dictionary = DT.compute_aggregates(seed,
+		"mage", shatter_ids)
+	var sh_pct_full := float(agg_sh["skill_mods"]["glacial_prison"].get("shatter_pct", 0.0))
+	_assert(sh_pct_full > 0.0 and sh_pct_full <= 1.00,
+		"210A: shatter_pct clamps at <= 1.00 under a full set (got %.3f)" % sh_pct_full)
+	var agg_bl: Dictionary = DT.compute_aggregates(seed,
+		"mage", brand_l_ids)
+	var bl_full := float(agg_bl["skill_mods"]["lightning"].get("brand_amp", 0.0))
+	var agg_bb: Dictionary = DT.compute_aggregates(seed,
+		"mage", brand_b_ids)
+	var bb_full := float(agg_bb["skill_mods"]["barrage"].get("brand_amp", 0.0))
+	_assert(bl_full > 0.0 and bl_full <= 0.40
+			and bb_full > 0.0 and bb_full <= 0.40,
+		"210A: brand_amp clamps at <= 0.40 per skill under full sets")
+	# Brittle Ice legs. A fresh mob beside the caster.
+	var gm = MobScene.instantiate()
+	gm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(gm)
+	gm.set("hp", 10000.0)
+	gm.set("max_hp", 10000.0)
+	gm.global_position = pc.global_position + Vector3(2, 0, 0)
+	# NEUTRALITY: no frost nodes — the prison stores zero,
+	# a hit lands exactly as today (the base Shatter layer
+	# only), and the freeze runs on unconsumed.
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_glacial_prison", pc.global_position, 1, 97, 0.0)
+	_assert(float(gm.get("prison_shatter")) == 0.0,
+		"210A: neutrality — a zero-owned prison stores no shatter")
+	gm.call("take_damage", 50.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(gm.get("hp")) - 62.5) < 0.01
+			and bool(gm.call("is_slowed")),
+		"210A: neutrality — a prisoned mob takes hits exactly as today (50 x 1.25 base Shatter), freeze unconsumed")
+	# POSITIVE: the full shatter set — the stored value is
+	# caster damage x aggregate; a hit adds it and breaks
+	# the ice (freeze consumed, value cleared).
+	pc.set("tree_owned", shatter_ids)
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_glacial_prison", pc.global_position, 1, 98, 0.0)
+	_assert(absf(float(gm.get("prison_shatter"))
+			- 100.0 * sh_pct_full) < 0.01,
+		"210A: the prison stores caster damage x shatter_pct")
+	gm.set("hp", 10000.0)
+	gm.call("take_damage", 50.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(gm.get("hp"))
+			- (50.0 + 100.0 * sh_pct_full) * 1.25) < 0.01
+			and float(gm.get("prison_shatter")) == 0.0
+			and not bool(gm.call("is_slowed")),
+		"210A: a hit on the frozen mob adds the shatter and breaks the ice")
+	gm.set("hp", 10000.0)
+	gm.call("take_damage", 50.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(gm.get("hp")) - 62.5) < 0.01,
+		"210A: one shatter per freeze — the next hit is base-only (the base Shatter window outlives the consumed freeze, as specced)")
+	hold.remove_child(gm)
+	gm.free()
+	# Arcing Brand legs.
+	var bm = MobScene.instantiate()
+	bm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(bm)
+	bm.set("hp", 10000.0)
+	bm.set("max_hp", 10000.0)
+	bm.global_position = pc.global_position + Vector3(4, 0, 0)
+	# NEUTRALITY: no storm nodes — no brand is applied.
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	_assert(float(bm.call("brand_amp_now")) == 0.0,
+		"210A: neutrality — a zero-owned chain applies no brand")
+	# POSITIVE (lightning): the first brand node brands
+	# its target; the next chain hit takes (1 + amp),
+	# unconsumed.
+	var amp_l := float(DT.compute_aggregates(seed, "mage",
+		[brand_l_ids[0]])["skill_mods"]["lightning"].get("brand_amp", 0.0))
+	pc.set("tree_owned", [brand_l_ids[0]])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	_assert(absf(float(bm.call("brand_amp_now")) - amp_l) < 0.001,
+		"210A: a chain hit brands its target at the caster's amp")
+	bm.set("hp", 10000.0)
+	pc.call("_execute_chain_lightning", 100.0)
+	_assert(absf(10000.0 - float(bm.get("hp"))
+			- 100.0 * (1.0 + amp_l)) < 0.01
+			and absf(float(bm.call("brand_amp_now")) - amp_l) < 0.001,
+		"210A: a branded target takes (1 + amp) on the next storm hit; the brand is not consumed")
+	# POSITIVE (barrage): bolts brand through the shared
+	# fireball construction; plain fireballs never do. A
+	# FRESH mob — bm still carries the lightning leg's
+	# live brand window, which would contaminate these
+	# amounts (the maxf reapplication rule).
+	hold.remove_child(bm)
+	bm.free()
+	bm = MobScene.instantiate()
+	bm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(bm)
+	bm.set("hp", 10000.0)
+	bm.set("max_hp", 10000.0)
+	var amp_b := float(DT.compute_aggregates(seed, "mage",
+		[brand_b_ids[0]])["skill_mods"]["barrage"].get("brand_amp", 0.0))
+	pc.set("tree_owned", [brand_b_ids[0]])
+	pc.call("_recompute_tree_aggregates")
+	bm.global_position = Vector3(1, 0, 0)
+	var FBB := load("res://scripts/combat/fireball.gd")
+	var bolt = FBB.new()
+	bolt.setup(Vector3.ZERO, 10.0, 1)
+	bolt.set("skill_tag", "barrage")
+	dgn.get_node("Projectiles").add_child(bolt)
+	bolt.global_position = Vector3.ZERO
+	bolt.call("_explode")
+	_assert(absf(float(bm.call("brand_amp_now")) - amp_b) < 0.001
+			and absf(10000.0 - float(bm.get("hp")) - 10.0) < 0.01,
+		"210A: a barrage bolt brands its target (the branding hit itself is unamplified)")
+	bm.set("hp", 10000.0)
+	var bolt2 = FBB.new()
+	bolt2.setup(Vector3.ZERO, 10.0, 1)
+	bolt2.set("skill_tag", "barrage")
+	dgn.get_node("Projectiles").add_child(bolt2)
+	bolt2.global_position = Vector3.ZERO
+	bolt2.call("_explode")
+	_assert(absf(10000.0 - float(bm.get("hp"))
+			- 10.0 * (1.0 + amp_b)) < 0.01,
+		"210A: a barrage bolt on a branded target takes (1 + amp)")
+	var plain = FBB.new()
+	plain.setup(Vector3.ZERO, 10.0, 1)
+	dgn.get_node("Projectiles").add_child(plain)
+	plain.global_position = Vector3.ZERO
+	bm.set("hp", 10000.0)
+	bm.call("apply_brand", 0.0, 0.0, 0)
+	plain.call("_explode")
+	_assert(float(bm.call("brand_amp_now")) == 0.0,
+		"210A: a plain fireball never brands, brand set or not")
+	for pr in dgn.get_node("Projectiles").get_children():
+		pr.free()
+	hold.remove_child(bm)
+	bm.free()
+
+	# Source pins for the timer-loop sites (blizzard ticks,
+	# tempest channel) and the remaining folds — those
+	# loops run on real timers, so their wiring is pinned
+	# here and their amounts at the aggregate level above.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("return 1.0 + bonus_atk_spd + _tree_stat(\"atk_spd\")"),
+		"210: section 1.2 — the authority branch carries the combined term")
+	_assert(psrc.contains("_tree_frost_mult(\"frost\")")
+			and psrc.contains("_tree_frost_mult(\"blizzard\")")
+			and psrc.contains("_tree_mult(\"lightning\")")
+			and psrc.contains("_tree_mult(\"barrage\")")
+			and psrc.contains("_tree_mult(\"tempest\")"),
+		"210: every B1 cast expression folds its tree multiplier")
+	_assert(psrc.contains("ability_cds[\"glacial_prison\"] = (60.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod(\"glacial_prison\", \"cd_mult\", 1.0)")
+			and psrc.contains("ability_cds[\"tempest\"] = (90.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod(\"tempest\", \"cd_mult\", 1.0)"),
+		"210: both signature cd sites fold cd_mult")
+	_assert(psrc.contains("\"whiteout\"") and psrc.contains("\"stasis_burst\"")
+			and psrc.contains("\"eye_of_the_storm\"")
+			and psrc.contains("_tree_storm_until"),
+		"210: Whiteout / Stasis Burst / Eye of the Storm / Stormcharged are wired")
+	var msrc := FileAccess.get_file_as_string(
+		"res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("prison_shatter")
+			and msrc.contains("_slow_mult == 0.0")
+			and msrc.contains("func apply_brand")
+			and msrc.contains("func brand_amp_now"),
+		"210A: the mob carries the shatter trigger (frozen test on the real slow vars) + the brand status")
+	_assert(psrc.contains("m.prison_shatter = damage * _tree_skill_mod(")
+			and psrc.contains("current.apply_brand(3.0, brand_amp, from)"),
+		"210A: the prison stores its shatter at cast; the chain brands on hit")
+	var fsrc := FileAccess.get_file_as_string(
+		"res://scripts/combat/fireball.gd")
+	_assert(fsrc.contains("barrage_brand")
+			and fsrc.contains("mob.apply_brand(3.0, barrage_brand, owner_peer)"),
+		"210A: barrage bolts brand through the shared construction (barrage only)")
+	root.remove_child(dgn)
+	dgn.queue_free()
+	for node in [pf, srv, pa, pg]:
+		hold.remove_child(node)
+		node.free()
+	current_scene = null
+	hold.free()
+	print("[Playtest] Deep Tree B1 test done.")
