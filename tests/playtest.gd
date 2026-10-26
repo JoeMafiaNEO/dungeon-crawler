@@ -131,6 +131,7 @@ func _run() -> void:
 	_test_deep_tree_206()
 	_test_deep_tree_b1_210()
 	_test_deep_tree_b2_210()
+	_test_deep_tree_b3_210()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -8405,7 +8406,7 @@ func _test_warrior_signatures() -> void:
 	_assert(psrc.contains("_sanctuary_t > 0.0"), "Sanctuary immunity checked in take_damage")
 	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
 	_assert(msrc.contains("var doom_t"), "Doom debuff timer exists on mobs")
-	_assert(msrc.contains("amount *= 1.3"), "Doom +30% damage in mob take_damage")
+	_assert(msrc.contains("amount *= 1.0 + doom_vuln"), "Doom +30% damage in mob take_damage (stored magnitude, #210 B3)")
 	var tsrc := FileAccess.get_file_as_string("res://scripts/combat/totem.gd")
 	_assert(tsrc.contains('"sanctuary_totem"'), "Totem handles sanctuary type")
 	_assert(tsrc.contains('"doom_totem"'), "Totem handles doom type")
@@ -18455,7 +18456,7 @@ func _test_atk_spd_184() -> void:
 			"ability_cds[\"smoke_veil\"] = (30.0) * cooldown_mult() \\\n\t\t* _tree_skill_mod(\"smoke_veil\", \"cd_mult\", 1.0)",
 			"ability_cds[\"shadow_step\"] = (15.0) * cooldown_mult() \\\n\t\t\t* _tree_skill_mod(\"shadow_step\", \"cd_mult\", 1.0)",
 			"ability_cds[\"reinforce\"] = (25.0) * cooldown_mult()\n",
-			"ability_cds[cd_key] = (cd) * cooldown_mult()\n",
+			"ability_cds[cd_key] = (cd) * cooldown_mult() \\\n\t\t* _tree_skill_mod(cd_key, \"cd_mult\", 1.0)\n",
 			"ability_cds[structure_id] = (cd) * cooldown_mult()\n"]:
 		_assert(psrc.contains(frag),
 			"184(s1): NON-BLEED set site byte-identical: " + frag.left(52).strip_edges())
@@ -23120,3 +23121,470 @@ func _test_deep_tree_b2_210() -> void:
 	current_scene = null
 	hold.free()
 	print("[Playtest] Deep Tree B2 test done.")
+
+
+## Issue #210 slice B3 helper: the first modifier node in
+## a branch carrying (target, param); returns [id, steps]
+## of its first matching component (scanning generation
+## directly — fixtures anchor on the recorded literals).
+func _b3_find(dt: GDScript, branch: int, target: String,
+		param: String, single := false) -> Array:
+	for ring in range(1, 61):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"warrior", branch, ring, i)
+			if str(n.get("archetype")) != "modifier" \
+					or str(n.get("target")) != target:
+				continue
+			if single and n["params"]["components"].size() != 1:
+				continue
+			for c in n["params"]["components"]:
+				if str(c["param"]) == param:
+					return [int(n["id"]), int(c["steps"])]
+	return [-1, 0]
+
+
+## Issue #210 slice B3 helper: total steps of (target,
+## param) across an owned set, summed from the
+## generation data itself (multi-component nodes sum
+## every component — expectations must too).
+func _b3_sum(dt: GDScript, owned: Array, target: String,
+		param: String) -> int:
+	var total := 0
+	for id in owned:
+		var n: Dictionary = dt.node_for(dt.TREE_SEED,
+			"warrior", dt.id_branch(int(id)),
+			dt.id_ring(int(id)), dt.id_index(int(id)))
+		if str(n.get("target")) != target:
+			continue
+		for c in n["params"].get("components", []):
+			if str(c["param"]) == param:
+				total += int(c["steps"])
+	return total
+
+
+## Issue #210 slice B3 helper: the first behavior node
+## with the given behavior id in a branch.
+func _b3_find_behavior(dt: GDScript, branch: int,
+		behavior: String) -> Array:
+	for ring in range(1, 61):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"warrior", branch, ring, i)
+			if str(n.get("archetype")) == "behavior" \
+					and str(n["params"].get("behavior",
+						"")) == behavior:
+				return [int(n["id"]), int(n["params"]["steps"])]
+	return [-1, 0]
+
+
+func _test_deep_tree_b3_210() -> void:
+	print("[Playtest] deep tree 210 B3 tests...")
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = dt.TREE_SEED
+	# (a) Warden / Conqueror rings 1-3 literals, recorded
+	# by probe at the governing seed (the fixtures of
+	# section 1.3 — later slices keep these).
+	var fix := [
+		[4, 1, 0, "behavior", "reciprocity", {"behavior": "oathkeeper", "steps": 4}, 24, "Iron Ward"],
+		[4, 2, 0, "stat", "", {"channel": "atk_spd", "steps": 4}, 12, "Oathen Root"],
+		[4, 2, 1, "behavior", "reciprocity", {"behavior": "rooted_ward", "steps": 2}, 29, "Patient Promise"],
+		[4, 3, 2, "modifier", "sanctuary_totem", {"components": [{"param": "duration_add", "steps": 2}]}, 24, "Quiet Bastion"],
+		[5, 1, 0, "modifier", "doom_totem", {"components": [{"param": "vuln_pct", "steps": 5}]}, 16, "Burning Dirge"],
+		[5, 2, 0, "modifier", "bulwark", {"components": [{"param": "guard_pct", "steps": 6}]}, 20, "Relentless Crown"],
+		[5, 2, 1, "modifier", "doom_totem", {"components": [{"param": "cd_pct", "steps": 4}]}, 20, "Feral Banner"],
+		[5, 3, 0, "stat", "", {"channel": "damage", "steps": 2}, 15, "Broken Roar"],
+		[5, 3, 1, "modifier", "doom_totem", {"components": [{"param": "radius_add", "steps": 2}]}, 24, "Burning Roar"],
+	]
+	for row in fix:
+		var n: Dictionary = dt.node_for(seed, "warrior",
+			row[0], row[1], row[2])
+		_assert(str(n.get("archetype")) == str(row[3])
+				and str(n.get("target")) == str(row[4])
+				and str(n.get("params")) == str(row[5])
+				and int(n.get("cost")) == int(row[6])
+				and str(n.get("name")) == str(row[7]),
+			"210B3: fixture %d/%d/%d" % [row[0], row[1], row[2]])
+	# Generation invariance: one spot row per branch
+	# already landed (byte-identical under B3).
+	var iv := [
+		[1, 2, 0, {"behavior": "fuel_for_the_flame", "steps": 4}, "Charred Throne", "mage"],
+		[2, 2, 0, {"components": [{"param": "freeze_add", "steps": 3}]}, "Bitter Garden", "mage"],
+		[3, 1, 0, {"components": [{"param": "cd_pct", "steps": 5}]}, "Bright Tongue", "mage"],
+		[6, 2, 0, {"behavior": "veilwalker", "steps": 4}, "Hollow Step", "rogue"],
+		[7, 1, 0, {"components": [{"param": "cd_pct", "steps": 8}]}, "Steady Fan", "rogue"],
+	]
+	for row in iv:
+		var n2: Dictionary = dt.node_for(seed, str(row[5]),
+			row[0], row[1], row[2])
+		_assert(str(n2.get("params")) == str(row[3])
+				and str(n2.get("name")) == str(row[4]),
+			"210B3: invariance spot %d/%d" % [row[0], row[1]])
+	# (b) Determinism rings 1-12 for both branches.
+	for branch in [4, 5]:
+		var run_a := ""
+		var run_b := ""
+		for rep in 2:
+			var acc := ""
+			for ring in range(1, 13):
+				for i in dt.width(seed, branch, ring):
+					acc += str(dt.node_for(seed, "warrior",
+						branch, ring, i)) + ";"
+			if rep == 0:
+				run_a = acc
+			else:
+				run_b = acc
+		_assert(run_a == run_b and run_a.length() > 100,
+			"210B3: determinism rings 1-12 branch %d" % branch)
+	# (c) Aggregate exactness on literal steps.
+	var agg: Dictionary = dt.compute_aggregates(seed,
+		"warrior", [dt.pack_id(5, 1, 0), dt.pack_id(5, 2, 1),
+			dt.pack_id(5, 3, 1)])
+	var de: Dictionary = agg["skill_mods"].get("doom_totem", {})
+	_assert(absf(float(de.get("vuln_pct", 0.0)) - 0.05) < 0.0001
+			and absf(float(de.get("cd_mult", 1.0)) - 0.98) < 0.0001
+			and absf(float(de.get("radius_add", 0.0)) - 0.2) < 0.0001,
+		"210B3: doom aggregates exact (vuln/cd/radius)")
+	var aggw: Dictionary = dt.compute_aggregates(seed,
+		"warrior", [dt.pack_id(4, 3, 0)])
+	_assert(absf(float(aggw["skill_mods"].get("reciprocity",
+			{}).get("mend_pct", 0.0)) - 0.04) < 0.0001,
+		"210B3: mend_pct aggregates (the renamed channel — it scales the heal, per the SE ruling)")
+	# Purchase legality + validator rejections (warrior).
+	var PlayerScene3: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold3 := Node3D.new()
+	root.add_child(hold3)
+	var wr = PlayerScene3.instantiate()
+	wr.set("class_id", "warrior")
+	hold3.add_child(wr)
+	wr.set("family_collection", {"warden": {"signature": true}})
+	wr.set("tree_lifetime", {"reciprocity": 90.0,
+		"stoneskin": 60.0})
+	_assert(dt.branch_unlocked(wr.family_collection,
+			"warrior", 4),
+		"210B3: the warden branch unlock reads the family signature flag")
+	_assert(dt.wallet(wr, 4) == 150,
+		"210B3: the warden wallet derives from its own skills")
+	_assert(bool(wr.call("try_purchase", dt.pack_id(4, 1, 0)))
+			and dt.wallet(wr, 4) == 126,
+		"210B3: legal warden purchase lands (150 - 24)")
+	var srv3 = PlayerScene3.instantiate()
+	srv3.set("class_id", "warrior")
+	hold3.add_child(srv3)
+	srv3.set("family_collection", {"warden": {"signature": true}})
+	srv3.set("tree_lifetime", {"reciprocity": 90.0,
+		"stoneskin": 60.0})
+	_assert(str(srv3.call("_tree_validate_claim",
+			dt.pack_id(4, 3, 0), 1000, 1)) == "prereq",
+		"210B3: validator rejects a parentless ring-3 claim")
+	_assert(str(srv3.call("_tree_validate_claim",
+			dt.pack_id(0, 1, 0), 1000, 1)) == "inert",
+		"210B3: validator rejects an inert branch claim")
+	_assert(str(srv3.call("_tree_validate_claim",
+			dt.pack_id(4, 1, 0), 10, 1)) == "insufficient",
+		"210B3: validator rejects without the Insight")
+	hold3.free()
+	# Live read-site legs. A bare dungeon fixture; its own
+	# Player_1 IS the warrior caster (the totem resolves
+	# its caster through the dungeon).
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	current_scene = dgn
+	dgn.set("_layout", null)
+	var pc = dgn.get_player_node(1)
+	_assert(pc != null and str(pc.get("class_id")) == "warrior",
+		"210B3: the fixture caster is the dungeon's warrior")
+	var ally = PlayerScene3.instantiate()
+	ally.set("class_id", "warrior")
+	root.add_child(ally)
+	ally.global_position = Vector3(2, 0, 0)
+	var mobres = load("res://data/mobs/goblin.tres")
+	var tot = load("res://scripts/combat/totem.gd")
+	var mobs: Array = []
+	for n in get_nodes_in_group("mobs"):
+		n.set("alive", false)
+	# Neutrality: a tree-less caster's totem is stock.
+	var t0 = tot.new()
+	t0.setup("reciprocity", 1, 1)
+	root.add_child(t0)
+	_assert(absf(t0.call("aura_radius") - 6.0) < 0.001
+			and absf(float(t0.get("_life")) - 20.0) < 0.001
+			and absf(t0.call("_aura_strength") - 1.0) < 0.001,
+		"210B3: neutral totem (radius/life/strength stock)")
+	t0.free()
+	# Stoneskin: armor magnitude + Living Stone heal.
+	var af := _b3_find(dt, 4, "stoneskin", "armor_pct")
+	var rf := _b3_find(dt, 4, "stoneskin", "radius_add", true)
+	var df := _b3_find(dt, 4, "stoneskin", "duration_add", true)
+	_assert(af[0] > 0 and rf[0] > 0 and df[0] > 0,
+		"210B3: stoneskin nodes exist for the legs")
+	var ls_node: Dictionary = {}
+	for ring in range(1, 241):
+		if dt.width(seed, 4, ring) > 0:
+			var cn: Dictionary = dt.node_for(seed,
+				"warrior", 4, ring, 0)
+			if str(cn.get("kind")) == "variant" and str(
+					cn["params"].get("variant", "")) \
+					== "living_stone":
+				ls_node = cn
+				break
+	var stone_owned := [af[0], rf[0], df[0],
+		int(ls_node.get("id", -1))]
+	pc.set("tree_owned", stone_owned)
+	pc._recompute_tree_aggregates()
+	var t1 = tot.new()
+	t1.setup("stoneskin", 1, 1)
+	root.add_child(t1)
+	_assert(absf(t1.call("aura_radius")
+			- (6.0 + float(_b3_sum(dt, stone_owned,
+				"stoneskin", "radius_add")) * 0.1)) < 0.001
+			and absf(float(t1.get("_life"))
+				- (20.0 + float(_b3_sum(dt, stone_owned,
+					"stoneskin", "duration_add")) * 0.5)) < 0.001,
+		"210B3: radius_add + duration_add read at the totem")
+	ally.set("hp", float(ally.get("max_hp")) - 10.0)
+	t1.call("_apply_aura")
+	var armor_frac := float(af[1]) * 0.01
+	_assert(absf(float(ally.get("_stoneskin_strength"))
+			- (1.0 + armor_frac)) < 0.001
+			and absf(float(ally.get("hp"))
+				- (float(ally.get("max_hp")) - 10.0
+					+ 2.0 * (1.0 + armor_frac))) < 0.01,
+		"210B3: armor_pct scales stoneskin; Living Stone heals per tick")
+	t1.free()
+	# Warhorn: aura magnitude + Thunderhead attack speed.
+	var auf := _b3_find(dt, 5, "warhorn", "aura_pct")
+	# (the thunderhead variant rides its own node:)
+	var th_node: Dictionary = {}
+	for ring in range(1, 61):
+		if dt.width(seed, 5, ring) > 0:
+			var cn2: Dictionary = dt.node_for(seed,
+				"warrior", 5, ring, 0)
+			if str(cn2.get("kind")) == "variant" and str(
+					cn2["params"].get("variant", "")) \
+					== "thunderhead_horn":
+				th_node = cn2
+				break
+	pc.set("tree_owned", [auf[0], int(th_node.get("id", -1))])
+	pc._recompute_tree_aggregates()
+	var t2 = tot.new()
+	t2.setup("warhorn", 1, 1)
+	root.add_child(t2)
+	t2.call("_apply_aura")
+	_assert(absf(float(ally.get("_warhorn_strength"))
+			- (1.0 + float(auf[1]) * 0.01)) < 0.001
+			and float(ally.get("_war_drums_t")) > 0.0,
+		"210B3: aura_pct scales warhorn; Thunderhead grants attack speed")
+	t2.free()
+	# Rally: haste magnitude + Forced March damage.
+	var hf := _b3_find(dt, 5, "rally", "haste_pct")
+	var fm_node: Dictionary = {}
+	for ring in range(1, 241):
+		if dt.width(seed, 5, ring) > 0:
+			var cn3: Dictionary = dt.node_for(seed,
+				"warrior", 5, ring, 0)
+			if str(cn3.get("kind")) == "variant" and str(
+					cn3["params"].get("variant", "")) \
+					== "forced_march":
+				fm_node = cn3
+				break
+	var rally_owned := [hf[0], int(fm_node.get("id", -1))]
+	pc.set("tree_owned", rally_owned)
+	pc._recompute_tree_aggregates()
+	var rally_expect := 1.0 + float(_b3_sum(dt,
+		rally_owned, "rally", "haste_pct")) * 0.01
+	var ally3 = PlayerScene3.instantiate()
+	ally3.set("class_id", "warrior")
+	root.add_child(ally3)
+	ally3.global_position = Vector3(2, 0, 0)
+	var t3 = tot.new()
+	t3.setup("rally", 1, 1)
+	root.add_child(t3)
+	t3.call("_apply_aura")
+	_assert(absf(float(ally3.get("_rally_strength"))
+			- rally_expect) < 0.001
+			and absf(float(ally3.get("_warhorn_strength"))
+				- rally_expect) < 0.001,
+		"210B3: haste_pct scales rally; Forced March grants damage at rally strength")
+	t3.free()
+	ally3.free()
+	# Bulwark: guard magnitude deepens the slow.
+	var gf := _b3_find(dt, 5, "bulwark", "guard_pct")
+	pc.set("tree_owned", [gf[0]])
+	pc._recompute_tree_aggregates()
+	var bm = load("res://scenes/mobs/mob.tscn").instantiate()
+	bm.setup(1, mobres)
+	root.add_child(bm)
+	mobs.append(bm)
+	var t4 = tot.new()
+	t4.setup("bulwark", 1, 1)
+	root.add_child(t4)
+	t4.call("_apply_aura")
+	_assert(absf(float(bm.get("_slow_mult"))
+			- 0.6 / (1.0 + float(gf[1]) * 0.01)) < 0.001,
+		"210B3: guard_pct scales bulwark's slow")
+	t4.free()
+	# Doom: the stored magnitude + Herald pulse.
+	pc.set("tree_owned", [dt.pack_id(5, 1, 0)])
+	pc._recompute_tree_aggregates()
+	var dm = load("res://scenes/mobs/mob.tscn").instantiate()
+	dm.setup(1, mobres)
+	root.add_child(dm)
+	mobs.append(dm)
+	var t5 = tot.new()
+	t5.setup("doom_totem", 1, 1)
+	root.add_child(t5)
+	t5.call("_apply_aura")
+	_assert(absf(float(dm.get("doom_vuln")) - 0.315) < 0.001,
+		"210B3: vuln_pct stores doom's magnitude on the mob")
+	var dh_node: Dictionary = {}
+	for ring in range(1, 61):
+		if dt.width(seed, 5, ring) > 0:
+			var cn4: Dictionary = dt.node_for(seed,
+				"warrior", 5, ring, 0)
+			if str(cn4.get("kind")) == "variant" and str(
+					cn4["params"].get("variant", "")) \
+					== "doom_herald":
+				dh_node = cn4
+				break
+	pc.set("tree_owned", [dt.pack_id(5, 1, 0),
+		int(dh_node.get("id", -1))])
+	pc._recompute_tree_aggregates()
+	t5.set("_pulse", 4)
+	var dm_hp := float(dm.get("hp"))
+	t5.call("_apply_aura")
+	_assert(absf((dm_hp - float(dm.get("hp")))
+			- 12.0 * (1.0 + 0.315)) < 0.6,
+		"210B3: Doom Herald pulses on the 5 s cadence (doom-amplified)")
+	t5.free()
+	# Strength in Numbers: 3+ enemies strengthen auras.
+	var sinf := _b3_find_behavior(dt, 5, "strength_in_numbers")
+	pc.set("tree_owned", [auf[0], sinf[0]])
+	pc._recompute_tree_aggregates()
+	for k in 3:
+		var em = load("res://scenes/mobs/mob.tscn").instantiate()
+		em.setup(1, mobres)
+		em.global_position = Vector3(1, 0, 0)
+		root.add_child(em)
+		mobs.append(em)
+	var t6 = tot.new()
+	t6.setup("warhorn", 1, 1)
+	root.add_child(t6)
+	t6.call("_apply_aura")
+	var sin_expect := (1.0 + float(auf[1]) * 0.01) \
+		* (1.0 + float(sinf[1]) * 0.05)
+	_assert(absf(float(ally.get("_warhorn_strength"))
+			- sin_expect) < 0.001,
+		"210B3: Strength in Numbers folds at 3+ enemies")
+	t6.free()
+	# Oathkeeper: the tick interval shortens while downed.
+	pc.set("tree_owned", [dt.pack_id(4, 1, 0)])
+	pc._recompute_tree_aggregates()
+	pc.set("downed", true)
+	var t7 = tot.new()
+	t7.setup("reciprocity", 1, 1)
+	root.add_child(t7)
+	t7.set("_tick", 0.0)
+	t7.call("_physics_process", 0.01)
+	_assert(absf(float(t7.get("_tick")) - 1.0 / 1.2) < 0.01,
+		"210B3: Oathkeeper ticks 20% faster while the owner is downed")
+	pc.set("downed", false)
+	t7.free()
+	# Rooted Ward: damage intake inside your own radius.
+	# A FRESH intake player (the shared caster carries
+	# timed buffs from the earlier aura legs).
+	var ward_hold := Node3D.new()
+	root.add_child(ward_hold)
+	var ward_pc = PlayerScene3.instantiate()
+	ward_pc.set("class_id", "warrior")
+	ward_hold.add_child(ward_pc)
+	ward_pc.set("tree_owned", [dt.pack_id(4, 2, 1)])
+	ward_pc._recompute_tree_aggregates()
+	var t8 = tot.new()
+	t8.setup("reciprocity", 1, 1)
+	root.add_child(t8)
+	ward_pc.global_position = Vector3.ZERO
+	ward_pc.set("hp", 1000.0)
+	ward_pc.take_damage(100.0)
+	_assert(absf(float(ward_pc.get("hp")) - 910.0) < 0.01,
+		"210B3: Rooted Ward reduces intake inside your totem (steps 2 = 10%)")
+	ward_pc.global_position = Vector3(30, 0, 0)
+	ward_pc.take_damage(100.0)
+	_assert(absf(float(ward_pc.get("hp")) - 810.0) < 0.01,
+		"210B3: no ward outside the radius")
+	t8.free()
+	ward_hold.free()
+	# Warlord's Tempo: the placement hook feeds atk spd.
+	var tf := _b3_find_behavior(dt, 5, "warlords_tempo")
+	pc.set("tree_owned", [tf[0]])
+	pc._recompute_tree_aggregates()
+	pc.call("_tree_note_totem_placed")
+	_assert(absf(pc.atk_spd_mult()
+			- (1.0 + float(tf[1]) * 0.05)) < 0.001,
+		"210B3: Warlord's Tempo reads in the atk_spd chain")
+	var tsrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, global_position, int(multiplayer.get_unique_id()), ability_rank())\n\t_tree_note_totem_placed()")
+			and tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, global_position, int(multiplayer.get_unique_id()), 1)\n\t_tree_note_totem_placed()"),
+		"210B3: both placement paths call the tempo hook")
+	# Reciprocity: mend_pct scales the heal; Thorn
+	# Mirror slows enemies on the tick (the SE's adopted
+	# forms for the reciprocity premise flag).
+	var mf := _b3_find(dt, 4, "reciprocity", "mend_pct")
+	var tm_node: Dictionary = {}
+	for ring in range(1, 121):
+		if dt.width(seed, 4, ring) > 0:
+			var cn5: Dictionary = dt.node_for(seed,
+				"warrior", 4, ring, 0)
+			if str(cn5.get("kind")) == "variant" and str(
+					cn5["params"].get("variant", "")) \
+					== "thorn_mirror":
+				tm_node = cn5
+				break
+	pc.set("tree_owned", [mf[0], int(tm_node.get("id", -1))])
+	pc._recompute_tree_aggregates()
+	var mend_expect := 1.0 + float(_b3_sum(dt,
+		[mf[0]], "reciprocity", "mend_pct")) * 0.01
+	ally.set("hp", float(ally.get("max_hp")) - 20.0)
+	var mm = load("res://scenes/mobs/mob.tscn").instantiate()
+	mm.setup(1, mobres)
+	root.add_child(mm)
+	mobs.append(mm)
+	var t9 = tot.new()
+	t9.setup("reciprocity", 1, 1)
+	root.add_child(t9)
+	t9.call("_apply_aura")
+	_assert(absf(float(ally.get("hp"))
+			- (float(ally.get("max_hp")) - 20.0
+				+ 4.0 * mend_expect)) < 0.01
+			and absf(float(mm.get("_slow_mult")) - 0.8) < 0.001
+			and float(mm.get("_slow_t")) > 1.9,
+		"210B3: mend_pct scales reciprocity's heal; Thorn Mirror slows enemies 20% for 2 s")
+	t9.free()
+	mm.free()
+	mobs.erase(mm)
+	# Signature cds: doom folded by its cd_pct; sanctuary
+	# stock at zero-owned (the 184 no-division site).
+	pc.set("tree_owned", [dt.pack_id(5, 2, 1)])
+	pc._recompute_tree_aggregates()
+	pc.set("totem_charges", 1)
+	pc.call("_activate_signature_totem", "doom_totem")
+	_assert(absf(float(pc.ability_cds.get("doom_totem",
+			0.0)) - 90.0 * 0.98) < 0.15,
+		"210B3: doom's cd folds its cd_pct at the signature site")
+	pc.set("tree_owned", [])
+	pc._recompute_tree_aggregates()
+	pc.set("totem_charges", 1)
+	pc.ability_cds.erase("sanctuary_totem")
+	pc.call("_activate_signature_totem", "sanctuary_totem")
+	_assert(absf(float(pc.ability_cds.get("sanctuary_totem",
+			0.0)) - 120.0) < 0.15,
+		"210B3: sanctuary's cd is stock at zero-owned")
+	for m in mobs:
+		m.free()
+	for n in get_nodes_in_group("totems"):
+		n.free()
+	ally.free()
+	dgn.free()
+	print("[Playtest] deep tree 210 B3 tests done.")

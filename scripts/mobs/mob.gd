@@ -101,6 +101,10 @@ var _support_dmg_mult := 1.0
 var bulwark_slow_t := 0.0
 ## Doom Totem (Conqueror signature): mob takes +30% damage from all sources.
 var doom_t := 0.0
+## Issue #210 (section 2.4): the doom magnitude stored by
+## the refreshing totem (the caster's vuln_pct fold);
+## 0.30 is the shipped base value.
+var doom_vuln := 0.30
 ## Issue #173: status-effect rings (presentation ONLY — no
 ## gameplay state lives here). A server-computed status_mask
 ## rides the mob snapshot; each replica renders one ground
@@ -1968,9 +1972,12 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 			if pl != null and pl.has_trait("brittle"):
 				amount *= 1.15
 				break
-	# Doom Totem (Conqueror signature): +30% damage from all sources.
+	# Doom Totem (Conqueror signature): +30% damage from
+	# all sources. Issue #210: the magnitude is stored on
+	# the mob by the totem that refreshed it (doom_vuln,
+	# default 0.30 = the shipped value).
 	if doom_t > 0.0:
-		amount *= 1.3
+		amount *= 1.0 + doom_vuln
 	# Shieldbearer (issue #67): frontal block. If the shield is up and the
 	# attacker is within the frontal arc, reduce damage. Meteor bypasses.
 	var blocked := false

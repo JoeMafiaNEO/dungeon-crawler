@@ -111,7 +111,10 @@ func atk_spd_mult() -> float:
 		# Issue #210 section 1.2 (settled): the owner's own
 		# cadence folds the tree — the same combined value
 		# that already rides the snapshot.
-		return 1.0 + bonus_atk_spd + _tree_stat("atk_spd")
+		return 1.0 + bonus_atk_spd + _tree_stat("atk_spd") \
+			+ (_tree_tempo_pct / 100.0 \
+				if Time.get_ticks_msec() < _tree_tempo_until \
+				else 0.0)
 	return 1.0 + net_bonus_atk_spd
 ## Bounty Board (issue #7): server-authoritative per-player progress,
 ## {bounty_id: count} (-1 = failed). Synced via player snapshots.
@@ -245,6 +248,10 @@ var _tree_veil_until := 0
 var _tree_dark_stamp := 0
 var _tree_twin_until := 0
 var _tree_twin_armed := false
+## Issue #210 (slice B3): Warlord's Tempo — the totem
+## placement buff window (msec) and its percent.
+var _tree_tempo_until := 0
+var _tree_tempo_pct := 0.0
 ## Issue #210: Stormcharged's window (10 s after Tempest).
 var _tree_storm_until := 0
 ## Anti-cheese: per-enemy cooldowns for affinity gain.
@@ -1317,6 +1324,22 @@ func _tree_veil_mult() -> float:
 		if p > 0.0:
 			return 1.0 + p / 100.0
 	return 1.0
+
+
+## Issue #210 (slice B3): the Totem's reads of its
+## caster's tree — the public wrappers in the
+## tree_brand_amp pattern.
+func tree_totem_mod(skill_id: String, key: String,
+		default: float) -> float:
+	return _tree_skill_mod(skill_id, key, default)
+
+
+func tree_totem_behavior(behavior_id: String) -> float:
+	return _tree_behavior_pct(behavior_id)
+
+
+func tree_totem_variant(skill_id: String) -> String:
+	return _tree_variant(skill_id)
 
 
 func tree_brand_amp(skill_id: String) -> float:
@@ -2511,8 +2534,19 @@ func _place_totem() -> void:
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon != null:
 		dungeon.rpc("place_totem", totem_id, global_position, int(multiplayer.get_unique_id()), ability_rank())
+	_tree_note_totem_placed()
 	if hud != null:
 		hud.refresh_abilities(self)
+
+
+## Issue #210 (Warlord's Tempo): placing a totem grants
+## the placer +X% attack speed for 5 s (read in the
+## atk_spd chain). Both placement paths call this.
+func _tree_note_totem_placed() -> void:
+	var tempo_pct := _tree_behavior_pct("warlords_tempo")
+	if tempo_pct > 0.0:
+		_tree_tempo_pct = tempo_pct
+		_tree_tempo_until = Time.get_ticks_msec() + 5000
 
 
 ## Rogue ability activation (implemented in the rogue task).
@@ -3102,10 +3136,12 @@ func _activate_signature_totem(totem_id: String) -> void:
 			AudioManager.sfx("ui_error")
 		return
 	totem_charges -= 1
-	ability_cds[cd_key] = (cd) * cooldown_mult()
+	ability_cds[cd_key] = (cd) * cooldown_mult() \
+		* _tree_skill_mod(cd_key, "cd_mult", 1.0)
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon != null:
 		dungeon.rpc("place_totem", totem_id, global_position, int(multiplayer.get_unique_id()), 1)
+	_tree_note_totem_placed()
 	AudioManager.sfx("milestone")
 	if hud != null:
 		var sig_name := "Sanctuary Totem" if totem_id == "sanctuary_totem" else "Doom Totem"
@@ -6351,6 +6387,16 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	# knockback, so there is nothing further to skip.)
 	if _reinforce_t > 0.0:
 		amount *= 0.5
+	# Issue #210 (Rooted Ward): standing inside any of
+	# your own totems' radii reduces damage taken.
+	var ward_pct := _tree_behavior_pct("rooted_ward")
+	if ward_pct > 0.0:
+		var my_peer := int(multiplayer.get_unique_id())
+		for n in get_tree().get_nodes_in_group("totems"):
+			if int(n.get("owner_peer")) == my_peer \
+					and global_position.distance_to(n.global_position) < float(n.call("aura_radius")):
+				amount *= 1.0 - ward_pct / 100.0
+				break
 	# Barnacle Bulwark (issue #102): wave-counted damage reduction.
 	amount *= _buff_mult("defense")
 	# Remember who hit us so the death screen can name the killer.

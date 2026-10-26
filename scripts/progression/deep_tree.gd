@@ -162,7 +162,7 @@ static func branch_info(class_id: String, branch: int) -> Dictionary:
 ## Populated branches (the prototype populated Fire; issue
 ## #210 slice B1 adds Frost and Storm).
 static func branch_populated(branch: int) -> bool:
-	return branch in [1, 2, 3, 6, 7]
+	return branch in [1, 2, 3, 4, 5, 6, 7]
 
 
 # ----------------------------------------------------------------
@@ -297,13 +297,29 @@ const PARAM_TABLE := {
 	"mark": ["cd_pct", "vuln_add"],
 	"fan": ["cd_pct", "dmg_pct"],
 	"execution": ["cd_pct", "dmg_pct", "threshold_add"],
+	# Issue #210 slice B3 (Warden, section 2.3): the
+	# totem magnitude channels scale the branch's tick
+	# strength (or, for doom, its stored magnitude).
+	"reciprocity": ["radius_add", "duration_add",
+		"mend_pct"],
+	"stoneskin": ["radius_add", "duration_add",
+		"armor_pct"],
+	"sanctuary_totem": ["cd_pct", "radius_add",
+		"duration_add"],
+	# Issue #210 slice B3 (Conqueror, section 2.4).
+	"bulwark": ["radius_add", "duration_add", "guard_pct"],
+	"warhorn": ["radius_add", "duration_add", "aura_pct"],
+	"rally": ["radius_add", "duration_add", "haste_pct"],
+	"doom_totem": ["cd_pct", "vuln_pct", "radius_add"],
 }
 const PARAM_UNIT := {"dmg_pct": 0.5, "cd_pct": 0.5,
 	"radius_add": 0.1, "slow_add": 0.25,
 	"duration_add": 0.5, "freeze_add": 0.25,
 	"chains_add": 1.0, "shatter_pct": 2.5,
 	"brand_amp": 2.0, "step_dmg": 5.0, "vuln_add": 2.0,
-	"threshold_add": 1.0}
+	"threshold_add": 1.0, "mend_pct": 1.0,
+	"armor_pct": 1.0, "guard_pct": 1.0, "aura_pct": 1.0,
+	"haste_pct": 1.0, "vuln_pct": 1.0}
 ## Per-target unit overrides: tempest's duration step is
 ## 1 s (2 strikes), blizzard's is one 0.5 s tick.
 const PARAM_UNIT_TARGET := {"tempest": {"duration_add": 1.0},
@@ -315,12 +331,16 @@ const PARAM_BASE := {"dmg_pct": 4, "cd_pct": 4,
 	"radius_add": 2, "slow_add": 2, "duration_add": 2,
 	"freeze_add": 2, "chains_add": 1, "shatter_pct": 2,
 	"brand_amp": 3, "step_dmg": 2, "vuln_add": 2,
-	"threshold_add": 2}
+	"threshold_add": 2, "mend_pct": 3, "armor_pct": 3,
+	"guard_pct": 3, "aura_pct": 3, "haste_pct": 3,
+	"vuln_pct": 3}
 const PARAM_SPAN := {"dmg_pct": 5, "cd_pct": 5,
 	"radius_add": 3, "slow_add": 3, "duration_add": 3,
 	"freeze_add": 3, "chains_add": 2, "shatter_pct": 3,
 	"brand_amp": 4, "step_dmg": 3, "vuln_add": 3,
-	"threshold_add": 3}
+	"threshold_add": 3, "mend_pct": 4, "armor_pct": 4,
+	"guard_pct": 4, "aura_pct": 4, "haste_pct": 4,
+	"vuln_pct": 4}
 
 
 static func _param_unit(param: String, target: String) -> float:
@@ -339,10 +359,13 @@ const BEHAVIORS := {
 	3: ["stormcharged", "static_bloom"],
 	6: ["veilwalker", "from_the_dark"],
 	7: ["deadeye", "surveyor"],
+	4: ["rooted_ward", "oathkeeper"],
+	5: ["warlords_tempo", "strength_in_numbers"],
 }
 ## The skill a branch's behavior nodes govern for looks.
 const BEHAVIOR_TARGET := {1: "fireball", 2: "frost",
-	3: "lightning", 6: "smoke_veil", 7: "mark"}
+	3: "lightning", 6: "smoke_veil", 7: "mark",
+	4: "reciprocity", 5: "warhorn"}
 
 const VARIANTS := {
 	"twin_suns": {"skill": "fireball",
@@ -375,6 +398,18 @@ const VARIANTS := {
 		"desc": "Death Sentence: your marked targets take +25% more damage from everyone."},
 	"headsman": {"skill": "execution",
 		"desc": "Headsman: bosses face Execution's threshold at half effect instead of immunity."},
+	"aegis_dome": {"skill": "sanctuary_totem",
+		"desc": "Aegis Dome: allies inside Sanctuary also gain stoneskin armor."},
+	"thorn_mirror": {"skill": "reciprocity",
+		"desc": "Thorn Mirror: Reciprocity's thorns slow enemies in its radius by 20% for 2 s."},
+	"living_stone": {"skill": "stoneskin",
+		"desc": "Living Stone: Stoneskin's totem also heals allies in its radius each tick."},
+	"doom_herald": {"skill": "doom_totem",
+		"desc": "Doom Herald: every 5 s, Doom's pulse damages enemies in its radius."},
+	"thunderhead_horn": {"skill": "warhorn",
+		"desc": "Thunderhead Horn: Warhorn also grants allies attack speed."},
+	"forced_march": {"skill": "rally",
+		"desc": "Forced March: Rally also grants allies damage."},
 }
 const VARIANT_IDS := {
 	1: ["twin_suns", "meteor_shower", "phoenix_pyre"],
@@ -382,6 +417,8 @@ const VARIANT_IDS := {
 	3: ["forked_sky", "tempest_fan", "eye_of_the_storm"],
 	6: ["choking_veil", "twin_step", "coup_de_grace"],
 	7: ["shuriken_storm", "death_sentence", "headsman"],
+	4: ["aegis_dome", "thorn_mirror", "living_stone"],
+	5: ["doom_herald", "thunderhead_horn", "forced_march"],
 }
 
 const ECHO_FAMILIES := {
@@ -390,12 +427,16 @@ const ECHO_FAMILIES := {
 	3: ["frost", "fire"],
 	6: ["precision"],
 	7: ["shadow"],
+	4: ["conqueror"],
+	5: ["warden"],
 }
 const FAMILY_SKILLS := {"fire": ["fireball", "meteor"],
 	"frost": ["frost", "blizzard"],
 	"storm": ["lightning", "barrage"],
 	"shadow": ["smoke_veil", "shadow_step"],
-	"precision": ["eagle_eye", "mark", "fan"]}
+	"precision": ["eagle_eye", "mark", "fan"],
+	"warden": ["reciprocity", "stoneskin"],
+	"conqueror": ["bulwark", "warhorn", "rally"]}
 
 const NAME_ADJ := ["Kindled", "Ashen", "Ember", "Scorched",
 	"Wildfire", "Blazing", "Smoldering", "Cinder",
@@ -418,6 +459,12 @@ const NAME_ADJ_BY_BRANCH := {
 	7: ["Keen", "Patient", "True", "Cold", "Steady",
 		"Piercing", "Watchful", "Measured", "Certain",
 		"Bright", "Still", "Hawken"],
+	4: ["Rooted", "Patient", "Stalwart", "Oathen",
+		"Quiet", "Iron", "Mossy", "Steadfast", "Gravel",
+		"Amber", "Hewn", "Deep"],
+	5: ["Iron", "Howling", "Crimson", "Relentless",
+		"Thunder", "Savage", "Burning", "Grim",
+		"Marching", "Broken", "Feral", "Proud"],
 }
 const NAME_NOUN_BY_BRANCH := {
 	2: ["Shard", "Prison", "Veil", "Heart", "Crown",
@@ -432,6 +479,12 @@ const NAME_NOUN_BY_BRANCH := {
 	7: ["Eye", "Mark", "Fan", "Verdict", "Sight",
 		"Ledger", "Point", "Reckoning", "Glance", "Oath",
 		"Edge", "Crown"],
+	4: ["Ward", "Oath", "Stone", "Root", "Watch",
+		"Bastion", "Promise", "Shelter", "Post", "Ring",
+		"Hearth", "Gate"],
+	5: ["Horn", "Doom", "Standard", "March", "Roar",
+		"Banner", "Crown", "Charge", "Dirge", "Toll",
+		"Wrath", "Drum"],
 }
 
 const COST_BASE := {"stat": 10, "modifier": 16,
@@ -582,8 +635,11 @@ static func _mod_desc(target: String, comps: Array) -> String:
 		elif param == "vuln_add":
 			parts.append("+%s %s vulnerability" % [
 				_fmt_pct(steps, param), target])
-		else: # threshold_add
+		elif param == "threshold_add":
 			parts.append("+%s %s execute threshold" % [
+				_fmt_pct(steps, param), target])
+		else: # the slice B3 totem magnitude kinds
+			parts.append("+%s %s magnitude" % [
 				_fmt_pct(steps, param), target])
 	return "; ".join(parts)
 
@@ -790,6 +846,9 @@ static func compute_aggregates(seed: int, class_id: String,
 	var step_steps := {}
 	var vuln_steps := {}
 	var thresh_steps := {}
+	# Issue #210 slice B3: the totem magnitude kinds,
+	# keyed "target|param" (one bucket for six channels).
+	var mag_steps := {}
 	var behaviors := {}
 	var variants := {}
 	var sorted_owned := owned.duplicate()
@@ -863,6 +922,12 @@ static func compute_aggregates(seed: int, class_id: String,
 				elif param == "threshold_add":
 					thresh_steps[tgt] = int(thresh_steps.get(
 						tgt, 0)) + steps
+				elif param in ["mend_pct", "armor_pct",
+						"guard_pct", "aura_pct",
+						"haste_pct", "vuln_pct"]:
+					var mk: String = tgt + "|" + param
+					mag_steps[mk] = int(mag_steps.get(
+						mk, 0)) + steps
 	var stat_adds := {
 		"damage": minf(40.0, float(stat_steps["damage"])
 			* float(STAT_UNIT["damage"])),
@@ -900,6 +965,8 @@ static func compute_aggregates(seed: int, class_id: String,
 		touched[s] = true
 	for s in thresh_steps:
 		touched[s] = true
+	for mk in mag_steps:
+		touched[mk.split("|")[0]] = true
 	for s in touched:
 		var entry := {
 			"dmg_mult": minf(1.60, 1.0
@@ -951,6 +1018,15 @@ static func compute_aggregates(seed: int, class_id: String,
 		if int(thresh_steps.get(s, 0)) > 0:
 			entry["threshold_add"] = float(thresh_steps[s]) \
 				* float(PARAM_UNIT["threshold_add"]) / 100.0
+		# Issue #210 slice B3: totem magnitudes are
+		# fractions of the branch's base magnitude; no
+		# clamp is named for any of them (section 1.5).
+		for mp in ["mend_pct", "armor_pct", "guard_pct",
+				"aura_pct", "haste_pct", "vuln_pct"]:
+			var mkey: String = s + "|" + mp
+			if int(mag_steps.get(mkey, 0)) > 0:
+				entry[mp] = float(mag_steps[mkey]) \
+					* float(PARAM_UNIT[mp]) / 100.0
 		skill_mods[s] = entry
 	return {"stat_adds": stat_adds, "skill_mods": skill_mods,
 		"behaviors": behaviors, "variants": variants}

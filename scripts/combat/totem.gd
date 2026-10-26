@@ -13,6 +13,9 @@ var _affinity_awarded := false
 var rank := 1
 
 var _life := DURATION
+## Issue #210 (Doom Herald): aura applications counted
+## for the 5 s pulse cadence.
+var _pulse := 0
 var _tick := 0.0
 var _ring: MeshInstance3D
 
@@ -30,6 +33,13 @@ func setup(p_id: String, p_owner: int, p_rank: int = 1) -> void:
 
 func _ready() -> void:
 	add_to_group("totems")
+	# Issue #210 (slice B3): the tree's duration_add joins
+	# the totem's lifetime (the base DURATION, or the
+	# signature's fixed lifetime set in setup()).
+	var dcaster := _caster()
+	if dcaster != null:
+		_life += dcaster.tree_totem_mod(totem_id,
+			"duration_add", 0.0)
 	# Wide Ward: +25% radius on Warden totems — scale the visual ring now.
 	var vis_r := _aura_radius()
 	# Totem pole: stacked stone/wood.
@@ -130,6 +140,14 @@ func _physics_process(delta: float) -> void:
 	_tick -= delta
 	if _tick <= 0.0:
 		_tick = TICK
+		# Issue #210 (Oathkeeper): the totem ticks faster
+		# while its owner is downed (the next interval is
+		# set here, through the same caster resolution).
+		var ocaster := _caster()
+		if ocaster != null and bool(ocaster.get("downed")):
+			var oath_pct: float = ocaster.tree_totem_behavior("oathkeeper")
+			if oath_pct > 0.0:
+				_tick = TICK / (1.0 + oath_pct / 100.0)
 		_apply_aura()
 
 
@@ -141,6 +159,23 @@ func _apply_aura() -> void:
 	var r := _aura_radius()
 	var strength := _aura_strength()
 	var caster := _caster()
+	# Issue #210 (Strength in Numbers): conqueror auras
+	# run stronger while 3+ enemies stand inside — the
+	# count is taken here, where the radius is known;
+	# the boost folds into the same strength the
+	# branches (and doom's stored magnitude) read.
+	if caster != null and totem_id in ["bulwark",
+			"warhorn", "rally", "doom_totem"]:
+		var sin_pct: float = caster.tree_totem_behavior(
+			"strength_in_numbers")
+		if sin_pct > 0.0:
+			var foes := 0
+			for n in get_tree().get_nodes_in_group("mobs"):
+				var fm := n as Mob
+				if fm != null and fm.alive and fm.global_position.distance_to(global_position) < r:
+					foes += 1
+			if foes >= 3:
+				strength *= 1.0 + sin_pct / 100.0
 	match totem_id:
 		"reciprocity":
 			for n in get_tree().get_nodes_in_group("players"):
@@ -149,6 +184,16 @@ func _apply_aura() -> void:
 					continue
 				if p.global_position.distance_to(global_position) < r:
 					p.rpc_id(p.get_multiplayer_authority(), "heal", 4.0 * _rank_mult() * strength)
+			# Issue #210 (Thorn Mirror, the SE's adopted
+			# form): the tick also slows enemies in
+			# radius 20% for 2 s, on its own cadence.
+			if caster != null and caster.tree_totem_variant("reciprocity") == "thorn_mirror":
+				for n in get_tree().get_nodes_in_group("mobs"):
+					var tm := n as Mob
+					if tm == null or not tm.alive:
+						continue
+					if tm.global_position.distance_to(global_position) < r:
+						tm.apply_slow(2.0, 0.8)
 		"bulwark":
 			var relentless := caster != null and caster.has_trait("relentless")
 			for n in get_tree().get_nodes_in_group("mobs"):
@@ -167,6 +212,11 @@ func _apply_aura() -> void:
 					continue
 				if p.global_position.distance_to(global_position) < r:
 					p.rpc_id(p.get_multiplayer_authority(), "apply_warhorn", TICK * 1.5, strength)
+					# Issue #210 (Thunderhead Horn): the
+					# aura also grants attack speed (the
+					# war drums verb, at its own magnitude).
+					if caster != null and caster.tree_totem_variant("warhorn") == "thunderhead_horn":
+						p.rpc_id(p.get_multiplayer_authority(), "apply_war_drums", TICK * 1.5)
 		"stoneskin":
 			var shared := caster != null and caster.has_trait("shared_vitality")
 			for n in get_tree().get_nodes_in_group("players"):
@@ -175,6 +225,11 @@ func _apply_aura() -> void:
 					continue
 				if p.global_position.distance_to(global_position) < r:
 					p.rpc_id(p.get_multiplayer_authority(), "apply_stoneskin", TICK * 1.5, strength)
+					# Issue #210 (Living Stone): the totem
+					# also heals allies in radius per tick
+					# (authored 2.0, the heal-tick form).
+					if caster != null and caster.tree_totem_variant("stoneskin") == "living_stone":
+						p.rpc_id(p.get_multiplayer_authority(), "heal", 2.0 * _rank_mult() * strength)
 					# Shared Vitality: Stoneskin also grants +10% move speed.
 					if shared:
 						p.rpc_id(p.get_multiplayer_authority(), "apply_shared_vitality", TICK * 1.5)
@@ -186,6 +241,11 @@ func _apply_aura() -> void:
 					continue
 				if p.global_position.distance_to(global_position) < r:
 					p.rpc_id(p.get_multiplayer_authority(), "apply_rally", TICK * 1.5, strength)
+					# Issue #210 (Forced March): Rally also
+					# grants damage (the warhorn verb, at
+					# Rally's own strength).
+					if caster != null and caster.tree_totem_variant("rally") == "forced_march":
+						p.rpc_id(p.get_multiplayer_authority(), "apply_warhorn", TICK * 1.5, strength)
 					# War Drums: Rally also grants +10% attack speed.
 					if drums:
 						p.rpc_id(p.get_multiplayer_authority(), "apply_war_drums", TICK * 1.5)
@@ -197,14 +257,32 @@ func _apply_aura() -> void:
 					continue
 				if p.global_position.distance_to(global_position) < r:
 					p.rpc_id(p.get_multiplayer_authority(), "apply_sanctuary", TICK * 1.5)
+					# Issue #210 (Aegis Dome): allies inside
+					# also gain armor (the stoneskin verb
+					# at its base strength).
+					if caster != null and caster.tree_totem_variant("sanctuary_totem") == "aegis_dome":
+						p.rpc_id(p.get_multiplayer_authority(), "apply_stoneskin", TICK * 1.5, 1.0)
 		"doom_totem":
 			# Conqueror signature: enemies in radius take +30% damage.
+			# Issue #210: the magnitude is the caster's
+			# stored vuln fold (0.30 base, x vuln_pct,
+			# x the folded strength incl. Strength in
+			# Numbers); Doom Herald pulses every 5 s.
+			_pulse += 1
+			var dvuln := 0.30 * strength
+			if caster != null:
+				dvuln *= 1.0 + caster.tree_totem_mod(
+					"doom_totem", "vuln_pct", 0.0)
+			var herald: bool = caster != null and caster.tree_totem_variant("doom_totem") == "doom_herald" and _pulse % 5 == 0
 			for n in get_tree().get_nodes_in_group("mobs"):
 				var m := n as Mob
 				if m == null or not m.alive:
 					continue
 				if m.global_position.distance_to(global_position) < r:
 					m.doom_t = TICK * 1.5
+					m.doom_vuln = dvuln
+					if herald:
+						m.take_damage(12.0 * strength, owner_peer, global_position)
 
 
 ## The placing player (server-side authoritative copy).
@@ -220,19 +298,39 @@ func _aura_strength() -> float:
 	var caster := _caster()
 	if caster == null:
 		return 1.0
+	var strength := 1.0
 	if totem_id in ["reciprocity", "stoneskin"] and caster.has_trait("wardens_oath"):
-		return 1.15
+		strength = 1.15
 	if totem_id in ["bulwark", "warhorn", "rally"] and caster.has_trait("commanding_presence"):
-		return 1.15
-	return 1.0
+		strength = 1.15
+	# Issue #210 (slice B3): the tree's magnitude channel
+	# scales the branch's tick strength. Reciprocity's
+	# channel is mend_pct — it scales the tick's heal
+	# (the SE's ruling on the reciprocity premise flag:
+	# no reflect mechanic exists; the channel is named
+	# for what it scales).
+	var mag_key: String = {"reciprocity": "mend_pct",
+		"stoneskin": "armor_pct",
+		"bulwark": "guard_pct", "warhorn": "aura_pct",
+		"rally": "haste_pct"}.get(totem_id, "")
+	if mag_key != "":
+		strength *= 1.0 + caster.tree_totem_mod(
+			totem_id, mag_key, 0.0)
+	return strength
 
 
 ## Wide Ward: +25% aura radius on Warden totems.
 func _aura_radius() -> float:
+	var r := RADIUS
 	var caster := _caster()
 	if caster != null and totem_id in ["reciprocity", "stoneskin"] and caster.has_trait("wide_ward"):
-		return RADIUS * 1.25
-	return RADIUS
+		r *= 1.25
+	# Issue #210 (slice B3): the tree's radius joins at
+	# this same caster read, for every totem type.
+	if caster != null:
+		r += caster.tree_totem_mod(totem_id,
+			"radius_add", 0.0)
+	return r
 
 
 ## Public aura radius for combo-finisher world-state checks (issue #8).
