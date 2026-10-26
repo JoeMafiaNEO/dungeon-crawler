@@ -190,6 +190,14 @@ func _impact() -> void:
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
 					m.apply_burn(3.0, dmg * 0.3, owner_peer)
+				# Amendment 1 section C.1 (Ignition):
+				# tree burn at the impact site; zero
+				# makes no call (neutrality).
+				if caster != null:
+					var mburn: float = caster.tree_burn_pct("meteor")
+					if mburn > 0.0:
+						m.apply_burn(3.0, dmg * mburn,
+							owner_peer)
 				hit_any = true
 				hit.append(m)
 				if Combo.note_kill(m, was_alive):

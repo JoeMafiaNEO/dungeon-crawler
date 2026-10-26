@@ -742,6 +742,7 @@ func _take_burn_tick() -> void:
 		# Issue #210: kill-decision site 2 of 2 for Coup de
 		# Grâce (checked for symmetry; see _notify_coup).
 		_notify_coup(_burn_attacker)
+		_notify_tree_kill(_burn_attacker)
 
 
 ## Issue #189 (section 3): tell the MARKER's player that
@@ -840,6 +841,24 @@ func assassinate_hit(amount: float, attacker: int,
 ## burn tick never carries the tag, whose lifetime is one
 ## take_damage call, so in practice the strike's own site
 ## is the one that fires).
+## Issue #210 slice B5 (spec section 3): Adrenaline kill
+## credit — the general form of the coup notification,
+## fired at BOTH death sites for the credited killer.
+func _notify_tree_kill(killer: int) -> void:
+	if not multiplayer.is_server() or killer == 0:
+		return
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return
+	var striker = dungeon.get_player_node(killer)
+	if striker == null or not striker.has_method("notify_tree_kill"):
+		return
+	if killer == int(multiplayer.get_unique_id()):
+		striker.notify_tree_kill()
+	else:
+		striker.rpc_id(killer, "notify_tree_kill")
+
+
 func _notify_coup(killer: int) -> void:
 	if not multiplayer.is_server():
 		return
@@ -2024,6 +2043,7 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		# Issue #210: kill-decision site 1 of 2 for Coup de
 		# Grâce — an Assassinate strike's own kill.
 		_notify_coup(attacker)
+		_notify_tree_kill(attacker)
 		_drop_and_reward(attacker)
 		# Splitter (issue #67 Phase 2): server-side spawn-on-death.
 		# Children have split_on_death=false (hard cap, no cascade).

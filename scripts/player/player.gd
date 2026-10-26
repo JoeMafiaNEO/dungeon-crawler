@@ -114,6 +114,10 @@ func atk_spd_mult() -> float:
 		return 1.0 + bonus_atk_spd + _tree_stat("atk_spd") \
 			+ (_tree_tempo_pct / 100.0 \
 				if Time.get_ticks_msec() < _tree_tempo_until \
+				else 0.0) \
+			+ (_tree_adrenaline_pct / 100.0 \
+				if Time.get_ticks_msec() \
+					< _tree_adrenaline_until \
 				else 0.0)
 	return 1.0 + net_bonus_atk_spd
 ## Bounty Board (issue #7): server-authoritative per-player progress,
@@ -251,6 +255,8 @@ var _tree_twin_armed := false
 ## Issue #210 (slice B3): Warlord's Tempo — the totem
 ## placement buff window (msec) and its percent.
 var _tree_tempo_until := 0
+var _tree_adrenaline_until := 0
+var _tree_adrenaline_pct := 0.0
 var _tree_tempo_pct := 0.0
 var _tree_tempered_until := 0
 var _reinforce_strength := 0.5
@@ -648,6 +654,10 @@ func _recalc_stats() -> void:
 	max_hp *= special_hp_mult
 	damage *= dmg_m
 	move_speed *= spd_m
+	# Issue #210 slice B5 (spec section 3): the tree xp
+	# layer — base x item x tree; the section 1.5 envelope
+	# does not clamp xp (not a combat channel).
+	xp_mult *= 1.0 + _tree_skill_mod("xp", "xp_pct", 0.0)
 	# Milestone passives: 25/50/75/100.
 	var ms := milestone_mult()
 	damage *= ms
@@ -1384,6 +1394,23 @@ func apply_tree_salvage(structure_id: String) -> void:
 			cur - float(base[structure_id]) * pct / 100.0)
 
 
+## Issue #210 slice B5 (Amendment 1 section C.1): the
+## caster's burn fraction for a skill (fireball / meteor).
+func tree_burn_pct(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "burn_pct", 0.0)
+
+
+## Issue #210 slice B5 (spec section 3): Wayfarer's Edge
+## governance for the basic-attack variant slot.
+## Public variant check for cross-object readers.
+func tree_variant_is(skill_id: String, vid: String) -> bool:
+	return _tree_variant(skill_id) == vid
+
+
+func tree_wayfarers_edge() -> bool:
+	return _tree_variant("basic_attack") == "wayfarers_edge"
+
+
 func tree_brand_amp(skill_id: String) -> float:
 	return _tree_skill_mod(skill_id, "brand_amp", 0.0)
 
@@ -1413,7 +1440,7 @@ func try_purchase(node_id: int) -> bool:
 	if node.is_empty() or bool(node.get("inert", false)):
 		return false
 	if not DeepTree.branch_unlocked(family_collection,
-			class_id, branch, tree_lifetime):
+			class_id, branch, tree_lifetime, level):
 		return false
 	if tree_owned.has(node_id):
 		return false
@@ -1467,7 +1494,7 @@ func _tree_validate_claim(node_id: int,
 	if node.is_empty() or bool(node.get("inert", false)):
 		return "inert"
 	if not DeepTree.branch_unlocked(family_collection,
-			class_id, branch, tree_lifetime):
+			class_id, branch, tree_lifetime, level):
 		return "locked"
 	if tree_owned.has(node_id):
 		return "duplicate"
@@ -3876,8 +3903,15 @@ func _physics_process(delta: float) -> void:
 			if _camera != null:
 				_camera.fov = lerpf(_camera.fov, _base_fov() + 7.0, delta * 12.0)
 		else:
-			velocity.x = move_vec.x * move_speed * _buff_mult("speed")
-			velocity.z = move_vec.z * move_speed * _buff_mult("speed")
+			# Issue #210 slice B5 (spec section 3):
+			# Second Wind folds where move_speed is
+			# consumed — below 25% HP, +X% move speed.
+			var spd := _buff_mult("speed")
+			if hp < max_hp * 0.25:
+				spd *= 1.0 + _tree_behavior_pct(
+					"second_wind") / 100.0
+			velocity.x = move_vec.x * move_speed * spd
+			velocity.z = move_vec.z * move_speed * spd
 			if _camera != null:
 				_camera.fov = lerpf(_camera.fov, _base_fov(), delta * 8.0)
 		if _jump_queued:
@@ -4023,7 +4057,9 @@ func _do_attack() -> void:
 	fwd.y = 0.0
 	fwd = fwd.normalized()
 	# Unseen trait: first attack after veil/blink crits for 2x.
-	var melee_dmg := damage * _buff_mult("damage")
+	# Issue #210 slice B5: the universal basic-attack fold.
+	var melee_dmg := damage * _buff_mult("damage") \
+		* _tree_skill_mod("basic_attack", "dmg_mult", 1.0)
 	if unseen_crit_ready:
 		melee_dmg *= 2.0
 		unseen_crit_ready = false
@@ -4039,10 +4075,15 @@ func _do_attack() -> void:
 			continue
 		if fwd.angle_to(to_mob / dist) > 0.75:
 			continue
+		# Issue #210 slice B5: Wayfarer's Edge — +50%
+		# against full-health targets, read per target.
+		var dealt := melee_dmg
+		if tree_wayfarers_edge() and mob.hp >= mob.max_hp:
+			dealt *= 1.5
 		if multiplayer.is_server():
-			mob.take_damage(melee_dmg, from, global_position)
+			mob.take_damage(dealt, from, global_position)
 		else:
-			mob.rpc_id(NetworkManager.server_peer_id, "take_damage", melee_dmg, from, global_position)
+			mob.rpc_id(NetworkManager.server_peer_id, "take_damage", dealt, from, global_position)
 		# Affinity: hit on marked target → +1 mark, per-enemy 5s cd.
 		if mob.is_marked():
 			gain_affinity("mark", 1.0, mob.get_instance_id())
@@ -4070,7 +4111,7 @@ func _throw_dagger() -> void:
 	fwd.y = 0.0
 	fwd = fwd.normalized()
 	var throw_range := lerpf(DAGGER_RANGE_MIN, DAGGER_RANGE_MAX, charge)
-	var throw_dmg := damage * lerpf(DAGGER_DMG_MIN, DAGGER_DMG_MAX, charge) * _buff_mult("damage")
+	var throw_dmg := damage * lerpf(DAGGER_DMG_MIN, DAGGER_DMG_MAX, charge) * _buff_mult("damage") * _tree_skill_mod("basic_attack", "dmg_mult", 1.0)
 	# Unseen crit applies.
 	if unseen_crit_ready:
 		throw_dmg *= 2.0
@@ -4618,9 +4659,17 @@ func _hl_server_tick(delta: float) -> void:
 			beam["tick_t"] = 0.0
 			var aim: Vector3 = beam.get("aim", Vector3.ZERO)
 			var lingering := bool(beam.get("lingering", false))
-			if not lingering:
+			# Issue #210 slice B5: Dawnbringer — a
+			# lingering zone whose caster owns the
+			# variant keeps ticking (damage AND heal)
+			# at half rate for its first 4 s.
+			var dawn := bool(beam.get("dawn", false)) \
+				and float(beam.get("linger_t", 0.0)) < 4.0
+			if not lingering or dawn:
 				# Damage: 1.0x mage base per tick in the 4m beam column.
 				var dmg := _hl_beam_damage()
+				if dawn:
+					dmg *= 0.5
 				for n in get_tree().get_nodes_in_group("mobs"):
 					var mob := n as Mob
 					if mob == null or not bool(mob.get("alive")):
@@ -4634,7 +4683,9 @@ func _hl_server_tick(delta: float) -> void:
 				if p == null or not bool(p.get("alive")):
 					continue
 				if p.global_position.distance_to(aim) <= HOLY_LIGHT_HEAL_RADIUS:
-					var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC
+					var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC * (1.0 + _tree_skill_mod("holy_light", "heal_pct", 0.0))
+					if dawn:
+						heal_amount *= 0.5
 					# Issue #162 routing audit: when the heal target's
 					# authority is THIS peer (the host healing himself),
 					# rpc_id would be self-addressed — a Steam peer cannot
@@ -4650,7 +4701,10 @@ func _hl_server_tick(delta: float) -> void:
 ## Issue #91 Phase 2: beam damage per 0.5s tick (1.0x mage base).
 func _hl_beam_damage() -> float:
 	# Mage base damage; non-mages use their own base.
-	return damage * _buff_mult("damage")
+	# Issue #210 slice B5: holy_light's modifiers live in
+	# the universal branch (familyless, spec section 3).
+	return damage * _buff_mult("damage") \
+		* _tree_mult("holy_light")
 
 
 ## Issue #91 Phase 1: 7 arms/disarms Holy Light (no longer instant-cast).
@@ -4784,7 +4838,7 @@ func _hl_strike() -> void:
 	_hl_active_t = 0.0
 	_hl_aim_send_t = 0.0
 	# 20s cooldown starts at STRIKE, not at arm.
-	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult()
+	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("holy_light", "cd_mult", 1.0)
 	if hud != null:
 		hud.refresh_abilities(self)
 	# Clear the reticle; the beam takes over.
@@ -4866,6 +4920,8 @@ func _hl_start_linger() -> void:
 		return
 	beam["lingering"] = true
 	beam["linger_t"] = 0.0
+	if _tree_variant("holy_light") == "dawnbringer":
+		beam["dawn"] = true
 	rpc("hl_linger_beam", my_id, _hl_active_seq)
 
 
@@ -4876,6 +4932,17 @@ func hl_linger_beam(owner_id: int, seq: int) -> void:
 	if not beam.is_empty():
 		beam["lingering"] = true
 		beam["linger_t"] = 0.0
+		# Issue #210 slice B5: Dawnbringer is derived from
+		# the owner's synced tree state on every peer.
+		var dungeons := get_tree().get_nodes_in_group(
+			"dungeon")
+		if not dungeons.is_empty():
+			var op = dungeons[0].get_player_node(owner_id)
+			if op != null and op.has_method(
+					"tree_variant_is") and bool(op.call(
+					"tree_variant_is", "holy_light",
+					"dawnbringer")):
+				beam["dawn"] = true
 
 
 ## Jesse 2026-10-10: lingering beams fade over HL_LINGER_TIME, then the
@@ -5046,7 +5113,7 @@ func _cast_fireball() -> void:
 	var basis := _camera.global_transform.basis
 	var dir := -basis.z
 	var origin: Vector3 = _camera.global_position + dir * 0.7 + Vector3(0, -0.15, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("fireball") * _tree_fire_mult("fireball")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("fireball") * _tree_fire_mult("fireball") * _tree_skill_mod("basic_attack", "dmg_mult", 1.0)
 	# Twin Suns (issue #206 variant): two bolts at 65% in a
 	# +-4 degree spread; the second carries the "twin" tag.
 	if _tree_variant("fireball") == "twin_suns":
@@ -6787,6 +6854,21 @@ func notify_mark_kill() -> void:
 ## Issue #210 (Coup de Grâce): the server reports that
 ## this player's Assassinate strike killed — a killing
 ## Assassinate resets its own cooldown.
+## Issue #210 slice B5 (spec section 3): Adrenaline — the
+## server reports a kill credited to this player (routed
+## through the two mob death sites, the coup discipline);
+## the buff writes a timed var read by the atk_spd chain.
+@rpc("any_peer", "call_local")
+func notify_tree_kill() -> void:
+	if not is_multiplayer_authority():
+		return
+	var pct := _tree_behavior_pct("adrenaline")
+	if pct > 0.0:
+		_tree_adrenaline_pct = pct
+		_tree_adrenaline_until = \
+			Time.get_ticks_msec() + 3000
+
+
 @rpc("any_peer", "call_local")
 func notify_coup_kill() -> void:
 	if not is_multiplayer_authority():

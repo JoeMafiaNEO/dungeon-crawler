@@ -155,6 +155,19 @@ func _explode() -> void:
 		var barrage_brand := 0.0
 		if skill_tag == "barrage" and caster != null:
 			barrage_brand = caster.tree_brand_amp("barrage")
+		# Amendment 1 section C.1 (Ignition, B5 closeout):
+		# the caster's burn fraction for the governing
+		# skill; zero makes no call (neutrality).
+		var burn := 0.0
+		# Issue #210 slice B5: Wayfarer's Edge governs
+		# basic casts (fireball + its Twin Suns bolts).
+		var edge := false
+		if caster != null:
+			burn = caster.tree_burn_pct(
+				"barrage" if skill_tag == "barrage"
+				else "fireball")
+			edge = skill_tag in ["fireball", "twin"] \
+				and caster.tree_wayfarers_edge()
 		for node in get_tree().get_nodes_in_group("mobs"):
 			var mob := node as Mob
 			if mob == null or not mob.alive:
@@ -169,10 +182,18 @@ func _explode() -> void:
 				var dealt := damage
 				if barrage_brand > 0.0:
 					dealt *= 1.0 + mob.brand_amp_now()
+				if edge and mob.hp >= mob.max_hp:
+					dealt *= 1.5
 				mob.take_damage(dealt, owner_peer, global_position)
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
 					mob.apply_burn(3.0, damage * 0.3, owner_peer)
+				# Ignition: tree burn composes with
+				# Wildfire through apply_burn's own
+				# strongest-wins rule.
+				if burn > 0.0:
+					mob.apply_burn(3.0, damage * burn,
+						owner_peer)
 				if barrage_brand > 0.0:
 					mob.apply_brand(3.0, barrage_brand, owner_peer)
 				# Affinity: fireball +2/hit max 10/cast; barrage +1/hit max 6/cast.

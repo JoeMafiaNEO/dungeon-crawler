@@ -97,7 +97,8 @@ static func id_index(id: int) -> int:
 static func branches_for(class_id: String) -> Array:
 	var all := {
 		0: {"id": 0, "key": "wayfaring", "name": "Wayfaring",
-			"skills": [], "targets": [], "family": ""},
+			"skills": [], "targets": ["basic_attack",
+				"holy_light", "xp"], "family": ""},
 		1: {"id": 1, "key": "fire", "name": "Fire",
 			"skills": ["fireball", "meteor"],
 			"targets": ["fireball", "meteor", "inferno"],
@@ -162,7 +163,7 @@ static func branch_info(class_id: String, branch: int) -> Dictionary:
 ## Populated branches (the prototype populated Fire; issue
 ## #210 slice B1 adds Frost and Storm).
 static func branch_populated(branch: int) -> bool:
-	return branch in [1, 2, 3, 4, 5, 6, 7, 8, 9]
+	return branch in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
 # ----------------------------------------------------------------
@@ -261,8 +262,17 @@ const STAT_BASE := {"damage": 2, "health": 2, "speed": 1,
 ## exists for fireball/meteor (the table says so rather
 ## than inventing one — spec section 2.5).
 const PARAM_TABLE := {
-	"fireball": ["dmg_pct", "radius_add"],
-	"meteor": ["dmg_pct", "radius_add"],
+	"fireball": ["dmg_pct", "radius_add", "burn_pct"],
+	"meteor": ["dmg_pct", "radius_add", "burn_pct"],
+	# Issue #210 slice B5 (spec section 3): the universal
+	# branch's classless targets. holy_light's modifiers
+	# live HERE (familyless); xp is a pseudo-target whose
+	# only channel folds into xp_mult (unclamped, section
+	# 3). For architect characters, basic_attack nodes
+	# target Hammer Smash instead (the node_for remap).
+	"basic_attack": ["dmg_pct"],
+	"holy_light": ["cd_pct", "dmg_pct", "heal_pct"],
+	"xp": ["xp_pct"],
 	"inferno": ["dmg_pct", "cd_pct", "radius_add"],
 	# Issue #210 (full build section 2.1): glacial prison
 	# has NO dmg_pct; the exclusions are the table's own
@@ -329,7 +339,8 @@ const PARAM_UNIT := {"dmg_pct": 0.5, "cd_pct": 0.5,
 	"chains_add": 1.0, "shatter_pct": 2.5,
 	"brand_amp": 2.0, "step_dmg": 5.0, "vuln_add": 2.0,
 	"hp_pct": 1.0, "life_add": 1.0, "shell_pct": 1.0,
-	"pulse_dmg": 5.0,
+	"pulse_dmg": 5.0, "burn_pct": 1.0,
+	"heal_pct": 1.0, "xp_pct": 1.0,
 	"threshold_add": 1.0, "mend_pct": 1.0,
 	"armor_pct": 1.0, "guard_pct": 1.0, "aura_pct": 1.0,
 	"haste_pct": 1.0, "vuln_pct": 1.0}
@@ -345,7 +356,8 @@ const PARAM_BASE := {"dmg_pct": 4, "cd_pct": 4,
 	"freeze_add": 2, "chains_add": 1, "shatter_pct": 2,
 	"brand_amp": 3, "step_dmg": 2, "vuln_add": 2,
 	"hp_pct": 3, "life_add": 2, "shell_pct": 3,
-	"pulse_dmg": 2,
+	"pulse_dmg": 2, "burn_pct": 3,
+	"heal_pct": 3, "xp_pct": 3,
 	"threshold_add": 2, "mend_pct": 3, "armor_pct": 3,
 	"guard_pct": 3, "aura_pct": 3, "haste_pct": 3,
 	"vuln_pct": 3}
@@ -354,7 +366,8 @@ const PARAM_SPAN := {"dmg_pct": 5, "cd_pct": 5,
 	"freeze_add": 3, "chains_add": 2, "shatter_pct": 3,
 	"brand_amp": 4, "step_dmg": 3, "vuln_add": 3,
 	"hp_pct": 4, "life_add": 3, "shell_pct": 4,
-	"pulse_dmg": 3,
+	"pulse_dmg": 3, "burn_pct": 4,
+	"heal_pct": 4, "xp_pct": 4,
 	"threshold_add": 3, "mend_pct": 4, "armor_pct": 4,
 	"guard_pct": 4, "aura_pct": 4, "haste_pct": 4,
 	"vuln_pct": 4}
@@ -371,6 +384,7 @@ static func _param_unit(param: String, target: String) -> float:
 const BEHAVIOR_UNIT := 5.0 # percent per step
 ## Authored behaviors per branch (the Fire pattern: two).
 const BEHAVIORS := {
+	0: ["second_wind", "adrenaline"],
 	1: ["emberheart", "fuel_for_the_flame"],
 	2: ["shatterglass", "permafrost_heart"],
 	3: ["stormcharged", "static_bloom"],
@@ -382,12 +396,16 @@ const BEHAVIORS := {
 	9: ["tempered", "salvage"],
 }
 ## The skill a branch's behavior nodes govern for looks.
-const BEHAVIOR_TARGET := {1: "fireball", 2: "frost",
+const BEHAVIOR_TARGET := {0: "wayfaring", 1: "fireball", 2: "frost",
 	3: "lightning", 6: "smoke_veil", 7: "mark",
 	4: "reciprocity", 5: "warhorn",
 	8: "sentry_turret", 9: "hammer_smash"}
 
 const VARIANTS := {
+	"dawnbringer": {"skill": "holy_light",
+		"desc": "Dawnbringer: Holy Light leaves a lingering zone that keeps ticking at half rate for 4 s."},
+	"wayfarers_edge": {"skill": "basic_attack",
+		"desc": "Wayfarer's Edge: your basic attacks deal +50% damage to full-health targets."},
 	"twin_suns": {"skill": "fireball",
 		"desc": "Twin Suns: Fireball casts two bolts at 65% damage each."},
 	"meteor_shower": {"skill": "meteor",
@@ -450,6 +468,7 @@ const VARIANTS := {
 		"desc": "Forced March: Rally also grants allies damage."},
 }
 const VARIANT_IDS := {
+	0: ["dawnbringer", "wayfarers_edge"],
 	1: ["twin_suns", "meteor_shower", "phoenix_pyre"],
 	2: ["splinter_volley", "whiteout", "stasis_burst"],
 	3: ["forked_sky", "tempest_fan", "eye_of_the_storm"],
@@ -515,6 +534,9 @@ const NAME_ADJ_BY_BRANCH := {
 	9: ["Burning", "Iron", "Thunder", "Heavy",
 		"Molten", "Grim", "Patient", "Savage",
 		"Bright", "Stone", "Howling", "Deep"],
+	0: ["Wandering", "Dusty", "Long", "Open",
+		"Weathered", "Far", "Quiet", "Amber",
+		"Worn", "Patient", "Golden", "Free"],
 }
 const NAME_NOUN_BY_BRANCH := {
 	2: ["Shard", "Prison", "Veil", "Heart", "Crown",
@@ -541,6 +563,9 @@ const NAME_NOUN_BY_BRANCH := {
 	9: ["Hammer", "Shell", "Wreck", "Forge", "Anvil",
 		"Bellows", "Stroke", "Ember", "Brand", "Seal",
 		"Fall", "Crown"],
+	0: ["Road", "Mile", "Horizon", "Camp", "Trail",
+		"Compass", "Lantern", "Ford", "Pass", "Rest",
+		"Journey", "Dawn"],
 }
 
 const COST_BASE := {"stat": 10, "modifier": 16,
@@ -712,6 +737,15 @@ static func _mod_desc(target: String, comps: Array) -> String:
 		elif param == "threshold_add":
 			parts.append("+%s %s execute threshold" % [
 				_fmt_pct(steps, param), target])
+		elif param == "burn_pct":
+			parts.append("+%s %s burn (of hit damage, as dps)" % [
+				_fmt_pct(steps, param), target])
+		elif param == "heal_pct":
+			parts.append("+%s %s healing" % [
+				_fmt_pct(steps, param), target])
+		elif param == "xp_pct":
+			parts.append("+%s experience" % _fmt_pct(
+				steps, param))
 		else: # the slice B3 totem magnitude kinds
 			parts.append("+%s %s magnitude" % [
 				_fmt_pct(steps, param), target])
@@ -762,14 +796,20 @@ static func node_for(seed: int, class_id: String,
 		archetype = "capstone"
 		var kv := roll(seed, S_CAPSTONE_KIND, branch, ring, 0,
 			100)
-		if kv < 50:
+		# Issue #210 slice B5 (spec section 3): the
+		# universal branch has no sibling family — its
+		# capstone roll is major 60 / variant 40, no echo.
+		var major_below := 50
+		if branch == 0:
+			major_below = 60
+		if kv < major_below:
 			kind = "major"
 			target = str(info_targets[roll(seed, S_TARGET,
 				branch, ring, 0, info_targets.size())])
 			params = {"components": _components(seed, branch,
 				ring, index, target, 300, 100, true)}
 			desc = _mod_desc(target, params["components"])
-		elif kv < 80:
+		elif kv < 80 or branch == 0:
 			kind = "variant"
 			var vids: Array = VARIANT_IDS[branch]
 			var vid := str(vids[roll(seed, S_TARGET,
@@ -789,6 +829,11 @@ static func node_for(seed: int, class_id: String,
 			params = {"echo_family": fam, "steps": steps}
 			desc = "+%s %s damage (echo of another family's art)" % [
 				_fmt_pct(steps, "dmg_pct"), fam]
+		# Issue #210 slice B5: the architect substitution
+		# for capstone targets (major + variant arms).
+		if branch == 0 and class_id == "architect" \
+				and target == "basic_attack":
+			target = "hammer_smash"
 	else:
 		archetype = _archetype(seed, branch, ring, index)
 		if archetype == "stat":
@@ -810,6 +855,9 @@ static func node_for(seed: int, class_id: String,
 		elif archetype == "modifier":
 			target = str(info_targets[roll(seed, S_TARGET,
 				branch, ring, index, info_targets.size())])
+			if branch == 0 and class_id == "architect" \
+					and target == "basic_attack":
+				target = "hammer_smash"
 			var comps := _components(seed, branch, ring,
 				index, target, s_num, s_den, false)
 			params = {"components": comps}
@@ -844,6 +892,26 @@ static func node_for(seed: int, class_id: String,
 					desc = "Salvage: when your structure is destroyed, refund %d%% of its placement cooldown." % pct
 				"static_bloom":
 					desc = "Static Bloom: your chain lightning deals +%d%% damage to every target beyond the first." % pct
+				"veilwalker":
+					desc = "Veilwalker: for 4 s after leaving Smoke Veil, you deal +%d%% damage." % pct
+				"from_the_dark":
+					desc = "From the Dark: Assassinate deals +%d%% damage when cast within 2 s of Smoke Veil or Shadow Step." % pct
+				"deadeye":
+					desc = "Deadeye: Fan of Knives deals +%d%% damage to marked targets." % pct
+				"surveyor":
+					desc = "Surveyor: Eagle Eye also marks the nearest elite or boss for +%d%% mark vulnerability." % pct
+				"rooted_ward":
+					desc = "Rooted Ward: while you stand within your own totem's aura, you take %d%% less damage." % pct
+				"oathkeeper":
+					desc = "Oathkeeper: while you are downed, your totems tick %d%% faster." % pct
+				"warlords_tempo":
+					desc = "Warlord's Tempo: for 3 s after placing a totem, you gain +%d%% attack speed." % pct
+				"strength_in_numbers":
+					desc = "Strength in Numbers: your totems grow %d%% stronger while three or more enemies are in their aura." % pct
+				"second_wind":
+					desc = "Second Wind: below 25%% health, you move %d%% faster." % pct
+				"adrenaline":
+					desc = "Adrenaline: on a kill credited to you, gain +%d%% attack speed for 3 s." % pct
 				_:
 					desc = bid
 	var composed: bool = params.has("components") \
@@ -863,7 +931,12 @@ static func node_for(seed: int, class_id: String,
 
 static func branch_unlocked(family_collection: Dictionary,
 		class_id: String, branch: int,
-		lifetime: Dictionary = {}) -> bool:
+		lifetime: Dictionary = {},
+		level: int = 0) -> bool:
+	# Spec section 1.1, third predicate kind: the
+	# universal branch unlocks at character level >= 20.
+	if branch == 0:
+		return level >= 20
 	# Spec section 1.1: the architect branches carry no
 	# family; they unlock at lifetime >= 100 in ANY
 	# architect branch skill.
@@ -887,6 +960,14 @@ static func branch_unlocked(family_collection: Dictionary,
 
 static func lifetime_total(lifetime: Dictionary,
 		class_id: String, branch: int) -> float:
+	# Issue #210 slice B5 (spec section 3): the universal
+	# wallet is Sigma lifetime across ALL the character's
+	# skills.
+	if branch == 0:
+		var all_total := 0.0
+		for k in lifetime:
+			all_total += float(lifetime[k])
+		return all_total
 	var info := branch_info(class_id, branch)
 	if info.is_empty():
 		return 0.0
@@ -946,6 +1027,7 @@ static func compute_aggregates(seed: int, class_id: String,
 	var range_steps := {}
 	var life_steps := {}
 	var pulse_steps := {}
+	var burn_steps := {}
 	var behaviors := {}
 	var variants := {}
 	var sorted_owned := owned.duplicate()
@@ -1001,6 +1083,9 @@ static func compute_aggregates(seed: int, class_id: String,
 				elif param == "pulse_dmg":
 					pulse_steps[tgt] = int(
 						pulse_steps.get(tgt, 0)) + steps
+				elif param == "burn_pct":
+					burn_steps[tgt] = int(
+						burn_steps.get(tgt, 0)) + steps
 				elif param == "slow_add":
 					slow_steps[tgt] = int(slow_steps.get(tgt,
 						0)) + steps
@@ -1031,7 +1116,8 @@ static func compute_aggregates(seed: int, class_id: String,
 				elif param in ["mend_pct", "armor_pct",
 						"guard_pct", "aura_pct",
 						"haste_pct", "vuln_pct",
-						"hp_pct", "shell_pct"]:
+						"hp_pct", "shell_pct",
+						"heal_pct", "xp_pct"]:
 					var mk: String = tgt + "|" + param
 					mag_steps[mk] = int(mag_steps.get(
 						mk, 0)) + steps
@@ -1078,6 +1164,8 @@ static func compute_aggregates(seed: int, class_id: String,
 		touched[s] = true
 	for s in pulse_steps:
 		touched[s] = true
+	for s in burn_steps:
+		touched[s] = true
 	for mk in mag_steps:
 		touched[mk.split("|")[0]] = true
 	for s in touched:
@@ -1119,6 +1207,12 @@ static func compute_aggregates(seed: int, class_id: String,
 			entry["pulse_dmg"] = minf(0.50,
 				float(pulse_steps[s])
 				* float(PARAM_UNIT["pulse_dmg"]) / 100.0)
+		# Amendment 1 section C.1 (Ignition, rides the
+		# B5 closeout): burn_pct clamps at 0.50 (section D).
+		if int(burn_steps.get(s, 0)) > 0:
+			entry["burn_pct"] = minf(0.50,
+				float(burn_steps[s])
+				* float(PARAM_UNIT["burn_pct"]) / 100.0)
 		# Amendment 1 section D clamps: shatter_pct is a
 		# fraction of caster damage (<= 1.00); brand_amp is
 		# a damage fraction (<= 0.40 per skill).
@@ -1149,7 +1243,8 @@ static func compute_aggregates(seed: int, class_id: String,
 		# clamp is named for any of them (section 1.5).
 		for mp in ["mend_pct", "armor_pct", "guard_pct",
 				"aura_pct", "haste_pct", "vuln_pct",
-				"hp_pct", "shell_pct"]:
+				"hp_pct", "shell_pct", "heal_pct",
+				"xp_pct"]:
 			var mkey: String = s + "|" + mp
 			if int(mag_steps.get(mkey, 0)) > 0:
 				entry[mp] = float(mag_steps[mkey]) \
@@ -1268,7 +1363,8 @@ static func visible_nodes(player: Variant) -> Array:
 		# have none to expose).
 		if not branch_populated(bid) or not branch_unlocked(
 				fcol, class_id, bid,
-				_pread(player, "tree_lifetime", {})):
+				_pread(player, "tree_lifetime", {}),
+				int(_pread(player, "level", 0))):
 			continue
 		var deepest := deepest_owned(owned, bid)
 		for ring in range(1, deepest + 3):
