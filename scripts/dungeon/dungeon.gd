@@ -175,6 +175,33 @@ static func restore_reveal_state(run: Dictionary) -> void:
 	revealed = bool(run.get("revealed", false))
 	buildings_cleared = int(run.get("buildings_cleared", 0))
 	home_anchor = (run.get("home_anchor", {}) as Dictionary).duplicate()
+	seed_home_ledger()
+
+
+## The home building's ledger key ("" before the reveal):
+## the min-corner lot of the anchor rect — the derivation
+## home_building() and FloorGen share.
+static func home_key() -> String:
+	if home_anchor.is_empty():
+		return ""
+	return "%d,%d" % [
+		int(floor(float(home_anchor["rect_x"]) / 8.0)),
+		int(floor(float(home_anchor["rect_z"]) / 8.0))]
+
+
+## Issue #205 S3: the home building's floors ARE the six
+## Act 1 levels — beaten during Act 1 — so its ledger
+## entry stands pre-cleared from the reveal on, and the
+## building never counts twice (buildings_cleared already
+## holds its 1 from P3). Idempotent; called wherever the
+## reveal state is (re)established.
+static func seed_home_ledger() -> void:
+	var hk := home_key()
+	if hk == "":
+		return
+	floor_masks[hk] = (1 << 6) - 1
+	if not floor_counted.has(hk):
+		floor_counted.append(hk)
 
 
 ## Fresh runs open unrevealed.
@@ -330,6 +357,7 @@ static func restore_act2_state(run: Dictionary) -> void:
 		as Dictionary).duplicate(true)
 	floor_counted = (a.get("floor_counted", []) as Array).duplicate()
 	world_time = float(run.get("world_time", 0.0))
+	seed_home_ledger()
 
 
 ## Fresh runs have no Act 2 record.
@@ -849,7 +877,7 @@ func _ready() -> void:
 		# floor's own; everything below this seam is the
 		# game's ordinary level machinery, un-forked: same
 		# layout, waves, objectives and loot.
-		var frec := Act2FloorGen.record_for(floor_key)
+		var frec := Act2FloorGen.record_for(floor_key, home_anchor)
 		theme = Act2FloorGen.theme_for(frec, floor_index,
 			danger_index(),
 			Act2FloorGen.is_home_key(floor_key, home_anchor))
@@ -917,6 +945,15 @@ func _ready() -> void:
 	_build_arena_from_layout()
 	if floor_active():
 		_spawn_floor_transfers()
+		# Issue #205 S3: post-reveal, the home building's
+		# top floor keeps its rooftop door — the reveal
+		# created it in the original instance; later
+		# visits stand it again so the rooftop (and the
+		# street below) stay reachable.
+		if revealed and floor_index == 5 \
+				and Act2FloorGen.is_home_key(floor_key,
+					home_anchor):
+			_create_rooftop_door()
 	var music_id := next_theme_id
 	if floor_active():
 		music_id = theme.theme_id if theme.theme_id != "floor" \
@@ -3544,6 +3581,7 @@ func _server_begin_reveal() -> void:
 	if _layout != null:
 		footprint = float(_layout.grid_size) * _layout.cell_size
 	home_anchor = compute_home_anchor(footprint)
+	seed_home_ledger()
 	_fire_reveal_save()
 	rpc("begin_reveal", home_anchor)
 
@@ -3625,7 +3663,7 @@ func _spawn_floor_transfers() -> void:
 	var base := spawn_points[0]
 	var script: GDScript = load(
 		"res://scripts/world/floor_transfer.gd")
-	var rec := Act2FloorGen.record_for(floor_key)
+	var rec := Act2FloorGen.record_for(floor_key, home_anchor)
 	var floors := int(rec.get("floors", 1))
 	var spots := {"cab": Vector3(-3.4, 0, -2.5)}
 	if floor_index < floors - 1:
@@ -3669,7 +3707,7 @@ func sync_floor_cleared(key: String, f: int) -> void:
 	floor_masks[key] = mask
 	if not multiplayer.is_server():
 		return
-	var rec := Act2FloorGen.record_for(key)
+	var rec := Act2FloorGen.record_for(key, home_anchor)
 	var floors := int(rec.get("floors", 0))
 	if floors > 0 and Act2FloorGen.lowest_uncleared(mask, floors) \
 			>= floors and not floor_counted.has(key):
@@ -3700,6 +3738,7 @@ func begin_reveal(anchor: Dictionary) -> void:
 	revealed = true
 	buildings_cleared = 1
 	home_anchor = anchor.duplicate(true)
+	seed_home_ledger()
 	_play_reveal()
 
 

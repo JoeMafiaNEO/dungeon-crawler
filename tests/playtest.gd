@@ -7355,6 +7355,78 @@ func _test_floors_205() -> void:
 			and nmsrc.contains("rpc(\"load_floor\""),
 		"205 S2: the MP continue routes a building run to its (building, floor)")
 
+	# 14. S3: the home building's record derives from the
+	# anchor rect — six floors, playable, and its doorstep
+	# equals the world's own home doorstep derivation.
+	var home_rect := {"rect_x": 800.0, "rect_z": 800.0,
+		"rect_w": 64.0, "rect_d": 64.0, "footprint": 64.0}
+	var hkey := "100,100"
+	DungeonScript.set("home_anchor", home_rect)
+	_assert(str(DungeonScript.home_key()) == hkey,
+		"205 S3: home_key derives the anchor's min-corner lot")
+	var hrec: Dictionary = FloorGenRes.record_for(hkey,
+		home_rect)
+	_assert(not hrec.is_empty() and int(hrec["floors"]) == 6
+			and bool(hrec["playable"]),
+		"205 S3: the home record reads six playable floors")
+	_assert(FloorGenRes.record_for(hkey).is_empty(),
+		"205 S3: without the anchor, the home lot is not a WorldGen building")
+	var hb: Dictionary = DungeonScript.home_building()
+	_assert(hrec["doorstep"] == hb["doorstep"],
+		"205 S3: the floor record's doorstep equals the world's home doorstep")
+
+	# 15. The home ledger stands pre-cleared: mask full,
+	# counted once — seeded directly and via a restore.
+	DungeonScript.reset_act2_state()
+	DungeonScript.seed_home_ledger()
+	_assert(int((DungeonScript.get("floor_masks")
+			as Dictionary).get(hkey, 0)) == 63
+			and (DungeonScript.get("floor_counted")
+				as Array).has(hkey),
+		"205 S3: the home ledger stands pre-cleared (mask 63, counted)")
+	DungeonScript.reset_act2_state()
+	DungeonScript.restore_reveal_state({"revealed": true,
+		"buildings_cleared": 1, "home_anchor": home_rect})
+	_assert(int((DungeonScript.get("floor_masks")
+			as Dictionary).get(hkey, 0)) == 63,
+		"205 S3: restoring a revealed run re-seeds the home ledger")
+
+	# 16. The cab panel names the rooftop on the home's
+	# top floor (the annex door there is the way up).
+	DungeonScript.set("floor_key", hkey)
+	DungeonScript.set("floor_index", 0)
+	DungeonScript.set("floor_masks", {hkey: 63})
+	var FTRes := load("res://scripts/world/floor_transfer.gd")
+	var hprop = FTRes.new()
+	var top_label := ""
+	for e in hprop.panel_entries():
+		if int(e["floor"]) == 5:
+			top_label = str(e["label"])
+	hprop.free()
+	_assert(top_label.contains("rooftop"),
+		"205 S3: the home panel's top-floor entry names the rooftop exit")
+
+	# 17. Fixtures: home floor 1 IS the Village level;
+	# home floor 6 (Warlord's Domain) stands its
+	# RooftopDoor for later visits.
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("buildings_cleared", 1)
+	DungeonScript.set("floor_index", 0)
+	var hfix = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(hfix)
+	_assert(str(hfix.get("theme").get("theme_id")) == "village",
+		"205 S3: home floor 1 hosts the Village theme")
+	root.remove_child(hfix)
+	hfix.free()
+	DungeonScript.set("floor_index", 5)
+	var hfix2 = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(hfix2)
+	_assert(str(hfix2.get("theme").get("theme_id")) == "warlord"
+			and hfix2.get_node_or_null("RooftopDoor") != null,
+		"205 S3: home floor 6 hosts Warlord's Domain with its RooftopDoor standing")
+	root.remove_child(hfix2)
+	hfix2.free()
+
 	# (Window widened past the long signature + gate comment —
 	# the #203 fixed-window maintenance pattern.)
 	var funnel := dsrc.substr(dsrc.find(

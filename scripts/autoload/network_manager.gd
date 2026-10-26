@@ -580,7 +580,7 @@ func load_floor(building_key: String, floor_idx: int,
 	Dungeon.floor_key = building_key
 	Dungeon.floor_index = floor_idx
 	Dungeon.act2_context = "building"
-	var rec := FloorGen.record_for(building_key)
+	var rec := FloorGen.record_for(building_key, Dungeon.home_anchor)
 	if not rec.is_empty():
 		Dungeon.act2_last_transition = {
 			"building": building_key, "floor": floor_idx,
@@ -937,6 +937,10 @@ func continue_run(mode: String, slot: int) -> bool:
 	# Issue #203: restore the reveal state beside the axis.
 	Dungeon.restore_reveal_state(run)
 	Dungeon.restore_act2_state(run)
+	# Issue #205 S3: a run continued inside a building
+	# keeps its door stash (the home rooftop door reads it).
+	if Dungeon.act2_context == "building":
+		Dungeon.act2_local_class = selected_class_id
 	# Jesse 2026-10-11: station saves resume AT the station, not in the dungeon.
 	# Issue #201: in the run's vehicle — cab for Act 1, train otherwise
 	# (the axis was restored just above).
@@ -1106,6 +1110,10 @@ func _continue_load_level() -> void:
 	# Issue #203: restore the reveal state beside the axis.
 	Dungeon.restore_reveal_state(run)
 	Dungeon.restore_act2_state(run)
+	# Issue #205 S3: a run continued inside a building
+	# keeps its door stash (the home rooftop door reads it).
+	if Dungeon.act2_context == "building":
+		Dungeon.act2_local_class = selected_class_id
 	# Stash the roster for the staging UI.
 	Dungeon.continued_roster = run.get("roster", [])
 	# Issue #140: the session store the dungeon captures its roster from.

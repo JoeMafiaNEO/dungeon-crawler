@@ -31,13 +31,43 @@ const BOSS_POOL: Array = ["boss_boar", "boss_warden", "boss_horror"]
 ## the same derivation the world streamer assembles from, so
 ## the shell in the street and the floors behind its door
 ## always agree. {} when the lot holds no building.
-static func record_for(key: String) -> Dictionary:
+static func record_for(key: String,
+		home_anchor: Dictionary = {}) -> Dictionary:
 	var parts := key.split(",")
 	if parts.size() != 2:
 		return {}
 	var wlx := int(parts[0])
 	var wlz := int(parts[1])
 	var seed: int = WorldGen.WORLD_SEED
+	# Issue #205 S3: the home building is NOT a WorldGen
+	# building — it is the reveal's reserved construction.
+	# Its record derives from the anchor rect (six floors,
+	# style 1, the rect's span), and its doorstep comes
+	# through the same plan/door derivation the world used
+	# for its standalone shell, so the two agree exactly.
+	if is_home_key(key, home_anchor):
+		# Mirrors Dungeon.home_building()'s derivation
+		# exactly (one span, from the rect's width).
+		var hspan := maxi(1, int(round(float(home_anchor.get(
+			"rect_w", 64.0)) / WorldGen.LOT_SIZE)))
+		var hspanz := hspan
+		var hplan: Dictionary = BuildingGen.plan_for(seed,
+			wlx, wlz, 6, 1, hspan, hspanz, 0)
+		var horigin := Vector3(
+			float(home_anchor["rect_x"])
+				+ float(home_anchor["rect_w"]) * 0.5, 0.0,
+			float(home_anchor["rect_z"])
+				+ float(home_anchor["rect_d"]) * 0.5)
+		horigin.y = WorldGen.height_at(seed, horigin.x,
+			horigin.z)
+		var hdw: Dictionary = BuildingGen.door_world(hplan,
+			horigin)
+		return {"key": key, "wlx": wlx, "wlz": wlz,
+			"floors": 6, "style": 1, "span_x": hspan,
+			"span_z": hspanz, "massing": 0, "origin": horigin,
+			"doorstep": hdw["doorstep"],
+			"gap_center": hdw["gap_center"], "density": 0.42,
+			"kind": "village", "playable": true}
 	var b: Dictionary = WorldGen.building_at(seed, wlx, wlz)
 	if b.is_empty():
 		return {}

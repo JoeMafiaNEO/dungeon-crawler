@@ -58,7 +58,7 @@ func interact(player: Node) -> void:
 
 
 func _floors() -> int:
-	var rec := FloorGen.record_for(Dungeon.floor_key)
+	var rec := FloorGen.record_for(Dungeon.floor_key, Dungeon.home_anchor)
 	return int(rec.get("floors", 1))
 
 
@@ -69,11 +69,18 @@ func panel_entries() -> Array:
 	var out: Array = []
 	var mask := Dungeon.floor_mask()
 	var floors := _floors()
+	# Issue #205 S3: in the home building, the top floor's
+	# entry names the rooftop — Floor 6's annex door is
+	# the way up (and out).
+	var is_home := FloorGen.is_home_key(Dungeon.floor_key,
+		Dungeon.home_anchor)
 	for f in FloorGen.allowed_floors(mask, floors):
 		out.append({"floor": f,
-			"label": "Floor %d%s%s" % [f + 1,
+			"label": "Floor %d%s%s%s" % [f + 1,
 				" — cleared" if (mask >> f) & 1 == 1 else "",
-				" (here)" if f == Dungeon.floor_index else ""],
+				" (here)" if f == Dungeon.floor_index else "",
+				" · rooftop exit" if is_home
+					and f == floors - 1 else ""],
 			"current": f == Dungeon.floor_index})
 	out.append({"floor": -1, "label": "Street — exit building",
 		"current": false})
