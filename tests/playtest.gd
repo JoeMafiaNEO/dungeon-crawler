@@ -8051,9 +8051,28 @@ func _test_building_boards_209() -> void:
 	_assert(_window_has(nm_src, "attempt_begin",
 			"Time.get_ticks_msec()", 200),
 		"209: load_floor's server leg begins the attempt")
-	_assert(_source_has(nm_src, "load_world_from_floor",
-			"attempt_clear"),
-		"209: the exit transfer clears the attempt server-side")
+	# Issue #211 rider: the pins above assert presence; these
+	# assert the GUARDS around the calls (issue text: the
+	# entry flag, server-side execution, the key argument).
+	var lf_beg := nm_src.find("func load_floor")
+	var lf_win := nm_src.substr(lf_beg,
+		nm_src.find("\nfunc ", lf_beg + 10) - lf_beg)
+	var lf_srv := lf_win.find("multiplayer.is_server()")
+	# The attempt's entry flag is the SECOND "if entry:" in
+	# load_floor (the first moves the respawn anchor, ahead
+	# of the server leg) - search from the server leg on.
+	var lf_ent := lf_win.find("if entry:", lf_srv)
+	var lf_beg_call := lf_win.find("attempt_begin(building_key,")
+	_assert(lf_beg >= 0 and lf_srv >= 0 and lf_ent > lf_srv
+			and lf_beg_call > lf_ent,
+		"209/211: load_floor's attempt_begin sits inside the is_server leg, under the entry flag, keyed by building_key")
+	var lw_beg := nm_src.find("func load_world_from_floor")
+	var lw_win := nm_src.substr(lw_beg,
+		nm_src.find("\nfunc ", lw_beg + 10) - lw_beg)
+	var lw_srv := lw_win.find("multiplayer.is_server()")
+	var lw_clr := lw_win.find("attempt_clear()")
+	_assert(lw_beg >= 0 and lw_srv >= 0 and lw_clr > lw_srv,
+		"209/211: the exit transfer's attempt_clear sits inside the is_server leg")
 	_assert(_source_has(nm_src, "start_continued_run",
 			"attempt_clear"),
 		"209: a continue ends any attempt")
