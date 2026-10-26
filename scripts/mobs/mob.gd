@@ -566,10 +566,17 @@ func is_stunned() -> bool:
 
 ## Issue #210 (Choking Veil): apply_slow is server-context
 ## only; this is its RPC route for owner-local casts, in
-## the apply_mark pattern.
+## the apply_mark pattern. Claimed-value discipline (the
+## request_chain_lightning posture): only the server
+## executes, and the claimed values are sanity-clamped
+## server-side — a slow's duration lives in [0, 15] s and
+## its multiplier in [0, 1].
 @rpc("any_peer", "call_local")
 func rpc_apply_slow(duration: float, mult: float) -> void:
-	apply_slow(duration, mult)
+	if not multiplayer.is_server():
+		return
+	apply_slow(clampf(duration, 0.0, 15.0),
+		clampf(mult, 0.0, 1.0))
 
 
 func apply_slow(duration: float, mult: float) -> void:

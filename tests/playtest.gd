@@ -23108,6 +23108,10 @@ func _test_deep_tree_b2_210() -> void:
 			and msrc2.contains("_notify_coup(attacker)")
 			and msrc2.contains("_notify_coup(_burn_attacker)"),
 		"210B: the vuln channel is stored + read; Coup hooks both kill-decision sites")
+	_assert(msrc2.contains("func rpc_apply_slow")
+			and msrc2.contains("clampf(duration, 0.0, 15.0)")
+			and msrc2.contains("clampf(mult, 0.0, 1.0)"),
+		"210B: rpc_apply_slow carries the claimed-value discipline (server execution, clamped claims)")
 	root.remove_child(dgn)
 	dgn.free()
 	for node in [pf, srv]:
