@@ -757,9 +757,33 @@ func _register_class_as(sender: int, class_id: String, steam_id: int = 0) -> voi
 			if _bounty != null:
 				node.set("bounty_progress", _team_progress())
 			rpc_id(sender, "apply_continued_state", ps)
+			# Issue #206 (spec section 4.4): join sync — the
+			# joiner receives a tree_sync_player for EVERY
+			# present player (itself included), and the
+			# joiner's own set broadcasts to the replicas.
+			_sync_tree_to_joiner(sender)
 		# Warlord: reclaim their faction from AI control.
 		if is_warlord:
 			_reclaim_faction(sender, int(roster_entry.get("rts_faction", -1)))
+
+
+## Issue #206 (spec section 4.4): converge Deep Tree owned
+## sets + aggregates for a joiner whose continued state was
+## just applied. Runs on the server inside the register
+## flow. Fresh-run joins need nothing: every copy spawns
+## with empty sets by construction.
+func _sync_tree_to_joiner(joiner: int) -> void:
+	for peer in peer_classes.keys():
+		var pid := int(peer)
+		var p := get_player_node(pid)
+		if p == null:
+			continue
+		if pid == joiner:
+			p.rpc("tree_sync_player", pid,
+				p.get("tree_owned"), p.get("tree_aggregates"))
+		else:
+			p.rpc_id(joiner, "tree_sync_player", pid,
+				p.get("tree_owned"), p.get("tree_aggregates"))
 
 
 ## Find a roster entry by Steam ID. Returns {} if not found.

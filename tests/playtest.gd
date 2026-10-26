@@ -128,6 +128,7 @@ func _run() -> void:
 	_test_menu_pad_191()
 	_test_pad_input_193()
 	_test_health_bar_depth_195()
+	_test_deep_tree_206()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -12261,8 +12262,8 @@ func _test_snapshot_yaw() -> void:
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
 	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids;
 	# since issue #126 Phase 1, rod_out too).
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd)'),
-		"caller passes _yaw (and, since #167, max_hp; since #163, downed; since #172, the revive pool fraction; since #184, the ATK SPD investment)")
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd + _tree_stat("atk_spd"))'),
+		"caller passes _yaw (and, since #167, max_hp; since #163, downed; since #172, the revive pool fraction; since #184, the ATK SPD investment; since #206 that term is bonus + tree)")
 	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
 	_assert(src.contains("rod_out_v: bool = false"), "push_snapshot takes rod_out_v (#126 P1)")
 	# _remote_yaw stored and interpolated with lerp_angle.
@@ -18499,8 +18500,8 @@ func _test_atk_spd_184() -> void:
 		"184(s2): the snapshot writes the mirror var net_bonus_atk_spd")
 	_assert(absf(mult_of.call(rep) - 1.25) < 0.001,
 		"184(s2): atk_spd_mult() off the replica reads the mirror (1.25)")
-	_assert(psrc.contains("downed, _revive_pool_frac, bonus_atk_spd)"),
-		"184(s2): the emit call site carries the sender's bonus_atk_spd (labeled source pin)")
+	_assert(psrc.contains("downed, _revive_pool_frac, bonus_atk_spd + _tree_stat(\"atk_spd\"))"),
+		"184(s2): the emit call site carries the sender's bonus_atk_spd (labeled source pin; since #206 the term is bonus + tree, spec section 4.5)")
 	# The divided SERVER gate at the mirror value: this replica
 	# is the server's copy of its player — its equipped state
 	# set as replication leaves it (equipped_ids; equip_stack
@@ -21467,3 +21468,506 @@ func _test_held_prop_yaw_141() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] held prop yaw 141 done")
+
+
+func _test_deep_tree_206() -> void:
+	print("[Playtest] Deep Tree prototype (issue #206)...")
+	var DT := load("res://scripts/progression/deep_tree.gd")
+	var seed: int = DT.TREE_SEED
+
+	# --- 9.1 hash integrity: the splitmix emulation pinned
+	# against an INDEPENDENT (Python) reference's literals.
+	_assert(DT._h(20261025, 2, 1, 1, 0) == -2073421989123396619
+			and DT._h(20261025, 1, 1, 8, 0) == 6454757055857580857
+			and DT._h(12345, 5, 9, 30, 77) == -6644571716815453981,
+		"206: splitmix64 hash matches the independent reference")
+
+	# --- 9.1 determinism: rings 1-12 generated twice,
+	# identical node dicts.
+	var det_ok := true
+	for ring in range(1, 13):
+		for index in DT.width(seed, 1, ring):
+			var a: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			var b: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			if JSON.stringify(a) != JSON.stringify(b):
+				det_ok = false
+	_assert(det_ok,
+		"206: Fire graph rings 1-12 regenerate identically")
+
+	# --- 9.1 FIXTURE: recorded literals for Fire rings 1-3
+	# (the deliberate exception — any hash/table change
+	# breaks this loudly, by design).
+	var fix := {
+		"1,0": ["modifier", "", "inferno", {"components": [{"param": "radius_add", "steps": 3}]}, 16, "Charred Oath"],
+		"2,0": ["behavior", "", "fireball", {"behavior": "fuel_for_the_flame", "steps": 4}, 29, "Charred Throne"],
+		"2,1": ["behavior", "", "fireball", {"behavior": "emberheart", "steps": 3}, 29, "Ignited Crown"],
+		"2,2": ["modifier", "", "meteor", {"components": [{"param": "dmg_pct", "steps": 4}]}, 20, "Ember Conflagration"],
+		"3,0": ["modifier", "", "fireball", {"components": [{"param": "dmg_pct", "steps": 6}]}, 24, "Furnace Conflagration"],
+		"3,1": ["stat", "", "", {"channel": "health", "steps": 1}, 15, "Scorched Oath"],
+		"3,2": ["stat", "", "", {"channel": "speed", "steps": 1}, 15, "Scorched Pact"],
+	}
+	var fix_ok := true
+	for key in fix:
+		var parts: PackedStringArray = str(key).split(",")
+		var n: Dictionary = DT.node_for(seed, "mage", 1,
+			int(parts[0]), int(parts[1]))
+		var e: Array = fix[key]
+		if str(n["archetype"]) != e[0] or str(n["kind"]) != e[1] \
+				or str(n["target"]) != e[2] \
+				or JSON.stringify(n["params"]) != JSON.stringify(e[3]) \
+				or int(n["cost"]) != e[4] or str(n["name"]) != e[5]:
+			fix_ok = false
+	_assert(fix_ok,
+		"206: FIXTURE — Fire rings 1-3 match the recorded literals")
+	_assert(DT.width(seed, 1, 1) == 1 and DT.width(seed, 1, 2) == 3
+			and DT.width(seed, 1, 3) == 3,
+		"206: FIXTURE — ring widths 1-3 are 1/3/3")
+
+	# --- 9.2 graph rules.
+	var width_ok := true
+	var pc_ok := true
+	var all_ids: Array = []
+	for ring in range(1, 13):
+		var w: int = DT.width(seed, 1, ring)
+		if w < 1 or w > 3:
+			width_ok = false
+		for index in w:
+			all_ids.append(DT.pack_id(1, ring, index))
+	for id in all_ids:
+		for p in DT.parent_of(seed, "mage", int(id)):
+			if int(p) != 0 and not DT.children_of(seed, "mage",
+					int(p)).has(int(id)):
+				pc_ok = false
+		for c in DT.children_of(seed, "mage", int(id)):
+			if not DT.parent_of(seed, "mage", int(c)).has(int(id)):
+				pc_ok = false
+	_assert(width_ok, "206: width stays within 1-3, rings 1-12")
+	_assert(pc_ok,
+		"206: parent_of/children_of mutually consistent, rings 1-12")
+	_assert(DT.parent_of(seed, "mage", DT.pack_id(1, 1, 0)) == [0],
+		"206: ring-1 spine's parent is the core")
+	var p8: Array = DT.parent_of(seed, "mage", DT.pack_id(1, 8, 0))
+	var p7: Array = DT.parent_of(seed, "mage", DT.pack_id(1, 7, 0))
+	_assert(p8.has(DT.pack_id(0, 8, 0)) and p8.has(DT.pack_id(2, 8, 0))
+			and p7 == [DT.pack_id(1, 6, 0)],
+		"206: bridges exist exactly at r % 8 == 0 (ring 8 mutual, ring 7 plain)")
+
+	# --- Inert branches and foreign coordinates.
+	_assert(bool(DT.node_for(seed, "mage", 2, 1, 0).get("inert", false))
+			and bool(DT.node_for(seed, "warrior", 1, 1, 0).get("inert", false)),
+		"206: unpopulated + foreign branches return the inert marker")
+	_assert(DT.node_for(seed, "mage", 1, 1, 5).is_empty(),
+		"206: coordinates outside the graph return empty")
+
+	# --- 9.6 envelope: nothing beyond the clamps at any
+	# forced depth; saturation demonstrated where the
+	# placeholder tables reach it.
+	var owned30: Array = []
+	for ring in range(1, 31):
+		for index in DT.width(seed, 1, ring):
+			owned30.append(DT.pack_id(1, ring, index))
+	var agg30: Dictionary = DT.compute_aggregates(seed, "mage",
+		owned30)
+	var sa30: Dictionary = agg30["stat_adds"]
+	_assert(float(sa30["damage"]) <= 40.0 and float(sa30["health"]) <= 480.0
+			and float(sa30["speed"]) <= 1.50 and float(sa30["atk_spd"]) <= 0.60,
+		"206: envelope — stat adds never beyond clamps (rings 1-30 all nodes)")
+	var sm30_ok := true
+	for s in agg30["skill_mods"]:
+		var m: Dictionary = agg30["skill_mods"][s]
+		if float(m["dmg_mult"]) > 1.60 or float(m["cd_mult"]) < 0.65 \
+				or float(m["radius_add"]) > 1.5:
+			sm30_ok = false
+	_assert(sm30_ok,
+		"206: envelope — skill mods never beyond clamps (rings 1-30)")
+	_assert(float(agg30["skill_mods"]["fireball"]["radius_add"]) == 1.5,
+		"206: envelope — fireball radius saturates exactly at 1.5 by ring 30")
+	var owned120: Array = []
+	for ring in range(1, 121):
+		for index in DT.width(seed, 1, ring):
+			owned120.append(DT.pack_id(1, ring, index))
+	var agg120: Dictionary = DT.compute_aggregates(seed, "mage",
+		owned120)
+	_assert(float(agg120["stat_adds"]["speed"]) == 1.5
+			and float(agg120["skill_mods"]["fireball"]["dmg_mult"]) == 1.6
+			and float(agg120["skill_mods"]["meteor"]["dmg_mult"]) == 1.6
+			and float(agg120["skill_mods"]["inferno"]["cd_mult"]) == 0.65,
+		"206: envelope — speed/dmg_mult/cd_mult saturate exactly at their clamps by ring 120")
+
+	# --- Economy (module level): wallet = lifetime - spent.
+	var life := {"fireball": 100.0, "meteor": 50.0}
+	var bought: Array = [DT.pack_id(1, 1, 0), DT.pack_id(1, 2, 2)]
+	_assert(DT.wallet_of(seed, "mage", life, [], 1) == 150
+			and DT.wallet_of(seed, "mage", life, bought, 1) == 114,
+		"206: wallet derives as lifetime minus owned costs (150 - 36 = 114)")
+	_assert(not DT.branch_unlocked({}, "mage", 1)
+			and DT.branch_unlocked({"fire": {"signature": true}}, "mage", 1),
+		"206: Fire unlock reads the family signature flag")
+
+	# --- Data surface: a signature-locked branch exposes
+	# no nodes; unlocked shows the lookahead band.
+	var locked_stub := {"class_id": "mage", "tree_seed": seed,
+		"tree_owned": [], "family_collection": {}}
+	var unlocked_stub := {"class_id": "mage", "tree_seed": seed,
+		"tree_owned": [], "family_collection": {"fire": {"signature": true}}}
+	_assert(DT.visible_nodes(locked_stub).is_empty(),
+		"206: locked branch exposes no nodes on the data surface")
+	var vis: Array = DT.visible_nodes(unlocked_stub)
+	var vis_rings := {}
+	for e in vis:
+		vis_rings[int(e["ring"])] = true
+	_assert(vis_rings.has(1) and vis_rings.has(2)
+			and not vis_rings.has(3),
+		"206: visible band is deepest owned ring + 2")
+	_assert(DT.wallet(unlocked_stub, 1) == 0,
+		"206: wallet(player, branch) reads through the data surface")
+
+	# --- 9.9 looks (parameter level): stock on empty,
+	# deterministic, set-dependent, variant grammar.
+	_assert(bool(DT.look_for(seed, "mage", "fireball", []).get("stock", false)),
+		"206: empty governing set returns stock")
+	var shallow: Array = [DT.pack_id(1, 3, 0)]
+	var look_a: Dictionary = DT.look_for(seed, "mage", "fireball",
+		shallow)
+	var look_b: Dictionary = DT.look_for(seed, "mage", "fireball",
+		shallow)
+	_assert(JSON.stringify(look_a) == JSON.stringify(look_b)
+			and not bool(look_a["stock"]),
+		"206: the same owned set regenerates the identical look")
+	# Find the first variant-governed spine (capstone rings).
+	var variant_id := -1
+	for ring in [6, 12, 18, 24, 30, 36]:
+		var n: Dictionary = DT.node_for(seed, "mage", 1, ring, 0)
+		if str(n.get("kind", "")) == "variant":
+			variant_id = DT.pack_id(1, ring, 0)
+			break
+	_assert(variant_id > 0,
+		"206: a variant capstone exists within rings 6-36")
+	# Two different governing sets -> different bundles.
+	var deeper: Array = [DT.pack_id(1, 3, 0), DT.pack_id(1, 2, 0)]
+	var look_deep: Dictionary = DT.look_for(seed, "mage",
+		"fireball", deeper)
+	_assert(JSON.stringify(look_deep) != JSON.stringify(look_a),
+		"206: two different owned sets produce different fireball looks")
+	if variant_id > 0:
+		var vnode: Dictionary = DT.node_for(seed, "mage", 1,
+			DT.id_ring(variant_id), 0)
+		var vskill := str(vnode["target"])
+		# Base set governing the variant's skill, variant-free
+		# (rings 1-3 fixture nodes), then the same + variant.
+		var vbase_map := {"fireball": DT.pack_id(1, 3, 0),
+			"meteor": DT.pack_id(1, 2, 2),
+			"inferno": DT.pack_id(1, 1, 0)}
+		var vbase: Array = [vbase_map[vskill]]
+		var look_base_v: Dictionary = DT.look_for(seed, "mage",
+			vskill, vbase)
+		var deep: Array = vbase.duplicate()
+		deep.append(variant_id)
+		var look_v: Dictionary = DT.look_for(seed, "mage", vskill,
+			deep)
+		_assert(not bool(look_v["stock"]) and bool(look_v["variant"]),
+			"206: variant-governed look is non-stock and flags the variant")
+		_assert(int(look_v["trail_amount"]) >= 36
+				and int(look_base_v["trail_amount"]) <= 24,
+			"206: variant governance moves a named parameter (trail amount 36-48 vs <=24)")
+		var gram: Dictionary = look_v["grammar"]
+		_assert(not gram.is_empty()
+				and (gram["shells"] as Array).size() <= 2
+				and ["octahedron", "sphere8", "box", "crystal"].has(str(gram["core"])),
+			"206: variant bundle carries a grammar spec within budgets (core + <=2 shells)")
+	# --- Player integration (slices B): real Player
+	# instances through the real funnels.
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold := Node3D.new()
+	root.add_child(hold)
+	current_scene = hold
+
+	# 9.3 Wallet math through the real gain_affinity
+	# funnel: the lifetime counter outgrows the gauge's
+	# 100 clamp; the wallet tracks buys exactly.
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "mage")
+	hold.add_child(p)
+	p.set("level", 25)
+	p.call("specialize", "fireball")
+	for i in 30:
+		p.call("gain_affinity", "fireball", 10.0, -1)
+	_assert(float(p.get("affinity")["fireball"]) == 100.0,
+		"206: affinity gauge clamps at 100 (unchanged behavior)")
+	_assert(float(p.get("tree_lifetime")["fireball"]) == 150.0,
+		"206: lifetime counter never clamps (30 x 5.0 = 150 past the gauge)")
+	p.set("family_collection", {"fire": {"signature": true}})
+	_assert(DT.wallet(p, 1) == 150,
+		"206: wallet starts at the full lifetime total")
+	_assert(bool(p.call("try_purchase", DT.pack_id(1, 1, 0))),
+		"206: buy ring-1 spine succeeds (prereq core + funds)")
+	_assert(DT.wallet(p, 1) == 134,
+		"206: wallet = lifetime - owned costs after buy 1 (150 - 16)")
+	_assert(bool(p.call("try_purchase", DT.pack_id(1, 2, 0))),
+		"206: buy ring-2 spine succeeds")
+	_assert(bool(p.call("try_purchase", DT.pack_id(1, 2, 2))),
+		"206: buy ring-2 side node succeeds (OR-parent owned)")
+	_assert(DT.wallet(p, 1) == 85,
+		"206: wallet after the scripted sequence (150 - 16 - 29 - 20 = 85)")
+
+	# 9.4 Purchase legality: each refusal changes nothing.
+	var owned_before: Array = (p.get("tree_owned") as Array).duplicate()
+	_assert(not bool(p.call("try_purchase", DT.pack_id(1, 1, 0))),
+		"206: re-buying an owned node is refused")
+	_assert(not bool(p.call("try_purchase", DT.pack_id(1, 4, 0))),
+		"206: buying past an unowned parent is refused")
+	_assert(not bool(p.call("try_purchase", DT.pack_id(2, 1, 0))),
+		"206: buying an inert branch node is refused")
+	_assert((p.get("tree_owned") as Array) == owned_before,
+		"206: refusals change nothing anywhere")
+	var p_poor = PlayerScene.instantiate()
+	p_poor.set("class_id", "mage")
+	hold.add_child(p_poor)
+	p_poor.set("family_collection", {"fire": {"signature": true}})
+	p_poor.set("tree_lifetime", {"fireball": 5.0})
+	_assert(not bool(p_poor.call("try_purchase",
+			DT.pack_id(1, 1, 0))),
+		"206: insufficient wallet is refused")
+	var p_locked = PlayerScene.instantiate()
+	p_locked.set("class_id", "mage")
+	hold.add_child(p_locked)
+	p_locked.set("tree_lifetime", {"fireball": 500.0})
+	_assert(not bool(p_locked.call("try_purchase",
+			DT.pack_id(1, 1, 0))),
+		"206: a signature-locked branch refuses purchases")
+
+	# 9.5 Server validation by regeneration, driven
+	# process-locally on a fresh server-copy player.
+	var srv = PlayerScene.instantiate()
+	srv.set("class_id", "mage")
+	hold.add_child(srv)
+	srv.set("family_collection", {"fire": {"signature": true}})
+	var auth := 1
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 3, 0), 1000, auth)) == "prereq",
+		"206: validator rejects an unmet prereq (regenerated graph)")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 2, 7), 1000, auth)) == "inert",
+		"206: validator rejects a forged node id (regeneration finds no such node)")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 1, 0), 10, auth)) == "insufficient",
+		"206: validator rejects a wallet-insufficient claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 1, 0), 100, auth)) == "",
+		"206: validator accepts a legal claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 1, 0), 100, auth)) == "duplicate",
+		"206: validator rejects a duplicate claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 2, 0), 50, auth)) == "rollback",
+		"206: validator rejects a non-monotone lifetime claim")
+	_assert((srv.get("tree_owned") as Array).size() == 1,
+		"206: only the legal claim recorded anything")
+
+	# 9.7 Apply/derive round-trip through the real
+	# get_state/apply_state.
+	var agg_before: Dictionary = p.call("get_state") # state carries the keys
+	_assert(agg_before.has("tree_seed") and agg_before.has("tree_owned")
+			and agg_before.has("tree_lifetime"),
+		"206: get_state carries exactly the three additive tree keys")
+	var agg_json := JSON.stringify(DT.compute_aggregates(seed,
+		"mage", p.get("tree_owned")))
+	var p2 = PlayerScene.instantiate()
+	p2.set("class_id", "mage")
+	hold.add_child(p2)
+	p2.call("apply_state", agg_before)
+	_assert((p2.get("tree_owned") as Array) == (p.get("tree_owned") as Array)
+			and int(p2.get("tree_seed")) == seed
+			and JSON.stringify(p2.get("tree_aggregates")) == agg_json,
+		"206: state round-trips; aggregates after apply equal aggregates before save")
+	var p3 = PlayerScene.instantiate()
+	p3.set("class_id", "mage")
+	hold.add_child(p3)
+	p3.call("apply_state", {"level": 3})
+	_assert(int(p3.get("tree_seed")) == seed
+			and (p3.get("tree_owned") as Array).is_empty(),
+		"206: a pre-tree save (no tree keys) applies with defaults — no version bump needed")
+	# 9.8 Read sites live: a scripted owned set moves the
+	# real cast sites by exactly the aggregates' amounts.
+	for n in root.get_tree().get_nodes_in_group("dungeon"):
+		n.remove_from_group("dungeon")
+	for n in root.get_tree().get_nodes_in_group("players"):
+		n.remove_from_group("players")
+	var DungeonScript: GDScript = load(
+		"res://scripts/dungeon/dungeon.gd")
+	var dgn = DungeonScript.new()
+	dgn.name = "Dungeon206"
+	hold.add_child(dgn)
+	for holder_name in ["Players", "Projectiles"]:
+		if dgn.get_node_or_null(holder_name) == null:
+			var hn := Node3D.new()
+			hn.name = holder_name
+			dgn.add_child(hn)
+	# The bare dungeon spawns its own default Player_1 on
+	# entry — purge it, or get_player_node(1) resolves to
+	# the WRONG player and the caster legs go hollow.
+	for c in dgn.get_node("Players").get_children():
+		c.free()
+	var pc = PlayerScene.instantiate()
+	pc.set("class_id", "mage")
+	pc.name = "Player_1"
+	dgn.get_node("Players").add_child(pc)
+	_assert(dgn.call("get_player_node", 1) == pc,
+		"206: fixture integrity — the dungeon resolves peer 1 to the scripted player")
+	pc.set("damage", 100.0)
+	# Fireball damage: the ring-3 fixture node is +3%
+	# fireball damage (6 steps x 0.5%).
+	pc.set("tree_owned", [DT.pack_id(1, 3, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_cast_fireball")
+	var fb_found = null
+	for c in dgn.get_node("Projectiles").get_children():
+		if str(c.name).begins_with("Proj_"):
+			fb_found = c
+	_assert(fb_found != null
+			and absf(float(fb_found.get("damage")) - 103.0) < 0.01,
+		"206: read site — fireball cast damage moves by exactly the aggregate (+3% of 100 = 103)")
+	# Inferno cooldown: a scanned cd_pct node on inferno.
+	var cd_node := -1
+	var cd_steps := 0
+	for ring in range(1, 13):
+		for index in DT.width(seed, 1, ring):
+			var nd: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			if str(nd["target"]) == "inferno":
+				for comp in nd["params"].get("components", []):
+					if str(comp["param"]) == "cd_pct":
+						cd_node = int(nd["id"])
+						cd_steps = int(comp["steps"])
+	_assert(cd_node > 0,
+		"206: a cd_pct-on-inferno node exists in rings 1-12 (scan)")
+	if cd_node > 0:
+		pc.set("tree_owned", [cd_node])
+		pc.call("_recompute_tree_aggregates")
+		pc.call("_activate_inferno")
+		var expect_cd := 60.0 * (1.0 - float(cd_steps) * 0.005)
+		_assert(absf(float(pc.get("ability_cds")["inferno"])
+				- expect_cd) < 0.05,
+			"206: read site — inferno cooldown scales by exactly the aggregate cd_mult")
+	# Fireball blast radius: a scanned radius_add node.
+	var rad_node := -1
+	var rad_steps := 0
+	for ring in range(1, 13):
+		for index in DT.width(seed, 1, ring):
+			var nd: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			if str(nd["target"]) == "fireball":
+				for comp in nd["params"].get("components", []):
+					if str(comp["param"]) == "radius_add" \
+							and rad_node < 0:
+						rad_node = int(nd["id"])
+						rad_steps = int(comp["steps"])
+	_assert(rad_node > 0,
+		"206: a radius_add-on-fireball node exists in rings 1-12 (scan)")
+	if rad_node > 0:
+		pc.set("tree_owned", [rad_node])
+		pc.call("_recompute_tree_aggregates")
+		var MobScene: PackedScene = load(
+			"res://scenes/mobs/mob.tscn")
+		var sdata: Resource = load("res://data/mobs/slime.tres")
+		var radius := 2.6 + float(rad_steps) * 0.1
+		var mob_in = MobScene.instantiate()
+		mob_in.setup(1, sdata, 1.0, 1.0, false, 1.0)
+		hold.add_child(mob_in)
+		# Placement discriminates: beyond the stock 2.6,
+		# inside 2.6 + radius_add (steps >= 1 => add >= 0.1).
+		mob_in.global_position = Vector3(radius - 0.05, 0, 0)
+		var mob_out = MobScene.instantiate()
+		mob_out.setup(1, sdata, 1.0, 1.0, false, 1.0)
+		hold.add_child(mob_out)
+		mob_out.global_position = Vector3(radius + 0.4, 0, 0)
+		var FB := load("res://scripts/combat/fireball.gd")
+		var fb = FB.new()
+		fb.setup(Vector3.ZERO, 10.0, 1)
+		dgn.get_node("Projectiles").add_child(fb)
+		fb.global_position = Vector3.ZERO
+		fb.call("_explode")
+		_assert(float(mob_in.get("hp")) < float(mob_in.get("max_hp")),
+			"206: read site — a mob inside 2.6 + radius_add is hit")
+		_assert(float(mob_out.get("hp")) == float(mob_out.get("max_hp")),
+			"206: read site — a mob beyond 2.6 + radius_add is untouched")
+		hold.remove_child(mob_in)
+		mob_in.free()
+		hold.remove_child(mob_out)
+		mob_out.free()
+	# The combined atk_spd rides the snapshot channel.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("bonus_atk_spd + _tree_stat(\"atk_spd\")"),
+		"206: push_snapshot carries bonus + tree atk_spd (no format change)")
+	# 9.9 Looks at construction: grammar budgets + a
+	# variant-governed fireball builds its grammar body
+	# while an ungoverned one builds stock.
+	var TL := load("res://scripts/progression/deep_tree_looks.gd")
+	var budgets_ok := true
+	for core_kind in ["octahedron", "sphere8", "box", "crystal"]:
+		var g := {"core": core_kind,
+			"shells": ["spike_crown", "orbit_ring"],
+			"scale": 1.0}
+		var groot = TL.grammar_root(g,
+			StandardMaterial3D.new(), StandardMaterial3D.new())
+		if TL.primitive_count(groot) > 8 \
+				or TL.vertex_count(groot) > 800:
+			budgets_ok = false
+		groot.free()
+	_assert(budgets_ok,
+		"206: grammar bundles stay within budgets (<= 8 primitives, <= 800 vertices)")
+	var twin_node := -1
+	for ring in [6, 12, 18, 24, 30, 36, 42, 48, 54, 60]:
+		var nd: Dictionary = DT.node_for(seed, "mage", 1, ring, 0)
+		if str(nd.get("kind", "")) == "variant" \
+				and str(nd["params"].get("variant", "")) == "twin_suns":
+			twin_node = DT.pack_id(1, ring, 0)
+			break
+	_assert(twin_node > 0,
+		"206: a twin_suns variant capstone exists (scan to ring 60)")
+	if twin_node > 0:
+		pc.set("tree_owned", [twin_node])
+		pc.call("_recompute_tree_aggregates")
+		var FB2 := load("res://scripts/combat/fireball.gd")
+		var fbg = FB2.new()
+		fbg.setup(Vector3(0, 0, -1), 10.0, 1)
+		dgn.get_node("Projectiles").add_child(fbg)
+		var has_grammar := false
+		var trail_amt := 0
+		for c in fbg.get_children():
+			if str(c.name).begins_with("TreeGrammar"):
+				has_grammar = true
+			if c is GPUParticles3D:
+				trail_amt = int((c as GPUParticles3D).amount)
+		_assert(has_grammar and trail_amt >= 36,
+			"206: variant-governed fireball builds the grammar body + boosted trail")
+		pc.set("tree_owned", [])
+		pc.call("_recompute_tree_aggregates")
+		var fbs = FB2.new()
+		fbs.setup(Vector3(0, 0, -1), 10.0, 1)
+		dgn.get_node("Projectiles").add_child(fbs)
+		var stock_ok := false
+		for c in fbs.get_children():
+			if c is MeshInstance3D:
+				var m := (c as MeshInstance3D).mesh
+				if m is SphereMesh and absf((m as SphereMesh).radius - 0.22) < 0.001:
+					stock_ok = true
+			if c is GPUParticles3D:
+				stock_ok = stock_ok and int((c as GPUParticles3D).amount) == 24
+		_assert(stock_ok,
+			"206: ungoverned fireball construction is stock (sphere r0.22, trail 24)")
+	var hsrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/hud.gd")
+	_assert(hsrc.contains("_refresh_tree_list")
+			and hsrc.contains("DeepTree.visible_nodes"),
+		"206: the pause-menu inspector renders the tree data surface")
+	for node in [p, p_poor, p_locked, srv, p2, p3]:
+		hold.remove_child(node)
+		node.free()
+	current_scene = null
+	hold.free()
+	print("[Playtest] Deep Tree module test done.")

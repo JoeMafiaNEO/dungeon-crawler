@@ -31,31 +31,74 @@ func _is_in_wall() -> bool:
 	return layout.is_solid_world(global_position)
 
 
+## Issue #206 (spec section 6): the caster's Deep Tree
+## look for this projectile, or {} when the caster's set
+## doesn't govern it (stock construction, byte-for-byte).
+func _caster_look() -> Dictionary:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return {}
+	var caster = dungeon.get_player_node(owner_peer)
+	if caster == null:
+		return {}
+	var owned: Array = caster.get("tree_owned")
+	if owned.is_empty():
+		return {}
+	return DeepTree.look_for(int(caster.get("tree_seed")),
+		str(caster.get("class_id")),
+		"barrage" if skill_tag == "barrage" else "fireball",
+		owned)
+
+
 func _ready() -> void:
-	# Glowing core.
-	var core := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.22
-	sphere.height = 0.44
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.45, 0.1)
-	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.4, 0.08)
-	mat.emission_energy_multiplier = 4.0
-	sphere.material = mat
-	core.mesh = sphere
-	add_child(core)
-	# Light it casts.
+	var look := _caster_look()
+	var governed := not look.is_empty() \
+		and not bool(look.get("stock", true))
+	var shift := float(look.get("hue_shift", 0.0)) \
+		if governed else 0.0
+	if governed and bool(look.get("variant", false)):
+		# Variant-governed: the seeded grammar body
+		# replaces the stock sphere (cached template).
+		var tmpl := DeepTreeLooks.bundle_template(owner_peer,
+			"barrage" if skill_tag == "barrage" else "fireball",
+			look, Color(1.0, 0.45, 0.1), Color(1.0, 0.4, 0.08))
+		add_child(tmpl.duplicate())
+	else:
+		# Glowing core (stock values when ungoverned).
+		var core := MeshInstance3D.new()
+		var sphere := SphereMesh.new()
+		sphere.radius = 0.22
+		sphere.height = 0.44
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = DeepTreeLooks.shifted(
+			Color(1.0, 0.45, 0.1), shift)
+		mat.emission_enabled = true
+		mat.emission = DeepTreeLooks.shifted(
+			Color(1.0, 0.4, 0.08), shift)
+		mat.emission_energy_multiplier = float(look.get(
+			"emission_energy", 4.0)) if governed else 4.0
+		sphere.material = mat
+		core.mesh = sphere
+		add_child(core)
+	# Light it casts (the look never adds lights; energy
+	# and color stay in the stock envelope).
 	var light := OmniLight3D.new()
-	light.light_color = Color(1.0, 0.5, 0.15)
-	light.light_energy = 1.6
+	light.light_color = DeepTreeLooks.shifted(
+		Color(1.0, 0.5, 0.15), shift)
+	light.light_energy = float(look.get("light_energy",
+		1.6)) if governed else 1.6
 	light.omni_range = 7.0
 	add_child(light)
-	# Flame trail.
-	var trail := Effects.make_flame()
-	trail.amount = 24
-	trail.local_coords = false
-	add_child(trail)
+	# Trail.
+	if governed:
+		add_child(DeepTreeLooks.make_trail(look,
+			DeepTreeLooks.shifted(Color(1.0, 0.45, 0.1),
+				shift)))
+	else:
+		var trail := Effects.make_flame()
+		trail.amount = 24
+		trail.local_coords = false
+		add_child(trail)
 
 
 func _physics_process(delta: float) -> void:
@@ -101,6 +144,10 @@ func _explode() -> void:
 		var radius := 2.6
 		if caster != null and caster.has_trait("conflagration") and skill_tag == "fireball":
 			radius *= 1.25
+		# Issue #206 (spec section 5): the caster's tree
+		# radius_add for the skill, beside Conflagration.
+		if caster != null:
+			radius += caster.tree_radius_add("barrage" if skill_tag == "barrage" else "fireball")
 		for node in get_tree().get_nodes_in_group("mobs"):
 			var mob := node as Mob
 			if mob == null or not mob.alive:
@@ -142,3 +189,4 @@ func explode_fx() -> void:
 	tw.tween_property(flash, "light_energy", 0.0, 0.35)
 	tw.tween_callback(flash.queue_free)
 	queue_free()
+

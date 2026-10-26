@@ -216,6 +216,25 @@ var eagle_eye_used_wave := -1
 var specialization := ""  # skill_id, or "" for none
 var affinity := {}  # skill_id -> float (0-100)
 var family_collection := {}  # family_id -> {"traits": [trait_ids], "signature": bool}
+## Issue #206 (Deep Tree): the character's tree seed (stored
+## per save; initialized from DeepTree.TREE_SEED, stored
+## value wins on apply), owned packed node ids, and the
+## NEVER-clamped lifetime affinity counters the insight
+## wallets derive from. Aggregates are derived state —
+## recomputed by DeepTree.compute_aggregates, never saved.
+var tree_seed := DeepTree.TREE_SEED
+var tree_owned: Array = []
+var tree_lifetime := {}  # skill_id -> float (lifetime, unclamped)
+var tree_aggregates := {}
+## Server-side monotone record: branch -> last claimed
+## lifetime total a validated purchase presented. Rollback
+## claims (below the record) reject (spec section 4).
+var tree_last_claimed := {}
+## Fuel for the Flame (issue #206 behavior): msec deadline
+## of the post-Inferno fire-damage window. Timed buff in
+## the _buff_mult pattern — a var + a clock check at the
+## read sites.
+var _tree_fuel_until := 0
 ## Anti-cheese: per-enemy cooldowns for affinity gain.
 var _affinity_enemy_cd := {}  # "%s:%d" % [skill_id, enemy_id] -> msec
 ## Per-cast caps: cast_id -> points granted so far.
@@ -578,9 +597,9 @@ func _recalc_stats() -> void:
 	var hp_m := 1.0
 	var spd_m := 1.0
 	xp_mult = 1.0
-	max_hp = class_data.base_health + float(level - 1) * 15.0 + bonus_health
-	damage = class_data.base_damage + float(level - 1) * 2.0 + bonus_damage
-	move_speed = class_data.base_move_speed + bonus_speed
+	max_hp = class_data.base_health + float(level - 1) * 15.0 + bonus_health + _tree_stat("health")
+	damage = class_data.base_damage + float(level - 1) * 2.0 + bonus_damage + _tree_stat("damage")
+	move_speed = class_data.base_move_speed + bonus_speed + _tree_stat("speed")
 	attack_cooldown = class_data.base_attack_cooldown
 	attack_range = class_data.base_attack_range
 	for entry in inventory:
@@ -1127,14 +1146,14 @@ func _update_staff_glow() -> void:
 		return
 	var f := _aura_factor()
 	_staff_glow.light_energy = 0.5 * f
-	_staff_glow.omni_range = 3.5 + float(level) * 0.15 + bonus_aura * 0.5
+	_staff_glow.omni_range = 3.5 + float(level) * 0.15 + (bonus_aura + _tree_stat("aura")) * 0.5
 	if _staff_crystal_mat != null:
 		_staff_crystal_mat.emission_energy_multiplier = 2.0 * f
 
 
 ## Shared aura brightness factor (level + invested aura points).
 func _aura_factor() -> float:
-	return 1.0 + float(maxi(0, level - 1)) * 0.25 + bonus_aura * 0.5
+	return 1.0 + float(maxi(0, level - 1)) * 0.25 + (bonus_aura + _tree_stat("aura")) * 0.5
 
 
 ## Team-visible aura: a world-space light every peer renders, so the
@@ -1181,9 +1200,198 @@ func _push_aura() -> void:
 	if not is_multiplayer_authority():
 		return
 	net_aura_level = level
-	net_bonus_aura = bonus_aura
+	# Issue #206: the combined aura (base + tree) rides the
+	# sync channel, like the snapshot's combined atk_spd.
+	net_bonus_aura = bonus_aura + _tree_stat("aura")
 	_update_aura_visual()
-	rpc("sync_aura", level, bonus_aura)
+	rpc("sync_aura", level, bonus_aura + _tree_stat("aura"))
+
+
+# --- Deep Tree (issue #206) ---
+
+## One aggregate value, read-safe before the first
+## recompute (empty aggregates read as zero everywhere).
+func _tree_stat(key: String) -> float:
+	if tree_aggregates.is_empty():
+		return 0.0
+	return float((tree_aggregates.get("stat_adds", {})
+		as Dictionary).get(key, 0.0))
+
+
+func _tree_skill_mod(skill_id: String, key: String,
+		default_value: float) -> float:
+	if tree_aggregates.is_empty():
+		return default_value
+	var mods: Dictionary = tree_aggregates.get("skill_mods",
+		{})
+	if not mods.has(skill_id):
+		return default_value
+	return float((mods[skill_id] as Dictionary).get(key,
+		default_value))
+
+
+func _recompute_tree_aggregates() -> void:
+	tree_aggregates = DeepTree.compute_aggregates(tree_seed,
+		class_id, tree_owned)
+
+
+## Public read for effect scripts (spec section 5): the
+## caster's radius_add for a skill, fetched by the effects
+## through get_player_node(owner_peer) at the effect site.
+func tree_radius_add(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "radius_add", 0.0)
+
+
+## The fire-damage multiplier the three fire cast sites
+## fold in beside trait_damage_mult (spec section 5): the
+## skill's aggregate dmg_mult, with the two authored
+## behaviors multiplying under their conditions.
+func _tree_fire_mult(skill_id: String) -> float:
+	var m := _tree_skill_mod(skill_id, "dmg_mult", 1.0)
+	if tree_aggregates.is_empty():
+		return m
+	var beh: Dictionary = tree_aggregates.get("behaviors", {})
+	if beh.has("emberheart") and hp < max_hp * 0.35:
+		m *= 1.0 + float(beh["emberheart"]) / 100.0
+	if beh.has("fuel_for_the_flame") \
+			and Time.get_ticks_msec() < _tree_fuel_until:
+		m *= 1.0 + float(beh["fuel_for_the_flame"]) / 100.0
+	return m
+
+
+func _tree_variant(skill_id: String) -> String:
+	if tree_aggregates.is_empty():
+		return ""
+	return str((tree_aggregates.get("variants", {})
+		as Dictionary).get(skill_id, ""))
+
+
+## Owner-side purchase entry (spec sections 4/8): local
+## validation first, then the single server-validated claim
+## path. Returns true when the claim was SENT (or applied
+## host-locally); acceptance itself arrives via
+## tree_sync_player.
+func try_purchase(node_id: int) -> bool:
+	var branch := DeepTree.id_branch(node_id)
+	var node := DeepTree.node_for(tree_seed, class_id, branch,
+		DeepTree.id_ring(node_id), DeepTree.id_index(node_id))
+	if node.is_empty() or bool(node.get("inert", false)):
+		return false
+	if not DeepTree.branch_unlocked(family_collection,
+			class_id, branch):
+		return false
+	if tree_owned.has(node_id):
+		return false
+	if not DeepTree.prereq_met(tree_seed, class_id, node_id,
+			tree_owned):
+		return false
+	if DeepTree.wallet_of(tree_seed, class_id, tree_lifetime,
+			tree_owned, branch) < int(node["cost"]):
+		return false
+	var claimed := int(DeepTree.lifetime_total(tree_lifetime,
+		class_id, branch))
+	if _tree_is_server():
+		# Host: direct call (the standard host-routing
+		# pattern); the accept broadcasts the sync, whose
+		# call_local leg applies on this copy the same way
+		# as every replica (the validator already recorded
+		# it; the sync re-application is idempotent).
+		var reason := _tree_validate_claim(node_id, claimed,
+			get_multiplayer_authority())
+		if reason != "":
+			return false
+		if multiplayer.has_multiplayer_peer():
+			rpc("tree_sync_player",
+				get_multiplayer_authority(), tree_owned,
+				tree_aggregates)
+		return true
+	# Guest: claim to the server's copy of this node.
+	rpc_id(NetworkManager.server_peer_id,
+		"tree_claim_purchase", node_id, claimed)
+	return true
+
+
+func _tree_is_server() -> bool:
+	return not multiplayer.has_multiplayer_peer() \
+		or multiplayer.is_server()
+
+
+## The regeneration validator (spec section 4.2) — pure
+## enough to drive process-locally in tests: it consults
+## only this copy's state (which, on the server, is the
+## ledger). Returns "" on accept, else the reject reason.
+## On accept it RECORDS the purchase on this copy; the
+## caller broadcasts the sync.
+func _tree_validate_claim(node_id: int,
+		claimed_lifetime: int, claimant_peer: int) -> String:
+	if claimant_peer != get_multiplayer_authority():
+		return "not_owner"
+	var branch := DeepTree.id_branch(node_id)
+	var node := DeepTree.node_for(tree_seed, class_id, branch,
+		DeepTree.id_ring(node_id), DeepTree.id_index(node_id))
+	if node.is_empty() or bool(node.get("inert", false)):
+		return "inert"
+	if not DeepTree.branch_unlocked(family_collection,
+			class_id, branch):
+		return "locked"
+	if tree_owned.has(node_id):
+		return "duplicate"
+	if not DeepTree.prereq_met(tree_seed, class_id, node_id,
+			tree_owned):
+		return "prereq"
+	if claimed_lifetime < int(tree_last_claimed.get(branch,
+			0)):
+		return "rollback"
+	var spent := DeepTree.spent_total(tree_seed, class_id,
+		tree_owned, branch)
+	if claimed_lifetime - spent < int(node["cost"]):
+		return "insufficient"
+	tree_owned.append(node_id)
+	tree_last_claimed[branch] = claimed_lifetime
+	_recompute_tree_aggregates()
+	return ""
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func tree_claim_purchase(node_id: int,
+		claimed_lifetime: int) -> void:
+	if not _tree_is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var reason := _tree_validate_claim(node_id,
+		claimed_lifetime, sender)
+	if reason == "":
+		rpc("tree_sync_player", get_multiplayer_authority(),
+			tree_owned, tree_aggregates)
+	else:
+		rpc_id(sender, "tree_purchase_denied", node_id, reason)
+
+
+@rpc("any_peer", "call_local", "reliable")
+func tree_sync_player(peer_id: int, owned: Array,
+		aggregates: Dictionary) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		return # only the server originates syncs
+	if peer_id != get_multiplayer_authority():
+		return
+	tree_owned = []
+	for id in owned:
+		tree_owned.append(int(id))
+	tree_aggregates = aggregates.duplicate(true)
+	_recalc_stats()
+	_push_aura()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func tree_purchase_denied(node_id: int, reason: String) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		return
+	# Nothing changes anywhere on a reject (spec section 4);
+	# the denial is surfaced for the inspector/HUD only.
+	print("[DeepTree] purchase denied node=%d reason=%s"
+		% [node_id, reason])
 
 
 # --- Co-op ping ---
@@ -2514,11 +2722,17 @@ func _activate_inferno() -> void:
 	var hit := space.intersect_ray(params)
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
-	ability_cds["inferno"] = (60.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["inferno"] = (60.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("inferno", "cd_mult", 1.0)
 	_cast_seq += 1
 	# 10 ticks x 0.6 = 6.0x base ≈ 1.5x rank-V meteor (4.0x), plus burn.
-	var dmg := damage * _buff_mult("damage") * 0.6 * trait_damage_mult("fireball")
+	var dmg := damage * _buff_mult("damage") * 0.6 * trait_damage_mult("fireball") * _tree_fire_mult("inferno")
 	rpc("cast_inferno", point, dmg, int(multiplayer.get_unique_id()), _cast_seq)
+	# Fuel for the Flame (issue #206): casting Inferno opens
+	# the 5 s fire-damage window the behavior prices.
+	if not tree_aggregates.is_empty() and (tree_aggregates.get(
+			"behaviors", {}) as Dictionary).has(
+			"fuel_for_the_flame"):
+		_tree_fuel_until = Time.get_ticks_msec() + 5000
 	AudioManager.sfx("milestone")
 	if hud != null:
 		hud.toast("INFERNO!")
@@ -2553,6 +2767,15 @@ func cast_inferno(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 					else:
 						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, point)
 					m.apply_burn(3.0, dmg * 0.3, owner)
+			# Phoenix Pyre (issue #206 variant): the tick also
+			# heals allies in the radius for a fraction of its
+			# damage (the Holy Light precedent). Heal fraction
+			# is an authored placeholder.
+			if _tree_variant("inferno") == "phoenix_pyre":
+				for pn in get_tree().get_nodes_in_group("players"):
+					var pl := pn as Player
+					if pl != null and pl.alive and pl.global_position.distance_to(point) < 8.0:
+						pl.heal(dmg * 0.25)
 		if i % 3 == 2 and is_inside_tree():
 			Effects.burst(get_parent(), point + Vector3(0, 1.0, 0), Color(1.0, 0.45, 0.1), 20, 7.0)
 	flames.emitting = false
@@ -3065,6 +3288,10 @@ func gain_affinity(skill_id: String, points: float, enemy_id: int = -1) -> float
 			return 0.0
 		_affinity_enemy_cd[key] = now
 	var gained := points * FOCUS_MULT * AFFINITY_RATE
+	# Issue #206 (spec section 3): the lifetime hook — ONE
+	# line in this funnel (gain_affinity_capped inherits it).
+	# Post caps, pre gauge-clamp; the counter never clamps.
+	tree_lifetime[skill_id] = float(tree_lifetime.get(skill_id, 0.0)) + gained
 	var cur := float(affinity.get(skill_id, 0.0))
 	affinity[skill_id] = minf(100.0, cur + gained)
 	print("[Affinity] %s +%.1f (%.0f/100)" % [skill_id, gained, affinity[skill_id]])
@@ -4456,7 +4683,15 @@ func _cast_fireball() -> void:
 	var basis := _camera.global_transform.basis
 	var dir := -basis.z
 	var origin: Vector3 = _camera.global_position + dir * 0.7 + Vector3(0, -0.15, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("fireball")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("fireball") * _tree_fire_mult("fireball")
+	# Twin Suns (issue #206 variant): two bolts at 65% in a
+	# +-4 degree spread; the second carries the "twin" tag.
+	if _tree_variant("fireball") == "twin_suns":
+		var uid := int(multiplayer.get_unique_id())
+		rpc("cast_fireball", origin, dir.normalized().rotated(Vector3.UP, deg_to_rad(-4.0)), dmg * 0.65, uid, _cast_seq)
+		_cast_seq += 1
+		rpc("cast_fireball", origin, dir.normalized().rotated(Vector3.UP, deg_to_rad(4.0)), dmg * 0.65, uid, _cast_seq, "twin")
+		return
 	rpc("cast_fireball", origin, dir.normalized(), dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
@@ -4643,7 +4878,17 @@ func _cast_meteor() -> void:
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
 	_cast_seq += 1
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 2.0 * trait_damage_mult("meteor")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 2.0 * trait_damage_mult("meteor") * _tree_fire_mult("meteor")
+	# Meteor Shower (issue #206 variant): three meteors at
+	# 45% in a triangle (~2.2 m) on the target area.
+	if _tree_variant("meteor") == "meteor_shower":
+		var uid := int(multiplayer.get_unique_id())
+		for k in 3:
+			var ang := deg_to_rad(90.0 + 120.0 * float(k))
+			var off := Vector3(cos(ang), 0.0, sin(ang)) * 2.2
+			rpc("cast_meteor", point + off, dmg * 0.45, uid, _cast_seq)
+			_cast_seq += 1
+		return
 	rpc("cast_meteor", point, dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
@@ -6172,7 +6417,9 @@ func spend_point(stat: String) -> bool:
 ## Called on spawn, on state restore, and on equip/unequip. Idempotent.
 func _apply_equipped_special() -> void:
 	# Migration: mages that invested 20 aura keep Holy Light via earn.
-	if class_id == "mage" and bonus_aura >= SpecialData.AURA_EARN_REQ:
+	# Issue #206 (spec section 5): the earn reads the COMBINED
+	# aura (base + tree), as specced.
+	if class_id == "mage" and bonus_aura + _tree_stat("aura") >= SpecialData.AURA_EARN_REQ:
 		SpecialData.earn_for(self, "holy_light")
 	# Derived effects reset first: unequipping or switching can never stack.
 	cash_mult = 1.0
@@ -6243,6 +6490,7 @@ const STATE_KEYS: Array[String] = [
 	"run_start_msec", "run_kills", "run_damage_dealt",
 	"supermarket_cash", "bounty_progress", "totem_charges",
 	"specialization", "affinity", "family_collection",
+	"tree_seed", "tree_owned", "tree_lifetime",
 	"equipped_special", "no_death_streak", "second_wind_armed",
 	"second_wind_used",
 ]
@@ -6294,6 +6542,11 @@ func get_state() -> Dictionary:
 		"specialization": specialization,
 		"affinity": affinity.duplicate(true),
 		"family_collection": family_collection.duplicate(true),
+		# Issue #206 (spec section 7): three additive keys,
+		# no SAVE_VERSION bump — derived state stays unsaved.
+		"tree_seed": tree_seed,
+		"tree_owned": tree_owned.duplicate(),
+		"tree_lifetime": tree_lifetime.duplicate(true),
 		# Relic Vault (issue #6): equipped special + earn tracking.
 		"equipped_special": equipped_special,
 		"no_death_streak": no_death_streak,
@@ -6344,6 +6597,16 @@ func apply_state(s: Dictionary) -> void:
 	specialization = str(s.get("specialization", ""))
 	affinity = (s.get("affinity", {}) as Dictionary).duplicate(true)
 	family_collection = (s.get("family_collection", {}) as Dictionary).duplicate(true)
+	# Issue #206: the stored seed wins; aggregates recompute
+	# here so the recalc at this function's tail folds them.
+	tree_seed = int(s.get("tree_seed", DeepTree.TREE_SEED))
+	if tree_seed == 0:
+		tree_seed = DeepTree.TREE_SEED
+	tree_owned = []
+	for tid in (s.get("tree_owned", []) as Array):
+		tree_owned.append(int(tid))
+	tree_lifetime = (s.get("tree_lifetime", {}) as Dictionary).duplicate(true)
+	_recompute_tree_aggregates()
 	# Relic Vault (issue #6): equipped special + earn tracking.
 	equipped_special = str(s.get("equipped_special", ""))
 	no_death_streak = int(s.get("no_death_streak", 0))
@@ -6497,7 +6760,7 @@ func _emit_snapshot(delta: float) -> void:
 		# Issue #133: never fire into a dead peer (the Oct 14 spam
 		# site — 10 Hz of not-connected errors after the host died).
 		if _mp_peer_connected():
-			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd)
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd + _tree_stat("atk_spd"))
 
 
 ## Issue #164 (parts A + C): a puppet's presentation follows its

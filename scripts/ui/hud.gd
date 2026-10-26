@@ -1919,9 +1919,67 @@ func _refresh_spec_list() -> void:
 				btn.tooltip_text = "Unlocks at level %d" % Player.SPECIALIZATION_UNLOCK_LEVEL
 		row.add_child(btn)
 		%SpecList.add_child(row)
+	_refresh_tree_list()
 	# Issue #152: spec rows are dynamic — re-chain while paused.
 	if is_paused:
 		FocusChain.apply(_pause_surface(), _pause_primary())
+
+
+## Issue #206 (spec section 8): the Deep Tree inspector —
+## DISPOSABLE SCAFFOLDING (Jesse's fork-5 canvas replaces
+## it eventually). Branch header + wallet line + the
+## visible band as rows in the specialization-list idiom;
+## purchasable rows carry a Buy button wired to
+## player.try_purchase. A signature-locked branch shows
+## the header only (the data surface exposes no nodes).
+func _refresh_tree_list() -> void:
+	if _player == null:
+		return
+	var cls := str(_player.get("class_id"))
+	var unlocked := DeepTree.branch_unlocked(
+		_player.get("family_collection"), cls,
+		DeepTree.BRANCH_FIRE)
+	var hdr := Label.new()
+	hdr.text = "Deep Tree — Fire (%s) — Insight: %d" % [
+		"unlocked" if unlocked else "locked — earn the family signature",
+		DeepTree.wallet(_player, DeepTree.BRANCH_FIRE)]
+	hdr.add_theme_color_override("font_color",
+		Color(1.0, 0.7, 0.35))
+	%SpecList.add_child(hdr)
+	for entry in DeepTree.visible_nodes(_player):
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 8)
+		var lbl := Label.new()
+		lbl.text = "R%d %s — %s (%d insight)" % [
+			int(entry["ring"]), str(entry["name"]),
+			str(entry["desc"]), int(entry["cost"])]
+		match str(entry["state"]):
+			"owned":
+				lbl.add_theme_color_override("font_color",
+					Color(0.55, 0.9, 0.55))
+			"purchasable":
+				lbl.add_theme_color_override("font_color",
+					Color(1.0, 0.9, 0.6))
+			_:
+				lbl.add_theme_color_override("font_color",
+					Color(0.6, 0.6, 0.65))
+		row.add_child(lbl)
+		if str(entry["state"]) == "purchasable":
+			var btn := Button.new()
+			btn.text = "Buy"
+			btn.pressed.connect(
+				_on_tree_buy_pressed.bind(int(entry["id"])))
+			row.add_child(btn)
+		%SpecList.add_child(row)
+
+
+func _on_tree_buy_pressed(node_id: int) -> void:
+	if _player == null:
+		return
+	_player.call("try_purchase", node_id)
+	_refresh_spec_list()
+	AudioManager.sfx("ui_click")
 
 
 func _on_specialize_pressed(skill_id: String) -> void:
