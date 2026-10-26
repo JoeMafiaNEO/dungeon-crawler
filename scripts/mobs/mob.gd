@@ -1994,6 +1994,12 @@ func _drop_and_reward(attacker: int) -> void:
 	if theme_res != null:
 		theme_id = str(theme_res.get("theme_id"))
 	var is_village := theme_id == "village"
+	# Issue #205 (F2): on a replayed floor, drops pay
+	# consumables only — gear entries leave the pool (XP
+	# above is untouched). Stubs without the method read as
+	# a first clear.
+	var replay: bool = dungeon.has_method("is_floor_replay") \
+		and bool(dungeon.call("is_floor_replay"))
 	var rolls := 1 + data.bonus_drops
 	for r in rolls:
 		if randf() > data.drop_chance * NetworkManager.host_loot_mult:
@@ -2004,6 +2010,8 @@ func _drop_and_reward(attacker: int) -> void:
 				continue
 			if d.item.meta_locked and not SaveManager.is_item_unlocked(d.item.id):
 				continue
+			if replay and not d.item.consumable:
+				continue
 			total += d.weight * _luck_weight(d.item.rarity)
 		if total <= 0.0:
 			continue
@@ -2012,6 +2020,8 @@ func _drop_and_reward(attacker: int) -> void:
 			if not is_village and _is_potion(d.item.id):
 				continue
 			if d.item.meta_locked and not SaveManager.is_item_unlocked(d.item.id):
+				continue
+			if replay and not d.item.consumable:
 				continue
 			roll -= d.weight * _luck_weight(d.item.rarity)
 			if roll <= 0.0:
@@ -2039,6 +2049,11 @@ func _is_potion(item_id: String) -> bool:
 ## Meta-unlocked items can drop from elites and bosses once unlocked.
 func _try_meta_drop(dungeon) -> void:
 	if not (data.is_boss or is_elite):
+		return
+	# Issue #205 (F2): meta items are gear — a replayed
+	# floor never pays them.
+	if dungeon.has_method("is_floor_replay") \
+			and bool(dungeon.call("is_floor_replay")):
 		return
 	var unlocked := SaveManager.get_unlocked_items()
 	if unlocked.is_empty():

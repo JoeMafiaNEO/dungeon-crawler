@@ -7284,6 +7284,77 @@ func _test_floors_205() -> void:
 		"205: the player interact scan sees doors + floor surfaces")
 	var dsrc: String = FileAccess.get_file_as_string(
 		"res://scripts/dungeon/dungeon.gd")
+	# 10. THE danger function (S2): danger_index() IS
+	# buildings_cleared — one read, no second formula.
+	DungeonScript.set("buildings_cleared", 3)
+	_assert(DungeonScript.danger_index() == 3,
+		"205 S2: danger_index() reads buildings_cleared")
+	DungeonScript.set("buildings_cleared", 0)
+	_assert(DungeonScript.danger_index() == 0,
+		"205 S2: danger_index() at zero cleared is zero")
+
+	# 11. The replay predicate (F2): the current floor is a
+	# replay iff its ledger bit was already set.
+	var dfix = DungeonScript.new()
+	DungeonScript.set("floor_key", "")
+	_assert(not bool(dfix.call("is_floor_replay")),
+		"205 S2: outside a building nothing is a replay")
+	DungeonScript.set("floor_key", "7,7")
+	DungeonScript.set("floor_index", 1)
+	DungeonScript.set("floor_masks", {})
+	_assert(not bool(dfix.call("is_floor_replay")),
+		"205 S2: a first visit is not a replay")
+	DungeonScript.set("floor_masks", {"7,7": 0b010})
+	_assert(bool(dfix.call("is_floor_replay")),
+		"205 S2: a set bit makes the floor a replay")
+	DungeonScript.set("floor_index", 0)
+	_assert(not bool(dfix.call("is_floor_replay")),
+		"205 S2: another floor's bit does not tier this floor")
+	dfix.free()
+
+	# 12. The Act 2 record round-trips the floor position +
+	# ledger (continue-at-(building, floor) reads these).
+	DungeonScript.set("floor_key", "12,9")
+	DungeonScript.set("floor_index", 2)
+	DungeonScript.set("floor_masks", {"12,9": 5})
+	DungeonScript.set("floor_counted", ["3,3"])
+	var rec_rt: Dictionary = DungeonScript.act2_record()
+	DungeonScript.reset_act2_state()
+	DungeonScript.restore_act2_state({"act2": rec_rt})
+	_assert(str(DungeonScript.get("floor_key")) == "12,9"
+			and int(DungeonScript.get("floor_index")) == 2
+			and int((DungeonScript.get("floor_masks")
+				as Dictionary).get("12,9", 0)) == 5
+			and (DungeonScript.get("floor_counted")
+				as Array).has("3,3"),
+		"205 S2: floor position + ledger round-trip the Act 2 record")
+
+	# 13. Tiering + death + continue wiring (source pins):
+	# the mob drop seam filters gear on replays, the clear
+	# shower does the same, death routes to the ground
+	# floor (both paths), and the MP continue broadcasts
+	# the building branch.
+	var msrc: String = FileAccess.get_file_as_string(
+		"res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("is_floor_replay")
+			and msrc.contains("replay and not d.item.consumable"),
+		"205 S2: mob drops tier gear out on replayed floors")
+	var shower := dsrc.substr(dsrc.find("func _shower_loot"), 700)
+	_assert(shower.contains("is_floor_replay"),
+		"205 S2: the clear shower tiers gear out on replays")
+	var wipe := dsrc.substr(dsrc.find("func check_party_wipe"),
+		1400)
+	_assert(wipe.contains("load_floor")
+			and wipe.contains("ground floor"),
+		"205 S2: a party wipe inside a building transfers to its ground floor")
+	var solo_die := psrc.substr(psrc.find(
+		"SaveManager.clear_run(SaveManager.MODE_SOLO") - 420, 460)
+	_assert(solo_die.contains("floor_active"),
+		"205 S2: solo death inside a building skips the run-over path")
+	_assert(nmsrc.contains("== \"building\"")
+			and nmsrc.contains("rpc(\"load_floor\""),
+		"205 S2: the MP continue routes a building run to its (building, floor)")
+
 	# (Window widened past the long signature + gate comment —
 	# the #203 fixed-window maintenance pattern.)
 	var funnel := dsrc.substr(dsrc.find(

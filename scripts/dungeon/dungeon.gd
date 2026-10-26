@@ -3014,8 +3014,13 @@ func _shower_loot() -> void:
 	for id in ItemDB.items.keys():
 		var item = ItemDB.items[id]
 		# Issue #113 Phase 3: starting gear never drops as loot.
-		if not bool(item.get("supermarket_loot")) and not bool(item.get("starting_gear")):
-			ids.append(id)
+		if bool(item.get("supermarket_loot")) or bool(item.get("starting_gear")):
+			continue
+		# Issue #205 (F2): a replayed floor's shower pays
+		# consumables only — no gear.
+		if is_floor_replay() and not bool(item.get("consumable")):
+			continue
+		ids.append(id)
 	if ids.is_empty():
 		return
 	for i in mini(4, ids.size()):
@@ -3635,6 +3640,16 @@ func _spawn_floor_transfers() -> void:
 		prop.set("mode", mode)
 		prop.position = base + spots[mode]
 		add_child(prop)
+
+
+## Whether the CURRENT floor is a replay: its ledger bit
+## was already set before this visit. F2's tiering input —
+## a replay pays consumables + XP only, no gear (the bit is
+## read at generation/drop time; a first clear sees its own
+## bit unset until the clear spine stamps it).
+func is_floor_replay() -> bool:
+	return floor_active() \
+		and (floor_mask() >> floor_index) & 1 == 1
 
 
 ## Server leg of the floor clear (called from the clear
