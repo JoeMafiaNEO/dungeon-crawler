@@ -108,6 +108,7 @@ func _run() -> void:
 	_test_sky_dome_202()
 	_test_reveal_203()
 	_test_world_204()
+	_test_scatter_207()
 	_test_floors_205()
 	_test_ai_director()
 	_test_downed_marker()
@@ -6537,6 +6538,148 @@ func _test_reveal_203() -> void:
 	DungeonScript.set("buildings_cleared", saved_cleared)
 	DungeonScript.set("home_anchor", saved_anchor)
 	print("[Playtest] Reveal test done.")
+
+
+func _test_scatter_207() -> void:
+	print("[Playtest] Scatter de-gridding (issue #207)...")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var ScatterRes := load("res://scripts/world/scatter_gen.gd")
+	var seed: int = WorldGenRes.WORLD_SEED
+	var scmap: Dictionary = ScatterRes.get_script_constant_map()
+
+	# 1. The noise field: bounded, deterministic, smooth
+	# (low-frequency), and seed-sensitive.
+	var n_min := 2.0
+	var n_max := -1.0
+	var n_sum := 0.0
+	var n_n := 0
+	var smooth := true
+	var det := true
+	var sx := -200.0
+	while sx <= 200.0:
+		var sz := -200.0
+		while sz <= 200.0:
+			var v: float = ScatterRes.noise_at(seed, sx, sz)
+			n_min = minf(n_min, v)
+			n_max = maxf(n_max, v)
+			n_sum += v
+			n_n += 1
+			if v != ScatterRes.noise_at(seed, sx, sz):
+				det = false
+			if absf(v - ScatterRes.noise_at(seed, sx + 0.5,
+					sz)) > 0.08:
+				smooth = false
+			sz += 7.3
+		sx += 7.3
+	_assert(n_min >= 0.0 and n_max <= 1.0,
+		"207: the noise field stays in [0, 1]")
+	_assert(det, "207: the noise field is deterministic")
+	_assert(smooth,
+		"207: the noise field is low-frequency (smooth at half-meter steps)")
+	_assert(ScatterRes.noise_at(seed, 40.0, 40.0)
+			!= ScatterRes.noise_at(seed + 1, 40.0, 40.0),
+		"207: the noise field is seed-sensitive")
+
+	# 2. The clumping factor: [0.40, 1.60] with mean ~1 —
+	# redistribution, not a density cut or a raise.
+	var c_min := 99.0
+	var c_max := -99.0
+	var c_sum := 0.0
+	var c_n := 0
+	sx = -300.0
+	while sx <= 300.0:
+		var sz2 := -300.0
+		while sz2 <= 300.0:
+			var cv: float = ScatterRes.clump_at(seed, sx, sz2)
+			c_min = minf(c_min, cv)
+			c_max = maxf(c_max, cv)
+			c_sum += cv
+			c_n += 1
+			sz2 += 3.7
+		sx += 3.7
+	_assert(c_min >= 0.40 and c_max <= 1.60,
+		"207: the clumping factor stays in [0.40, 1.60]")
+	_assert(c_sum / float(c_n) >= 0.85
+			and c_sum / float(c_n) <= 1.15,
+		"207: the clumping factor averages ~1 (redistribution)")
+
+	# 3. Distribution variance on a dense wilderness chunk:
+	# nothing stands at a cell center, offsets span the
+	# cell, rotations and scales vary.
+	var d00: RefCounted = WorldGenRes.generate_chunk(0, 0, seed)
+	var s00: Dictionary = ScatterRes.scatter_for_chunk(seed,
+		0, 0, d00)
+	var centers := 0
+	var fx_min := 2.0
+	var fx_max := -1.0
+	var rots := {}
+	var s_min := 99.0
+	var s_max := -99.0
+	for t in ScatterRes.TYPES:
+		for it in s00[t]:
+			var p: Vector3 = it["p"]
+			var fx: float = (p.x / 2.0) - floor(p.x / 2.0)
+			var fz: float = (p.z / 2.0) - floor(p.z / 2.0)
+			if absf(fx - 0.5) < 0.02 and absf(fz - 0.5) < 0.02:
+				centers += 1
+			fx_min = minf(fx_min, fx)
+			fx_max = maxf(fx_max, fx)
+			rots[float(it["r"])] = true
+			s_min = minf(s_min, float(it["s"]))
+			s_max = maxf(s_max, float(it["s"]))
+	_assert(centers == 0,
+		"207: no scatter instance stands at a cell center (the lattice is gone)")
+	_assert(fx_min < 0.15 and fx_max > 0.85,
+		"207: jitter spans the full cell")
+	_assert(rots.size() > 40,
+		"207: rotations vary per instance")
+	_assert(s_min >= 0.85 and s_max <= 1.30
+			and s_min < 0.95 and s_max > 1.15,
+		"207: scales vary per instance inside [0.85, 1.30]")
+
+	# 4. The N4 budget binds exactly across a 5x5 scan —
+	# the field may never push a chunk past any cap.
+	for cx in range(-2, 3):
+		for cz in range(-2, 3):
+			var dd: RefCounted = WorldGenRes.generate_chunk(
+				cx, cz, seed)
+			var sc: Dictionary = ScatterRes.scatter_for_chunk(
+				seed, cx, cz, dd)
+			for t in ScatterRes.TYPES:
+				var cap := int(scmap["CAP_TREE"])
+				if t == "grass":
+					cap = int(scmap["CAP_GRASS"])
+				elif t == "mushroom":
+					cap = int(scmap["CAP_MUSH"])
+				elif t == "fence":
+					cap = int(scmap["CAP_FENCE"])
+				elif t == "rock_big" or t == "rock_small":
+					cap = int(scmap["CAP_ROCK"])
+				_assert((sc[t] as Array).size() <= cap,
+					"207: per-kind budget holds under the field (%s)" % t)
+			_assert(ScatterRes.total_count(sc)
+					<= int(scmap["CAP_TOTAL"]),
+				"207: total budget holds under the field")
+
+	# 5. Capped chunks stay pinned AT the cap (the trim
+	# binds exactly), and the recorded totals of the
+	# verified build stand as regression literals.
+	_assert((s00["pine"] as Array).size() == 200,
+		"207: a capped chunk's tree total stays pinned at the cap")
+	_assert((s00["grass"] as Array).size() == 597,
+		"207: chunk (0,0) grass total matches the verified build (597)")
+	var d33: RefCounted = WorldGenRes.generate_chunk(3, 3, seed)
+	var s33: Dictionary = ScatterRes.scatter_for_chunk(seed,
+		3, 3, d33)
+	_assert((s33["pine"] as Array).size() == 200
+			and (s33["mushroom"] as Array).size() == 80,
+		"207: chunk (3,3) stays pinned at its caps (pine 200, mushroom 80)")
+
+	# 6. Determinism with the new streams engaged.
+	_assert(ScatterRes.serialize(s00) == ScatterRes.serialize(
+			ScatterRes.scatter_for_chunk(seed, 0, 0, d00)),
+		"207: scatter stays deterministic for (seed, chunk)")
+	print("[Playtest] Scatter de-gridding test done.")
 
 
 func _test_world_204() -> void:

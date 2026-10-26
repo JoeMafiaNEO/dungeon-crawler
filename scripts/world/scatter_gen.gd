@@ -35,6 +35,20 @@ extends RefCounted
 ## lands inside a building footprint (own chunk's buildings
 ## plus the spill rects the caller passes for west/north
 ## neighbors, whose +x/+z spans can cross the border).
+##
+## Issue #207 (Jesse, from his #204 screenshots: the scatter
+## "looks a little grid like"): placement gains a
+## low-frequency value-noise density field (clump_at, mean
+## 1.0 — it redistributes into thickets and clearings,
+## layered WITH the N1 falloff; N4's caps bind in the trim
+## exactly as before) and FULL-CELL positional jitter:
+## candidates
+## keep their cell identity for every roll, but stand
+## anywhere within the cell's pitch, with all legality
+## (lots, footprints, N5 slope) judged at the jittered
+## position. Rotation/scale variance predates this change
+## (SALT_ROT / SALT_SCALE). All streams remain raw hashes of
+## the universal WORLD_SEED — no new seed anywhere.
 
 const WorldGen := preload("res://scripts/world/world_gen.gd")
 const ChunkData := preload("res://scripts/world/chunk_data.gd")
@@ -51,6 +65,10 @@ const SALT_MUSH := 4106
 const SALT_FENCE := 4107
 const SALT_SCALE := 4108
 const SALT_ROT := 4109
+const SALT_NOISE := 4110 ## #207: the clumping field's lattice
+const SALT_JX := 4111 ## #207: full-cell jitter, x
+const SALT_JZ := 4112 ## #207: full-cell jitter, z
+const NOISE_CELL := 28.0 ## #207: the field's lattice pitch (m)
 
 const TREE_P := 0.11
 const ROCK_P := 0.014
@@ -82,9 +100,42 @@ static func slope_at(seed: int, wx: float, wz: float) -> float:
 	return Vector2(sx, sz).length()
 
 
+## Issue #207: low-frequency value noise over the world
+## plane — bilinear interpolation (smoothstepped) of the
+## hash stream on a coarse lattice, in [0, 1]. A pure
+## function of WORLD_SEED like everything else here: the
+## same forest on every peer, by construction.
+static func noise_at(seed: int, wx: float, wz: float) -> float:
+	var fx := wx / NOISE_CELL
+	var fz := wz / NOISE_CELL
+	var ix := int(floor(fx))
+	var iz := int(floor(fz))
+	var tx := fx - float(ix)
+	var tz := fz - float(iz)
+	var sx := tx * tx * (3.0 - 2.0 * tx)
+	var sz := tz * tz * (3.0 - 2.0 * tz)
+	var v00 := WorldGen.rand01(seed, ix, iz, SALT_NOISE)
+	var v10 := WorldGen.rand01(seed, ix + 1, iz, SALT_NOISE)
+	var v01 := WorldGen.rand01(seed, ix, iz + 1, SALT_NOISE)
+	var v11 := WorldGen.rand01(seed, ix + 1, iz + 1, SALT_NOISE)
+	return lerpf(lerpf(v00, v10, sx), lerpf(v01, v11, sx), sz)
+
+
+## The clumping factor the noise field applies to scatter
+## density: [0.40, 1.60], mean 1.0 — the field REDISTRIBUTES
+## (thickets above the old density, clearings below),
+## layered with the N1 falloff. The N4 budget is untouched:
+## the caps bind in _apply_caps exactly as before, so no
+## chunk's totals can pass them whatever the field does.
+static func clump_at(seed: int, wx: float, wz: float) -> float:
+	return 0.40 + 1.20 * noise_at(seed, wx, wz)
+
+
 ## Is the 32 m grove cell containing (wx, wz) a grove? The
 ## roll leans on the density at the cell's center (N1): town
-## cells rarely grove, wilderness cells usually do.
+## cells rarely grove, wilderness cells usually do. #207:
+## the clumping field leans on the same roll, so groves
+## themselves gather into thickets with clearings between.
 static func grove_at(seed: int, wx: float, wz: float) -> bool:
 	var gx := int(floor(wx / GROVE_CELL))
 	var gz := int(floor(wz / GROVE_CELL))
@@ -93,6 +144,7 @@ static func grove_at(seed: int, wx: float, wz: float) -> bool:
 	var dens := float(WorldGen.density_at_world(seed, cc.x,
 		cc.y)["density"])
 	var p := lerpf(0.18, 0.60, clampf(1.0 - dens, 0.0, 1.0))
+	p *= 0.60 + 0.80 * noise_at(seed, cc.x, cc.y)
 	return WorldGen.rand01(seed, gx, gz, SALT_GROVE) < p
 
 
@@ -130,10 +182,44 @@ static func scatter_for_chunk(seed: int, cx: int, cz: int,
 	var grove_by_cell := {}
 	for iz in steps:
 		for ix in steps:
-			var wx := x0 + (float(ix) + 0.5) * CELL
-			var wz := z0 + (float(iz) + 0.5) * CELL
+			var cxm := x0 + (float(ix) + 0.5) * CELL
+			var czm := z0 + (float(iz) + 0.5) * CELL
+			var hx := int(floor(cxm / CELL))
+			var hz := int(floor(czm / CELL))
+			# Issue #207: full-cell positional jitter — up to
+			# the whole cell pitch, from the same hash
+			# discipline. The candidate's identity stays its
+			# cell (hx, hz); only where it STANDS moves, and
+			# every legality rule below (lots, footprints,
+			# slope) reads at the jittered position, so the
+			# exclusions hold exactly, not approximately.
+			var wx := cxm + (WorldGen.rand01(seed, hx, hz,
+				SALT_JX) - 0.5) * CELL
+			var wz := czm + (WorldGen.rand01(seed, hx, hz,
+				SALT_JZ) - 0.5) * CELL
+			# Ownership stays by position (#204's border
+			# rule): fold the jitter at the chunk's edges
+			# (mirror, so nothing piles up on the seam and
+			# a chunk owns only points standing inside it).
+			if wx < x0:
+				wx = x0 + (x0 - wx)
+			elif wx > x0 + WorldGen.CHUNK_SIZE:
+				wx = x0 + WorldGen.CHUNK_SIZE \
+					- (wx - x0 - WorldGen.CHUNK_SIZE)
+			if wz < z0:
+				wz = z0 + (z0 - wz)
+			elif wz > z0 + WorldGen.CHUNK_SIZE:
+				wz = z0 + WorldGen.CHUNK_SIZE \
+					- (wz - z0 - WorldGen.CHUNK_SIZE)
 			var llx := int(floor((wx - x0) / WorldGen.LOT_SIZE))
 			var llz := int(floor((wz - z0) / WorldGen.LOT_SIZE))
+			if llx < 0 or llx > 15 or llz < 0 or llz > 15:
+				# Jitter carried the point across the chunk
+				# border (<= 1 m): the neighbor's lots are
+				# not this call's to read — judge by the
+				# candidate's own lot.
+				llx = int(floor((cxm - x0) / WorldGen.LOT_SIZE))
+				llz = int(floor((czm - z0) / WorldGen.LOT_SIZE))
 			var cls: int = data.lot_class(llx, llz)
 			if cls == ChunkData.ROAD or cls == ChunkData.BUILDING \
 					or cls == ChunkData.PLAZA:
@@ -153,25 +239,27 @@ static func scatter_for_chunk(seed: int, cx: int, cz: int,
 				dens_by_lot[lkey] = float(WorldGen.density_at_world(
 					seed, lc.x, lc.y)["density"])
 			var dens: float = dens_by_lot[lkey]
-			var hx := int(floor(wx / CELL))
-			var hz := int(floor(wz / CELL))
 			var gkey := "%d,%d" % [int(floor(wx / GROVE_CELL)),
 				int(floor(wz / GROVE_CELL))]
 			if not grove_by_cell.has(gkey):
 				grove_by_cell[gkey] = grove_at(seed, wx, wz)
 			var grove: bool = grove_by_cell[gkey]
+			# #207: the clumping factor, layered WITH the N1
+			# falloff (dens) — thickets and clearings over
+			# the settlement gradient.
+			var clump := clump_at(seed, wx, wz)
 			# Grass: fine-grained in groves (sparser on open
 			# GREEN lots); follows the ground anywhere (N5).
 			var gh := WorldGen.rand01(seed, hx, hz, SALT_GRASS)
-			if (grove and gh < GRASS_P) or (not grove
+			if (grove and gh < GRASS_P * clump) or (not grove
 					and cls == ChunkData.GREEN
-					and gh < GRASS_P * 0.6):
+					and gh < GRASS_P * 0.6 * clump):
 				out["grass"].append(_item(seed, hx, hz, wx, wz,
 					gh, 1.0))
 			if grove:
 				var th := WorldGen.rand01(seed, hx, hz, SALT_TREE)
-				if th < TREE_P and slope_at(seed, wx, wz) \
-						<= MAX_SLOPE:
+				if th < TREE_P * clump and slope_at(seed, wx,
+						wz) <= MAX_SLOPE:
 					var kind := "pine"
 					if dens >= NEAR_DENSITY:
 						kind = "oak" if WorldGen.rand01(seed,
@@ -180,17 +268,19 @@ static func scatter_for_chunk(seed: int, cx: int, cz: int,
 					out[kind].append(_item(seed, hx, hz, wx,
 						wz, th, 1.0))
 				var mh := WorldGen.rand01(seed, hx, hz, SALT_MUSH)
-				if mh < MUSH_P:
+				if mh < MUSH_P * clump:
 					out["mushroom"].append(_item(seed, hx, hz,
 						wx, wz, mh, 1.0))
 			var rh := WorldGen.rand01(seed, hx, hz, SALT_ROCK)
-			if rh < ROCK_P * (1.0 - 0.6 * dens) \
+			if rh < ROCK_P * (1.0 - 0.6 * dens) * clump \
 					and slope_at(seed, wx, wz) <= MAX_SLOPE:
 				var big := WorldGen.rand01(seed, hx, hz,
 					SALT_ROCK_BIG) < 0.3
 				out["rock_big" if big else "rock_small"].append(
 					_item(seed, hx, hz, wx, wz, rh, 1.0))
 			# Fences: settlement-edge dressing, visual only.
+			# (Keyed to the settlement gradient alone — the
+			# clumping field is grove scatter's, not theirs.)
 			if dens >= 0.45:
 				var fh := WorldGen.rand01(seed, hx, hz,
 					SALT_FENCE)
