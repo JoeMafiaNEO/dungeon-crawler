@@ -60,6 +60,48 @@ const STYLE_COLORS: Array = [
 	Color(0.66, 0.64, 0.50), Color(0.58, 0.52, 0.55),
 ]
 
+## Issue #208: facade variance streams (hash discriminators
+## on the universal WORLD_SEED, like every other stream).
+const SALT_TINT := 4201 ## per-building hue/sat/value roll
+const SALT_BAND := 4202 ## per-floor band (salt + floor)
+const SALT_TEXV := 4203 ## per-building texture variant
+
+
+## Issue #208: one building's facade color on one floor —
+## the style palette color rolled within a bounded arc
+## (hue ±0.025, saturation ±0.06, value ±0.07) by the
+## building's own hash stream, then rippled per floor
+## (value × [0.94, 1.03]) so the banding breaks up. A pure
+## function of (seed, building, style, floor): the same
+## building wears the same face on every peer.
+static func facade_color(seed: int, wlx: int, wlz: int,
+		style: int, floor_idx: int) -> Color:
+	var base: Color = STYLE_COLORS[style % STYLE_COLORS.size()]
+	var h := base.h + (WorldGen.rand01(seed, wlx, wlz,
+		SALT_TINT) - 0.5) * 0.05
+	var s := clampf(base.s + (WorldGen.rand01(seed, wlx,
+		wlz, SALT_TINT + 1) - 0.5) * 0.12, 0.0, 1.0)
+	var v := clampf(base.v + (WorldGen.rand01(seed, wlx,
+		wlz, SALT_TINT + 2) - 0.5) * 0.14, 0.0, 1.0)
+	v *= 0.94 + 0.09 * WorldGen.rand01(seed, wlx, wlz,
+		SALT_BAND + floor_idx)
+	return Color.from_hsv(h, s, clampf(v, 0.0, 1.0))
+
+
+## Issue #208: which of the six texture variants (three
+## window-grid phases × the shipped texture and its
+## 180°-rotated twin) a building wears.
+static func facade_variant(seed: int, wlx: int, wlz: int) -> int:
+	return mini(5, int(WorldGen.rand01(seed, wlx, wlz,
+		SALT_TEXV) * 6.0))
+
+
+## A shell piece's floor, from its center height (wall
+## centers sit at floor * PITCH + WALL_H/2; plates ride the
+## floor boundaries) — the band the facade color reads.
+static func facade_floor(c: Vector3, floors: int) -> int:
+	return clampi(int(floor(c.y / 3.0)), 0, maxi(0, floors - 1))
+
 var _target_node: Node3D = null
 var _target_pos := Vector3.ZERO
 var _has_target := false
@@ -80,6 +122,7 @@ var suppress_enabled := false
 
 var _box_mesh: BoxMesh = null
 var _building_mat: StandardMaterial3D = null
+var _building_mats: Array = [] ## #208: the six facade variants
 var _interior_mat: StandardMaterial3D = null
 var _terrain_mat: StandardMaterial3D = null
 var _door_mat: StandardMaterial3D = null
@@ -385,8 +428,8 @@ func _make_buildings(rec: Dictionary) -> Node:
 	(rec["node"] as Node).add_child(node)
 	var cx: int = data.cx
 	var cz: int = data.cz
-	var shell_xforms: Array = []
-	var shell_colors: Array = []
+	var shell_buckets := {}
+	var shell_total := 0
 	var door_xforms: Array = []
 	var collision_shapes := 0
 	var playable_doors := 0
@@ -434,12 +477,16 @@ func _make_buildings(rec: Dictionary) -> Node:
 		body.collision_layer = 1
 		body.collision_mask = 0
 		node.add_child(body)
+		var variant := facade_variant(WorldGen.WORLD_SEED,
+			wlx, wlz)
 		for p in plan["pieces"]:
 			if not bool(p["shell"]):
 				continue
 			var xf := Transform3D(Basis.from_scale(p["s"]), origin + (p["c"] as Vector3))
-			shell_xforms.append(xf)
-			shell_colors.append(STYLE_COLORS[style % STYLE_COLORS.size()])
+			_bucket_add(shell_buckets, variant, xf,
+				facade_color(WorldGen.WORLD_SEED, wlx, wlz,
+					style, facade_floor(p["c"], floors)))
+			shell_total += 1
 			_add_box_shape(body, xf)
 			collision_shapes += 1
 		# The door beat: a slab in the gap (playable) or a
@@ -487,16 +534,19 @@ func _make_buildings(rec: Dictionary) -> Node:
 			node.add_child(trig)
 		else:
 			solid_buildings += 1
-			shell_xforms.append(slab_xf)
-			shell_colors.append(STYLE_COLORS[style
-				% STYLE_COLORS.size()])
-	rec["shell_pieces"] = shell_xforms.size()
+			_bucket_add(shell_buckets, variant, slab_xf,
+				facade_color(WorldGen.WORLD_SEED, wlx, wlz,
+					style, 0))
+			shell_total += 1
+	rec["shell_pieces"] = shell_total
 	rec["interior_pieces"] = 0
 	rec["collision_shapes"] = collision_shapes
 	rec["playable_doors"] = playable_doors
 	rec["solid_buildings"] = solid_buildings
-	if not shell_xforms.is_empty():
-		node.add_child(_piece_multimesh(shell_xforms, shell_colors, _building_mat))
+	for v in shell_buckets:
+		var pair: Array = shell_buckets[v]
+		node.add_child(_piece_multimesh(pair[0], pair[1],
+			_building_mats[v]))
 	if not door_xforms.is_empty():
 		var whites: Array = []
 		for i in door_xforms.size():
@@ -525,16 +575,19 @@ func build_standalone_building(plan: Dictionary,
 	body.collision_layer = 1
 	body.collision_mask = 0
 	node.add_child(body)
-	var shell_xforms: Array = []
-	var shell_colors: Array = []
+	var kp := key.split(",")
+	var kwx := int(kp[0]) if kp.size() == 2 else 0
+	var kwz := int(kp[1]) if kp.size() == 2 else 0
+	var variant := facade_variant(WorldGen.WORLD_SEED, kwx, kwz)
+	var shell_buckets := {}
 	for p in plan["pieces"]:
 		if not bool(p["shell"]):
 			continue
 		var xf := Transform3D(Basis.from_scale(p["s"]),
 			origin + (p["c"] as Vector3))
-		shell_xforms.append(xf)
-		shell_colors.append(STYLE_COLORS[style
-			% STYLE_COLORS.size()])
+		_bucket_add(shell_buckets, variant, xf,
+			facade_color(WorldGen.WORLD_SEED, kwx, kwz, style,
+				facade_floor(p["c"], int(plan["floors"]))))
 		_add_box_shape(body, xf)
 	var door := BuildingGen.door_world(plan, origin)
 	var gap_c: Vector3 = door["gap_center"]
@@ -574,12 +627,13 @@ func build_standalone_building(plan: Dictionary,
 		trig.add_child(tshape)
 		node.add_child(trig)
 	else:
-		shell_xforms.append(slab_xf)
-		shell_colors.append(STYLE_COLORS[style
-			% STYLE_COLORS.size()])
-	if not shell_xforms.is_empty():
-		node.add_child(_piece_multimesh(shell_xforms,
-			shell_colors, _building_mat))
+		_bucket_add(shell_buckets, variant, slab_xf,
+			facade_color(WorldGen.WORLD_SEED, kwx, kwz, style,
+				0))
+	for v in shell_buckets:
+		var pair: Array = shell_buckets[v]
+		node.add_child(_piece_multimesh(pair[0], pair[1],
+			_building_mats[v]))
 	return node
 
 
@@ -682,6 +736,16 @@ func _make_scatter(rec: Dictionary) -> Node:
 	return node
 
 
+## Issue #208: accumulate a shell piece into its texture
+## variant's batch (xforms + colors kept parallel).
+func _bucket_add(buckets: Dictionary, variant: int,
+		xf: Transform3D, col: Color) -> void:
+	if not buckets.has(variant):
+		buckets[variant] = [[], []]
+	(buckets[variant][0] as Array).append(xf)
+	(buckets[variant][1] as Array).append(col)
+
+
 func _piece_multimesh(xforms: Array, colors: Array, mat: Material) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -767,6 +831,27 @@ func _ensure_assets() -> void:
 	_building_mat = StandardMaterial3D.new()
 	_building_mat.albedo_texture = _window_texture()
 	_building_mat.roughness = 0.9
+	# Issue #208: six facade texture variants — three
+	# window-grid phase offsets x the shipped texture and
+	# its 180-degree rotation (the texture is near-symmetric
+	# under that rotation: trim bands swap, windows stay
+	# upright). Same shipped art, no new assets; buildings
+	# hash-pick a variant and batch by it.
+	var wimg := _window_image()
+	var wimg_flip := wimg.duplicate() as Image
+	wimg_flip.flip_x()
+	wimg_flip.flip_y()
+	var tex_a := ImageTexture.create_from_image(wimg)
+	var tex_b := ImageTexture.create_from_image(wimg_flip)
+	var offs := [Vector2(0.0, 0.0), Vector2(0.13, 0.07),
+		Vector2(0.38, 0.13)]
+	_building_mats.clear()
+	for i in 6:
+		var m := StandardMaterial3D.new()
+		m.albedo_texture = tex_b if i >= 3 else tex_a
+		m.uv1_offset = Vector3(offs[i % 3].x, offs[i % 3].y, 0.0)
+		m.roughness = 0.9
+		_building_mats.append(m)
 	_interior_mat = StandardMaterial3D.new()
 	_interior_mat.albedo_color = Color(0.84, 0.80, 0.74)
 	_interior_mat.roughness = 1.0
@@ -806,6 +891,10 @@ func _glb_mesh(path: String) -> Mesh:
 ## with a structural band above and below the row, so the
 ## features survive mip averaging from the air.
 func _window_texture() -> ImageTexture:
+	return ImageTexture.create_from_image(_window_image())
+
+
+func _window_image() -> Image:
 	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0.84, 0.80, 0.74))
 	for y in range(6, 12):
@@ -820,4 +909,4 @@ func _window_texture() -> ImageTexture:
 		for y in range(14, 50):
 			for x in range(wx_i * 16 + 3, wx_i * 16 + 13):
 				img.set_pixel(x, y, c)
-	return ImageTexture.create_from_image(img)
+	return img

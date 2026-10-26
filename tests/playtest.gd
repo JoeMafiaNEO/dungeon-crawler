@@ -109,6 +109,7 @@ func _run() -> void:
 	_test_reveal_203()
 	_test_world_204()
 	_test_scatter_207()
+	_test_facades_208()
 	_test_floors_205()
 	_test_ai_director()
 	_test_downed_marker()
@@ -6680,6 +6681,200 @@ func _test_scatter_207() -> void:
 			ScatterRes.scatter_for_chunk(seed, 0, 0, d00)),
 		"207: scatter stays deterministic for (seed, chunk)")
 	print("[Playtest] Scatter de-gridding test done.")
+
+
+func _test_facades_208() -> void:
+	print("[Playtest] Building texture variance (issue #208)...")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var BuildingGenRes := load("res://scripts/world/building_gen.gd")
+	var SelectRes := load("res://scripts/world/building_select.gd")
+	var StreamerRes := load("res://scripts/world/world_streamer.gd")
+	var seed: int = WorldGenRes.WORLD_SEED
+	var smap: Dictionary = StreamerRes.get_script_constant_map()
+	var palette: Array = smap["STYLE_COLORS"]
+
+	# Sample real buildings around the first city.
+	var samples: Array = []
+	for gx in range(-6, 7):
+		for gz in range(-6, 7):
+			var stl: Dictionary = WorldGenRes.settlement_in_cell(
+				seed, gx, gz)
+			if stl.is_empty() or str(stl["kind"]) != "city":
+				continue
+			var cen: Vector2 = stl["center"]
+			var ccx := int(floor(cen.x / float(
+				WorldGenRes.CHUNK_SIZE)))
+			var ccz := int(floor(cen.y / float(
+				WorldGenRes.CHUNK_SIZE)))
+			for cx in range(ccx - 1, ccx + 2):
+				for cz in range(ccz - 1, ccz + 2):
+					var ch = WorldGenRes.generate_chunk(cx, cz,
+						seed)
+					for b in ch.buildings:
+						samples.append([cx * 16 + int(b[0]),
+							cz * 16 + int(b[1]), int(b[3])])
+			if samples.size() >= 24:
+				break
+		if samples.size() >= 24:
+			break
+	_assert(samples.size() >= 12,
+		"208: fixture buildings sampled around a city")
+
+	# 1. Adjacent buildings differ; bands differ floor to
+	# floor; everything stays in a bounded arc of the
+	# palette; regeneration is identical.
+	var adj_diff := 0
+	var band_diff := 0
+	var arc_ok := true
+	var det_ok := true
+	var variants := {}
+	for sm in samples:
+		var bx: int = sm[0]
+		var bz: int = sm[1]
+		var sty: int = sm[2]
+		var c0: Color = StreamerRes.facade_color(seed, bx, bz,
+			sty, 0)
+		if c0 != StreamerRes.facade_color(seed, bx + 1, bz,
+				sty, 0):
+			adj_diff += 1
+		if c0 != StreamerRes.facade_color(seed, bx, bz, sty, 1):
+			band_diff += 1
+		if c0 != StreamerRes.facade_color(seed, bx, bz, sty, 0):
+			det_ok = false
+		variants[StreamerRes.facade_variant(seed, bx, bz)] = true
+		var base: Color = palette[sty % palette.size()]
+		for f in 3:
+			var cf: Color = StreamerRes.facade_color(seed, bx,
+				bz, sty, f)
+			if absf(cf.r - base.r) > 0.30 or absf(cf.g - base.g) > 0.30 \
+					or absf(cf.b - base.b) > 0.30:
+				arc_ok = false
+	_assert(adj_diff >= int(samples.size() * 3 / 4),
+		"208: adjacent buildings wear different tints")
+	_assert(band_diff >= int(samples.size() * 3 / 4),
+		"208: floor bands vary within a building")
+	_assert(det_ok,
+		"208: the same building regenerates the identical facade")
+	_assert(arc_ok,
+		"208: tints stay in a bounded arc of the style palette")
+	_assert(variants.size() >= 4,
+		"208: buildings spread across the texture variants")
+
+	# 2. The floor read: wall centers and plate heights
+	# land on their floors, clamped at the top.
+	_assert(StreamerRes.facade_floor(Vector3(0, 1.5, 0), 7) == 0
+			and StreamerRes.facade_floor(Vector3(0, 4.5, 0), 7) == 1
+			and StreamerRes.facade_floor(Vector3(0, 3.0, 0), 7) == 1
+			and StreamerRes.facade_floor(Vector3(0, 100.0, 0), 7) == 6,
+		"208: facade_floor reads piece heights to floors")
+
+	# 3. Assembly invariance on a multi-building chunk:
+	# piece counts and collision exactly the plan-derived
+	# totals (material-space only), batched by variant,
+	# with more than one tint actually instanced.
+	var fc := Vector2i(2147483647, 0)
+	var fdata: RefCounted = null
+	var fvars := {}
+	for gx2 in range(-6, 7):
+		for gz2 in range(-6, 7):
+			var stl2: Dictionary = WorldGenRes.settlement_in_cell(
+				seed, gx2, gz2)
+			if stl2.is_empty() or str(stl2["kind"]) != "city":
+				continue
+			var cen2: Vector2 = stl2["center"]
+			var kx := int(floor(cen2.x / float(
+				WorldGenRes.CHUNK_SIZE)))
+			var kz := int(floor(cen2.y / float(
+				WorldGenRes.CHUNK_SIZE)))
+			for cx in range(kx - 1, kx + 2):
+				for cz in range(kz - 1, kz + 2):
+					var ch2 = WorldGenRes.generate_chunk(cx, cz,
+						seed)
+					if ch2.buildings.size() < 3:
+						continue
+					var vs := {}
+					for b in ch2.buildings:
+						vs[StreamerRes.facade_variant(seed,
+							cx * 16 + int(b[0]),
+							cz * 16 + int(b[1]))] = true
+					if vs.size() >= 2:
+						fc = Vector2i(cx, cz)
+						fdata = ch2
+						fvars = vs
+						break
+				if fc.x != 2147483647:
+					break
+			if fc.x != 2147483647:
+				break
+		if fc.x != 2147483647:
+			break
+	_assert(fc.x != 2147483647,
+		"208: assembly fixture chunk (3+ buildings, 2+ variants) found")
+	if fc.x != 2147483647:
+		var exp_shells := 0
+		var exp_playable := 0
+		var tint_set := {}
+		for b in fdata.buildings:
+			var plan: Dictionary = BuildingGenRes.plan_for(seed,
+				fc.x * 16 + int(b[0]), fc.y * 16 + int(b[1]),
+				int(b[2]), int(b[3]),
+				int(b[4]) if b.size() > 4 else 1,
+				int(b[5]) if b.size() > 5 else 1,
+				int(b[6]) if b.size() > 6 else 0)
+			for pc in plan["pieces"]:
+				if bool(pc["shell"]):
+					exp_shells += 1
+			tint_set[StreamerRes.facade_color(seed,
+				fc.x * 16 + int(b[0]), fc.y * 16 + int(b[1]),
+				int(b[3]), 0)] = true
+			if SelectRes.is_playable(seed,
+					fc.x * 16 + int(b[0]), fc.y * 16 + int(b[1])):
+				exp_playable += 1
+			else:
+				exp_shells += 1
+		var st2 = StreamerRes.new()
+		root.add_child(st2)
+		st2.call("_build_chunk", fc.x, fc.y)
+		var arec2: Dictionary = (st2.get("_active")
+			as Dictionary)["%d,%d" % [fc.x, fc.y]]
+		var bnode: Node = st2.call("_make_buildings", arec2)
+		var astate2: Dictionary = st2.call("debug_chunk_state",
+			fc.x, fc.y)
+		_assert(int(astate2["shell_pieces"]) == exp_shells,
+			"208: shell piece count unchanged by the variance (material-space only)")
+		_assert(int(astate2["collision_shapes"])
+				== exp_shells + exp_playable,
+			"208: collision shapes unchanged by the variance")
+		# NOTE: MultiMesh instance colors cannot be read
+		# back headless (get_instance_color returns black;
+		# the buffer materializes at render) — tint
+		# application is proven by the facade_color pins,
+		# the batching structure here, and the frame pair.
+		var inst_total := 0
+		var mats := {}
+		for c in bnode.get_children():
+			if c is MultiMeshInstance3D:
+				var mm := (c as MultiMeshInstance3D).multimesh
+				mats[(c as MultiMeshInstance3D).material_override] = true
+				inst_total += mm.instance_count
+		_assert(inst_total == exp_shells
+				+ int(astate2["playable_doors"]),
+			"208: instanced pieces == shells + door slabs")
+		_assert(mats.size() == fvars.size()
+				+ (1 if int(astate2["playable_doors"]) > 0
+					else 0),
+			"208: shells batch by exactly the buildings' texture variants (+ the door batch)")
+		_assert(tint_set.size() >= 2,
+			"208: the fixture chunk's buildings wear more than one tint")
+		root.remove_child(st2)
+		st2.free()
+	# The assembly actually feeds facade_color into the
+	# batches (defined-and-used, not defined-only).
+	_assert(FileAccess.get_file_as_string(
+			"res://scripts/world/world_streamer.gd").count(
+			"facade_color(") >= 4,
+		"208: facade_color is applied at the assembly sites")
+	print("[Playtest] Facade variance test done.")
 
 
 func _test_world_204() -> void:
