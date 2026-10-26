@@ -590,6 +590,13 @@ func load_floor(building_key: String, floor_idx: int,
 			Dungeon.act2_anchor_doorstep = rec["doorstep"]
 	if multiplayer.is_server():
 		Dungeon.save_act2_clock()
+		# Issue #209: a street entry starts the attempt
+		# clock (server wall-clock). Floor transfers, wipe
+		# respawns and continues pass entry=false and never
+		# restart it.
+		if entry:
+			Dungeon.attempt_begin(building_key,
+				Time.get_ticks_msec())
 	get_tree().change_scene_to_file(
 		"res://scenes/dungeon/dungeon.tscn")
 
@@ -605,6 +612,9 @@ func load_world_from_floor() -> void:
 	Dungeon.act2_spawn_at = "doorstep"
 	if multiplayer.is_server():
 		Dungeon.save_act2_clock()
+		# Issue #209: leaving the building abandons the
+		# attempt — no post; re-entry starts a fresh one.
+		Dungeon.attempt_clear()
 	get_tree().change_scene_to_file(Dungeon.WORLD_SCENE)
 
 
@@ -1033,6 +1043,10 @@ func start_continued_run() -> void:
 		return
 	Steam.setLobbyJoinable(lobby_id, false)
 	var run := _continued_run
+	# Issue #209: a continue ends any attempt — attempt state
+	# is never saved, and a restored party has no active
+	# attempt until it exits and re-enters via the street.
+	Dungeon.attempt_clear()
 	# Broadcast the level load to all clients (they pull state via
 	# register_class, and the server matches them against the saved roster).
 	# Without this the host loads alone and clients sit in staging forever.

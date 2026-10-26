@@ -257,6 +257,45 @@ static var floor_masks: Dictionary = {}
 ## buildings_cleared (the increment fires EXACTLY ONCE).
 static var floor_counted: Array = []
 
+## Issue #209: the building clear-time ATTEMPT — one
+## continuous visit (street entry -> every floor cleared ->
+## never left), timed server-side. Server-only state beside
+## the floor statics (the one authority; never saved — a
+## continue-restored party has no active attempt until it
+## exits and re-enters through the street door). The attempt
+## mask is separate from the cumulative ledger mask above:
+## the ledger is progression, the attempt is the race.
+static var attempt_key := ""
+static var attempt_start_msec := 0
+static var attempt_mask := 0
+## The server's record of the last completed attempt:
+## {key, seconds, details} — set at the completing floor
+## clear, exactly once per completion.
+static var attempt_last_completed: Dictionary = {}
+
+
+## Start (or restart) the attempt clock for a street entry.
+static func attempt_begin(key: String, now_msec: int) -> void:
+	attempt_key = key
+	attempt_start_msec = now_msec
+	attempt_mask = 0
+
+
+## Abandon the attempt with no post (exit / continue).
+static func attempt_clear() -> void:
+	attempt_key = ""
+	attempt_start_msec = 0
+	attempt_mask = 0
+
+
+## Seconds since the attempt started, read against an
+## injected clock (the seam the #209 pins drive); -1 when no
+## attempt is active.
+static func attempt_elapsed_seconds(now_msec: int) -> int:
+	if attempt_key == "":
+		return -1
+	return int((now_msec - attempt_start_msec) / 1000)
+
 
 static func floor_active() -> bool:
 	return floor_key != ""
@@ -3707,6 +3746,27 @@ func sync_floor_cleared(key: String, f: int) -> void:
 	floor_masks[key] = mask
 	if not multiplayer.is_server():
 		return
+	# Issue #209: stamp the attempt mask; on completion the
+	# post is computed HERE, ahead of the ledger increment
+	# block below, so details slot 2 reads the danger index
+	# BEFORE this clear's increment (the danger the run was
+	# played under). The attempt completes exactly once —
+	# its state clears as the post is computed.
+	if key == attempt_key:
+		attempt_mask |= (1 << f)
+		var arec := Act2FloorGen.record_for(key, home_anchor)
+		var afloors := int(arec.get("floors", 0))
+		if afloors > 0 and Act2FloorGen.lowest_uncleared(
+				attempt_mask, afloors) >= afloors:
+			var secs := attempt_elapsed_seconds(
+				Time.get_ticks_msec())
+			var details: Array = [afloors,
+				maxi(1, multiplayer.get_peers().size() + 1),
+				danger_index(), Leaderboard.LAYOUT_VERSION]
+			attempt_last_completed = {"key": key,
+				"seconds": secs, "details": details}
+			attempt_clear()
+			rpc("announce_building_cleared", key, secs, details)
 	var rec := Act2FloorGen.record_for(key, home_anchor)
 	var floors := int(rec.get("floors", 0))
 	if floors > 0 and Act2FloorGen.lowest_uncleared(mask, floors) \
@@ -3724,6 +3784,23 @@ func sync_floor_cleared(key: String, f: int) -> void:
 		run["act2"] = act2_record()
 		run["world_time"] = world_time
 		SaveManager.save_run(run, mode, slot)
+
+
+## Issue #209 section 3: a building attempt completed.
+## Server-origin (the standing guard); EVERY peer's handler
+## posts the server-authored time under its own Steam
+## account (a host-only upload would put only the host on
+## the board) and shows the time locally. No Steam: the
+## upload silently no-ops, the toast still shows.
+@rpc("any_peer", "call_local")
+func announce_building_cleared(key: String, seconds: int,
+		details: Array) -> void:
+	if multiplayer.get_remote_sender_id() not in [0, 1]:
+		return
+	var board := Leaderboard.board_name_for(key)
+	Leaderboard.upload_building(board, seconds, details)
+	announce_text("Building cleared in "
+		+ Leaderboard.format_score(board, seconds), "clear")
 
 
 ## Server-origin, idempotent (the #135 discipline): a forged or

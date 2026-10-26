@@ -111,6 +111,7 @@ func _run() -> void:
 	_test_scatter_207()
 	_test_facades_208()
 	_test_floors_205()
+	_test_building_boards_209()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -7786,6 +7787,292 @@ func _test_floors_205() -> void:
 
 
 
+func _test_building_boards_209() -> void:
+	print("[Playtest] Building clear-time boards (issue #209)...")
+	var LBScript = load("res://scripts/autoload/leaderboard.gd")
+	var FGScript = load("res://scripts/world/floor_gen.gd")
+	var lb: Node = root.get_node_or_null("Leaderboard")
+	_assert(lb != null, "209: Leaderboard autoload exists")
+
+	# 1. BOARD IDENTITY (spec section 8.1): name derivation
+	# from literal keys — positive, negative, home — and the
+	# record floors that feed details slot 0.
+	_assert(LBScript.board_name_for("12,40") == "bld_12_40",
+		"209: board name from a positive key")
+	_assert(LBScript.board_name_for("-14,203") == "bld_-14_203",
+		"209: board name from a negative key")
+	var anchor209 := {"rect_x": 128.0, "rect_z": 64.0,
+		"rect_w": 64.0, "rect_d": 64.0}
+	_assert(FGScript.is_home_key("16,8", anchor209),
+		"209: the fixture anchor's home key is 16,8")
+	_assert(LBScript.board_name_for("16,8") == "bld_16_8",
+		"209: board name for the home key")
+	_assert(int(FGScript.record_for("16,8", anchor209)
+			.get("floors", 0)) == 6,
+		"209: the home record carries 6 floors (details slot 0)")
+	_assert(int(FGScript.record_for("-128,42", {})
+			.get("floors", 0)) == 2,
+		"209: fixture key -128,42 carries 2 floors")
+	_assert(int(LBScript.LAYOUT_VERSION) == 1,
+		"209: LAYOUT_VERSION is 1")
+	_assert(LBScript.format_score("bld_-128_42", 272) == "4:32",
+		"209: building boards format as m:ss")
+
+	# 2-5. THE ATTEMPT STATE MACHINE, driven through the
+	# real floor-clear spine (sync_floor_cleared on a fixture
+	# dungeon, the #205 ledger-drive shape) with the clock
+	# read through the injectable seam. The transfer legs
+	# themselves are source-pinned below (group 7): a live
+	# load_floor drive would change the suite's scene, so the
+	# begin/clear calls are driven at the exact functions the
+	# transfers invoke server-side.
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var nm = root.get_node("NetworkManager")
+	var sm = root.get_node("SaveManager")
+	var saved_mode: String = nm.get("active_run_mode")
+	var saved_slot: int = nm.get("active_run_slot")
+	var saved_cleared: int = DungeonScript.get("buildings_cleared")
+	var saved_anchor: Dictionary = (
+		DungeonScript.get("home_anchor") as Dictionary).duplicate()
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 99)
+	sm.call("save_run", {"seed": 7, "buildings_cleared": 3},
+		"solo", 99)
+	DungeonScript.set("buildings_cleared", 3)
+	DungeonScript.set("home_anchor", {})
+	DungeonScript.set("floor_masks", {})
+	DungeonScript.set("floor_counted", [])
+	DungeonScript.call("attempt_clear")
+	DungeonScript.set("attempt_last_completed", {})
+	var fix = load(
+		"res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(fix)
+	var K := "-128,42" # playable, 2 floors (probe-recorded)
+
+	# The pure clock seam, literal.
+	DungeonScript.call("attempt_begin", K, 1000000)
+	_assert(int(DungeonScript.call(
+			"attempt_elapsed_seconds", 1075400)) == 75,
+		"209: elapsed seconds read through the injected clock")
+	_assert(int(DungeonScript.call(
+			"attempt_elapsed_seconds", 1000000)) == 0,
+		"209: zero elapsed at the start tick")
+
+	# Visit 1: floor 0 only, then exit abandons.
+	fix.call("sync_floor_cleared", K, 0)
+	_assert(int(DungeonScript.get("attempt_mask")) == 1,
+		"209: the attempt mask stamps the cleared floor")
+	_assert((DungeonScript.get("attempt_last_completed")
+			as Dictionary).is_empty(),
+		"209: a partial visit posts nothing")
+	DungeonScript.call("attempt_clear") # the exit leg's call
+	_assert(str(DungeonScript.get("attempt_key")) == "",
+		"209: exit abandons the attempt")
+
+	# Visit 2: floor 1 only. The LEDGER completes (danger
+	# increments) but the assembled clear posts NO time.
+	DungeonScript.call("attempt_begin", K,
+		Time.get_ticks_msec())
+	fix.call("sync_floor_cleared", K, 1)
+	_assert(int(DungeonScript.get("buildings_cleared")) == 4,
+		"209: the assembled clear still counts for danger")
+	_assert((DungeonScript.get("attempt_last_completed")
+			as Dictionary).is_empty(),
+		"209: an assembled-across-visits clear posts no time")
+	DungeonScript.call("attempt_clear")
+
+	# Replay: one visit, every floor — posts. Details are
+	# the literal tuple; danger reads PRE-increment (the
+	# ledger state is reset so this clear increments again).
+	DungeonScript.set("floor_masks", {})
+	DungeonScript.set("floor_counted", [])
+	var start209 := Time.get_ticks_msec()
+	DungeonScript.call("attempt_begin", K, start209)
+	fix.call("sync_floor_cleared", K, 0)
+	fix.call("sync_floor_cleared", K, 1)
+	var done209: Dictionary = DungeonScript.get(
+		"attempt_last_completed")
+	_assert(str(done209.get("key", "")) == K,
+		"209: the replay completion posts for the building")
+	var expect_secs := int(
+		(Time.get_ticks_msec() - start209) / 1000)
+	var got_secs := int(done209.get("seconds", -1))
+	_assert(got_secs == expect_secs or got_secs == expect_secs - 1,
+		"209: the posted seconds match the attempt clock")
+	_assert(done209.get("details", []) == [2, 1, 4, 1],
+		"209: details are [floors, party, danger-pre, layout]")
+	_assert(int(DungeonScript.get("buildings_cleared")) == 5,
+		"209: the increment lands after the details were read")
+	_assert(str(DungeonScript.get("attempt_key")) == "",
+		"209: completion clears the attempt (posts once)")
+	fix.call("sync_floor_cleared", K, 0)
+	_assert(int((DungeonScript.get("attempt_last_completed")
+			as Dictionary).get("seconds", -1)) == got_secs,
+		"209: a further clear cannot re-post the completion")
+	root.remove_child(fix)
+	fix.queue_free()
+	sm.call("clear_run", "solo", 99)
+	nm.set("active_run_mode", saved_mode)
+	nm.set("active_run_slot", saved_slot)
+	DungeonScript.set("buildings_cleared", saved_cleared)
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("floor_masks", {})
+	DungeonScript.set("floor_counted", [])
+	DungeonScript.call("attempt_clear")
+	DungeonScript.set("attempt_last_completed", {})
+
+	# 6. AUTOLOAD REGISTRY (spec sections 4 + 8.6): daily
+	# behavior is pinned by _test_leaderboard_phase1; here —
+	# unregistered names rejected, dynamic registration,
+	# pending uploads carrying their details through a flush,
+	# downloads passing details through, the prompt's best.
+	var saved_handles: Dictionary = (
+		lb.get("_handles") as Dictionary).duplicate()
+	var saved_pending: Array = (
+		lb.get("_pending_uploads") as Array).duplicate()
+	var saved_cache: Dictionary = (
+		lb.get("_cache") as Dictionary).duplicate(true)
+	lb.call("_on_leaderboard_found", 4242, 1)
+	_assert((lb.get("_handles") as Dictionary).is_empty(),
+		"209: an unregistered board name is still rejected")
+	lb.call("ensure_board", "bld_9_9")
+	_assert((lb.get("_board_configs") as Dictionary)
+			.has("bld_9_9"),
+		"209: ensure_board registers a building board")
+	lb.set("_pending_uploads", [["bld_9_9", 100, [2, 1, 0, 1]],
+		["bld_8_8", 50, [1, 1, 0, 1]]])
+	lb.set("_handles", {"bld_9_9": 4242})
+	lb.call("_flush_pending_uploads", "bld_9_9")
+	var pend: Array = lb.get("_pending_uploads")
+	_assert(pend.size() == 1
+			and pend[0] == ["bld_8_8", 50, [1, 1, 0, 1]],
+		"209: a resolved board's upload flushes; the other waits with details intact")
+	lb.set("_handles", {"bld_9_9": 4242, "bld_8_8": 4243})
+	lb.call("_on_scores_downloaded", "", 4242, [
+		{"steam_id": 777, "global_rank": 1, "score": 90,
+			"details": [2, 1, 0, 1]}])
+	var rows209: Array = lb.call("get_cached", "bld_9_9")
+	_assert(rows209.size() == 1
+			and int(rows209[0].get("score", 0)) == 90
+			and rows209[0].get("details", []) == [2, 1, 0, 1],
+		"209: downloaded rows pass their details through")
+	lb.call("_flush_pending_uploads")
+	_assert((lb.get("_pending_uploads") as Array).is_empty(),
+		"209: the remaining upload flushes on its resolution")
+	(lb.get("_cache") as Dictionary)["bld_-128_42"] = [
+		{"rank": 1, "name": "Me", "score": 272,
+			"is_player": true}]
+	_assert(int(lb.call("player_best", "bld_-128_42")) == 272,
+		"209: player_best reads the local player's cached row")
+	_assert(int(lb.call("player_best", "bld_1_1")) == -1,
+		"209: player_best is -1 with no cached row")
+	lb.call("upload_building", "bld_-128_42", 300, [2, 1, 0, 1])
+	_assert((lb.get("_pending_uploads") as Array).is_empty(),
+		"209: no-Steam posture — a building upload silently no-ops")
+	lb.set("_handles", saved_handles)
+	lb.set("_pending_uploads", saved_pending)
+	lb.set("_cache", saved_cache)
+
+	# 7. THE DOOR PANEL + SOURCE PINS (spec section 6): the
+	# panel renders the top rows through the menu's shape,
+	# names the empty board, fits the screen with no scroll
+	# container; the transfer wiring is unchanged.
+	var TTScript = load("res://scripts/world/transfer_trigger.gd")
+	var trig = TTScript.new()
+	trig.set("building_key", K)
+	trig.set("record", FGScript.record_for(K, {}))
+	root.add_child(trig)
+	(lb.get("_cache") as Dictionary)["bld_-128_42"] = [
+		{"rank": 1, "name": "Me", "score": 272,
+			"is_player": true},
+		{"rank": 2, "name": "Rival", "score": 300,
+			"is_player": false}]
+	_assert(trig.call("prompt_text")
+			== "Enter building · Best 4:32",
+		"209: the door prompt gains the cached best")
+	# Opening fetches (which clears the cache until the
+	# download lands — the daily boards' own shape); the
+	# rows arrive through the download handler's refresh.
+	lb.set("_handles", {"bld_-128_42": 4242})
+	trig.call("interact", null)
+	var panel: CanvasLayer = trig.get("_panel")
+	_assert(panel != null, "209: the door opens its panel")
+	lb.call("_on_scores_downloaded", "", 4242, [
+		{"steam_id": 777, "global_rank": 1, "score": 272,
+			"details": [2, 1, 0, 1]},
+		{"steam_id": 888, "global_rank": 2, "score": 300,
+			"details": [2, 2, 0, 1]}])
+	lb.set("_handles", saved_handles)
+	var labels209: Array = []
+	_collect_labels(panel, labels209)
+	var texts209: Array = []
+	for l in labels209:
+		texts209.append(l.text)
+	_assert(texts209.has("Village — 2 floors"),
+		"209: the panel header names kind + floors")
+	var row_1 := false
+	var row_2 := false
+	for t in texts209:
+		if t.begins_with("1. ") and t.ends_with(" — 4:32"):
+			row_1 = true
+		if t.begins_with("2. ") and t.ends_with(" — 5:00"):
+			row_2 = true
+	_assert(row_1 and row_2,
+		"209: the panel rows use the menu's row shape")
+	var scrolls209: Array = []
+	_find_scroll_containers(panel, scrolls209)
+	_assert(scrolls209.is_empty(),
+		"209: the door panel has no scroll container")
+	trig.call("_close_panel")
+	_assert(trig.get("_panel") == null, "209: the panel closes")
+	(lb.get("_cache") as Dictionary)["bld_-128_42"] = []
+	trig.call("interact", null)
+	labels209.clear()
+	_collect_labels(trig.get("_panel"), labels209)
+	texts209.clear()
+	for l in labels209:
+		texts209.append(l.text)
+	_assert(texts209.has(
+			"No recorded clear yet — set the first time."),
+		"209: an empty board invites the first time")
+	trig.call("_close_panel")
+	root.remove_child(trig)
+	trig.queue_free()
+	lb.set("_cache", saved_cache)
+	var trig2 = TTScript.new()
+	trig2.set("building_key", "1,1")
+	root.add_child(trig2)
+	_assert(trig2.call("prompt_text") == "Enter building",
+		"209: no cached best — the prompt stays plain")
+	root.remove_child(trig2)
+	trig2.queue_free()
+	var nm_src := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(_window_has(nm_src, "attempt_begin",
+			"Time.get_ticks_msec()", 200),
+		"209: load_floor's server leg begins the attempt")
+	_assert(_source_has(nm_src, "load_world_from_floor",
+			"attempt_clear"),
+		"209: the exit transfer clears the attempt server-side")
+	_assert(_source_has(nm_src, "start_continued_run",
+			"attempt_clear"),
+		"209: a continue ends any attempt")
+	var dun_src := FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	_assert(_source_has(dun_src, "announce_building_cleared",
+			"get_remote_sender_id() not in [0, 1]"),
+		"209: the completion announce is server-origin guarded")
+	_assert(_source_has(dun_src, "announce_building_cleared",
+			"upload_building"),
+		"209: every peer's handler posts under its own account")
+	var trig_src := FileAccess.get_file_as_string(
+		"res://scripts/world/transfer_trigger.gd")
+	_assert(_source_has(trig_src, "func activate",
+			"load_floor\", building_key, 0, true"),
+		"209: Enter building runs the existing transfer")
+	print("[Playtest] Building boards test done.")
+
+
 func _test_annex_departure() -> void:
 	print("[Playtest] Annex departure trigger + ride (issue #2 phase 3)...")
 	# (Runtime loads only: bare autoload identifiers don't compile in -s script mode.)
@@ -13230,6 +13517,33 @@ func _find_scroll_containers(node: Node, out: Array) -> void:
 		out.append(node)
 	for child in node.get_children():
 		_find_scroll_containers(child, out)
+
+
+func _collect_labels(node: Node, out: Array) -> void:
+	if node is Label:
+		out.append(node)
+	for child in node.get_children():
+		_collect_labels(child, out)
+
+
+## Source-window pin helper (issue #209): the needle occurs
+## within `span` chars after the anchor's first occurrence.
+func _window_has(src: String, anchor: String, needle: String,
+		span: int) -> bool:
+	var i := src.find(anchor)
+	if i < 0:
+		return false
+	return src.substr(i, span).contains(needle)
+
+
+## The needle occurs somewhere after the anchor (function-
+## scoped source pins).
+func _source_has(src: String, anchor: String,
+		needle: String) -> bool:
+	var i := src.find(anchor)
+	if i < 0:
+		return false
+	return src.substr(i).contains(needle)
 
 
 func _test_echo_phase2() -> void:
