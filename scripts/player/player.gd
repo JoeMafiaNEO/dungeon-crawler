@@ -238,6 +238,13 @@ var tree_last_claimed := {}
 ## the _buff_mult pattern — a var + a clock check at the
 ## read sites.
 var _tree_fuel_until := 0
+## Issue #210 (slice B2): Veilwalker's post-veil damage
+## window (msec), From the Dark's veil/step recency
+## stamp (msec), and Twin Step's free-recast window.
+var _tree_veil_until := 0
+var _tree_dark_stamp := 0
+var _tree_twin_until := 0
+var _tree_twin_armed := false
 ## Issue #210: Stormcharged's window (10 s after Tempest).
 var _tree_storm_until := 0
 ## Anti-cheese: per-enemy cooldowns for affinity gain.
@@ -1302,6 +1309,16 @@ func _tree_frost_mult(skill_id: String) -> float:
 ## Issue #210 Amendment 1: the caster's Arcing Brand amp
 ## for a skill. Public: the Fireball explode loop reads
 ## the barrage amp via the caster.
+## Issue #210 (Veilwalker): the damage multiplier of the
+## post-veil window — 1.0 outside it or unowned.
+func _tree_veil_mult() -> float:
+	if Time.get_ticks_msec() < _tree_veil_until:
+		var p := _tree_behavior_pct("veilwalker")
+		if p > 0.0:
+			return 1.0 + p / 100.0
+	return 1.0
+
+
 func tree_brand_amp(skill_id: String) -> float:
 	return _tree_skill_mod(skill_id, "brand_amp", 0.0)
 
@@ -2536,6 +2553,11 @@ func _activate_eagle_eye() -> void:
 	# X-ray all mobs on every peer.
 	var cast_id := "eagle_%d" % _cast_seq
 	var revealed := 0
+	# Issue #210 (Surveyor): the reveal also marks the
+	# nearest elite or boss, through the mark's own path.
+	var surveyor := _tree_behavior_pct("surveyor") > 0.0
+	var survey_target: Mob = null
+	var survey_d := INF
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
 		if m != null and m.alive:
@@ -2544,7 +2566,21 @@ func _activate_eagle_eye() -> void:
 			var pts := 5.0 if (m.is_elite or m.data.is_boss) else 1.0
 			gain_affinity_capped("eagle_eye", pts, -1, cast_id, 10.0)
 			revealed += 1
-	await get_tree().create_timer(4.0).timeout
+			if surveyor and (m.is_elite or m.data.is_boss):
+				var d := m.global_position.distance_to(global_position)
+				if d < survey_d:
+					survey_d = d
+					survey_target = m
+	if survey_target != null:
+		var svuln := _tree_skill_mod("mark", "vuln_add", 0.0)
+		if _tree_variant("mark") == "death_sentence":
+			svuln += 0.25
+		if multiplayer.is_server():
+			survey_target.apply_mark(Mob.MARK_PERMANENT, 1.0, svuln)
+		else:
+			survey_target.rpc_id(NetworkManager.server_peer_id, "apply_mark", Mob.MARK_PERMANENT, 1.0, svuln)
+	await get_tree().create_timer(4.0 + _tree_skill_mod(
+		"eagle_eye", "duration_add", 0.0)).timeout
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
 		if m != null and is_instance_valid(m):
@@ -2558,19 +2594,33 @@ func _activate_smoke_veil() -> void:
 			hud.toast("Smoke Veil on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["smoke_veil"] = (30.0) * cooldown_mult()
+	ability_cds["smoke_veil"] = (30.0) * cooldown_mult() \
+		* _tree_skill_mod("smoke_veil", "cd_mult", 1.0)
 	stealthed = true
-	_stealth_t = 7.0 if has_trait("longer_shadows") else 6.0
+	_stealth_t = (7.0 if has_trait("longer_shadows") else 6.0) \
+		+ _tree_skill_mod("smoke_veil", "duration_add", 0.0)
+	# Issue #210 (From the Dark): the veil sets the recency
+	# the combo condition reads.
+	_tree_dark_stamp = Time.get_ticks_msec()
 	rpc("set_stealthed", true)
 	AudioManager.sfx("smoke_veil")
 	Effects.burst(get_parent(), global_position + Vector3(0, 1.0, 0), Color(0.5, 0.5, 0.55), 20, 4.0)
 	# Affinity: +5 if ≥1 enemy within 10m.
+	# Issue #210 (Choking Veil): the same scan slows its
+	# enemies 20% for 3 s (server-routed like the mark).
+	var choking := _tree_variant("smoke_veil") == "choking_veil"
 	var near := false
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
 		if m != null and m.alive and m.global_position.distance_to(global_position) < 10.0:
 			near = true
-			break
+			if choking:
+				if multiplayer.is_server():
+					m.apply_slow(3.0, 0.8)
+				else:
+					m.rpc_id(NetworkManager.server_peer_id, "rpc_apply_slow", 3.0, 0.8)
+			if not choking:
+				break
 	if near:
 		gain_affinity("smoke_veil", 5.0)
 	if hud != null:
@@ -2595,15 +2645,24 @@ func _activate_mark() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["mark"] = (25.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["mark"] = (25.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("mark", "cd_mult", 1.0)
 	# Hamstring Mark trait: marked targets are also slowed 20%.
 	var hamstring := 0.8 if has_trait("hamstring_mark") else 1.0
+	# Issue #210 (section 2.6): the caster's tree vuln add
+	# rides the application and is stored on the mark;
+	# Death Sentence deepens it by an authored +0.25 (the
+	# base game's amplification is already all-source, so
+	# the variant takes the deepen form).
+	var vuln := _tree_skill_mod("mark", "vuln_add", 0.0)
+	if _tree_variant("mark") == "death_sentence":
+		vuln += 0.25
 	# SteamMultiplayerPeer can't rpc_id its own peer ID: when this instance is
 	# the server, call directly (same outcome — the handler is call_local).
 	if multiplayer.is_server():
-		target.apply_mark(Mob.MARK_PERMANENT, hamstring)
+		target.apply_mark(Mob.MARK_PERMANENT, hamstring, vuln)
 	else:
-		target.rpc_id(NetworkManager.server_peer_id, "apply_mark", Mob.MARK_PERMANENT, hamstring)
+		target.rpc_id(NetworkManager.server_peer_id, "apply_mark", Mob.MARK_PERMANENT, hamstring, vuln)
 	AudioManager.sfx("mark")
 	if hud != null:
 		hud.toast("Target marked! +50% damage.")
@@ -2631,12 +2690,28 @@ func _nearest_mob_aimed(from: Vector3, dir: Vector3, max_dist: float) -> Mob:
 
 ## Shadow Step: blink 8m in the facing direction. 15s cooldown.
 func _activate_shadow_step() -> void:
+	# Issue #210 (Twin Step): one free re-cast within 2 s
+	# of a step — a recast window on the cd site.
+	var free_recast := false
 	if float(ability_cds.get("shadow_step", 0.0)) > 0.0:
-		if hud != null:
-			hud.toast("Shadow Step on cooldown.")
-			AudioManager.sfx("ui_error")
-		return
-	ability_cds["shadow_step"] = (15.0) * cooldown_mult()
+		if _tree_variant("shadow_step") == "twin_step" \
+				and _tree_twin_armed \
+				and Time.get_ticks_msec() < _tree_twin_until:
+			free_recast = true
+			_tree_twin_armed = false
+		else:
+			if hud != null:
+				hud.toast("Shadow Step on cooldown.")
+				AudioManager.sfx("ui_error")
+			return
+	if not free_recast:
+		ability_cds["shadow_step"] = (15.0) * cooldown_mult() \
+			* _tree_skill_mod("shadow_step", "cd_mult", 1.0)
+		if _tree_variant("shadow_step") == "twin_step":
+			_tree_twin_armed = true
+			_tree_twin_until = Time.get_ticks_msec() + 2000
+	# Issue #210 (From the Dark): the step sets the recency.
+	_tree_dark_stamp = Time.get_ticks_msec()
 	var fwd := -global_transform.basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized()
@@ -2654,6 +2729,24 @@ func _activate_shadow_step() -> void:
 	global_position = target
 	Effects.burst(get_parent(), global_position + Vector3(0, 1.0, 0), Color(0.6, 0.5, 0.9), 20, 5.0)
 	AudioManager.sfx("shadow_step")
+	# Amendment 1 section C.2 (Umbral Strike): at arrival,
+	# the step bites — weapon damage x the step_dmg
+	# aggregate to enemies within 2 m, server-executed
+	# with the assassinate strike's damage discipline. At
+	# zero aggregate the step damages nothing and moves
+	# exactly as today (neutrality).
+	var step_dmg := _tree_skill_mod("shadow_step",
+		"step_dmg", 0.0)
+	if step_dmg > 0.0:
+		var sdmg := damage * step_dmg
+		var me_step := int(multiplayer.get_unique_id())
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var m := n as Mob
+			if m != null and m.alive and m.global_position.distance_to(global_position) <= 2.0:
+				if multiplayer.is_server():
+					m.take_damage(sdmg, me_step, global_position)
+				else:
+					m.rpc_id(NetworkManager.server_peer_id, "take_damage", sdmg, me_step, global_position)
 	# Unseen trait: next attack after the blink crits.
 	if has_trait("unseen"):
 		unseen_crit_ready = true
@@ -2687,8 +2780,10 @@ func _activate_fan() -> void:
 			hud.toast("Fan of Knives on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["fan"] = (20.0) * cooldown_mult() / atk_spd_mult()
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 1.2
+	ability_cds["fan"] = (20.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("fan", "cd_mult", 1.0)
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 1.2 \
+		* _tree_mult("fan") * _tree_veil_mult()
 	# Unseen trait: first attack after veil/blink crits for 2x.
 	if unseen_crit_ready:
 		dmg *= 2.0
@@ -2700,6 +2795,16 @@ func _activate_fan() -> void:
 	if multiplayer.is_server():
 		var from := int(multiplayer.get_unique_id())
 		var cast_id := "fan_%d" % _cast_seq
+		# Issue #210 (Deadeye): the fan hits marked targets
+		# harder — the mob's mark state is the read.
+		var deadeye_pct := _tree_behavior_pct("deadeye")
+		# Issue #210 (Shuriken Storm, shape ruled on the
+		# corrected spec): the fan's +2-at-80% identity on
+		# its real radial-burst form — each in-radius
+		# target is struck two additional times at 80%
+		# (damage-only; the cast's affinity/combo
+		# bookkeeping stays on the first strike).
+		var shuriken := _tree_variant("fan") == "shuriken_storm"
 		for n in get_tree().get_nodes_in_group("mobs"):
 			var m := n as Mob
 			if m == null or not m.alive:
@@ -2707,10 +2812,19 @@ func _activate_fan() -> void:
 			if m.global_position.distance_to(global_position) < fan_radius:
 				var was_alive := m.alive
 				var was_slowed := m.is_slowed()
+				var hit_dmg := dmg
+				if deadeye_pct > 0.0 and m.is_marked():
+					hit_dmg = dmg * (1.0 + deadeye_pct / 100.0)
 				if multiplayer.is_server():
-					m.take_damage(dmg, from, global_position)
+					m.take_damage(hit_dmg, from, global_position)
 				else:
-					m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, from, global_position)
+					m.rpc_id(NetworkManager.server_peer_id, "take_damage", hit_dmg, from, global_position)
+				if shuriken:
+					for extra in 2:
+						if multiplayer.is_server():
+							m.take_damage(hit_dmg * 0.8, from, global_position)
+						else:
+							m.rpc_id(NetworkManager.server_peer_id, "take_damage", hit_dmg * 0.8, from, global_position)
 				# Affinity: +2 per enemy hit, max +8/cast.
 				gain_affinity_capped("fan", 2.0, m.get_instance_id(), cast_id, 8.0)
 				# Combo Finisher: Shatter Cascade (issue #8) -- Fan of Knives
@@ -3027,7 +3141,8 @@ func _activate_assassinate() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["assassinate"] = (45.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["assassinate"] = (45.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("assassinate", "cd_mult", 1.0)
 	var origin := global_position
 	# Blink to behind the target (far side relative to our position).
 	var away: Vector3 = target.global_position - global_position
@@ -3046,12 +3161,25 @@ func _activate_assassinate() -> void:
 	Effects.burst(get_parent(), dest + Vector3(0, 1.0, 0), Color(0.6, 0.5, 0.9), 25, 6.0)
 	AudioManager.sfx("shadow_step")
 	# Strike for 300% damage (server-authoritative).
-	var strike := damage * _buff_mult("damage") * rank_mult() * 3.0
+	var strike := damage * _buff_mult("damage") * rank_mult() * 3.0 \
+		* _tree_mult("assassinate")
+	# Issue #210 (From the Dark): +X% when cast within 2 s
+	# of Smoke Veil or Shadow Step (the recency stamp).
+	var dark_pct := _tree_behavior_pct("from_the_dark")
+	if dark_pct > 0.0 and Time.get_ticks_msec() \
+			- _tree_dark_stamp <= 2000:
+		strike *= 1.0 + dark_pct / 100.0
+	# Issue #210 (Veilwalker): the post-veil window also
+	# feeds the strike.
+	strike *= _tree_veil_mult()
 	var me := int(multiplayer.get_unique_id())
+	# The strike routes through the mob's assassinate_hit
+	# wrapper so a kill is attributable at the kill sites
+	# (Coup de Grâce); damage discipline unchanged.
 	if multiplayer.is_server():
-		target.take_damage(strike, me, global_position)
+		target.assassinate_hit(strike, me, global_position)
 	else:
-		target.rpc_id(NetworkManager.server_peer_id, "take_damage", strike, me, global_position)
+		target.rpc_id(NetworkManager.server_peer_id, "assassinate_hit", strike, me, global_position)
 	Effects.burst(get_parent(), target.global_position + Vector3(0, 1.2, 0), Color(1.0, 0.85, 0.9), 30, 7.0)
 	AudioManager.sfx("fan")
 	if hud != null:
@@ -3075,19 +3203,30 @@ func _activate_execution() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["execution"] = (60.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["execution"] = (60.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("execution", "cd_mult", 1.0)
 	var me := int(multiplayer.get_unique_id())
-	var base := damage * _buff_mult("damage") * rank_mult()
+	var base := damage * _buff_mult("damage") * rank_mult() \
+		* _tree_mult("execution") * _tree_veil_mult()
 	var is_boss: bool = (target.get("data") as MobData).is_boss
 	var frac := target.hp / maxf(target.max_hp, 0.01)
 	var dmg := base * 2.0
 	var executed := false
-	if not is_boss and frac < 0.15:
+	var exec_thr := 0.15 + _tree_skill_mod(
+		"execution", "threshold_add", 0.0)
+	if not is_boss and frac < exec_thr:
 		# Instant kill: overwhelming damage routes through the normal death path.
 		dmg = 999999.0
 		executed = true
 	elif is_boss:
-		dmg = base * 5.0
+		# Issue #210 (Headsman): bosses face the threshold
+		# at half effect instead of being immune to it.
+		if _tree_variant("execution") == "headsman" \
+				and frac < exec_thr * 0.5:
+			dmg = 999999.0
+			executed = true
+		else:
+			dmg = base * 5.0
 	if multiplayer.is_server():
 		target.take_damage(dmg, me, global_position)
 	else:
@@ -3630,6 +3769,10 @@ func _physics_process(delta: float) -> void:
 			_stealth_t -= delta
 			if _stealth_t <= 0.0 and stealthed:
 				stealthed = false
+				# Issue #210 (Veilwalker): EXITING the veil
+				# opens the 4 s damage window.
+				if _tree_behavior_pct("veilwalker") > 0.0:
+					_tree_veil_until = Time.get_ticks_msec() + 4000
 				if _mp_peer_connected():
 					rpc("set_stealthed", false)
 				# Unseen trait: first attack after the veil ends crits.
@@ -6522,6 +6665,19 @@ func notify_mark_kill() -> void:
 ## guard means an unspent one gains nothing and no second
 ## charge can ever bank. Silent by ruling (section 4): no
 ## toast, no sfx — the slot visibly re-enables via
+## Issue #210 (Coup de Grâce): the server reports that
+## this player's Assassinate strike killed — a killing
+## Assassinate resets its own cooldown.
+@rpc("any_peer", "call_local")
+func notify_coup_kill() -> void:
+	if not is_multiplayer_authority():
+		return
+	if _tree_variant("assassinate") == "coup_de_grace":
+		ability_cds["assassinate"] = 0.0
+		if hud != null:
+			hud.refresh_abilities(self)
+
+
 ## refresh_abilities.
 @rpc("any_peer", "call_local")
 func notify_marked_target_died() -> void:

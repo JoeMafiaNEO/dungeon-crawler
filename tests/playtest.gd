@@ -130,6 +130,7 @@ func _run() -> void:
 	_test_health_bar_depth_195()
 	_test_deep_tree_206()
 	_test_deep_tree_b1_210()
+	_test_deep_tree_b2_210()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -18446,10 +18447,13 @@ func _test_atk_spd_184() -> void:
 			"_dagger_catch_cd = DAGGER_CATCH_COOLDOWN / atk_spd_mult()"]:
 		_assert(psrc.contains(frag), "184(s1): divided set site present: " + frag.left(52))
 	# --- NON-BLEED: the five non-attack set sites byte-
-	# --- identical (first-class pin, section 1).
+	# --- identical (first-class pin, section 1). The two
+	# --- rogue sites carry issue #210's tree cd fold —
+	# --- still NO atk_spd division (the pin's substance);
+	# --- their fragments record the folded forms.
 	for frag in [
-			"ability_cds[\"smoke_veil\"] = (30.0) * cooldown_mult()\n",
-			"ability_cds[\"shadow_step\"] = (15.0) * cooldown_mult()\n",
+			"ability_cds[\"smoke_veil\"] = (30.0) * cooldown_mult() \\\n\t\t* _tree_skill_mod(\"smoke_veil\", \"cd_mult\", 1.0)",
+			"ability_cds[\"shadow_step\"] = (15.0) * cooldown_mult() \\\n\t\t\t* _tree_skill_mod(\"shadow_step\", \"cd_mult\", 1.0)",
 			"ability_cds[\"reinforce\"] = (25.0) * cooldown_mult()\n",
 			"ability_cds[cd_key] = (cd) * cooldown_mult()\n",
 			"ability_cds[structure_id] = (cd) * cooldown_mult()\n"]:
@@ -22588,3 +22592,527 @@ func _test_deep_tree_b1_210() -> void:
 	current_scene = null
 	hold.free()
 	print("[Playtest] Deep Tree B1 test done.")
+
+
+func _test_deep_tree_b2_210() -> void:
+	print("[Playtest] Deep Tree B2 rogue completion (issue #210)...")
+	var DT = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = DT.TREE_SEED
+
+	# (a) FIXTURE LITERALS, recorded from the module:
+	# Shadow rings 1-3 (widths 1/2/1), Precision 1/2/1.
+	_assert(DT.width(seed, 6, 1) == 1 and DT.width(seed, 6, 2) == 2
+			and DT.width(seed, 6, 3) == 1
+			and DT.width(seed, 7, 1) == 1
+			and DT.width(seed, 7, 2) == 2
+			and DT.width(seed, 7, 3) == 1,
+		"210B: Shadow/Precision fixture widths are 1/2/1 each")
+	var fx := [
+		[6, 1, 0, "modifier", "assassinate", {"components": [{"param": "cd_pct", "steps": 4}]}, 16, "Hidden Veil"],
+		[6, 2, 0, "behavior", "smoke_veil", {"behavior": "veilwalker", "steps": 4}, 29, "Hollow Step"],
+		[6, 2, 1, "modifier", "smoke_veil", {"components": [{"param": "cd_pct", "steps": 4}]}, 20, "Silent Whisper"],
+		[6, 3, 0, "modifier", "smoke_veil", {"components": [{"param": "duration_add", "steps": 2}]}, 24, "Umbral Promise"],
+		[7, 1, 0, "modifier", "execution", {"components": [{"param": "cd_pct", "steps": 8}]}, 16, "Steady Fan"],
+		[7, 2, 0, "stat", "", {"channel": "damage", "steps": 4}, 12, "Piercing Point"],
+		[7, 2, 1, "stat", "", {"channel": "damage", "steps": 2}, 12, "Cold Edge"],
+		[7, 3, 0, "stat", "", {"channel": "damage", "steps": 4}, 15, "Keen Eye"],
+	]
+	for row in fx:
+		var nd: Dictionary = DT.node_for(seed, "rogue",
+			int(row[0]), int(row[1]), int(row[2]))
+		_assert(str(nd["archetype"]) == str(row[3])
+				and str(nd["target"]) == str(row[4])
+				and nd["params"] == row[5]
+				and int(nd["cost"]) == int(row[6])
+				and str(nd["name"]) == str(row[7]),
+			"210B: fixture %d/%d/%d is %s" % [row[0], row[1],
+				row[2], row[7]])
+	# Section 1.3 invariance: Fire/Frost/Storm literals stand.
+	var inv1: Dictionary = DT.node_for(seed, "mage", 1, 2, 0)
+	_assert(str(inv1["name"]) == "Charred Throne"
+			and inv1["params"] == {"behavior": "fuel_for_the_flame", "steps": 4},
+		"210B: invariance — Fire ring 2 behavior unchanged")
+	var inv2: Dictionary = DT.node_for(seed, "mage", 2, 2, 0)
+	_assert(str(inv2["name"]) == "Bitter Garden"
+			and inv2["params"] == {"components": [{"param": "freeze_add", "steps": 3}]},
+		"210B: invariance — Frost ring 2/0 unchanged (B1's amended fixture)")
+	var inv3: Dictionary = DT.node_for(seed, "mage", 3, 1, 2)
+	_assert(str(inv3["name"]) == "Arc Brand"
+			and inv3["params"] == {"components": [{"param": "dmg_pct", "steps": 3}]},
+		"210B: invariance — Storm ring 1/2 unchanged")
+
+	# (b) Determinism for the new branches, rings 1-12.
+	for b in [6, 7]:
+		var s1 := ""
+		var s2 := ""
+		for ring in range(1, 13):
+			for index in DT.width(seed, b, ring):
+				s1 += str(DT.node_for(seed, "rogue", b, ring, index))
+				s2 += str(DT.node_for(seed, "rogue", b, ring, index))
+		_assert(s1 == s2 and s1 != "",
+			"210B: branch %d generates deterministically (rings 1-12)" % b)
+
+	# (c) Aggregate exactness + exclusions + envelopes.
+	var aggA: Dictionary = DT.compute_aggregates(seed, "rogue",
+		[DT.pack_id(6, 3, 0), DT.pack_id(6, 1, 0),
+		DT.pack_id(7, 1, 0)])
+	_assert(absf(float(aggA["skill_mods"]["smoke_veil"].get("duration_add", 0.0)) - 2.0) < 0.001,
+		"210B: smoke duration_add 2 steps x 1.0 s (target unit) = 2.0")
+	_assert(absf(float(aggA["skill_mods"]["assassinate"].get("cd_mult", 0.0)) - 0.98) < 0.001
+			and absf(float(aggA["skill_mods"]["execution"].get("cd_mult", 0.0)) - 0.96) < 0.001,
+		"210B: assassinate cd_mult 0.98, execution cd_mult 0.96")
+	# The wave-gate protection: no eagle_eye node ever
+	# carries cd_pct (rings 1-12 scan).
+	var eagle_clean := true
+	for ring in range(1, 13):
+		for index in DT.width(seed, 7, ring):
+			var ndE: Dictionary = DT.node_for(seed, "rogue",
+				7, ring, index)
+			if str(ndE["target"]) == "eagle_eye":
+				for comp in ndE["params"].get("components", []):
+					if str(comp["param"]) == "cd_pct":
+						eagle_clean = false
+	_assert(eagle_clean,
+		"210B: exclusion — eagle_eye generates no cd_pct (wave gate protected)")
+	# Scans for the live legs + envelopes.
+	var scan := {"step": [], "vuln": -1, "thresh": -1,
+		"dark": -1, "deadeye": -1, "surveyor": -1,
+		"coup": -1, "twin": -1, "choking": -1,
+		"headsman": -1, "death_sentence": -1,
+		"shuriken": -1}
+	for ring in range(1, 241):
+		for b in [6, 7]:
+			for index in DT.width(seed, b, ring):
+				var ndS: Dictionary = DT.node_for(seed,
+					"rogue", b, ring, index)
+				if str(ndS["target"]) == "shadow_step":
+					for comp in ndS["params"].get("components", []):
+						if str(comp["param"]) == "step_dmg":
+							scan["step"].append(int(ndS["id"]))
+				if str(ndS["target"]) == "mark" and int(scan["vuln"]) < 0:
+					for comp in ndS["params"].get("components", []):
+						if str(comp["param"]) == "vuln_add":
+							scan["vuln"] = int(ndS["id"])
+				if str(ndS["target"]) == "execution" and int(scan["thresh"]) < 0:
+					for comp in ndS["params"].get("components", []):
+						if str(comp["param"]) == "threshold_add":
+							scan["thresh"] = int(ndS["id"])
+				var beh := str(ndS["params"].get("behavior", ""))
+				if beh == "from_the_dark" and int(scan["dark"]) < 0:
+					scan["dark"] = int(ndS["id"])
+				if beh == "deadeye" and int(scan["deadeye"]) < 0:
+					scan["deadeye"] = int(ndS["id"])
+				if beh == "surveyor" and int(scan["surveyor"]) < 0:
+					scan["surveyor"] = int(ndS["id"])
+				var vr := str(ndS["params"].get("variant", ""))
+				if vr == "coup_de_grace" and int(scan["coup"]) < 0:
+					scan["coup"] = int(ndS["id"])
+				if vr == "twin_step" and int(scan["twin"]) < 0:
+					scan["twin"] = int(ndS["id"])
+				if vr == "choking_veil" and int(scan["choking"]) < 0:
+					scan["choking"] = int(ndS["id"])
+				if vr == "headsman" and int(scan["headsman"]) < 0:
+					scan["headsman"] = int(ndS["id"])
+				if vr == "death_sentence" and int(scan["death_sentence"]) < 0:
+					scan["death_sentence"] = int(ndS["id"])
+				if vr == "shuriken_storm" and int(scan["shuriken"]) < 0:
+					scan["shuriken"] = int(ndS["id"])
+	for k in ["vuln", "thresh", "dark", "deadeye",
+			"surveyor", "coup", "twin", "choking",
+			"headsman", "death_sentence", "shuriken"]:
+		_assert(int(scan[k]) > 0, "210B: scan finds a %s node" % k)
+	_assert(not scan["step"].is_empty(),
+		"210B: scan finds step_dmg nodes")
+	var agg_step: Dictionary = DT.compute_aggregates(seed,
+		"rogue", scan["step"])
+	var step_full := float(agg_step["skill_mods"]["shadow_step"].get("step_dmg", 0.0))
+	_assert(step_full > 0.0 and step_full <= 1.00,
+		"210B: step_dmg clamps at <= 1.00 under a full set (Amendment 1 section D; got %.3f)" % step_full)
+
+	# (d) Purchase legality + server validation (Shadow).
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold := Node3D.new()
+	root.add_child(hold)
+	current_scene = hold
+	var pf = PlayerScene.instantiate()
+	pf.set("class_id", "rogue")
+	hold.add_child(pf)
+	pf.set("family_collection", {"shadow": {"signature": true}})
+	pf.set("tree_lifetime", {"smoke_veil": 90.0,
+		"shadow_step": 60.0})
+	_assert(DT.wallet(pf, 6) == 150,
+		"210B: the shadow wallet derives from its own skills")
+	_assert(bool(pf.call("try_purchase", DT.pack_id(6, 1, 0))),
+		"210B: buy the Shadow ring-1 spine succeeds")
+	_assert(DT.wallet(pf, 6) == 134,
+		"210B: wallet after the buy (150 - 16)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(6, 1, 0))),
+		"210B: re-buying is refused")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(6, 2, 1))),
+		"210B: a side node without its spine is refused (prereq)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(7, 1, 0))),
+		"210B: a sibling-branch node is refused before its own unlock")
+	var srv = PlayerScene.instantiate()
+	srv.set("class_id", "rogue")
+	hold.add_child(srv)
+	srv.set("family_collection", {"shadow": {"signature": true}})
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 3, 0), 1000, 1)) == "prereq",
+		"210B: validator rejects an unmet Shadow prereq")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 2, 7), 1000, 1)) == "inert",
+		"210B: validator rejects a forged Shadow id")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 1, 0), 10, 1)) == "insufficient",
+		"210B: validator rejects an insufficient Shadow claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 1, 0), 100, 1)) == "",
+		"210B: validator accepts a legal Shadow claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 1, 0), 100, 1)) == "duplicate",
+		"210B: validator rejects a duplicate Shadow claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 2, 0), 50, 1)) == "rollback",
+		"210B: validator rejects a non-monotone Shadow claim")
+
+	# (e) READ SITES LIVE — the bare-dungeon fixture with
+	# the shadow-Player_1 purge and a rogue claimant.
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	for c in dgn.get_node("Players").get_children():
+		c.free()
+	var pc = PlayerScene.instantiate()
+	pc.set("class_id", "rogue")
+	pc.name = "Player_1"
+	dgn.get_node("Players").add_child(pc)
+	_assert(dgn.call("get_player_node", 1) == pc,
+		"210B: fixture integrity — peer 1 resolves to the scripted rogue")
+	pc.set("damage", 100.0)
+	dgn.set("_layout", null)
+	for n in get_nodes_in_group("mobs"):
+		n.get_parent().remove_child(n)
+		n.free()
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var sdata: Resource = load("res://data/mobs/slime.tres")
+	var bdata: Resource = load("res://data/mobs/boss_boar.tres")
+	# Aim-driven activations read _camera: force a known
+	# eye (the fixture's own camera, when _ready built
+	# one, is not positioned for these drives).
+	var cam := Camera3D.new()
+	cam.position = Vector3(0, 1.0, 0)
+	pc.add_child(cam)
+	pc.set("_camera", cam)
+
+	# Umbral Strike (Amendment 1 section C.2).
+	var um = MobScene.instantiate()
+	um.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(um)
+	um.set("hp", 10000.0)
+	um.set("max_hp", 10000.0)
+	# NEUTRALITY: a zero-owned step damages nothing and
+	# moves exactly as today (8 m forward).
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	um.global_position = pc.global_position + Vector3(0, 0, -8)
+	pc.call("_activate_shadow_step")
+	_assert(absf(10000.0 - float(um.get("hp"))) < 0.01
+			and absf(pc.global_position.z + 8.0) < 0.5,
+		"210B: neutrality — a zero-owned step damages nothing, moves as today")
+	# POSITIVE: the full step set — arrival damage is
+	# weapon damage x the aggregate.
+	pc.set("tree_owned", scan["step"])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	um.global_position = pc.global_position + Vector3(0, 0, -8)
+	pc.call("_activate_shadow_step")
+	_assert(absf(10000.0 - float(um.get("hp"))
+			- 100.0 * step_full) < 0.01,
+		"210B: Umbral Strike deals weapon damage x step_dmg at arrival")
+	hold.remove_child(um)
+	um.free()
+
+	# Smoke Veil: cd + window read the aggregates.
+	pc.set("tree_owned", [DT.pack_id(6, 3, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_smoke_veil")
+	_assert(absf(float(pc.get("ability_cds").get("smoke_veil", 0.0)) - 30.0) < 0.01
+			and absf(float(pc.get("_stealth_t")) - 8.0) < 0.01,
+		"210B: the veil window reads duration_add exactly (6 + 2 = 8 s); its cd is the unfolded 30 s")
+	# Choking Veil: the activation scan slows its enemies.
+	var cm = MobScene.instantiate()
+	cm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(cm)
+	cm.set("hp", 10000.0)
+	cm.set("max_hp", 10000.0)
+	cm.global_position = pc.global_position + Vector3(3, 0, 0)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_smoke_veil")
+	_assert(not bool(cm.call("is_slowed")),
+		"210B: a plain veil slows nobody (Choking neutrality)")
+	pc.set("tree_owned", [scan["choking"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_smoke_veil")
+	_assert(bool(cm.call("is_slowed"))
+			and absf(float(cm.get("_slow_mult")) - 0.8) < 0.001,
+		"210B: Choking Veil slows the scan's enemies 20% for 3 s")
+	hold.remove_child(cm)
+	cm.free()
+	# Veilwalker: exiting the veil opens the 4 s window.
+	pc.set("tree_owned", [DT.pack_id(6, 2, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("stealthed", true)
+	pc.set("_stealth_t", 0.05)
+	pc.call("_physics_process", 0.1)
+	_assert(int(pc.get("_tree_veil_until")) > Time.get_ticks_msec()
+			and absf(float(pc.call("_tree_veil_mult")) - 1.2) < 0.001,
+		"210B: Veilwalker — exiting the veil grants +20% damage for 4 s (4 steps)")
+	pc.set("_tree_veil_until", 0)
+
+	# Twin Step: one free re-cast within 2 s.
+	pc.set("tree_owned", [scan["twin"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.global_position = Vector3.ZERO
+	var z0: float = pc.global_position.z
+	pc.call("_activate_shadow_step")
+	var z1: float = pc.global_position.z
+	pc.call("_activate_shadow_step")
+	var z2: float = pc.global_position.z
+	pc.call("_activate_shadow_step")
+	_assert(absf(z1 - z0 + 8.0) < 0.5 and absf(z2 - z1 + 8.0) < 0.5
+			and absf(pc.global_position.z - z2) < 0.01,
+		"210B: Twin Step — the second step is free inside 2 s, the third is gated")
+
+	# Coup de Grâce: the strike's kill attribution.
+	var km = MobScene.instantiate()
+	km.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(km)
+	km.set("hp", 50.0)
+	km.set("max_hp", 10000.0)
+	km.global_position = pc.global_position + Vector3(2, 0, 0)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {"assassinate": 30.0})
+	km.call("assassinate_hit", 100.0, 1, pc.global_position)
+	_assert(absf(float(pc.get("ability_cds").get("assassinate", 0.0)) - 30.0) < 0.01,
+		"210B: a killing strike without Coup de Grâce resets nothing")
+	var km2 = MobScene.instantiate()
+	km2.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(km2)
+	km2.set("hp", 50.0)
+	km2.set("max_hp", 10000.0)
+	km2.global_position = pc.global_position + Vector3(2, 0, 0)
+	pc.set("tree_owned", [scan["coup"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {"assassinate": 30.0})
+	km2.call("assassinate_hit", 100.0, 1, pc.global_position)
+	_assert(absf(float(pc.get("ability_cds").get("assassinate", 0.0))) < 0.01,
+		"210B: Coup de Grâce — a killing Assassinate resets its own cooldown")
+	hold.remove_child(km2)
+	km2.free()
+
+	# The mark's vuln channel: stored at application,
+	# consumed at the read, never re-read.
+	var vuln_agg := float(DT.compute_aggregates(seed, "rogue",
+		[scan["vuln"]])["skill_mods"]["mark"].get("vuln_add", 0.0))
+	pc.set("tree_owned", [scan["vuln"], scan["death_sentence"]])
+	pc.call("_recompute_tree_aggregates")
+	var mm = MobScene.instantiate()
+	mm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(mm)
+	mm.set("hp", 10000.0)
+	mm.set("max_hp", 10000.0)
+	mm.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("ability_cds", {})
+	pc.call("_activate_mark")
+	_assert(absf(float(mm.get("_mark_vuln_add"))
+			- (vuln_agg + 0.25)) < 0.001,
+		"210B: the caster's vuln rides the application and is stored on the mark (Death Sentence deepens +0.25)")
+	mm.call("take_damage", 100.0, 1, pc.global_position)
+	var mark_loss := 100.0 * (1.5 + vuln_agg + 0.25)
+	_assert(absf(10000.0 - float(mm.get("hp")) - mark_loss) < 0.01,
+		"210B: the marked read consumes the stored value (x%.2f)" % (1.5 + vuln_agg + 0.25))
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	mm.set("hp", 10000.0)
+	mm.call("take_damage", 100.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(mm.get("hp")) - mark_loss) < 0.01,
+		"210B: the stored value is NOT re-read from a changed build")
+	hold.remove_child(mm)
+	mm.free()
+
+	# Deadeye: the fan reads the mob's mark state.
+	var deadeye_pct := float(DT.compute_aggregates(seed,
+		"rogue", [scan["deadeye"]])["behaviors"].get("deadeye", 0.0))
+	pc.set("tree_owned", [scan["deadeye"]])
+	pc.call("_recompute_tree_aggregates")
+	var fm1 = MobScene.instantiate()
+	fm1.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(fm1)
+	fm1.set("hp", 10000.0)
+	fm1.set("max_hp", 10000.0)
+	fm1.global_position = pc.global_position + Vector3(2, 0, 0)
+	var fm2 = MobScene.instantiate()
+	fm2.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(fm2)
+	fm2.set("hp", 10000.0)
+	fm2.set("max_hp", 10000.0)
+	fm2.global_position = pc.global_position + Vector3(-2, 0, 0)
+	fm2.call("apply_mark", 1e9, 1.0, 0.0)
+	pc.set("ability_cds", {})
+	# Affinity gains in the earlier legs recompute the
+	# fixture's damage stat — pin it at the cast.
+	pc.set("damage", 100.0)
+	pc.call("_activate_fan")
+	_assert(absf(10000.0 - float(fm1.get("hp")) - 120.0) < 0.01
+			and absf(10000.0 - float(fm2.get("hp"))
+				- 120.0 * (1.0 + deadeye_pct / 100.0) * 1.5) < 0.01,
+		"210B: Deadeye — the fan hits marked targets harder (mark amp x1.5 included on the marked one)")
+	hold.remove_child(fm1)
+	fm1.free()
+	hold.remove_child(fm2)
+	fm2.free()
+	# Shuriken Storm (the ruled burst form): each target
+	# is struck two additional times at 80%.
+	pc.set("tree_owned", [scan["shuriken"]])
+	pc.call("_recompute_tree_aggregates")
+	var sm9 = MobScene.instantiate()
+	sm9.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(sm9)
+	sm9.set("hp", 10000.0)
+	sm9.set("max_hp", 10000.0)
+	sm9.global_position = pc.global_position + Vector3(2, 0, 0)
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_fan")
+	_assert(absf(10000.0 - float(sm9.get("hp"))
+			- (120.0 + 2.0 * 96.0)) < 0.01,
+		"210B: Shuriken Storm — the fan strikes each target two extra times at 80% (120 + 2x96)")
+	hold.remove_child(sm9)
+	sm9.free()
+
+	# From the Dark: the strike inside 2 s of a step.
+	var dark_pct := float(DT.compute_aggregates(seed, "rogue",
+		[scan["dark"]])["behaviors"].get("from_the_dark", 0.0))
+	pc.set("tree_owned", [scan["dark"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_shadow_step")
+	var am = MobScene.instantiate()
+	am.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(am)
+	am.set("hp", 10000.0)
+	am.set("max_hp", 10000.0)
+	am.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("damage", 100.0)
+	pc.call("_activate_assassinate")
+	_assert(absf(10000.0 - float(am.get("hp"))
+			- 300.0 * (1.0 + dark_pct / 100.0)) < 0.01,
+		"210B: From the Dark — Assassinate inside 2 s of a step deals +X%")
+	hold.remove_child(am)
+	am.free()
+
+	# Execution: threshold_add at the frac read; Headsman.
+	var thr_agg := float(DT.compute_aggregates(seed, "rogue",
+		[scan["thresh"]])["skill_mods"]["execution"].get("threshold_add", 0.0))
+	var xm = MobScene.instantiate()
+	xm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(xm)
+	xm.set("max_hp", 10000.0)
+	xm.set("hp", 1550.0)
+	xm.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(absf(1550.0 - float(xm.get("hp")) - 200.0) < 0.01,
+		"210B: at frac 0.155 a stock Execution does not execute (x2 only)")
+	xm.set("hp", 1550.0)
+	xm.set("alive", true)
+	pc.set("tree_owned", [scan["thresh"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(not bool(xm.get("alive")),
+		"210B: threshold_add (%.2f) lifts the threshold past 0.155 — executed" % thr_agg)
+	hold.remove_child(xm)
+	xm.free()
+	var bm3 = MobScene.instantiate()
+	bm3.setup(1, bdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(bm3)
+	bm3.set("max_hp", 12000.0)
+	bm3.set("hp", 600.0)
+	bm3.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(bool(bm3.get("alive"))
+			and absf(600.0 - float(bm3.get("hp")) - 500.0) < 0.01,
+		"210B: a boss at frac 0.05 takes x5 — no threshold without Headsman")
+	bm3.set("hp", 600.0)
+	pc.set("tree_owned", [scan["headsman"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(not bool(bm3.get("alive")),
+		"210B: Headsman — the boss faces the threshold at half effect (0.075) and is executed")
+	hold.remove_child(bm3)
+	bm3.free()
+
+	# Surveyor: the reveal marks the nearest elite/boss.
+	var em = MobScene.instantiate()
+	em.setup(1, sdata, 1.0, 1.0, true, 1.0)
+	hold.add_child(em)
+	em.set("hp", 10000.0)
+	em.set("max_hp", 10000.0)
+	em.global_position = pc.global_position + Vector3(5, 0, 0)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_activate_eagle_eye")
+	_assert(not bool(em.call("is_marked")),
+		"210B: a plain Eagle Eye marks nobody (Surveyor neutrality)")
+	pc.set("tree_owned", [scan["surveyor"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("eagle_eye_used_wave", -999)
+	pc.call("_activate_eagle_eye")
+	_assert(bool(em.call("is_marked")),
+		"210B: Surveyor — the reveal marks the nearest elite or boss")
+	hold.remove_child(em)
+	em.free()
+
+	# Source pins for the remaining folds.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("target.assassinate_hit(strike, me, global_position)")
+			and psrc.contains("func notify_coup_kill")
+			and psrc.contains("_tree_dark_stamp = Time.get_ticks_msec()"),
+		"210B: the strike routes through assassinate_hit; Coup + the recency stamp are wired")
+	_assert(psrc.contains("survey_target.apply_mark(Mob.MARK_PERMANENT, 1.0, svuln)")
+			and psrc.contains("deadeye_pct")
+			and psrc.contains("\"headsman\""),
+		"210B: Surveyor / Deadeye / Headsman are wired")
+	var msrc2 := FileAccess.get_file_as_string(
+		"res://scripts/mobs/mob.gd")
+	_assert(msrc2.contains("vuln_add: float = 0.0")
+			and msrc2.contains("amount *= 1.5 + _mark_vuln_add")
+			and msrc2.contains("_notify_coup(attacker)")
+			and msrc2.contains("_notify_coup(_burn_attacker)"),
+		"210B: the vuln channel is stored + read; Coup hooks both kill-decision sites")
+	root.remove_child(dgn)
+	dgn.free()
+	for node in [pf, srv]:
+		hold.remove_child(node)
+		node.free()
+	current_scene = null
+	hold.free()
+	print("[Playtest] Deep Tree B2 test done.")

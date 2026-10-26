@@ -162,7 +162,7 @@ static func branch_info(class_id: String, branch: int) -> Dictionary:
 ## Populated branches (the prototype populated Fire; issue
 ## #210 slice B1 adds Frost and Storm).
 static func branch_populated(branch: int) -> bool:
-	return branch in [1, 2, 3]
+	return branch in [1, 2, 3, 6, 7]
 
 
 # ----------------------------------------------------------------
@@ -282,23 +282,45 @@ const PARAM_TABLE := {
 	"barrage": ["dmg_pct", "brand_amp"],
 	"tempest": ["dmg_pct", "cd_pct", "radius_add",
 		"duration_add"],
+	# Issue #210 slice B2 (Shadow, section 2.5): smoke
+	# veil's cd fold has no atk_spd division in the base
+	# game and the tree does not add one; shadow_step's
+	# step_dmg row is Amendment 1 section C.2 (Umbral
+	# Strike, clamp 1.00).
+	"smoke_veil": ["cd_pct", "duration_add"],
+	"shadow_step": ["cd_pct", "step_dmg"],
+	"assassinate": ["cd_pct", "dmg_pct"],
+	# Issue #210 slice B2 (Precision, section 2.6):
+	# eagle_eye has NO cd_pct — it is wave-gated, a
+	# designed protection (Amendment 1 section A).
+	"eagle_eye": ["duration_add"],
+	"mark": ["cd_pct", "vuln_add"],
+	"fan": ["cd_pct", "dmg_pct"],
+	"execution": ["cd_pct", "dmg_pct", "threshold_add"],
 }
 const PARAM_UNIT := {"dmg_pct": 0.5, "cd_pct": 0.5,
 	"radius_add": 0.1, "slow_add": 0.25,
 	"duration_add": 0.5, "freeze_add": 0.25,
 	"chains_add": 1.0, "shatter_pct": 2.5,
-	"brand_amp": 2.0}
+	"brand_amp": 2.0, "step_dmg": 5.0, "vuln_add": 2.0,
+	"threshold_add": 1.0}
 ## Per-target unit overrides: tempest's duration step is
 ## 1 s (2 strikes), blizzard's is one 0.5 s tick.
-const PARAM_UNIT_TARGET := {"tempest": {"duration_add": 1.0}}
+const PARAM_UNIT_TARGET := {"tempest": {"duration_add": 1.0},
+	# Issue #210 slice B2: the veil window grows in 1 s
+	# steps (the dispatch's step size; spec section 2.5
+	# names the channel without a size).
+	"smoke_veil": {"duration_add": 1.0}}
 const PARAM_BASE := {"dmg_pct": 4, "cd_pct": 4,
 	"radius_add": 2, "slow_add": 2, "duration_add": 2,
 	"freeze_add": 2, "chains_add": 1, "shatter_pct": 2,
-	"brand_amp": 3}
+	"brand_amp": 3, "step_dmg": 2, "vuln_add": 2,
+	"threshold_add": 2}
 const PARAM_SPAN := {"dmg_pct": 5, "cd_pct": 5,
 	"radius_add": 3, "slow_add": 3, "duration_add": 3,
 	"freeze_add": 3, "chains_add": 2, "shatter_pct": 3,
-	"brand_amp": 4}
+	"brand_amp": 4, "step_dmg": 3, "vuln_add": 3,
+	"threshold_add": 3}
 
 
 static func _param_unit(param: String, target: String) -> float:
@@ -315,10 +337,12 @@ const BEHAVIORS := {
 	1: ["emberheart", "fuel_for_the_flame"],
 	2: ["shatterglass", "permafrost_heart"],
 	3: ["stormcharged", "static_bloom"],
+	6: ["veilwalker", "from_the_dark"],
+	7: ["deadeye", "surveyor"],
 }
 ## The skill a branch's behavior nodes govern for looks.
 const BEHAVIOR_TARGET := {1: "fireball", 2: "frost",
-	3: "lightning"}
+	3: "lightning", 6: "smoke_veil", 7: "mark"}
 
 const VARIANTS := {
 	"twin_suns": {"skill": "fireball",
@@ -339,21 +363,39 @@ const VARIANTS := {
 		"desc": "Tempest Fan: Barrage fires five bolts at 50% damage each."},
 	"eye_of_the_storm": {"skill": "tempest",
 		"desc": "Eye of the Storm: when Tempest ends, a final strike at 200% hits the nearest enemy."},
+	"choking_veil": {"skill": "smoke_veil",
+		"desc": "Choking Veil: enemies caught in Smoke Veil's activation scan are slowed for 3 s."},
+	"twin_step": {"skill": "shadow_step",
+		"desc": "Twin Step: Shadow Step can be re-cast free within 2 s."},
+	"coup_de_grace": {"skill": "assassinate",
+		"desc": "Coup de Grâce: a killing Assassinate resets its cooldown."},
+	"shuriken_storm": {"skill": "fan",
+		"desc": "Shuriken Storm: Fan of Knives strikes each target two extra times at 80%."},
+	"death_sentence": {"skill": "mark",
+		"desc": "Death Sentence: your marked targets take +25% more damage from everyone."},
+	"headsman": {"skill": "execution",
+		"desc": "Headsman: bosses face Execution's threshold at half effect instead of immunity."},
 }
 const VARIANT_IDS := {
 	1: ["twin_suns", "meteor_shower", "phoenix_pyre"],
 	2: ["splinter_volley", "whiteout", "stasis_burst"],
 	3: ["forked_sky", "tempest_fan", "eye_of_the_storm"],
+	6: ["choking_veil", "twin_step", "coup_de_grace"],
+	7: ["shuriken_storm", "death_sentence", "headsman"],
 }
 
 const ECHO_FAMILIES := {
 	1: ["frost", "storm"],
 	2: ["fire", "storm"],
 	3: ["frost", "fire"],
+	6: ["precision"],
+	7: ["shadow"],
 }
 const FAMILY_SKILLS := {"fire": ["fireball", "meteor"],
 	"frost": ["frost", "blizzard"],
-	"storm": ["lightning", "barrage"]}
+	"storm": ["lightning", "barrage"],
+	"shadow": ["smoke_veil", "shadow_step"],
+	"precision": ["eagle_eye", "mark", "fan"]}
 
 const NAME_ADJ := ["Kindled", "Ashen", "Ember", "Scorched",
 	"Wildfire", "Blazing", "Smoldering", "Cinder",
@@ -370,6 +412,12 @@ const NAME_ADJ_BY_BRANCH := {
 	3: ["Crackling", "Tempest", "Voltaic", "Howling",
 		"Charged", "Forked", "Rumbling", "Bright", "Wild",
 		"Stormborn", "Arc", "Thunder"],
+	6: ["Silent", "Umbral", "Veiled", "Hollow", "Patient",
+		"Dusken", "Hidden", "Fading", "Soundless", "Pale",
+		"Grim", "Ashen"],
+	7: ["Keen", "Patient", "True", "Cold", "Steady",
+		"Piercing", "Watchful", "Measured", "Certain",
+		"Bright", "Still", "Hawken"],
 }
 const NAME_NOUN_BY_BRANCH := {
 	2: ["Shard", "Prison", "Veil", "Heart", "Crown",
@@ -378,6 +426,12 @@ const NAME_NOUN_BY_BRANCH := {
 	3: ["Arc", "Verdict", "Tongue", "Mantle", "Gaze",
 		"Pact", "Crown", "Throne", "Veil", "Oath",
 		"Choir", "Brand"],
+	6: ["Veil", "Step", "Blade", "Promise", "Shadow",
+		"Whisper", "Gaze", "Covenant", "Edge", "Shroud",
+		"Mark", "Throat"],
+	7: ["Eye", "Mark", "Fan", "Verdict", "Sight",
+		"Ledger", "Point", "Reckoning", "Glance", "Oath",
+		"Edge", "Crown"],
 }
 
 const COST_BASE := {"stat": 10, "modifier": 16,
@@ -519,8 +573,17 @@ static func _mod_desc(target: String, comps: Array) -> String:
 		elif param == "shatter_pct":
 			parts.append("+%s %s shatter (of caster damage)" % [
 				_fmt_pct(steps, param), target])
-		else: # brand_amp
+		elif param == "brand_amp":
 			parts.append("+%s %s brand amplification" % [
+				_fmt_pct(steps, param), target])
+		elif param == "step_dmg":
+			parts.append("+%s %s arrival damage (of weapon damage)" % [
+				_fmt_pct(steps, param), target])
+		elif param == "vuln_add":
+			parts.append("+%s %s vulnerability" % [
+				_fmt_pct(steps, param), target])
+		else: # threshold_add
+			parts.append("+%s %s execute threshold" % [
 				_fmt_pct(steps, param), target])
 	return "; ".join(parts)
 
@@ -724,6 +787,9 @@ static func compute_aggregates(seed: int, class_id: String,
 	var chain_steps := {}
 	var shatter_steps := {}
 	var brand_steps := {}
+	var step_steps := {}
+	var vuln_steps := {}
+	var thresh_steps := {}
 	var behaviors := {}
 	var variants := {}
 	var sorted_owned := owned.duplicate()
@@ -788,6 +854,15 @@ static func compute_aggregates(seed: int, class_id: String,
 				elif param == "brand_amp":
 					brand_steps[tgt] = int(brand_steps.get(
 						tgt, 0)) + steps
+				elif param == "step_dmg":
+					step_steps[tgt] = int(step_steps.get(
+						tgt, 0)) + steps
+				elif param == "vuln_add":
+					vuln_steps[tgt] = int(vuln_steps.get(
+						tgt, 0)) + steps
+				elif param == "threshold_add":
+					thresh_steps[tgt] = int(thresh_steps.get(
+						tgt, 0)) + steps
 	var stat_adds := {
 		"damage": minf(40.0, float(stat_steps["damage"])
 			* float(STAT_UNIT["damage"])),
@@ -818,6 +893,12 @@ static func compute_aggregates(seed: int, class_id: String,
 	for s in shatter_steps:
 		touched[s] = true
 	for s in brand_steps:
+		touched[s] = true
+	for s in step_steps:
+		touched[s] = true
+	for s in vuln_steps:
+		touched[s] = true
+	for s in thresh_steps:
 		touched[s] = true
 	for s in touched:
 		var entry := {
@@ -856,6 +937,20 @@ static func compute_aggregates(seed: int, class_id: String,
 			entry["brand_amp"] = minf(0.40,
 				float(brand_steps[s])
 				* float(PARAM_UNIT["brand_amp"]) / 100.0)
+		# Issue #210 slice B2 channels: step_dmg carries
+		# Amendment 1 section D's clamp (<= 1.00);
+		# vuln_add and threshold_add carry no clamp —
+		# none is named for them (the no-new-clamps rule).
+		if int(step_steps.get(s, 0)) > 0:
+			entry["step_dmg"] = minf(1.00,
+				float(step_steps[s])
+				* float(PARAM_UNIT["step_dmg"]) / 100.0)
+		if int(vuln_steps.get(s, 0)) > 0:
+			entry["vuln_add"] = float(vuln_steps[s]) \
+				* float(PARAM_UNIT["vuln_add"]) / 100.0
+		if int(thresh_steps.get(s, 0)) > 0:
+			entry["threshold_add"] = float(thresh_steps[s]) \
+				* float(PARAM_UNIT["threshold_add"]) / 100.0
 		skill_mods[s] = entry
 	return {"stat_adds": stat_adds, "skill_mods": skill_mods,
 		"behaviors": behaviors, "variants": variants}

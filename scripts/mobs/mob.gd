@@ -564,6 +564,14 @@ func is_stunned() -> bool:
 	return _stun_t > 0.0
 
 
+## Issue #210 (Choking Veil): apply_slow is server-context
+## only; this is its RPC route for owner-local casts, in
+## the apply_mark pattern.
+@rpc("any_peer", "call_local")
+func rpc_apply_slow(duration: float, mult: float) -> void:
+	apply_slow(duration, mult)
+
+
 func apply_slow(duration: float, mult: float) -> void:
 	if not alive:
 		return
@@ -720,6 +728,9 @@ func _take_burn_tick() -> void:
 		# burn kills skip _drop_and_reward entirely, so the
 		# marker notification hooks HERE, not the reward path.
 		_notify_marked_death()
+		# Issue #210: kill-decision site 2 of 2 for Coup de
+		# Grâce (checked for symmetry; see _notify_coup).
+		_notify_coup(_burn_attacker)
 
 
 ## Issue #189 (section 3): tell the MARKER's player that
@@ -770,6 +781,14 @@ func set_xray(enabled: bool) -> void:
 ## Marked target: takes +50% damage from everyone while marked.
 var _mark_t := 0.0
 
+## Issue #210 (section 2.6, the spec's one API extension):
+## the marking caster's Deep Tree vuln_add, stored on the
+## mark at application time (the caster's aggregate THEN,
+## never re-read from a possibly-changed build) and added
+## to the 1.5 amplification at the damage read. A re-mark
+## overwrites it — the last applier owns the mark.
+var _mark_vuln_add := 0.0
+
 ## Issue #189 (section 1): the permanent mark — the cast passes
 ## this in place of a duration. INF lives in the existing
 ## _mark_t: every consumer (damage +50%, True Aim, the status
@@ -784,14 +803,58 @@ const MARK_PERMANENT := INF
 ## player (the marker), never the killer.
 var _marked_by_peer := 0
 
+## Issue #210 (Coup de Grâce): the peer whose Assassinate
+## strike is currently being applied (see assassinate_hit)
+## — set only for the duration of that one damage call, so
+## the kill-decision sites can attribute the kill exactly.
+var _coup_from := 0
+
+
+## The Assassinate strike's damage route: identical damage
+## discipline to a direct take_damage call, with the strike
+## tagged for the duration of the call.
+@rpc("any_peer", "call_local")
+func assassinate_hit(amount: float, attacker: int,
+		attacker_pos: Vector3) -> void:
+	_coup_from = attacker
+	take_damage(amount, attacker, attacker_pos)
+	_coup_from = 0
+
+
+## Issue #210: tell the Assassinate striker's player that
+## their strike killed (Coup de Grâce). Mirrors
+## _notify_marked_death's addressing; fires from the two
+## kill-decision sites when the killing source carries the
+## strike tag (the burn site is checked for symmetry — a
+## burn tick never carries the tag, whose lifetime is one
+## take_damage call, so in practice the strike's own site
+## is the one that fires).
+func _notify_coup(killer: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if _coup_from == 0 or _coup_from != killer:
+		return
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return
+	var striker = dungeon.get_player_node(_coup_from)
+	if striker == null or not striker.has_method("notify_coup_kill"):
+		return
+	if _coup_from == int(multiplayer.get_unique_id()):
+		striker.notify_coup_kill()
+	else:
+		striker.rpc_id(_coup_from, "notify_coup_kill")
+
 
 func is_marked() -> bool:
 	return _mark_t > 0.0
 
 
 @rpc("any_peer", "call_local")
-func apply_mark(duration: float, slow_mult: float = 1.0) -> void:
+func apply_mark(duration: float, slow_mult: float = 1.0,
+		vuln_add: float = 0.0) -> void:
 	_mark_t = duration
+	_mark_vuln_add = vuln_add
 	# Issue #189 (section 3): record the marker on the server
 	# (sender resolution, house pattern; a local server cast
 	# reports sender 0 -> the server's own id). A re-mark
@@ -1878,9 +1941,10 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		_slow_t = 0.0
 		_slow_mult = 1.0
 		_sprite.modulate = Color.WHITE
-	# Marked targets take +50% damage.
+	# Marked targets take +50% damage (plus the marking
+	# caster's stored Deep Tree vuln add, issue #210).
 	if _mark_t > 0.0:
-		amount *= 1.5
+		amount *= 1.5 + _mark_vuln_add
 	# True Aim trait: attacker's +10% damage vs marked or revealed targets.
 	if _mark_t > 0.0 or _xray:
 		for n in get_tree().get_nodes_in_group("players"):
@@ -1943,6 +2007,9 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		# the marker hears of the death here, whatever the
 		# damage source was.
 		_notify_marked_death()
+		# Issue #210: kill-decision site 1 of 2 for Coup de
+		# Grâce — an Assassinate strike's own kill.
+		_notify_coup(attacker)
 		_drop_and_reward(attacker)
 		# Splitter (issue #67 Phase 2): server-side spawn-on-death.
 		# Children have split_on_death=false (hard cap, no cascade).
