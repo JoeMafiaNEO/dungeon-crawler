@@ -9,13 +9,15 @@ extends Node
 ## FloorTransfer surfaces between floors, and asserts:
 ##   1. a completion posts EXACTLY ONCE, the time reaching
 ##      the announce/upload path under the no-Steam posture
-##      (nothing errors; nothing uploads; the completion
-##      handler posts its time toast - proven by driving
-##      the handler directly. Through the spine itself the
-##      toast is superseded in-sequence by the "Floor
-##      cleared." announce: the FINDING printed in _run,
-##      reported on the issue, not fixed here);
-##   2. entry -> exit abandons with no post.
+##      (nothing errors; nothing uploads);
+##   2. entry -> exit abandons with no post;
+##   3. (issue #214) the resting banner after a completing
+##      clear is the completion announce ("Building
+##      cleared in M:SS") - the #211 finding, fixed by the
+##      announce reorder in _server_floor_cleared - while
+##      a non-completing floor clear still rests on the
+##      generic "Floor cleared." (asserted on floor 0 of
+##      the preferred 2-floor target).
 ##
 ## Run under Xvfb (never --headless - headless ignores
 ## mouse_mode; the standing scene-check rule):
@@ -127,7 +129,7 @@ func _transfers_ready() -> bool:
 		"floor_transfer").is_empty()
 
 
-func _pick_target() -> Dictionary:
+func _pick_target(want: int = 0) -> Dictionary:
 	# Enumerate buildings the way the streamer does:
 	# WorldGen.generate_chunk carries each chunk's
 	# building list ([lx, lz, floors, style, span...]).
@@ -167,6 +169,8 @@ func _pick_target() -> Dictionary:
 					var floors := int(b[2])
 					if floors < 1 or floors > 2:
 						continue
+					if want == 2 and floors != 2:
+						continue
 					var wlx := (hcx + dcx) * 16 \
 						+ int(b[0])
 					var wlz := (hcz + dcz) * 16 \
@@ -200,6 +204,21 @@ func _pick_target() -> Dictionary:
 	return {}
 
 
+## The floor HUD's announce label text once the
+## announce sequence has settled (30 frames is far
+## beyond the in-sequence rpc ordering under test).
+func _resting_banner(dgn: Node) -> String:
+	for i in 30:
+		await get_tree().process_frame
+	var hud = dgn.get("_local_hud")
+	if hud == null:
+		return ""
+	var lbl = hud.get_node_or_null("%AnnounceLabel")
+	if lbl == null:
+		return ""
+	return str(lbl.get("text"))
+
+
 func _run() -> void:
 	var crt_mgr = get_node_or_null("/root/CRTManager")
 	if crt_mgr != null and crt_mgr.has_method(
@@ -216,7 +235,12 @@ func _run() -> void:
 	var home: Dictionary = Dungeon.home_building()
 	Dungeon.act2_anchor_building = str(home["key"])
 	Dungeon.act2_anchor_doorstep = home["doorstep"]
-	_target = _pick_target()
+	# Issue #214: prefer a 2-floor target so one building
+	# carries both banner legs (non-completing floor 0,
+	# completing floor 1); fall back to any 1-2 floors.
+	_target = _pick_target(2)
+	if _target.is_empty():
+		_target = _pick_target(0)
 	_check(not _target.is_empty(),
 		"a playable 1-2 floor building exists near home (scan)")
 	if _target.is_empty():
@@ -266,8 +290,7 @@ func _run() -> void:
 		"the street entry began the attempt (server-side)")
 	# Clear the floors through the shipped spine, riding
 	# the real stair surfaces between them. The final
-	# floor is cleared separately below - its toast poll
-	# must start in the same breath as the clear.
+	# floor is cleared separately below.
 	for f in floors - 1:
 		var dgn = get_tree().current_scene
 		var lp = dgn.call("_my_player")
@@ -283,6 +306,12 @@ func _run() -> void:
 				and Dungeon.attempt_last_completed
 					.is_empty(),
 				"floor %d clear stamps the attempt, posts nothing yet" % (f + 1))
+			# Issue #214: a non-completing clear's
+			# resting banner is the generic line,
+			# exactly as before the reorder.
+			var rest_nc := await _resting_banner(dgn)
+			_check(rest_nc == "Floor cleared.",
+				"floor %d (non-completing) rests on 'Floor cleared.'" % (f + 1))
 			var up = _find_transfer("stair_up")
 			_check(up != null,
 				"floor %d offers its stair_up surface" % (f + 1))
@@ -297,31 +326,13 @@ func _run() -> void:
 					and _transfers_ready()
 			_check(await _wait_until(c_up, 30.0),
 				"stair_up rides load_floor to floor %d" % (nf + 1))
-	# The final floor: clear it and poll the HUD banner
-	# from the same breath - the floor's own "Floor
-	# cleared." announce follows the completion announce
-	# in the same spine, so the banner only holds the
-	# completion text until the next announce lands.
+	# The final floor: clear it through the spine, then
+	# read the RESTING banner.
 	var dgn2 = get_tree().current_scene
 	var lp3 = dgn2.call("_my_player")
 	if lp3 != null:
 		lp3.set("hp", lp3.get("max_hp"))
 	dgn2.call("complete_level_objective")
-	var toast_seen := false
-	var toast_last := ""
-	var toast_deadline := Time.get_ticks_msec() + 3000
-	while Time.get_ticks_msec() < toast_deadline \
-			and not toast_seen:
-		var hud = dgn2.get("_local_hud")
-		if hud != null:
-			var lbl = hud.get_node_or_null(
-				"%AnnounceLabel")
-			if lbl != null:
-				toast_last = str(lbl.get("text"))
-				toast_seen = toast_last.begins_with(
-					"Building cleared in")
-		if not toast_seen:
-			await get_tree().process_frame
 	await get_tree().process_frame
 	await get_tree().process_frame
 	# The completing clear posted.
@@ -337,49 +348,15 @@ func _run() -> void:
 		and Dungeon.buildings_cleared
 			== cleared_before + 1,
 		"the attempt closed and the building counted exactly once")
-	print("[BUILDING] toast label observed: '", toast_last,
+	# Issue #214: the #211 finding flips - through the
+	# real spine, the completion announce is now the
+	# RESTING banner (the generic line issues before the
+	# sync rpc, so the specific announce supersedes it).
+	var rest_c := await _resting_banner(dgn2)
+	print("[BUILDING] resting banner observed: '", rest_c,
 		"'")
-	# FINDING (issue #211, reported on the issue, routed
-	# through the DM/gate - NOT fixed inline): through the
-	# real spine the completion toast does not survive.
-	# sync_floor_cleared's completion block rpcs
-	# announce_building_cleared (the "Building cleared in
-	# M:SS" banner), and _server_floor_cleared's very next
-	# line rpcs announce_text("Floor cleared.") - the
-	# second announce supersedes the banner within the
-	# same call sequence, so the resting banner after a
-	# completing clear reads "Floor cleared." and the
-	# clear time is never presented, though spec section 3
-	# has the handler "show the time locally". The probe
-	# leg below proves the handler itself posts its toast
-	# when the spine's ordering is not in play.
-	if not toast_seen:
-		print("[BUILDING] FINDING: the spine's resting ",
-			"banner is '", toast_last, "' - the ",
-			"completion toast is superseded in-sequence ",
-			"(see the comment above this print).")
-	# Probe leg: drive the completion handler directly
-	# with a distinctive time, outside the spine's
-	# announce sequence - the counted proof that the
-	# announce/upload path posts the time toast under
-	# the no-Steam posture.
-	dgn2.call("announce_building_cleared", key, 7541,
-		done.get("details", []))
-	var probe_seen := false
-	var probe_deadline := Time.get_ticks_msec() + 3000
-	while Time.get_ticks_msec() < probe_deadline \
-			and not probe_seen:
-		var hud2 = dgn2.get("_local_hud")
-		if hud2 != null:
-			var lbl2 = hud2.get_node_or_null(
-				"%AnnounceLabel")
-			if lbl2 != null and str(lbl2.get("text")) \
-					== "Building cleared in 125:41":
-				probe_seen = true
-		if not probe_seen:
-			await get_tree().process_frame
-	_check(probe_seen,
-		"the completion announce path posts the time toast (handler driven directly)")
+	_check(rest_c.begins_with("Building cleared in"),
+		"a completing clear rests on 'Building cleared in M:SS' through the spine")
 	var pend: Array = lb.get("_pending_uploads")
 	_check(pend.is_empty(),
 		"nothing uploads under the no-Steam posture")

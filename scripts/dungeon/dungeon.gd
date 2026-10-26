@@ -3733,8 +3733,15 @@ func is_floor_replay() -> bool:
 ## spine): stamp the ledger bit on every peer; when the bit
 ## completes the building, count it — exactly once.
 func _server_floor_cleared() -> void:
-	rpc("sync_floor_cleared", floor_key, floor_index)
+	# Issue #214: the generic announce issues BEFORE the
+	# sync rpc so a completing clear's announce (the clear
+	# time, from sync_floor_cleared's completion branch)
+	# supersedes it and rests on the banner - the most
+	# specific announce is the resting one (leaderboards
+	# spec section 3: the handler shows the time locally).
+	# Non-completing floors rest exactly as before.
 	rpc("announce_text", "Floor cleared.")
+	rpc("sync_floor_cleared", floor_key, floor_index)
 
 
 @rpc("any_peer", "call_local")
