@@ -41,7 +41,15 @@ const GLYPH_CORE := 34.0
 const GLYPH_GATE := 26.0
 # --- Label tiers (spec 9.4) ---
 const ZOOM_LABELS_ALL := 1.1
-const ZOOM_LABELS_FRONTIER := 0.55
+# Issue #216 calibration: the frontier tier starts at
+# 1.0, above every fit-the-band opening zoom for a
+# developed tree (the shipped fixture fits at 0.56;
+# developed bands fit ~0.5-0.9), so the opening view
+# settles in the low tier - branch headers + the lit
+# owned path, no mid-tree label collisions. Deliberate
+# branch zooms (>= 1.3) keep the frontier/all tiers
+# exactly as #215 shipped them.
+const ZOOM_LABELS_FRONTIER := 1.0
 
 ## Sector center angles per class (spec 2.1, RULED:
 ## the adjacency-true ordering - the table's circular
