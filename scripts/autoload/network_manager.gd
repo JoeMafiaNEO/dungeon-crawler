@@ -549,6 +549,65 @@ func load_world() -> void:
 	get_tree().change_scene_to_file(Dungeon.WORLD_SCENE)
 
 
+## This peer's own progression state, captured from whichever
+## scene it currently stands in (issue #205): the floor hops
+## are direct scene transfers (no vehicle interior), so each
+## peer captures its own state before the hop — the train's
+## per-peer capture pattern without the car.
+func _capture_own_state() -> void:
+	var scene := get_tree().current_scene
+	if scene == null:
+		return
+	var me := scene.find_child(
+		"Player_%d" % multiplayer.get_unique_id(), true, false)
+	if me != null and me.has_method("get_state"):
+		Dungeon.saved_player_state = me.get_state()
+		Dungeon.act2_local_class = str(me.get("class_id"))
+
+
+## Issue #205 (P5): the party transfer into (or between)
+## building floors. Party-together (F0): the broadcast lands
+## on every peer; each captures its own state, stamps the
+## floor statics identically (the floor itself is synthesized
+## locally from the pure FloorGen functions), and loads the
+## dungeon scene as that floor. `entry` marks a street entry:
+## the respawn anchor moves to this building (P4 semantics —
+## the anchor updates on every building ENTRY).
+@rpc("any_peer", "call_local")
+func load_floor(building_key: String, floor_idx: int,
+		entry: bool = false) -> void:
+	_capture_own_state()
+	Dungeon.floor_key = building_key
+	Dungeon.floor_index = floor_idx
+	Dungeon.act2_context = "building"
+	var rec := FloorGen.record_for(building_key)
+	if not rec.is_empty():
+		Dungeon.act2_last_transition = {
+			"building": building_key, "floor": floor_idx,
+			"point": rec["doorstep"]}
+		if entry:
+			Dungeon.act2_anchor_building = building_key
+			Dungeon.act2_anchor_doorstep = rec["doorstep"]
+	if multiplayer.is_server():
+		Dungeon.save_act2_clock()
+	get_tree().change_scene_to_file(
+		"res://scenes/dungeon/dungeon.tscn")
+
+
+## Issue #205: the party transfer OUT of a building, back to
+## the street at the anchor building's doorstep.
+@rpc("any_peer", "call_local")
+func load_world_from_floor() -> void:
+	_capture_own_state()
+	Dungeon.floor_key = ""
+	Dungeon.floor_index = 0
+	Dungeon.act2_context = "world"
+	Dungeon.act2_spawn_at = "doorstep"
+	if multiplayer.is_server():
+		Dungeon.save_act2_clock()
+	get_tree().change_scene_to_file(Dungeon.WORLD_SCENE)
+
+
 @rpc("any_peer", "call_local")
 func load_station(level_number: int, cab: bool = false) -> void:
 	Station.next_level_number = level_number
@@ -676,6 +735,13 @@ func _on_peer_connected(id: int) -> void:
 	if transport == Transport.LAN:
 		_on_lan_peer_connected(id)
 	vault_peer_connected(id)  # Issue #182: the gate's connected set.
+	# Issue #205: a joiner mid-building pulls to the party's
+	# current floor (the #135 pattern) — the server directs
+	# the new peer straight into the floor scene; the
+	# dungeon's register/pull machinery does the rest.
+	if multiplayer.is_server() and Dungeon.floor_active():
+		rpc_id(id, "load_floor", Dungeon.floor_key,
+			Dungeon.floor_index, false)
 	_refresh_members()
 	lobby_members_changed.emit()
 	_push_saved_class_notices()
@@ -972,6 +1038,13 @@ func start_continued_run() -> void:
 	var a2: Dictionary = run.get("act2", {})
 	if str(a2.get("context", "")) == "world":
 		rpc("load_world")
+		return
+	# Issue #205: a run saved inside a building resumes the
+	# whole party at that (building, floor) — the floor's
+	# uncleared waves reset (a fresh floor scene).
+	if str(a2.get("context", "")) == "building":
+		rpc("load_floor", str(a2.get("floor_key", "")),
+			int(a2.get("floor_index", 0)), false)
 		return
 	# Jesse 2026-10-11: station saves resume AT the station.
 	if bool(run.get("at_station", false)):

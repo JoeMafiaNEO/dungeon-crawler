@@ -214,6 +214,39 @@ static var act2_local_class := ""
 ## Accumulated Act 2 play time (the world clock's input).
 static var world_time := 0.0
 
+## Issue #205 (P5): the party's position inside an Act 2
+## building. floor_key == "" = the party is not in a building.
+## Entry is party-together (F0): one shared floor instance,
+## reached only by the transfer broadcasts in
+## NetworkManager.load_floor / load_world_from_floor.
+static var floor_key := ""
+static var floor_index := 0
+## The sparse ledger (issue #205 S2): building key ->
+## cleared-floor bitmask (bit f = floor f cleared). Only
+## entered buildings get entries — the city is large and
+## almost all of it is never entered.
+static var floor_masks: Dictionary = {}
+## Buildings whose full clear has already incremented
+## buildings_cleared (the increment fires EXACTLY ONCE).
+static var floor_counted: Array = []
+
+
+static func floor_active() -> bool:
+	return floor_key != ""
+
+
+## THE danger function (issue #205 S2): Act 2 danger is
+## buildings_cleared — one read, used by floor synthesis and
+## every future Act 2 scaling site.
+static func danger_index() -> int:
+	return buildings_cleared
+
+
+## The current building's cleared-floor bitmask (0 when the
+## building has no ledger entry yet).
+static func floor_mask() -> int:
+	return int(floor_masks.get(floor_key, 0))
+
 
 ## The world clock's persistence beat (issue #204): the
 ## server writes world_time (and the act2 record, unchanged)
@@ -235,6 +268,7 @@ static func save_act2_clock() -> void:
 const WORLD_SCENE := "res://scenes/world/world.tscn"
 const Act2BuildingGen := preload("res://scripts/world/building_gen.gd")
 const Act2WorldClock := preload("res://scripts/world/world_clock.gd")
+const Act2FloorGen := preload("res://scripts/world/floor_gen.gd")
 
 
 ## The home building's identity, derived from the reveal's
@@ -273,7 +307,11 @@ static func act2_record() -> Dictionary:
 		"anchor_building": act2_anchor_building,
 		"anchor_doorstep": [act2_anchor_doorstep.x,
 			act2_anchor_doorstep.y, act2_anchor_doorstep.z],
-		"last_transition": act2_last_transition.duplicate(true)}
+		"last_transition": act2_last_transition.duplicate(true),
+		"floor_key": floor_key,
+		"floor_index": floor_index,
+		"floor_masks": floor_masks.duplicate(true),
+		"floor_counted": floor_counted.duplicate()}
 
 
 static func restore_act2_state(run: Dictionary) -> void:
@@ -286,6 +324,11 @@ static func restore_act2_state(run: Dictionary) -> void:
 		float(ds[2])) if ds.size() == 3 else Vector3.ZERO
 	act2_last_transition = (a.get("last_transition", {})
 		as Dictionary).duplicate(true)
+	floor_key = str(a.get("floor_key", ""))
+	floor_index = int(a.get("floor_index", 0))
+	floor_masks = (a.get("floor_masks", {})
+		as Dictionary).duplicate(true)
+	floor_counted = (a.get("floor_counted", []) as Array).duplicate()
 	world_time = float(run.get("world_time", 0.0))
 
 
@@ -297,6 +340,10 @@ static func reset_act2_state() -> void:
 	act2_anchor_doorstep = Vector3.ZERO
 	act2_last_transition = {}
 	act2_spawn_at = ""
+	floor_key = ""
+	floor_index = 0
+	floor_masks = {}
+	floor_counted = []
 	world_time = 0.0
 
 ## The ONE loop-index read (amended spec section 1): 0 while the
@@ -795,10 +842,24 @@ func _ready() -> void:
 	_director = load("res://scripts/systems/ai_director.gd").new()
 	_director.name = "AIDirector"
 	add_child(_director)
-	theme = load("res://data/levels/theme_%s.tres" % next_theme_id) as LevelTheme
-	if theme == null:
-		push_warning("[Dungeon] Unknown theme '%s', falling back to village." % next_theme_id)
-		theme = load("res://data/levels/theme_village.tres") as LevelTheme
+	if floor_active():
+		# Issue #205 (P5): a building floor. The theme is
+		# SYNTHESIZED from the building record (FloorGen —
+		# pure, identical on every peer) and the seed is the
+		# floor's own; everything below this seam is the
+		# game's ordinary level machinery, un-forked: same
+		# layout, waves, objectives and loot.
+		var frec := Act2FloorGen.record_for(floor_key)
+		theme = Act2FloorGen.theme_for(frec, floor_index,
+			danger_index(),
+			Act2FloorGen.is_home_key(floor_key, home_anchor))
+		next_seed = Act2FloorGen.seed_for(floor_key, floor_index)
+		next_level_number = 1
+	else:
+		theme = load("res://data/levels/theme_%s.tres" % next_theme_id) as LevelTheme
+		if theme == null:
+			push_warning("[Dungeon] Unknown theme '%s', falling back to village." % next_theme_id)
+			theme = load("res://data/levels/theme_village.tres") as LevelTheme
 	level_number = next_level_number
 	# Jesse 2026-10-11: resume at the saved wave (0 = fresh level).
 	wave = next_wave
@@ -839,6 +900,10 @@ func _ready() -> void:
 	_mob_mix_sorted = ProcGen.sorted_mob_mix(theme)
 	# AI Director only spawns mobs this theme allows.
 	_director.set_allowed_mobs(theme.mob_mix.keys())
+	# Issue #205: a building floor gets its transfer surfaces
+	# (elevator cab + stair doors + street exit) at the arena
+	# entrance — built after the layout exists (below, once
+	# the arena is built and spawn points are known).
 	# Bounty Board (issue #7 Phase 1): server generates the run's 3 bounties
 	# seeded by the level seed; every peer sees the same set.
 	if multiplayer.is_server():
@@ -850,7 +915,13 @@ func _ready() -> void:
 		rpc("sync_bounties", _bounty.bounties)
 	_load_mob_types()
 	_build_arena_from_layout()
-	AudioManager.play_music(next_theme_id)
+	if floor_active():
+		_spawn_floor_transfers()
+	var music_id := next_theme_id
+	if floor_active():
+		music_id = theme.theme_id if theme.theme_id != "floor" \
+			else "dungeon"
+	AudioManager.play_music(music_id)
 	wave_info["theme_name"] = theme.display_name
 	wave_info["theme_id"] = theme.theme_id
 	wave_info["level"] = level_number
@@ -868,7 +939,9 @@ func _ready() -> void:
 			_spawn_checkout()
 			_spawn_potion_shop()
 	# Mason's Cipher: one parchment note per dungeon level.
-	if multiplayer.is_server() and not is_supermarket and not is_warlord:
+	# (Act 2 floors are not cipher levels — issue #205.)
+	if multiplayer.is_server() and not is_supermarket and not is_warlord \
+			and not floor_active():
 		rpc("spawn_cipher_plaque", _cipher_plaque_pos())
 	# Warlord mode: RTS hybrid. No waves, no keys. Victory clears the level.
 	is_warlord = theme.theme_id == "warlord"
@@ -1569,9 +1642,21 @@ func _hp_scale() -> float:
 
 # --- Mobs (host only) ---
 
+var _floor_clock_save_t := 0.0
+
+
 func _process(delta: float) -> void:
 	# Sim clock for the RTS economy (respawns etc.) — tracks time_scale.
 	sim_time += delta
+	# Issue #205: the world clock advances while an Act 2 run
+	# is played — inside buildings too (the world root owns
+	# it on the street). Server-advanced, saved periodically.
+	if floor_active() and multiplayer.is_server():
+		world_time += delta
+		_floor_clock_save_t += delta
+		if _floor_clock_save_t >= 30.0:
+			_floor_clock_save_t = 0.0
+			save_act2_clock()
 	_process_pending_buys()
 	# Issue #86 Bug 2: retry the server handshake until the local player
 	# spawns. The first attempt can be lost if the server hasn't finished
@@ -3425,6 +3510,11 @@ func complete_level_objective() -> void:
 			and theme.theme_id == "warlord" \
 			and reveal_armed(act1_step, level_number):
 		_server_begin_reveal()
+	# Issue #205 (P5): a floor clear stamps the ledger on
+	# the same spine (server-side). The party leaves by the
+	# floor's own transfer surfaces — no annex departure.
+	if multiplayer.is_server() and floor_active():
+		_server_floor_cleared()
 
 
 # -------------------------------------------------------------------
@@ -3511,6 +3601,76 @@ func scrub_departed_player(peer_id: int) -> void:
 	var node := get_node_or_null("Players/Player_%d" % peer_id)
 	if node != null:
 		node.queue_free()
+
+
+# -------------------------------------------------------------------
+# Issue #205 (P5): building floors inside the dungeon scene.
+# The transfer surfaces stand at the arena entrance; the
+# clear spine stamps the ledger; a wipe inside a building is
+# a transfer to its ground floor, never a run erasure.
+# -------------------------------------------------------------------
+
+## The transfer props for this floor (elevator cab, stair
+## doors, the street exit on the ground floor), placed at the
+## player spawn — the floor's entrance. Runtime load: the
+## prop script reads Dungeon statics (the station pattern).
+func _spawn_floor_transfers() -> void:
+	if spawn_points.is_empty():
+		return
+	var base := spawn_points[0]
+	var script: GDScript = load(
+		"res://scripts/world/floor_transfer.gd")
+	var rec := Act2FloorGen.record_for(floor_key)
+	var floors := int(rec.get("floors", 1))
+	var spots := {"cab": Vector3(-3.4, 0, -2.5)}
+	if floor_index < floors - 1:
+		spots["stair_up"] = Vector3(3.4, 0, -2.5)
+	if floor_index > 0:
+		spots["stair_down"] = Vector3(6.2, 0, -2.5)
+	if floor_index == 0:
+		spots["exit"] = Vector3(0, 0, -4.5)
+	for mode in spots:
+		var prop := Node3D.new()
+		prop.set_script(script)
+		prop.set("mode", mode)
+		prop.position = base + spots[mode]
+		add_child(prop)
+
+
+## Server leg of the floor clear (called from the clear
+## spine): stamp the ledger bit on every peer; when the bit
+## completes the building, count it — exactly once.
+func _server_floor_cleared() -> void:
+	rpc("sync_floor_cleared", floor_key, floor_index)
+	rpc("announce_text", "Floor cleared.")
+
+
+@rpc("any_peer", "call_local")
+func sync_floor_cleared(key: String, f: int) -> void:
+	if multiplayer.get_remote_sender_id() not in [0, 1]:
+		return  # server-origin only (the #135 discipline)
+	var mask := int(floor_masks.get(key, 0))
+	mask |= (1 << f)
+	floor_masks[key] = mask
+	if not multiplayer.is_server():
+		return
+	var rec := Act2FloorGen.record_for(key)
+	var floors := int(rec.get("floors", 0))
+	if floors > 0 and Act2FloorGen.lowest_uncleared(mask, floors) \
+			>= floors and not floor_counted.has(key):
+		floor_counted.append(key)
+		buildings_cleared += 1
+	# Persist on EVERY floor clear (loaded-dict-first):
+	# cleared floors stay cleared across continues, and the
+	# counter's root key moves with the counted set.
+	var mode: String = NetworkManager.active_run_mode
+	var slot: int = NetworkManager.active_run_slot
+	var run: Dictionary = SaveManager.load_run(mode, slot).duplicate(true)
+	if not run.is_empty():
+		run["buildings_cleared"] = buildings_cleared
+		run["act2"] = act2_record()
+		run["world_time"] = world_time
+		SaveManager.save_run(run, mode, slot)
 
 
 ## Server-origin, idempotent (the #135 discipline): a forged or
@@ -4064,6 +4224,12 @@ func begin_annex_departure(theme_id: String, spots: Dictionary) -> void:
 ## go_to_station_net/change_level handoff did capture it.
 @rpc("any_peer", "call_local")
 func board_train_interior(theme_id: String, new_seed: int, new_level: int, classes: Dictionary, states: Dictionary = {}, baked_hash: String = "", player_count: int = 0, act1_step_next: int = -2) -> void:
+	# Issue #205: inside a building there is no annex
+	# departure — the floor's own transfer surfaces are the
+	# only way out (the funnel gate; the vote may run, the
+	# hop never fires).
+	if floor_active():
+		return
 	var sender := multiplayer.get_remote_sender_id()
 	if sender != 0 and sender != NetworkManager.server_peer_id:
 		return
@@ -4944,5 +5110,13 @@ func check_party_wipe() -> void:
 		if p != null and connected.has(p.get_multiplayer_authority()):
 			if bool(p.get("alive")):
 				return  # someone's still standing
+	# Issue #205 (Jesse's Act 2 ruling): death inside a
+	# building is a party transfer to that building's
+	# ground floor — never a run erasure.
+	if floor_active():
+		rpc("announce_text",
+			"The party is thrown back to the ground floor.")
+		NetworkManager.rpc("load_floor", floor_key, 0, false)
+		return
 	SaveManager.clear_run(SaveManager.MODE_MP, NetworkManager.active_run_slot)
 	rpc("announce_text", "Party wiped! The run has been erased.")

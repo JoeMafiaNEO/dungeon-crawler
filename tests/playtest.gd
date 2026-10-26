@@ -108,6 +108,7 @@ func _run() -> void:
 	_test_sky_dome_202()
 	_test_reveal_203()
 	_test_world_204()
+	_test_floors_205()
 	_test_ai_director()
 	_test_downed_marker()
 	_test_dash_flash_separate()
@@ -7021,6 +7022,286 @@ func _test_world_204() -> void:
 	DungeonScript.restore_act2_state({"act2": saved_act2,
 		"world_time": saved_wt})
 	print("[Playtest] World test done.")
+
+
+func _test_floors_205() -> void:
+	print("[Playtest] Floor-levels (issue #205 S1)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var FloorGenRes := load("res://scripts/world/floor_gen.gd")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var TransferRes := load("res://scripts/world/floor_transfer.gd")
+	var seed: int = WorldGenRes.WORLD_SEED
+	var saved_revealed: bool = DungeonScript.get("revealed")
+	var saved_cleared_n: int = DungeonScript.get("buildings_cleared")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate()
+	var saved_step: int = DungeonScript.get("act1_step")
+	var saved_act2: Dictionary = DungeonScript.act2_record()
+	var saved_wt: float = DungeonScript.get("world_time")
+	var saved_next := [DungeonScript.get("next_theme_id"),
+		DungeonScript.get("next_seed"),
+		DungeonScript.get("next_level_number")]
+
+	# 1. THE ACCESS RULE, literally: travel stops at the
+	# lowest uncleared floor; cleared floors and the
+	# frontier are offered, nothing above them.
+	_assert(FloorGenRes.allowed_floors(0, 4) == [0],
+		"205: a fresh building offers only its ground floor")
+	_assert(FloorGenRes.allowed_floors(1, 4) == [0, 1],
+		"205: clearing floor 0 opens floor 1")
+	_assert(FloorGenRes.allowed_floors(3, 4) == [0, 1, 2],
+		"205: two clears open the third floor")
+	_assert(FloorGenRes.allowed_floors(15, 4) == [0, 1, 2, 3],
+		"205: a cleared building offers every floor")
+	_assert(FloorGenRes.lowest_uncleared(0b101, 4) == 1,
+		"205: the frontier is the lowest uncleared floor")
+	_assert(FloorGenRes.floor_allowed(0, 4, 0)
+			and not FloorGenRes.floor_allowed(0, 4, 1)
+			and not FloorGenRes.floor_allowed(0, 4, -1)
+			and not FloorGenRes.floor_allowed(0, 4, 4),
+		"205: floor_allowed enforces the frontier + the range")
+
+	# 2. A real playable building's record: parity with the
+	# world gen's own derivation (the shell and its floors
+	# agree because both derive from this record).
+	var bkey := ""
+	var brec: Dictionary = {}
+	var city: Dictionary = {}
+	for gx in range(-6, 7):
+		for gz in range(-6, 7):
+			var st: Dictionary = WorldGenRes.settlement_in_cell(
+				seed, gx, gz)
+			if not st.is_empty() and str(st["kind"]) == "city":
+				city = st
+				break
+		if not city.is_empty():
+			break
+	_assert(not city.is_empty(), "205: fixture city found")
+	var ccen: Vector2 = city.get("center", Vector2.ZERO)
+	var ccx := int(floor(ccen.x / float(WorldGenRes.CHUNK_SIZE)))
+	var ccz := int(floor(ccen.y / float(WorldGenRes.CHUNK_SIZE)))
+	for cx in range(ccx - 1, ccx + 2):
+		for cz in range(ccz - 1, ccz + 2):
+			var chunk = WorldGenRes.generate_chunk(cx, cz, seed)
+			for b in chunk.buildings:
+				var k := "%d,%d" % [cx * 16 + int(b[0]),
+					cz * 16 + int(b[1])]
+				var r: Dictionary = FloorGenRes.record_for(k)
+				if not r.is_empty() and bool(r["playable"]) \
+						and int(r["floors"]) >= 2:
+					bkey = k
+					brec = r
+					break
+			if bkey != "":
+				break
+		if bkey != "":
+			break
+	_assert(bkey != "",
+		"205: fixture playable building (2+ floors) found")
+	if bkey != "":
+		var raw: Dictionary = WorldGenRes.building_at(seed,
+			int(brec["wlx"]), int(brec["wlz"]))
+		_assert(int(brec["floors"]) == int(raw["floors"])
+				and int(brec["style"]) == int(raw["style"])
+				and int(brec["span_x"]) == int(raw["span_x"])
+				and int(brec["span_z"]) == int(raw["span_z"]),
+			"205: the floor record matches the shell's derivation")
+		_assert(brec["doorstep"] is Vector3
+				and brec["gap_center"] is Vector3,
+			"205: the record carries the doorstep + gap (P4 interface)")
+
+	# 3. Floor seeds: deterministic, per floor, per building.
+	_assert(FloorGenRes.seed_for(bkey, 0)
+			== FloorGenRes.seed_for(bkey, 0),
+		"205: a floor's seed is deterministic")
+	_assert(FloorGenRes.seed_for(bkey, 0)
+			!= FloorGenRes.seed_for(bkey, 1),
+		"205: floors of one building seed differently")
+
+	# 4. Theme synthesis on a hand-built record (literal
+	# expectations, independent of the SUT's tables).
+	var frec := {"key": "0,0", "floors": 3, "span_x": 2,
+		"span_z": 1, "style": 1, "massing": 0, "kind": "city"}
+	var th0 = FloorGenRes.theme_for(frec, 0, 0, false)
+	_assert(th0.theme_id == "floor" and th0.boss_id == "",
+		"205: a non-top floor is a plain floor theme, no boss")
+	_assert(th0.grid_size == 36,
+		"205: grid derives from the span/style base (got %d)"
+			% th0.grid_size)
+	_assert(is_equal_approx(th0.hp_scale, 1.0),
+		"205: danger 0 leaves mob hp unscaled")
+	var th2 = FloorGenRes.theme_for(frec, 2, 2, false)
+	_assert(th2.boss_id == "boss_warden",
+		"205: the top floor's boss comes from the pool by danger band")
+	_assert(is_equal_approx(th2.hp_scale, 1.5),
+		"205: danger scales mob hp (1 + 0.25/band)")
+	_assert(FloorGenRes.theme_for(frec, 2, 0, false).boss_id
+			== "boss_boar",
+		"205: danger band 0 tops out at the pool's first boss")
+	_assert(FloorGenRes.theme_for(frec, 2, 9, false).boss_id
+			== "boss_horror",
+		"205: high danger tops out at the pool's last boss")
+	var grid_ok := true
+	for m in [0, 1, 2, 3]:
+		for f in 6:
+			var rr := {"key": "0,0", "floors": 6, "span_x": 3,
+				"span_z": 3, "style": 2, "massing": m,
+				"kind": "city"}
+			var g: int = FloorGenRes.theme_for(rr, f, 0,
+				false).grid_size
+			if g < 24 or g > 96:
+				grid_ok = false
+	_assert(grid_ok,
+		"205: every massing/floor grid stays inside 24-96 cells")
+
+	# 5. The home building's floors ARE the six Act 1
+	# themes, in order (S3's seam, pinned now).
+	var home_ids := ["village", "dungeon", "depths",
+		"supermarket", "misty_docks", "warlord"]
+	var home_ok := true
+	for i in 6:
+		if FloorGenRes.theme_for(frec, i, 0, true).theme_id \
+				!= home_ids[i]:
+			home_ok = false
+	_assert(home_ok,
+		"205: home floors synthesize to the six Act 1 themes in order")
+
+	# 6. THE MACHINERY HOSTS A FLOOR: a fixture dungeon with
+	# floor statics builds the synthesized theme at level 1
+	# and stands the transfer surfaces at its entrance.
+	if bkey != "":
+		DungeonScript.set("revealed", true)
+		DungeonScript.set("act1_step", 5)
+		DungeonScript.set("floor_key", bkey)
+		DungeonScript.set("floor_index", 0)
+		DungeonScript.set("act2_context", "building")
+		var dun = load(
+			"res://scenes/dungeon/dungeon.tscn").instantiate()
+		root.add_child(dun)
+		_assert(dun.theme != null
+				and dun.theme.theme_id == "floor",
+			"205: the dungeon hosts the synthesized floor theme")
+		_assert(dun.level_number == 1,
+			"205: a floor scene runs at level number 1 (no cycle growth)")
+		var modes := {}
+		var ft_script := load(
+			"res://scripts/world/floor_transfer.gd")
+		for c in dun.get_children():
+			if c.get_script() == ft_script:
+				modes[str(c.get("mode"))] = true
+		_assert(modes.has("cab") and modes.has("exit")
+				and modes.has("stair_up")
+				and not modes.has("stair_down"),
+			"205: the ground floor stands cab + exit + stairs up (got %s)"
+				% str(modes.keys()))
+		root.remove_child(dun)
+		dun.queue_free()
+
+	# 7. THE LEDGER: bits accumulate per floor; the building
+	# counts EXACTLY ONCE when the last floor clears; the
+	# record round-trips through the save.
+	if bkey != "":
+		var nm = root.get_node("NetworkManager")
+		var sm = root.get_node("SaveManager")
+		var saved_mode: String = nm.get("active_run_mode")
+		var saved_slot: int = nm.get("active_run_slot")
+		nm.set("active_run_mode", "solo")
+		nm.set("active_run_slot", 99)
+		sm.call("save_run", {"seed": 7, "buildings_cleared":
+			saved_cleared_n}, "solo", 99)
+		DungeonScript.set("floor_key", bkey)
+		DungeonScript.set("floor_index", 0)
+		DungeonScript.set("act2_context", "building")
+		DungeonScript.set("floor_masks", {})
+		DungeonScript.set("floor_counted", [])
+		var floors_n := int(brec["floors"])
+		var fix = load(
+			"res://scenes/dungeon/dungeon.tscn").instantiate()
+		root.add_child(fix)
+		for f in floors_n:
+			fix.call("sync_floor_cleared", bkey, f)
+		var expect_mask := (1 << floors_n) - 1
+		_assert(int((DungeonScript.get("floor_masks")
+				as Dictionary).get(bkey, 0)) == expect_mask,
+			"205: the ledger bitmask accumulates every floor")
+		_assert(DungeonScript.get("buildings_cleared")
+				== saved_cleared_n + 1,
+			"205: a full clear increments the counter exactly once")
+		fix.call("sync_floor_cleared", bkey, 0)
+		_assert(DungeonScript.get("buildings_cleared")
+				== saved_cleared_n + 1,
+			"205: re-clearing a floor never re-increments")
+		var run99: Dictionary = sm.call("load_run", "solo", 99)
+		_assert(int(run99.get("buildings_cleared", -1))
+				== saved_cleared_n + 1
+				and int(((run99.get("act2", {})
+					as Dictionary).get("floor_masks", {})
+					as Dictionary).get(bkey, 0)) == expect_mask,
+			"205: the ledger + counter persist in the Act 2 record")
+		root.remove_child(fix)
+		fix.queue_free()
+		sm.call("clear_run", "solo", 99)
+		nm.set("active_run_mode", saved_mode)
+		nm.set("active_run_slot", saved_slot)
+
+	# 8. The cab panel, as data: allowed floors + street,
+	# the current floor marked, cleared floors labeled.
+	if bkey != "":
+		DungeonScript.set("floor_key", bkey)
+		DungeonScript.set("floor_index", 0)
+		DungeonScript.set("floor_masks", {bkey: 1})
+		var ft = TransferRes.new()
+		var entries: Array = ft.call("panel_entries")
+		_assert(entries.size() == 3
+				and int(entries[0]["floor"]) == 0
+				and bool(entries[0]["current"])
+				and str(entries[0]["label"]).contains("cleared")
+				and int(entries[1]["floor"]) == 1
+				and int(entries[2]["floor"]) == -1,
+			"205: the panel offers frontier + cleared + street (got %s)"
+				% str(entries))
+		ft.free()
+
+	# 9. Wiring (source pins): the trigger gathers the
+	# party, NM carries the floor broadcasts + the joiner
+	# pull, the player scan sees both new groups, and the
+	# departure funnel is gated inside buildings.
+	var trig_src: String = FileAccess.get_file_as_string(
+		"res://scripts/world/transfer_trigger.gd")
+	_assert(trig_src.contains("load_floor")
+			and trig_src.contains("func prompt_text"),
+		"205: the P4 door trigger is wired to the party transfer")
+	var nmsrc: String = FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(nmsrc.contains("func load_floor")
+			and nmsrc.contains("func load_world_from_floor")
+			and nmsrc.contains("rpc_id(id, \"load_floor\""),
+		"205: NM carries the floor transfers + the joiner pull")
+	var psrc: String = FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("\"transfer_trigger\"")
+			and psrc.contains("\"floor_transfer\""),
+		"205: the player interact scan sees doors + floor surfaces")
+	var dsrc: String = FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	# (Window widened past the long signature + gate comment —
+	# the #203 fixed-window maintenance pattern.)
+	var funnel := dsrc.substr(dsrc.find(
+		"func board_train_interior"), 800)
+	_assert(funnel.contains("if floor_active():"),
+		"205: the annex departure funnel is gated inside buildings")
+
+	DungeonScript.set("revealed", saved_revealed)
+	DungeonScript.set("buildings_cleared", saved_cleared_n)
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("act1_step", saved_step)
+	DungeonScript.set("next_theme_id", saved_next[0])
+	DungeonScript.set("next_seed", saved_next[1])
+	DungeonScript.set("next_level_number", saved_next[2])
+	DungeonScript.reset_act2_state()
+	DungeonScript.restore_act2_state({"act2": saved_act2,
+		"world_time": saved_wt})
+	print("[Playtest] Floors test done.")
 
 
 

@@ -4894,7 +4894,7 @@ func _update_pickup_prompt() -> void:
 func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "vault_door", "rooftop_door", "farm_plots", "dock_merchant", "vault_mechanisms"]:
+	for group in ["cipher_plaques", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "vault_door", "rooftop_door", "farm_plots", "dock_merchant", "vault_mechanisms", "transfer_trigger", "floor_transfer"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:
@@ -5964,6 +5964,13 @@ func die() -> void:
 						_ws.call("upload_today_best")
 			else:
 				DailyRun.record_attempt(score)
+		# Issue #205 (Jesse's Act 2 ruling): death inside a
+		# building respawns at that building's ground floor —
+		# the run is NOT over.
+		if Dungeon.floor_active():
+			NetworkManager.rpc("load_floor",
+				Dungeon.floor_key, 0, false)
+			return
 		SaveManager.clear_run(SaveManager.MODE_SOLO, NetworkManager.active_run_slot)
 		if hud != null:
 			hud.show_death_screen(run_stats())
