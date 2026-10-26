@@ -252,6 +252,8 @@ var _tree_twin_armed := false
 ## placement buff window (msec) and its percent.
 var _tree_tempo_until := 0
 var _tree_tempo_pct := 0.0
+var _tree_tempered_until := 0
+var _reinforce_strength := 0.5
 ## Issue #210: Stormcharged's window (10 s after Tempest).
 var _tree_storm_until := 0
 ## Anti-cheese: per-enemy cooldowns for affinity gain.
@@ -1342,6 +1344,46 @@ func tree_totem_variant(skill_id: String) -> String:
 	return _tree_variant(skill_id)
 
 
+## Issue #210 (slice B4): public structure reads for
+## Structure/Dungeon, same wrapper pattern.
+func tree_structure_mod(skill_id: String, key: String,
+		default: float) -> float:
+	return _tree_skill_mod(skill_id, key, default)
+
+
+func tree_structure_behavior(behavior_id: String) -> float:
+	return _tree_behavior_pct(behavior_id)
+
+
+func tree_structure_variant(skill_id: String) -> String:
+	return _tree_variant(skill_id)
+
+
+## Issue #210 (slice B4, Aegis Shell): true while this
+## player's Reinforce shell holds and the variant is
+## owned — read at the forge damage sites.
+func tree_aegis_active() -> bool:
+	return _reinforce_t > 0.0 and _tree_variant("reinforce") \
+		== "aegis_shell"
+
+
+## Issue #210 (slice B4, Salvage): a structure of this
+## player's was destroyed server-side — refund the
+## behavior's percent of its placement cooldown.
+func apply_tree_salvage(structure_id: String) -> void:
+	var pct := _tree_behavior_pct("salvage")
+	if pct <= 0.0:
+		return
+	var base := {"sentry_turret": 12.0, "bulwark_wall": 8.0,
+		"spike_trap": 10.0, "keystone": 30.0}
+	if not base.has(structure_id):
+		return
+	var cur := float(ability_cds.get(structure_id, 0.0))
+	if cur > 0.0:
+		ability_cds[structure_id] = maxf(0.0,
+			cur - float(base[structure_id]) * pct / 100.0)
+
+
 func tree_brand_amp(skill_id: String) -> float:
 	return _tree_skill_mod(skill_id, "brand_amp", 0.0)
 
@@ -1371,7 +1413,7 @@ func try_purchase(node_id: int) -> bool:
 	if node.is_empty() or bool(node.get("inert", false)):
 		return false
 	if not DeepTree.branch_unlocked(family_collection,
-			class_id, branch):
+			class_id, branch, tree_lifetime):
 		return false
 	if tree_owned.has(node_id):
 		return false
@@ -1425,7 +1467,7 @@ func _tree_validate_claim(node_id: int,
 	if node.is_empty() or bool(node.get("inert", false)):
 		return "inert"
 	if not DeepTree.branch_unlocked(family_collection,
-			class_id, branch):
+			class_id, branch, tree_lifetime):
 		return "locked"
 	if tree_owned.has(node_id):
 		return "duplicate"
@@ -3345,10 +3387,12 @@ var _reinforce_shell: MeshInstance3D = null
 
 
 @rpc("any_peer", "call_local")
-func apply_reinforce(duration: float) -> void:
+func apply_reinforce(duration: float,
+		strength: float = 0.5) -> void:
 	if not is_multiplayer_authority():
 		return
 	_reinforce_t = maxf(_reinforce_t, duration)
+	_reinforce_strength = strength
 	_update_reinforce_shell()
 
 
@@ -4198,7 +4242,8 @@ func _place_structure(structure_id: String) -> void:
 		AudioManager.sfx("ui_error")
 		return
 	var point := _cursor_ground_point()
-	ability_cds[structure_id] = (cd) * cooldown_mult()
+	ability_cds[structure_id] = (cd) * cooldown_mult() \
+		* _tree_skill_mod(structure_id, "cd_mult", 1.0)
 	_structure_seq += 1
 	var uid := "%d_%d" % [me, _structure_seq]
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
@@ -4228,17 +4273,25 @@ func _cast_reinforce() -> void:
 		if to.length() < best_d:
 			best_d = to.length()
 			best = p
-	ability_cds["reinforce"] = (25.0) * cooldown_mult()
+	ability_cds["reinforce"] = (25.0) * cooldown_mult() \
+		* _tree_skill_mod("reinforce", "cd_mult", 1.0)
+	# Issue #210 (Tempered): the 5 s window arms at the
+	# cast, whatever the shell's target.
+	_tree_tempered_until = Time.get_ticks_msec() + 5000
 	AudioManager.sfx("totem_place")
 	var target: Player = best if best != null else self
 	# Issue #169: when the target's authority is THIS peer (a
 	# self-target — the common case), rpc_id would be self-addressed
 	# and a Steam peer cannot rpc_id its own id (the #165 D1
 	# family): the reinforce silently never landed. Call directly.
+	# Issue #210: shell_pct scales the shell's strength
+	# (its 0.5 base) at the apply site.
+	var shell := 0.5 * (1.0 + _tree_skill_mod("reinforce",
+		"shell_pct", 0.0))
 	if int(target.get_multiplayer_authority()) == int(multiplayer.get_unique_id()):
-		target.apply_reinforce(6.0)
+		target.apply_reinforce(6.0, shell)
 	else:
-		target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0)
+		target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0, shell)
 	if hud != null:
 		hud.refresh_abilities(self)
 
@@ -4260,7 +4313,9 @@ func _cast_demolish() -> void:
 			hud.toast("No structures to demolish!")
 		AudioManager.sfx("ui_error")
 		return
-	ability_cds["demolish"] = (45.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["demolish"] = (45.0) * cooldown_mult() \
+		/ atk_spd_mult() * _tree_skill_mod("demolish",
+			"cd_mult", 1.0)
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null:
 		dungeon.rpc("demolish_structures", me)
@@ -4287,8 +4342,14 @@ func _cast_hammer_smash() -> void:
 			hud.toast("Hammer Smash on cooldown!")
 		AudioManager.sfx("ui_error")
 		return
-	ability_cds["hammer_smash"] = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult()
-	var dmg := damage * _buff_mult("damage") * rank_mult() * SMASH_DAMAGE_MULT
+	ability_cds["hammer_smash"] = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("hammer_smash", "cd_mult", 1.0)
+	var dmg := damage * _buff_mult("damage") * rank_mult() * SMASH_DAMAGE_MULT * _tree_mult("hammer_smash")
+	# Issue #210 (Tempered + Aegis Shell at the cast
+	# expression).
+	if Time.get_ticks_msec() < _tree_tempered_until:
+		dmg *= 1.0 + _tree_behavior_pct("tempered") / 100.0
+	if tree_aegis_active():
+		dmg *= 1.25
 	if multiplayer.is_server():
 		request_hammer_smash(dmg)
 	else:
@@ -4318,7 +4379,7 @@ func request_hammer_smash(claimed_damage: float) -> void:
 	# this server copy holds the caster's equipped special, so
 	# the factor is evaluated HERE, on the enforcing node, and
 	# the HUD mirror's multiplied value becomes the truth.
-	_srv_smash_cd = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult()
+	_srv_smash_cd = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("hammer_smash", "cd_mult", 1.0)
 	var attacker := int(get_multiplayer_authority())
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
@@ -4328,6 +4389,18 @@ func request_hammer_smash(claimed_damage: float) -> void:
 			m.take_damage(claimed_damage, attacker, global_position)
 			if m.alive:
 				m.apply_stun(SMASH_STUN_TIME)
+	# Issue #210 (Seismic Smash): a ring at 50% damage
+	# beyond the smash's own area, damage only.
+	if _tree_variant("hammer_smash") == "seismic_smash":
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var rm := n as Mob
+			if rm == null or not rm.alive:
+				continue
+			var rd := rm.global_position.distance_to(
+				global_position)
+			if rd > SMASH_RADIUS and rd <= SMASH_RADIUS * 1.5:
+				rm.take_damage(claimed_damage * 0.5,
+					attacker, global_position)
 	rpc("hammer_smash_fx", global_position)
 
 
@@ -6386,7 +6459,7 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	# Reinforce (Architect): -50% damage taken. (take_damage applies no
 	# knockback, so there is nothing further to skip.)
 	if _reinforce_t > 0.0:
-		amount *= 0.5
+		amount *= 1.0 - _reinforce_strength
 	# Issue #210 (Rooted Ward): standing inside any of
 	# your own totems' radii reduces damage taken.
 	var ward_pct := _tree_behavior_pct("rooted_ward")

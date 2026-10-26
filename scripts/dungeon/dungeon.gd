@@ -2843,10 +2843,41 @@ func place_structure(structure_id: String, pos: Vector3, owner: int, rank: int, 
 	var hp_mult := 1.0
 	if Structure.keystone_near(get_tree(), Vector3(pos.x, 0.0, pos.z), owner):
 		hp_mult = 1.5
+	# Issue #210 (slice B4): hp_pct and life_add join at
+	# the placement, read from the owner's aggregates on
+	# this peer's copy (the design's sync keeps them
+	# current); life_add reaches setup, which applies
+	# it only where life > 0.
+	var owner_p := get_player_node(owner) as Player
+	var life_add := 0.0
+	if owner_p != null:
+		hp_mult *= 1.0 + owner_p.tree_structure_mod(
+			structure_id, "hp_pct", 0.0)
+		life_add = owner_p.tree_structure_mod(structure_id,
+			"life_add", 0.0)
 	var st := Structure.new()
-	st.setup(structure_id, owner, rank, hp_mult, uid)
+	st.setup(structure_id, owner, rank, hp_mult, uid,
+		life_add)
 	add_child(st)
 	st.global_position = Vector3(pos.x, ground_height_at(pos) + 0.05, pos.z)
+	# Issue #210 (Overbuilt): placing a structure repairs
+	# the owner's OTHER structures (server-side; the new
+	# values ride structure_repaired like the wrench's).
+	if multiplayer.is_server() and owner_p != null:
+		var ob: float = owner_p.tree_structure_behavior(
+			"overbuilt")
+		if ob > 0.0:
+			for n in get_tree().get_nodes_in_group(
+					"structures"):
+				var ss := n as Structure
+				if ss == null or ss == st or ss.owner_peer \
+						!= owner or ss.is_queued_for_deletion():
+					continue
+				var nh: float = minf(ss.max_hp,
+					ss.hp + ss.max_hp * ob / 100.0)
+				if nh > ss.hp:
+					ss.hp = nh
+					rpc("structure_repaired", ss.uid, nh)
 
 
 ## Server: a structure was destroyed. Every peer plays rubble FX and frees
@@ -2886,15 +2917,31 @@ func demolish_structures(owner: int) -> void:
 		var s := n as Structure
 		if s != null and s.owner_peer == owner and not s.is_queued_for_deletion():
 			mine.append(s)
+	# Issue #210 (slice B4): demolish's dmg_pct, radius_add,
+	# Wrecking Ball (per standing structure) and the
+	# Aegis Shell read join at the detonation.
+	var demo_p := get_player_node(owner) as Player
+	var demo_radius: float = Structure.DEMOLISH_RADIUS
+	var demo_mult := 1.0
+	if demo_p != null:
+		demo_radius += demo_p.tree_structure_mod("demolish",
+			"radius_add", 0.0)
+		demo_mult = demo_p.tree_structure_mod("demolish",
+			"dmg_mult", 1.0)
+		if demo_p.tree_structure_variant("demolish") \
+				== "wrecking_ball":
+			demo_mult *= 1.0 + 0.10 * float(mine.size())
+		if demo_p.tree_aegis_active():
+			demo_mult *= 1.25
 	for s in mine:
 		var st := s as Structure
 		if multiplayer.is_server():
-			var dmg := st.max_hp * 0.5
+			var dmg := st.max_hp * 0.5 * demo_mult
 			for m in get_tree().get_nodes_in_group("mobs"):
 				var mob := m as Mob
 				if mob == null or not mob.alive:
 					continue
-				if mob.global_position.distance_to(st.global_position) < Structure.DEMOLISH_RADIUS:
+				if mob.global_position.distance_to(st.global_position) < demo_radius:
 					if multiplayer.is_server():
 						mob.take_damage(dmg, owner, st.global_position)
 					else:

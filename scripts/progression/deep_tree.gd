@@ -162,7 +162,7 @@ static func branch_info(class_id: String, branch: int) -> Dictionary:
 ## Populated branches (the prototype populated Fire; issue
 ## #210 slice B1 adds Frost and Storm).
 static func branch_populated(branch: int) -> bool:
-	return branch in [1, 2, 3, 4, 5, 6, 7]
+	return branch in [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
 # ----------------------------------------------------------------
@@ -311,12 +311,25 @@ const PARAM_TABLE := {
 	"warhorn": ["radius_add", "duration_add", "aura_pct"],
 	"rally": ["radius_add", "duration_add", "haste_pct"],
 	"doom_totem": ["cd_pct", "vuln_pct", "radius_add"],
+	"sentry_turret": ["cd_pct", "hp_pct", "life_add",
+		"dmg_pct", "range_add"],
+	"bulwark_wall": ["cd_pct", "hp_pct", "life_add",
+		"pulse_dmg"],
+	"spike_trap": ["cd_pct", "hp_pct", "life_add",
+		"dmg_pct", "radius_add"],
+	"keystone": ["cd_pct", "hp_pct", "life_add",
+		"radius_add", "aura_pct"],
+	"hammer_smash": ["cd_pct", "dmg_pct"],
+	"reinforce": ["cd_pct", "shell_pct"],
+	"demolish": ["cd_pct", "dmg_pct", "radius_add"],
 }
 const PARAM_UNIT := {"dmg_pct": 0.5, "cd_pct": 0.5,
-	"radius_add": 0.1, "slow_add": 0.25,
+	"radius_add": 0.1, "range_add": 0.1, "slow_add": 0.25,
 	"duration_add": 0.5, "freeze_add": 0.25,
 	"chains_add": 1.0, "shatter_pct": 2.5,
 	"brand_amp": 2.0, "step_dmg": 5.0, "vuln_add": 2.0,
+	"hp_pct": 1.0, "life_add": 1.0, "shell_pct": 1.0,
+	"pulse_dmg": 5.0,
 	"threshold_add": 1.0, "mend_pct": 1.0,
 	"armor_pct": 1.0, "guard_pct": 1.0, "aura_pct": 1.0,
 	"haste_pct": 1.0, "vuln_pct": 1.0}
@@ -328,16 +341,20 @@ const PARAM_UNIT_TARGET := {"tempest": {"duration_add": 1.0},
 	# names the channel without a size).
 	"smoke_veil": {"duration_add": 1.0}}
 const PARAM_BASE := {"dmg_pct": 4, "cd_pct": 4,
-	"radius_add": 2, "slow_add": 2, "duration_add": 2,
+	"radius_add": 2, "range_add": 2, "slow_add": 2, "duration_add": 2,
 	"freeze_add": 2, "chains_add": 1, "shatter_pct": 2,
 	"brand_amp": 3, "step_dmg": 2, "vuln_add": 2,
+	"hp_pct": 3, "life_add": 2, "shell_pct": 3,
+	"pulse_dmg": 2,
 	"threshold_add": 2, "mend_pct": 3, "armor_pct": 3,
 	"guard_pct": 3, "aura_pct": 3, "haste_pct": 3,
 	"vuln_pct": 3}
 const PARAM_SPAN := {"dmg_pct": 5, "cd_pct": 5,
-	"radius_add": 3, "slow_add": 3, "duration_add": 3,
+	"radius_add": 3, "range_add": 3, "slow_add": 3, "duration_add": 3,
 	"freeze_add": 3, "chains_add": 2, "shatter_pct": 3,
 	"brand_amp": 4, "step_dmg": 3, "vuln_add": 3,
+	"hp_pct": 4, "life_add": 3, "shell_pct": 4,
+	"pulse_dmg": 3,
 	"threshold_add": 3, "mend_pct": 4, "armor_pct": 4,
 	"guard_pct": 4, "aura_pct": 4, "haste_pct": 4,
 	"vuln_pct": 4}
@@ -361,11 +378,14 @@ const BEHAVIORS := {
 	7: ["deadeye", "surveyor"],
 	4: ["rooted_ward", "oathkeeper"],
 	5: ["warlords_tempo", "strength_in_numbers"],
+	8: ["overbuilt", "siege_mind"],
+	9: ["tempered", "salvage"],
 }
 ## The skill a branch's behavior nodes govern for looks.
 const BEHAVIOR_TARGET := {1: "fireball", 2: "frost",
 	3: "lightning", 6: "smoke_veil", 7: "mark",
-	4: "reciprocity", 5: "warhorn"}
+	4: "reciprocity", 5: "warhorn",
+	8: "sentry_turret", 9: "hammer_smash"}
 
 const VARIANTS := {
 	"twin_suns": {"skill": "fireball",
@@ -402,6 +422,24 @@ const VARIANTS := {
 		"desc": "Aegis Dome: allies inside Sanctuary also gain stoneskin armor."},
 	"thorn_mirror": {"skill": "reciprocity",
 		"desc": "Thorn Mirror: Reciprocity's thorns slow enemies in its radius by 20% for 2 s."},
+	"twin_bolts": {"skill": "sentry_turret",
+		"name": "Twin Bolts",
+		"desc": "Twin Bolts: each turret shot fires a second bolt at 60% damage."},
+	"cluster_trap": {"skill": "spike_trap",
+		"name": "Cluster Trap",
+		"desc": "Cluster Trap: the trap detonates a second time at 70% damage after 0.5 s."},
+	"heartstone": {"skill": "keystone",
+		"name": "Heartstone",
+		"desc": "Heartstone: the keystone also heals nearby structures for 5 health per second."},
+	"seismic_smash": {"skill": "hammer_smash",
+		"name": "Seismic Smash",
+		"desc": "Seismic Smash: the smash sends a ring at 50% damage beyond its own area."},
+	"aegis_shell": {"skill": "reinforce",
+		"name": "Aegis Shell",
+		"desc": "Aegis Shell: while the shell holds, its bearer deals +25% damage."},
+	"wrecking_ball": {"skill": "demolish",
+		"name": "Wrecking Ball",
+		"desc": "Wrecking Ball: Demolish deals +10% damage per structure you have standing."},
 	"living_stone": {"skill": "stoneskin",
 		"desc": "Living Stone: Stoneskin's totem also heals allies in its radius each tick."},
 	"doom_herald": {"skill": "doom_totem",
@@ -419,6 +457,8 @@ const VARIANT_IDS := {
 	7: ["shuriken_storm", "death_sentence", "headsman"],
 	4: ["aegis_dome", "thorn_mirror", "living_stone"],
 	5: ["doom_herald", "thunderhead_horn", "forced_march"],
+	8: ["twin_bolts", "cluster_trap", "heartstone"],
+	9: ["seismic_smash", "aegis_shell", "wrecking_ball"],
 }
 
 const ECHO_FAMILIES := {
@@ -429,6 +469,7 @@ const ECHO_FAMILIES := {
 	7: ["shadow"],
 	4: ["conqueror"],
 	5: ["warden"],
+	8: ["forge"], 9: ["engineering"],
 }
 const FAMILY_SKILLS := {"fire": ["fireball", "meteor"],
 	"frost": ["frost", "blizzard"],
@@ -436,7 +477,10 @@ const FAMILY_SKILLS := {"fire": ["fireball", "meteor"],
 	"shadow": ["smoke_veil", "shadow_step"],
 	"precision": ["eagle_eye", "mark", "fan"],
 	"warden": ["reciprocity", "stoneskin"],
-	"conqueror": ["bulwark", "warhorn", "rally"]}
+	"conqueror": ["bulwark", "warhorn", "rally"],
+	"engineering": ["sentry_turret", "bulwark_wall",
+		"spike_trap", "keystone"],
+	"forge": ["hammer_smash", "reinforce", "demolish"]}
 
 const NAME_ADJ := ["Kindled", "Ashen", "Ember", "Scorched",
 	"Wildfire", "Blazing", "Smoldering", "Cinder",
@@ -465,6 +509,12 @@ const NAME_ADJ_BY_BRANCH := {
 	5: ["Iron", "Howling", "Crimson", "Relentless",
 		"Thunder", "Savage", "Burning", "Grim",
 		"Marching", "Broken", "Feral", "Proud"],
+	8: ["Iron", "Patient", "Stalwart", "Cogged",
+		"Braced", "Riveted", "Quiet", "Heavy",
+		"Measured", "Stone", "Copper", "Deep"],
+	9: ["Burning", "Iron", "Thunder", "Heavy",
+		"Molten", "Grim", "Patient", "Savage",
+		"Bright", "Stone", "Howling", "Deep"],
 }
 const NAME_NOUN_BY_BRANCH := {
 	2: ["Shard", "Prison", "Veil", "Heart", "Crown",
@@ -485,6 +535,12 @@ const NAME_NOUN_BY_BRANCH := {
 	5: ["Horn", "Doom", "Standard", "March", "Roar",
 		"Banner", "Crown", "Charge", "Dirge", "Toll",
 		"Wrath", "Drum"],
+	8: ["Turret", "Wall", "Trap", "Key", "Bastion",
+		"Gear", "Post", "Engine", "Ward", "Span",
+		"Bolt", "Foundation"],
+	9: ["Hammer", "Shell", "Wreck", "Forge", "Anvil",
+		"Bellows", "Stroke", "Ember", "Brand", "Seal",
+		"Fall", "Crown"],
 }
 
 const COST_BASE := {"stat": 10, "modifier": 16,
@@ -629,6 +685,24 @@ static func _mod_desc(target: String, comps: Array) -> String:
 		elif param == "brand_amp":
 			parts.append("+%s %s brand amplification" % [
 				_fmt_pct(steps, param), target])
+		elif param == "hp_pct":
+			parts.append("+%s%% max health" % _fmt_num(
+				float(steps) * float(PARAM_UNIT[param])))
+		elif param == "shell_pct":
+			parts.append("shell strength +%s%%"
+				% _fmt_num(float(steps)
+				* float(PARAM_UNIT[param])))
+		elif param == "pulse_dmg":
+			parts.append("thorn pulse %s%% of your damage"
+				% _fmt_num(float(steps)
+				* float(PARAM_UNIT[param])))
+		elif param == "life_add":
+			parts.append("lasts +%s s longer"
+				% _fmt_num(float(steps)
+				* float(PARAM_UNIT[param])))
+		elif param == "range_add":
+			parts.append("range +%s m" % _fmt_num(
+				float(steps) * float(PARAM_UNIT[param])))
 		elif param == "step_dmg":
 			parts.append("+%s %s arrival damage (of weapon damage)" % [
 				_fmt_pct(steps, param), target])
@@ -760,6 +834,14 @@ static func node_for(seed: int, class_id: String,
 					desc = "Permafrost Heart: your frost skills deal +%d%% damage while you are above 75%% health." % pct
 				"stormcharged":
 					desc = "Stormcharged: for 10 s after casting Tempest, your chain lightning gains +1 chain."
+				"overbuilt":
+					desc = "Overbuilt: placing a structure repairs your other structures by %d%% of their max health." % pct
+				"siege_mind":
+					desc = "Siege Mind: your turret deals +%d%% damage to elites and bosses." % pct
+				"tempered":
+					desc = "Tempered: for 5 s after Reinforce, your Hammer Smash deals +%d%% damage." % pct
+				"salvage":
+					desc = "Salvage: when your structure is destroyed, refund %d%% of its placement cooldown." % pct
 				"static_bloom":
 					desc = "Static Bloom: your chain lightning deals +%d%% damage to every target beyond the first." % pct
 				_:
@@ -780,7 +862,19 @@ static func node_for(seed: int, class_id: String,
 # ----------------------------------------------------------------
 
 static func branch_unlocked(family_collection: Dictionary,
-		class_id: String, branch: int) -> bool:
+		class_id: String, branch: int,
+		lifetime: Dictionary = {}) -> bool:
+	# Spec section 1.1: the architect branches carry no
+	# family; they unlock at lifetime >= 100 in ANY
+	# architect branch skill.
+	if branch in [8, 9]:
+		for bid in [8, 9]:
+			for sk in branch_info(class_id,
+					bid).get("skills", []):
+				if float(lifetime.get(str(sk), 0.0)) \
+						>= 100.0:
+					return true
+		return false
 	var info := branch_info(class_id, branch)
 	if info.is_empty():
 		return false
@@ -849,6 +943,9 @@ static func compute_aggregates(seed: int, class_id: String,
 	# Issue #210 slice B3: the totem magnitude kinds,
 	# keyed "target|param" (one bucket for six channels).
 	var mag_steps := {}
+	var range_steps := {}
+	var life_steps := {}
+	var pulse_steps := {}
 	var behaviors := {}
 	var variants := {}
 	var sorted_owned := owned.duplicate()
@@ -895,6 +992,15 @@ static func compute_aggregates(seed: int, class_id: String,
 				elif param == "radius_add":
 					rad_steps[tgt] = int(rad_steps.get(tgt,
 						0)) + steps
+				elif param == "range_add":
+					range_steps[tgt] = int(
+						range_steps.get(tgt, 0)) + steps
+				elif param == "life_add":
+					life_steps[tgt] = int(
+						life_steps.get(tgt, 0)) + steps
+				elif param == "pulse_dmg":
+					pulse_steps[tgt] = int(
+						pulse_steps.get(tgt, 0)) + steps
 				elif param == "slow_add":
 					slow_steps[tgt] = int(slow_steps.get(tgt,
 						0)) + steps
@@ -924,7 +1030,8 @@ static func compute_aggregates(seed: int, class_id: String,
 						tgt, 0)) + steps
 				elif param in ["mend_pct", "armor_pct",
 						"guard_pct", "aura_pct",
-						"haste_pct", "vuln_pct"]:
+						"haste_pct", "vuln_pct",
+						"hp_pct", "shell_pct"]:
 					var mk: String = tgt + "|" + param
 					mag_steps[mk] = int(mag_steps.get(
 						mk, 0)) + steps
@@ -965,6 +1072,12 @@ static func compute_aggregates(seed: int, class_id: String,
 		touched[s] = true
 	for s in thresh_steps:
 		touched[s] = true
+	for s in range_steps:
+		touched[s] = true
+	for s in life_steps:
+		touched[s] = true
+	for s in pulse_steps:
+		touched[s] = true
 	for mk in mag_steps:
 		touched[mk.split("|")[0]] = true
 	for s in touched:
@@ -993,6 +1106,19 @@ static func compute_aggregates(seed: int, class_id: String,
 				* float(PARAM_UNIT["freeze_add"])
 		if int(chain_steps.get(s, 0)) > 0:
 			entry["chains_add"] = mini(2, int(chain_steps[s]))
+		# Issue #210 slice B4 channels: range/life join
+		# unclamped (none named); pulse_dmg carries
+		# Amendment 1 section D's clamp (<= 0.50).
+		if int(range_steps.get(s, 0)) > 0:
+			entry["range_add"] = float(range_steps[s]) \
+				* float(PARAM_UNIT["range_add"])
+		if int(life_steps.get(s, 0)) > 0:
+			entry["life_add"] = float(life_steps[s]) \
+				* float(PARAM_UNIT["life_add"])
+		if int(pulse_steps.get(s, 0)) > 0:
+			entry["pulse_dmg"] = minf(0.50,
+				float(pulse_steps[s])
+				* float(PARAM_UNIT["pulse_dmg"]) / 100.0)
 		# Amendment 1 section D clamps: shatter_pct is a
 		# fraction of caster damage (<= 1.00); brand_amp is
 		# a damage fraction (<= 0.40 per skill).
@@ -1022,7 +1148,8 @@ static func compute_aggregates(seed: int, class_id: String,
 		# fractions of the branch's base magnitude; no
 		# clamp is named for any of them (section 1.5).
 		for mp in ["mend_pct", "armor_pct", "guard_pct",
-				"aura_pct", "haste_pct", "vuln_pct"]:
+				"aura_pct", "haste_pct", "vuln_pct",
+				"hp_pct", "shell_pct"]:
 			var mkey: String = s + "|" + mp
 			if int(mag_steps.get(mkey, 0)) > 0:
 				entry[mp] = float(mag_steps[mkey]) \
@@ -1140,7 +1267,8 @@ static func visible_nodes(player: Variant) -> Array:
 		# NO nodes on the data surface (and inert branches
 		# have none to expose).
 		if not branch_populated(bid) or not branch_unlocked(
-				fcol, class_id, bid):
+				fcol, class_id, bid,
+				_pread(player, "tree_lifetime", {})):
 			continue
 		var deepest := deepest_owned(owned, bid)
 		for ring in range(1, deepest + 3):

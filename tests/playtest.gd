@@ -132,6 +132,7 @@ func _run() -> void:
 	_test_deep_tree_b1_210()
 	_test_deep_tree_b2_210()
 	_test_deep_tree_b3_210()
+	_test_deep_tree_b4_210()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -18442,7 +18443,8 @@ func _test_atk_spd_184() -> void:
 			"ability_cds[\"tempest\"] = (90.0) * cooldown_mult() / atk_spd_mult()",
 			"ability_cds[\"assassinate\"] = (45.0) * cooldown_mult() / atk_spd_mult()",
 			"ability_cds[\"execution\"] = (60.0) * cooldown_mult() / atk_spd_mult()",
-			"ability_cds[\"demolish\"] = (45.0) * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"demolish\"] = (45.0) * cooldown_mult() \\
+\t\t/ atk_spd_mult() * _tree_skill_mod(\"demolish\",",
 			"ability_cds[\"holy_light\"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult()",
 			"_srv_lightning_cd = LIGHTNING_COOLDOWN / atk_spd_mult()",
 			"_dagger_catch_cd = DAGGER_CATCH_COOLDOWN / atk_spd_mult()"]:
@@ -18455,9 +18457,11 @@ func _test_atk_spd_184() -> void:
 	for frag in [
 			"ability_cds[\"smoke_veil\"] = (30.0) * cooldown_mult() \\\n\t\t* _tree_skill_mod(\"smoke_veil\", \"cd_mult\", 1.0)",
 			"ability_cds[\"shadow_step\"] = (15.0) * cooldown_mult() \\\n\t\t\t* _tree_skill_mod(\"shadow_step\", \"cd_mult\", 1.0)",
-			"ability_cds[\"reinforce\"] = (25.0) * cooldown_mult()\n",
+			"ability_cds[\"reinforce\"] = (25.0) * cooldown_mult() \\
+\t\t* _tree_skill_mod(\"reinforce\", \"cd_mult\", 1.0)",
 			"ability_cds[cd_key] = (cd) * cooldown_mult() \\\n\t\t* _tree_skill_mod(cd_key, \"cd_mult\", 1.0)\n",
-			"ability_cds[structure_id] = (cd) * cooldown_mult()\n"]:
+			"ability_cds[structure_id] = (cd) * cooldown_mult() \\
+\t\t* _tree_skill_mod(structure_id, \"cd_mult\", 1.0)"]:
 		_assert(psrc.contains(frag),
 			"184(s1): NON-BLEED set site byte-identical: " + frag.left(52).strip_edges())
 	# --- Dagger: charge rate + catch lockout (rogue drives).
@@ -19857,7 +19861,7 @@ func _test_ability_matrix_162() -> void:
 	caster_c.hl_end_beam(7, 0)
 
 	# --- Part 4 (#169): Reinforce routing ---
-	_assert(psrc.contains("target.apply_reinforce(6.0)"),
+	_assert(psrc.contains("target.apply_reinforce(6.0, shell)"),
 		"matrix169: self-authority targets take the direct call")
 	# The cast measures from the cursor point (origin without a
 	# camera); sweep stray players out of its 3m reach first.
@@ -23588,3 +23592,467 @@ func _test_deep_tree_b3_210() -> void:
 	ally.free()
 	dgn.free()
 	print("[Playtest] deep tree 210 B3 tests done.")
+
+
+func _b4_find(dt, branch: int, target: String,
+		param: String) -> Array:
+	for ring in range(1, 121):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"architect", branch, ring, i)
+			if str(n.get("archetype")) != "modifier":
+				continue
+			if str(n.get("target")) != target:
+				continue
+			for c in n["params"].get("components", []):
+				if str(c.get("param")) == param:
+					return [int(n["id"]), int(c["steps"])]
+	return [-1, 0]
+
+
+func _b4_find_behavior(dt, branch: int, bid: String) -> Array:
+	for ring in range(1, 121):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"architect", branch, ring, i)
+			if str(n.get("archetype")) == "behavior" and str(
+					n["params"].get("behavior", "")) == bid:
+				return [int(n["id"]),
+					int(n["params"]["steps"])]
+	return [-1, 0]
+
+
+func _b4_find_variant(dt, branch: int, vid: String) -> int:
+	for ring in range(1, 400):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"architect", branch, ring, i)
+			if str(n.get("kind")) == "variant" and str(
+					n["params"].get("variant", "")) == vid:
+				return int(n["id"])
+	return -1
+
+
+## Issue #210 slice B4: Engineering + Forge populate —
+## fixtures, determinism, the section 1.1 predicate,
+## purchase legality, aggregates, and the structure /
+## forge read sites driven live.
+func _test_deep_tree_b4_210() -> void:
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = dt.TREE_SEED
+	var e10: Dictionary = dt.node_for(seed, "architect", 8, 1, 0)
+	_assert(str(e10["archetype"]) == "modifier"
+		and str(e10["target"]) == "bulwark_wall"
+		and int(e10["params"]["components"][0]["steps"]) == 7
+		and int(e10["cost"]) == 16
+		and str(e10["name"]) == "Cogged Gear",
+		"210B4: engineering 1/0 fixture (wall cd 7, 16)")
+	var e12: Dictionary = dt.node_for(seed, "architect", 8, 1, 2)
+	_assert(str(e12["archetype"]) == "behavior"
+		and str(e12["params"].get("behavior", ""))
+			== "overbuilt"
+		and int(e12["params"]["steps"]) == 2
+		and int(e12["cost"]) == 24
+		and str(e12["name"]) == "Iron Foundation",
+		"210B4: engineering 1/2 fixture (overbuilt 2, 24)")
+	var e20: Dictionary = dt.node_for(seed, "architect", 8, 2, 0)
+	_assert(str(e20["target"]) == "spike_trap"
+		and int(e20["params"]["components"][0]["steps"]) == 7
+		and int(e20["cost"]) == 20
+		and str(e20["name"]) == "Copper Trap",
+		"210B4: engineering 2/0 fixture (trap dmg 7, 20)")
+	var e30: Dictionary = dt.node_for(seed, "architect", 8, 3, 0)
+	_assert(str(e30["target"]) == "sentry_turret"
+		and int(e30["params"]["components"][0]["steps"]) == 6
+		and int(e30["cost"]) == 24
+		and str(e30["name"]) == "Braced Ward",
+		"210B4: engineering 3/0 fixture (turret dmg 6, 24)")
+	var f10: Dictionary = dt.node_for(seed, "architect", 9, 1, 0)
+	_assert(str(f10["target"]) == "demolish"
+		and int(f10["params"]["components"][0]["steps"]) == 3
+		and int(f10["cost"]) == 16
+		and str(f10["name"]) == "Molten Wreck",
+		"210B4: forge 1/0 fixture (demolish radius 3, 16)")
+	var f11: Dictionary = dt.node_for(seed, "architect", 9, 1, 1)
+	_assert(str(f11["target"]) == "hammer_smash"
+		and int(f11["params"]["components"][0]["steps"]) == 5
+		and int(f11["cost"]) == 16
+		and str(f11["name"]) == "Thunder Forge",
+		"210B4: forge 1/1 fixture (smash dmg 5, 16)")
+	var f20: Dictionary = dt.node_for(seed, "architect", 9, 2, 0)
+	_assert(str(f20["archetype"]) == "behavior"
+		and str(f20["params"].get("behavior", ""))
+			== "tempered"
+		and int(f20["params"]["steps"]) == 3
+		and int(f20["cost"]) == 29
+		and str(f20["name"]) == "Howling Bellows",
+		"210B4: forge 2/0 fixture (tempered 3, 29)")
+	var f30: Dictionary = dt.node_for(seed, "architect", 9, 3, 0)
+	_assert(str(f30["target"]) == "hammer_smash"
+		and int(f30["params"]["components"].size()) == 2
+		and int(f30["cost"]) == 24
+		and str(f30["name"]) == "Deep Heavy Shell",
+		"210B4: forge 3/0 fixture (composed smash, 24)")
+	# Generation invariance: one spot row per landed branch.
+	var rows := [[1, "mage", "inferno", 3],
+		[2, "mage", "blizzard", 2], [3, "mage", "tempest", 5],
+		[5, "warrior", "doom_totem", 5],
+		[6, "rogue", "assassinate", 4],
+		[7, "rogue", "execution", 8]]
+	var inv := true
+	for row in rows:
+		var sn: Dictionary = dt.node_for(seed, str(row[1]),
+			int(row[0]), 1, 0)
+		if str(sn.get("target")) != str(row[2]) or int(
+				sn["params"]["components"][0]["steps"]) \
+				!= int(row[3]):
+			inv = false
+	var w40: Dictionary = dt.node_for(seed, "warrior", 4, 1, 0)
+	if str(w40["params"].get("behavior", "")) != "oathkeeper" \
+			or int(w40["params"]["steps"]) != 4:
+		inv = false
+	_assert(inv, "210B4: invariance spot rows hold for all seven landed branches")
+	var det := true
+	for b in [8, 9]:
+		for r in range(1, 13):
+			for i in dt.width(seed, b, r):
+				var a: Dictionary = dt.node_for(seed,
+					"architect", b, r, i)
+				var c: Dictionary = dt.node_for(seed,
+					"architect", b, r, i)
+				if int(a["id"]) != dt.pack_id(b, r, i) \
+						or a["params"] != c["params"] \
+						or int(a["cost"]) != int(c["cost"]):
+					det = false
+	_assert(det, "210B4: determinism rings 1-12 (engineering + forge)")
+	_assert(not dt.branch_unlocked({}, "architect", 8,
+			{"sentry_turret": 99.0})
+		and dt.branch_unlocked({}, "architect", 8,
+			{"sentry_turret": 100.0})
+		and dt.branch_unlocked({}, "architect", 9,
+			{"demolish": 100.0})
+		and not dt.branch_unlocked({}, "architect", 9,
+			{"demolish": 40.0, "keystone": 60.0}),
+		"210B4: section 1.1 unlock predicate (any branch skill at 100)")
+	var agg: Dictionary = dt.compute_aggregates(seed,
+		"architect", [int(e10["id"]), int(f30["id"])])
+	_assert(absf(float(agg["skill_mods"]["bulwark_wall"]
+			["cd_mult"]) - 0.965) < 0.0001
+		and absf(float(agg["skill_mods"]["hammer_smash"]
+			["cd_mult"]) - 0.99) < 0.0001
+		and absf(float(agg["skill_mods"]["hammer_smash"]
+			["dmg_mult"]) - 1.015) < 0.0001,
+		"210B4: aggregates exact (wall cd .965, smash cd .99 / dmg 1.015)")
+	var pulse_f := _b4_find(dt, 8, "bulwark_wall", "pulse_dmg")
+	var aggp: Dictionary = dt.compute_aggregates(seed,
+		"architect", [pulse_f[0]])
+	_assert(pulse_f[0] > 0 and absf(float(aggp["skill_mods"]
+			["bulwark_wall"]["pulse_dmg"])
+			- float(pulse_f[1]) * 0.05) < 0.0001,
+		"210B4: pulse_dmg aggregates at 5% steps (section C.3)")
+	# Purchase legality through the player validator.
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	current_scene = dgn
+	# Structure._caster resolves through the FIRST
+	# dungeon in the group — clear leaked fixtures so
+	# this section's casters resolve to its own player.
+	for n in get_nodes_in_group("dungeon"):
+		if n != dgn:
+			(n as Node).free()
+	for n in get_nodes_in_group("mobs"):
+		(n as Node).free()
+	var pc = load("res://scenes/player/player.tscn").instantiate()
+	pc.set("class_id", "architect")
+	pc.set("claimant_peer", 1)
+	pc.set("tree_lifetime", {"sentry_turret": 150.0})
+	root.add_child(pc)
+	pc.global_position = Vector3(300, 0, 300)
+	_assert(str(pc.call("_tree_validate_claim",
+			int(e10["id"]), 150, 1)) == "",
+		"210B4: the validator accepts under the section 1.1 predicate")
+	var pc2 = load("res://scenes/player/player.tscn").instantiate()
+	pc2.set("class_id", "architect")
+	pc2.set("claimant_peer", 1)
+	pc2.set("tree_lifetime", {"sentry_turret": 150.0})
+	root.add_child(pc2)
+	pc2.global_position = Vector3(310, 0, 310)
+	_assert(pc2.call("try_purchase", int(e10["id"])),
+		"210B4: architect purchase buys under the predicate")
+	pc2.free()
+	var locked_pc = load("res://scenes/player/player.tscn").instantiate()
+	locked_pc.set("class_id", "architect")
+	locked_pc.set("claimant_peer", 1)
+	locked_pc.set("tree_lifetime", {"sentry_turret": 50.0})
+	root.add_child(locked_pc)
+	locked_pc.global_position = Vector3(320, 0, 320)
+	_assert(str(locked_pc.call("_tree_validate_claim",
+			int(e10["id"]), 50, 1)) == "locked",
+		"210B4: below the predicate the validator answers locked")
+	# The dungeon's own player drives the structure legs.
+	var dpc = dgn.get_node("Players").get_children()[0]
+	dpc.set("class_id", "architect")
+	dpc.set("damage", 100.0)
+	var stc = load("res://scripts/combat/structure.gd")
+	var mobres = load("res://data/mobs/goblin.tres")
+	var mobs: Array = []
+	# Placement: cd fold + life_add at the dungeon.
+	var hp_f := _b4_find(dt, 8, "sentry_turret", "hp_pct")
+	var life_f := _b4_find(dt, 8, "bulwark_wall", "life_add")
+	dpc.set("tree_owned", [int(e10["id"]), hp_f[0],
+		life_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.call("_place_structure", "bulwark_wall")
+	_assert(absf(float(dpc.get("ability_cds")[
+			"bulwark_wall"]) - 8.0 * 0.965) < 0.01,
+		"210B4: placement cd folds at the one dict site")
+	var wall = null
+	for n in get_nodes_in_group("structures"):
+		if str((n as Node).get("structure_id")) \
+				== "bulwark_wall":
+			wall = n
+	_assert(wall != null and absf(float(wall.get("_life"))
+			- (20.0 + float(life_f[1]) * 1.0)) < 0.01,
+		"210B4: life_add joins the wall's life at placement")
+	# Turret: dmg_pct + siege + twin + range + keystone aura.
+	dpc.set("tree_owned", [int(e30["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	var tur = stc.new()
+	tur.setup("sentry_turret", 1, 1)
+	root.add_child(tur)
+	tur.global_position = Vector3.ZERO
+	var tm1 = load("res://scenes/mobs/mob.tscn").instantiate()
+	tm1.setup(1, mobres)
+	root.add_child(tm1)
+	mobs.append(tm1)
+	tm1.global_position = Vector3(5, 0, 0)
+	tm1.set("hp", 100000.0)
+	tm1.set("_shield_up", false)
+	var hp0 := float(tm1.get("hp"))
+	tur.call("_tick_turret", 2.0)
+	_assert(absf((hp0 - float(tm1.get("hp"))) - 60.0
+			* 1.03) < 0.5,
+		"210B4: turret shot carries dmg_pct (60 x 1.03)")
+	var siege_f := _b4_find_behavior(dt, 8, "siege_mind")
+	dpc.set("tree_owned", [int(e30["id"]), siege_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	tm1.set("is_elite", true)
+	hp0 = float(tm1.get("hp"))
+	tur.call("_tick_turret", 2.0)
+	_assert(absf((hp0 - float(tm1.get("hp"))) - 60.0
+			* 1.03 * (1.0 + float(siege_f[1]) * 5.0
+			/ 100.0)) < 0.5,
+		"210B4: Siege Mind adds its percent vs elites")
+	var twin_id := _b4_find_variant(dt, 8, "twin_bolts")
+	dpc.set("tree_owned", [twin_id])
+	dpc.call("_recompute_tree_aggregates")
+	tm1.set("is_elite", false)
+	hp0 = float(tm1.get("hp"))
+	tur.call("_tick_turret", 2.0)
+	_assert(absf((hp0 - float(tm1.get("hp"))) - 60.0
+			* 1.6) < 0.5,
+		"210B4: Twin Bolts fires the second bolt at 60%")
+	var rng_f := _b4_find(dt, 8, "sentry_turret", "range_add")
+	tm1.global_position = Vector3(12.0 + float(rng_f[1])
+		* 0.1 - 0.05, 0, 0)
+	dpc.set("tree_owned", [])
+	dpc.call("_recompute_tree_aggregates")
+	var no_pick = tur.call("_pick_target")
+	dpc.set("tree_owned", [rng_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	_assert(no_pick == null and tur.call("_pick_target")
+			== tm1,
+		"210B4: range_add extends the turret's reach")
+	tur.free()
+	var aura_f := _b4_find(dt, 8, "keystone", "aura_pct")
+	var key = stc.new()
+	key.setup("keystone", 1, 1)
+	root.add_child(key)
+	key.global_position = wall.global_position + Vector3(2, 0, 0)
+	var tur2 = stc.new()
+	tur2.setup("sentry_turret", 1, 1)
+	root.add_child(tur2)
+	tur2.global_position = key.global_position + Vector3(1, 0, 0)
+	dpc.set("tree_owned", [aura_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	tm1.global_position = tur2.global_position + Vector3(5, 0, 0)
+	tur2.call("_tick_turret", 2.0)
+	var expect_tick := 1.2 / (1.3 * (1.0 + float(
+		aura_f[1]) * 0.01))
+	_assert(absf(float(tur2.get("_fire_tick"))
+			- expect_tick) < 0.02,
+		"210B4: keystone aura_pct scales the 1.3 fire divisor")
+	tur2.free()
+	var heart_id := _b4_find_variant(dt, 8, "heartstone")
+	dpc.set("tree_owned", [heart_id])
+	dpc.call("_recompute_tree_aggregates")
+	wall.set("hp", 100.0)
+	key.call("_heartstone_tick")
+	_assert(absf(float(wall.get("hp")) - 105.0) < 0.01,
+		"210B4: Heartstone heals nearby structures per tick")
+	key.free()
+	# Trap: dmg fold, AOE fold, Cluster's second blast.
+	var mk_mob := func(x: float) -> Node:
+		var m = load("res://scenes/mobs/mob.tscn").instantiate()
+		m.setup(1, mobres)
+		root.add_child(m)
+		m.global_position = Vector3(x, 0, 0)
+		m.set("hp", 100000.0)
+		m.set("_shield_up", false)
+		mobs.append(m)
+		return m
+	dpc.set("tree_owned", [int(e20["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	var trp = stc.new()
+	trp.setup("spike_trap", 1, 1)
+	root.add_child(trp)
+	trp.global_position = Vector3(30, 0, 0)
+	var trig = mk_mob.call(30.5)
+	var far = mk_mob.call(32.7)
+	var thp := float(trig.get("hp"))
+	var fhp := float(far.get("hp"))
+	trp.call("_tick_trap")
+	_assert(absf((thp - float(trig.get("hp"))) - 150.0
+			* 1.035) < 0.5 and absf(float(far.get("hp"))
+			- fhp) < 0.01,
+		"210B4: trap blast folds dmg_pct; the far mob is outside stock AOE")
+	var rad_f := _b4_find(dt, 8, "spike_trap", "radius_add")
+	var clus_id := _b4_find_variant(dt, 8, "cluster_trap")
+	dpc.set("tree_owned", [int(e20["id"]), rad_f[0],
+		clus_id])
+	dpc.call("_recompute_tree_aggregates")
+	var trp2 = stc.new()
+	trp2.setup("spike_trap", 1, 1)
+	root.add_child(trp2)
+	trp2.global_position = Vector3(40, 0, 0)
+	var trig2 = mk_mob.call(40.5)
+	var far2 = mk_mob.call(40.0 + 2.5 + float(rad_f[1])
+		* 0.1 - 0.05)
+	trp2.call("_tick_trap")
+	var held: bool = not trp2.is_queued_for_deletion() and int(
+		trp2.get("_cluster_at")) > 0
+	var f2hp := float(far2.get("hp"))
+	trp2.set("_cluster_at", 1)
+	trp2.call("_physics_process", 0.01)
+	_assert(held and float(far2.get("hp")) < f2hp
+		and trp2.is_queued_for_deletion(),
+		"210B4: Cluster Trap holds, then detonates again inside the folded AOE")
+	# Thornwall Pulse + neutrality (fresh wall) + Salvage.
+	var pulse_wall = stc.new()
+	pulse_wall.setup("bulwark_wall", 1, 1)
+	root.add_child(pulse_wall)
+	pulse_wall.global_position = Vector3(50, 0, 0)
+	var pm = mk_mob.call(51.5)
+	dpc.set("tree_owned", [pulse_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	var php := float(pm.get("hp"))
+	pulse_wall.call("take_structure_damage", 10.0, 0)
+	var pulsed := absf((php - float(pm.get("hp")))
+		- 100.0 * float(pulse_f[1]) * 0.05) < 0.5
+	php = float(pm.get("hp"))
+	pulse_wall.call("take_structure_damage", 10.0, 0)
+	_assert(pulsed and absf(float(pm.get("hp")) - php)
+			< 0.01,
+		"210B4: Thornwall Pulse fires once per second at owner damage x pulse_dmg")
+	var calm_wall = stc.new()
+	calm_wall.setup("bulwark_wall", 1, 1)
+	root.add_child(calm_wall)
+	calm_wall.global_position = Vector3(60, 0, 0)
+	pm.global_position = Vector3(61.5, 0, 0)
+	dpc.set("tree_owned", [])
+	dpc.call("_recompute_tree_aggregates")
+	php = float(pm.get("hp"))
+	calm_wall.call("take_structure_damage", 10.0, 0)
+	_assert(absf(float(pm.get("hp")) - php) < 0.01,
+		"210B4: neutrality — a zero-owned wall deals no pulse")
+	var salv_f := _b4_find_behavior(dt, 9, "salvage")
+	dpc.set("tree_owned", [salv_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.set("ability_cds", {"bulwark_wall": 8.0})
+	pulse_wall.set("hp", 50.0)
+	pulse_wall.call("take_structure_damage", 100.0, 0)
+	_assert(absf(float(dpc.get("ability_cds")[
+			"bulwark_wall"]) - (8.0 - 8.0 * float(
+			salv_f[1]) * 5.0 / 100.0)) < 0.01,
+		"210B4: Salvage refunds its percent of the placement cooldown")
+	# Overbuilt at the dungeon placement.
+	var ob_hp0 := float(wall.get("hp"))
+	dpc.set("tree_owned", [int(e12["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	dgn.call("place_structure", "spike_trap",
+		Vector3(9, 0, 9), 1, 1, "ob1")
+	_assert(absf(float(wall.get("hp")) - minf(float(
+			wall.get("max_hp")), ob_hp0 + float(
+			wall.get("max_hp")) * 0.10)) < 0.01,
+		"210B4: Overbuilt repairs other structures on placement (10%)")
+	# Reinforce shell strength; smash folds + the gate.
+	dpc.call("apply_reinforce", 6.0, 0.75)
+	_assert(absf(float(dpc.get("_reinforce_strength"))
+			- 0.75) < 0.001,
+		"210B4: shell_pct's strength lands at the apply site")
+	var dhp := float(dpc.get("hp"))
+	dpc.call("take_damage", 40.0, "")
+	_assert(absf((dhp - float(dpc.get("hp"))) - 10.0)
+			< 0.5,
+		"210B4: the strengthened shell cuts intake by its strength (40 -> 10)")
+	dpc.set("_reinforce_t", 0.0)
+	var cmap: Dictionary = load(
+		"res://scripts/player/player.gd").get_script_constant_map()
+	dpc.set("equipped_ids", {"WEAPON": str(cmap[
+		"HAMMER_ITEM_ID"])})
+	dpc.set("tree_owned", [int(f11["id"]), int(f20["id"]),
+		int(f30["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.set("ability_cds", {})
+	dpc.call("_cast_reinforce")
+	dpc.set("ability_cds", {"reinforce": 25.0})
+	var sm = mk_mob.call(0.0)
+	sm.global_position = dpc.global_position + Vector3(1, 0, 0)
+	var shp := float(sm.get("hp"))
+	dpc.call("_cast_hammer_smash")
+	var smash_expect := 100.0 * float(cmap[
+		"SMASH_DAMAGE_MULT"]) * 1.04 * 1.15
+	_assert(absf((shp - float(sm.get("hp")))
+			- smash_expect) < 1.0
+		and absf(float(dpc.get("ability_cds")[
+			"hammer_smash"]) - 10.0 * 0.99) < 0.05
+		and absf(float(dpc.get("_srv_smash_cd"))
+			- 10.0 * 0.99) < 0.05,
+		"210B4: smash folds dmg_pct + Tempered; client cd and server gate both fold cd_mult")
+	var seis_id := _b4_find_variant(dt, 9, "seismic_smash")
+	dpc.set("tree_owned", [seis_id])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.set("ability_cds", {})
+	dpc.set("_srv_smash_cd", 0.0)
+	var ring = mk_mob.call(4.5)
+	var rhp := float(ring.get("hp"))
+	dpc.call("request_hammer_smash", 80.0)
+	_assert(absf((rhp - float(ring.get("hp"))) - 40.0)
+			< 0.5,
+		"210B4: Seismic Smash rings at 50% beyond the area")
+	# Demolish with Wrecking Ball at the dungeon (exact).
+	var wreck_id := _b4_find_variant(dt, 9, "wrecking_ball")
+	dpc.set("tree_owned", [wreck_id])
+	dpc.call("_recompute_tree_aggregates")
+	var standing := 0
+	for n in get_nodes_in_group("structures"):
+		var sn2 := n as Node
+		if int(sn2.get("owner_peer")) == 1 and not \
+				sn2.is_queued_for_deletion():
+			standing += 1
+	var dm = mk_mob.call(0.0)
+	dm.global_position = wall.global_position + Vector3(1.5, 0, 0)
+	var dmhp := float(dm.get("hp"))
+	dgn.call("demolish_structures", 1)
+	_assert(absf((dmhp - float(dm.get("hp"))) - 75.0
+			* (1.0 + 0.10 * float(standing))) < 1.0,
+		"210B4: Wrecking Ball scales demolish per standing structure")
+	pc.free()
+	locked_pc.free()
+	for m in mobs:
+		if is_instance_valid(m):
+			m.free()
+	for n in get_nodes_in_group("structures"):
+		(n as Node).free()
+	dgn.free()
+	print("[Playtest] deep tree 210 B4 section done")
