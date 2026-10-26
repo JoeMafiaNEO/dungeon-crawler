@@ -5,6 +5,15 @@ extends CanvasLayer
 ## global class cache is stale on a fresh clone (issue #7 red-fix lesson).
 const BountySys := preload("res://scripts/systems/bounty.gd")
 const BountyUI := preload("res://scripts/ui/bounty_ui.gd")
+const DeepTreeCanvas := preload(
+	"res://scripts/ui/deep_tree_canvas.gd")
+
+## Issue #215: the Deep Tree canvas surface (null until
+## first opened) + whether it was opened from the pause
+## menu (closing returns there) or directly from
+## gameplay (closing resumes).
+var _tree_surface: Control = null
+var _tree_from_pause := false
 
 var is_paused := false
 
@@ -1275,6 +1284,14 @@ func _pad_back() -> bool:
 
 
 func _input(event: InputEvent) -> void:
+	if event.is_action_pressed("deep_tree_open") \
+			and _player != null \
+			and not cipher_popup_open \
+			and (_tree_surface == null
+				or not _tree_surface.visible):
+		open_deep_tree(is_paused)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventJoypadButton and event.is_action_pressed("ui_cancel"):
 		if _pad_back():
 			get_viewport().set_input_as_handled()
@@ -1919,67 +1936,78 @@ func _refresh_spec_list() -> void:
 				btn.tooltip_text = "Unlocks at level %d" % Player.SPECIALIZATION_UNLOCK_LEVEL
 		row.add_child(btn)
 		%SpecList.add_child(row)
-	_refresh_tree_list()
+	# Issue #215: the tree lives on its own canvas
+	# surface now (the #206 rows are retired, section
+	# 7.3 of the node-UI spec); the tab carries the
+	# open button.
+	var trow := HBoxContainer.new()
+	trow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var tbtn := Button.new()
+	tbtn.text = "Open the Deep Tree"
+	tbtn.pressed.connect(_on_open_tree_pressed)
+	trow.add_child(tbtn)
+	%SpecList.add_child(trow)
 	# Issue #152: spec rows are dynamic — re-chain while paused.
 	if is_paused:
 		FocusChain.apply(_pause_surface(), _pause_primary())
 
 
-## Issue #206 (spec section 8): the Deep Tree inspector —
-## DISPOSABLE SCAFFOLDING (Jesse's fork-5 canvas replaces
-## it eventually). Branch header + wallet line + the
-## visible band as rows in the specialization-list idiom;
-## purchasable rows carry a Buy button wired to
-## player.try_purchase. A signature-locked branch shows
-## the header only (the data surface exposes no nodes).
-func _refresh_tree_list() -> void:
-	if _player == null:
-		return
-	var cls := str(_player.get("class_id"))
-	var unlocked := DeepTree.branch_unlocked(
-		_player.get("family_collection"), cls,
-		DeepTree.BRANCH_FIRE)
-	var hdr := Label.new()
-	hdr.text = "Deep Tree — Fire (%s) — Insight: %d" % [
-		"unlocked" if unlocked else "locked — earn the family signature",
-		DeepTree.wallet(_player, DeepTree.BRANCH_FIRE)]
-	hdr.add_theme_color_override("font_color",
-		Color(1.0, 0.7, 0.35))
-	%SpecList.add_child(hdr)
-	for entry in DeepTree.visible_nodes(_player):
-		var row := HBoxContainer.new()
-		row.alignment = BoxContainer.ALIGNMENT_CENTER
-		row.add_theme_constant_override("separation", 8)
-		var lbl := Label.new()
-		lbl.text = "R%d %s — %s (%d insight)" % [
-			int(entry["ring"]), str(entry["name"]),
-			str(entry["desc"]), int(entry["cost"])]
-		match str(entry["state"]):
-			"owned":
-				lbl.add_theme_color_override("font_color",
-					Color(0.55, 0.9, 0.55))
-			"purchasable":
-				lbl.add_theme_color_override("font_color",
-					Color(1.0, 0.9, 0.6))
-			_:
-				lbl.add_theme_color_override("font_color",
-					Color(0.6, 0.6, 0.65))
-		row.add_child(lbl)
-		if str(entry["state"]) == "purchasable":
-			var btn := Button.new()
-			btn.text = "Buy"
-			btn.pressed.connect(
-				_on_tree_buy_pressed.bind(int(entry["id"])))
-			row.add_child(btn)
-		%SpecList.add_child(row)
+## Issue #215: the Deep Tree canvas surface - hosted
+## here, above the pause surface (node-UI spec 7.1).
+## Opened from the Specialization tab's button or the
+## deep_tree_open action; pausing is the pause menu's
+## own (is_paused; multiplayer semantics unchanged).
+func _on_open_tree_pressed() -> void:
+	open_deep_tree(true)
 
 
-func _on_tree_buy_pressed(node_id: int) -> void:
+func open_deep_tree(from_pause: bool) -> void:
 	if _player == null:
 		return
-	_player.call("try_purchase", node_id)
-	_refresh_spec_list()
+	if _tree_surface != null and _tree_surface.visible:
+		return
+	_tree_from_pause = from_pause or is_paused
+	if not is_paused:
+		show_pause()
+	if _tree_surface == null:
+		_tree_surface = DeepTreeCanvas.new()
+		_tree_surface.surface_closed.connect(
+			_on_tree_surface_closed)
+		_tree_surface.panel_focus_entered.connect(
+			_on_tree_panel_focus)
+		add_child(_tree_surface)
+	_tree_surface.open_for(_player,
+		Player.class_abilities(str(_player.get(
+			"class_id"))))
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	AudioManager.sfx("ui_click")
+
+
+func _on_tree_surface_closed() -> void:
+	if not _tree_from_pause:
+		hide_pause()
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		FocusChain.apply(_pause_surface(),
+			_pause_primary())
+	_tree_from_pause = false
+
+
+func _on_tree_panel_focus() -> void:
+	if _tree_surface != null:
+		FocusChain.apply(_tree_surface.panel_root(),
+			_tree_surface.panel_primary())
+
+
+## Issue #215 (spec 5.3): the player's purchase-denial
+## forward lands here; the surface shows the reason
+## verbatim. Factored as a plain receiver so the suite
+## can drive it directly (the #135 discipline).
+func tree_denial_received(node_id: int,
+		reason: String) -> void:
+	AudioManager.sfx("ui_error")
+	if _tree_surface != null and _tree_surface.visible:
+		_tree_surface.show_denial(node_id, reason)
 
 
 func _on_specialize_pressed(skill_id: String) -> void:

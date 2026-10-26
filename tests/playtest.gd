@@ -134,6 +134,7 @@ func _run() -> void:
 	_test_deep_tree_b3_210()
 	_test_deep_tree_b4_210()
 	_test_deep_tree_b5_210()
+	_test_deep_tree_ui_215()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -15082,7 +15083,10 @@ func _test_input_vocabulary_144() -> void:
 	for a in InputMap.get_actions():
 		if not str(a).begins_with("ui_"):
 			custom += 1
-	_assert(custom == 30, "144: exactly 30 project actions (26 verbs + 4 look)")
+	# Issue #215: the count rises 30 -> 31 - the spec's
+	# ruled direct-open action (deep_tree_open, node-UI
+	# spec 7.1/9.2) is a new verb, counted in daylight.
+	_assert(custom == 31, "144: exactly 31 project actions (27 verbs + 4 look)")
 	_assert(InputMap.has_action("ui_accept") and not InputMap.action_get_events("ui_accept").is_empty(),
 		"144: built-in ui actions intact")
 	# Byte-for-byte spot check: the raw poll the game used to read and
@@ -21985,9 +21989,16 @@ func _test_deep_tree_206() -> void:
 			"206: ungoverned fireball construction is stock (sphere r0.22, trail 24)")
 	var hsrc := FileAccess.get_file_as_string(
 		"res://scripts/ui/hud.gd")
-	_assert(hsrc.contains("_refresh_tree_list")
-			and hsrc.contains("DeepTree.visible_nodes"),
-		"206: the pause-menu inspector renders the tree data surface")
+	# Issue #215 (spec 7.3): the 206 inspector pin is
+	# retired in daylight - its successor pins (equal or
+	# greater weight) assert the canvas surface replaced
+	# it: hud preloads + creates the canvas, carries the
+	# open path, and no longer defines the row renderer.
+	_assert(hsrc.contains("deep_tree_canvas")
+			and hsrc.contains("open_deep_tree")
+			and hsrc.contains("Open the Deep Tree")
+			and not hsrc.contains("func _refresh_tree_list"),
+		"215: hud hosts the Deep Tree canvas; the 206 inspector is retired")
 	for node in [p, p_poor, p_locked, srv, p2, p3]:
 		hold.remove_child(node)
 		node.free()
@@ -24350,6 +24361,444 @@ func _test_deep_tree_b5_210() -> void:
 	hold.free()
 	current_scene = null
 	print("[Playtest] deep tree 210 B5 section done")
+
+
+func _dt_ui_fixture(owned: Array, lifetime: Dictionary,
+		fcol: Dictionary, level: int,
+		class_id: String = "mage") -> Dictionary:
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	return {"class_id": class_id,
+		"tree_seed": dt.TREE_SEED, "tree_owned": owned,
+		"tree_lifetime": lifetime,
+		"family_collection": fcol, "level": level}
+
+
+func _test_deep_tree_ui_215() -> void:
+	print("[Playtest] Deep Tree node UI test (issue #215)...")
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var cv = load("res://scripts/ui/deep_tree_canvas.gd")
+	var seed: int = dt.TREE_SEED
+	var abils: Array = [
+		{"id": "fireball", "name": "Fireball",
+			"desc": "Fiery bolt, small blast"},
+		{"id": "meteor", "name": "Meteor",
+			"desc": "Delayed fiery impact"},
+		{"id": "frost", "name": "Frost Shard",
+			"desc": "Fast shard, slows enemies"},
+		{"id": "blizzard", "name": "Blizzard",
+			"desc": "Freezing storm, DoT + slow"},
+		{"id": "inferno", "name": "Inferno",
+			"desc": "Channeled firestorm"},
+		{"id": "glacial_prison", "name": "Glacial Prison",
+			"desc": "Freeze all enemies in place"},
+	]
+	var sig_fire := {"fire": {"signature": true}}
+	# --- 1. Layout determinism: two computations and
+	# two canvas instances produce identical maps.
+	var fix_mid = _dt_ui_fixture(
+		[dt.pack_id(1, 1, 0), dt.pack_id(1, 2, 0)],
+		{"fireball": 500.0}, sig_fire, 30)
+	var built_a: Dictionary = cv.build_entries(fix_mid)
+	var built_b: Dictionary = cv.build_entries(fix_mid)
+	_assert(str(built_a["nodes"]) == str(built_b["nodes"])
+		and str(built_a["edges"]) == str(built_b["edges"]),
+		"215-1: layout map is deterministic across computations")
+	var hold := Node.new()
+	root.add_child(hold)
+	current_scene = hold
+	var inst_a = cv.new()
+	var inst_b = cv.new()
+	hold.add_child(inst_a)
+	hold.add_child(inst_b)
+	inst_a.open_for(fix_mid, abils)
+	inst_b.open_for(fix_mid, abils)
+	_assert(str(inst_a.get("_built")["nodes"]) == str(
+		inst_b.get("_built")["nodes"]),
+		"215-1: two canvas instances build identical entry maps")
+	inst_a.queue_free()
+	inst_b.queue_free()
+	# --- 2. Layout form: formula literals from section
+	# 2.1's constants (CORE_R 90, RING_GAP 120, STEP 22).
+	# Fire sector is 180 deg: ring r spine sits at
+	# (-(90 + 120 r), 0).
+	for r in [1, 2, 3]:
+		var w_r: int = dt.width(seed, 1, r)
+		for i in w_r:
+			var p: Vector2 = cv.layout_pos("mage", seed,
+				1, r, i)
+			var ang := deg_to_rad(180.0 + (float(i)
+				- float(w_r - 1) / 2.0) * 22.0)
+			var exp_p: Vector2 = Vector2(cos(ang), sin(ang)) \
+				* (90.0 + 120.0 * r)
+			_assert(p.distance_to(exp_p) < 0.01,
+				"215-2: fire ring %d index %d matches the section 2.1 formula literal" % [r, i])
+	# Width-3 symmetry: siblings mirror about the spine.
+	var w3_ring := -1
+	for r in range(1, 30):
+		if dt.width(seed, 1, r) == 3:
+			w3_ring = r
+			break
+	_assert(w3_ring > 0,
+		"215-2: a width-3 fire ring exists in generation")
+	if w3_ring > 0:
+		var pa: Vector2 = cv.layout_pos("mage", seed, 1,
+			w3_ring, 0)
+		var pb: Vector2 = cv.layout_pos("mage", seed, 1,
+			w3_ring, 1)
+		var pc: Vector2 = cv.layout_pos("mage", seed, 1,
+			w3_ring, 2)
+		_assert(is_equal_approx(pb.y, 0.0)
+			and is_equal_approx(pa.y, -pc.y)
+			and is_equal_approx(pa.x, pc.x),
+			"215-2: width-3 siblings are symmetric about the sector line")
+	# --- 3. Drawn-set fidelity.
+	var vis: Array = dt.visible_nodes(fix_mid)
+	var same: bool = built_a["nodes"].size() == vis.size()
+	if same:
+		for k in vis.size():
+			var ve: Dictionary = vis[k]
+			var ce: Dictionary = built_a["nodes"][k]
+			if int(ve["id"]) != int(ce["id"]) \
+					or str(ve["state"]) != str(
+						ce["state"]):
+				same = false
+	_assert(same,
+		"215-3: canvas entries == visible_nodes (ids and states)")
+	var fix_fresh = _dt_ui_fixture([], {}, {}, 1)
+	var built_fresh: Dictionary = cv.build_entries(
+		fix_fresh)
+	_assert(built_fresh["nodes"].is_empty()
+		and built_fresh["gates"].size() == 4,
+		"215-3: a fresh mage draws gates for all four locked branches and zero nodes")
+	var chain40: Array = []
+	for r in range(1, 41):
+		chain40.append(dt.pack_id(1, r, 0))
+	var fix_deep = _dt_ui_fixture(chain40,
+		{"fireball": 5000.0}, sig_fire, 30)
+	var vis_deep: Array = dt.visible_nodes(fix_deep)
+	var built_deep: Dictionary = cv.build_entries(
+		fix_deep)
+	_assert(built_deep["nodes"].size() == vis_deep.size()
+		and dt.deepest_owned(chain40, 1) == 40,
+		"215-3: a ring-40 fabricated chain draws the full visible band")
+	# --- 4. Detail content.
+	var d_pur: Dictionary = cv.detail_for(fix_mid,
+		dt.pack_id(1, 3, 0), abils)
+	_assert(str(d_pur["state"]) == "purchasable"
+		and int(d_pur["wallet_after"]) == int(
+			d_pur["wallet"]) - int(d_pur["cost"])
+		and str(d_pur["afford_line"]) == "Affordable",
+		"215-4: purchasable detail carries cost, wallet-after, affordability")
+	var fix_lock = _dt_ui_fixture([], {"fireball": 500.0},
+		sig_fire, 30)
+	var d_lock: Dictionary = cv.detail_for(fix_lock,
+		dt.pack_id(1, 2, 0), abils)
+	var lock_marks := true
+	for p in d_lock["parents"]:
+		if bool(p["owned"]):
+			lock_marks = false
+	_assert(str(d_lock["state"]) == "locked"
+		and str(d_lock["parents_heading"]) == "Requires any one of:"
+		and str(d_lock["reason_line"]) != ""
+		and lock_marks,
+		"215-4: a locked node explains itself (OR heading, unmet parents, reason)")
+	var d_own: Dictionary = cv.detail_for(fix_mid,
+		dt.pack_id(1, 1, 0), abils)
+	_assert(str(d_own["state"]) == "owned",
+		"215-4: an owned node's detail states owned")
+	# Behavior whole-text: scan the deep band for one.
+	var beh_id := -1
+	for e in vis_deep:
+		if str(e["archetype"]) == "behavior":
+			beh_id = int(e["id"])
+			break
+	_assert(beh_id > 0,
+		"215-4: the deep band contains a behavior node")
+	if beh_id > 0:
+		var d_beh: Dictionary = cv.detail_for(fix_deep,
+			beh_id, abils)
+		var bn: Dictionary = dt.node_for(seed, "mage",
+			dt.id_branch(beh_id), dt.id_ring(beh_id),
+			dt.id_index(beh_id))
+		_assert(str(d_beh["effect_lines"][0]) == str(
+			bn["desc"]),
+			"215-4: a behavior node shows its authored text whole")
+	# Composed: components listed individually.
+	var comp_id := -1
+	for e in vis_deep:
+		var pp: Dictionary = e.get("params", {})
+		if pp.has("components") and (pp["components"]
+				as Array).size() > 1:
+			comp_id = int(e["id"])
+			break
+	_assert(comp_id > 0,
+		"215-4: the deep band contains a composed modifier")
+	if comp_id > 0:
+		var d_comp: Dictionary = cv.detail_for(
+			fix_deep, comp_id, abils)
+		var cn: Dictionary = dt.node_for(seed, "mage",
+			dt.id_branch(comp_id), dt.id_ring(comp_id),
+			dt.id_index(comp_id))
+		_assert(d_comp["effect_lines"].size() == 1
+			+ (cn["params"]["components"] as
+				Array).size(),
+			"215-4: a composed modifier lists its components individually")
+	# Clamped before/after: grow an owned set of fire
+	# dmg_pct nodes until one crosses the 1.60 clamp.
+	var grow_owned: Array = []
+	var cross_node := -1
+	var dmg_nodes: Array = []
+	for r in range(1, 201):
+		for i in dt.width(seed, 1, r):
+			var nn: Dictionary = dt.node_for(seed, "mage", 1, r, i)
+			if str(nn["target"]) != "fireball":
+				continue
+			var has_d := false
+			for comp in (nn["params"] as Dictionary
+					).get("components", []):
+				if str(comp.get("param", "")) == \
+						"dmg_pct":
+					has_d = true
+			if has_d:
+				dmg_nodes.append(int(nn["id"]))
+	dmg_nodes.sort()
+	for nid in dmg_nodes:
+		var agg_b2: Dictionary = dt.compute_aggregates(seed,
+			"mage", grow_owned)
+		var with_n: Array = grow_owned.duplicate()
+		with_n.append(nid)
+		var agg_a2: Dictionary = dt.compute_aggregates(seed,
+			"mage", with_n)
+		var mb2 := float((agg_b2["skill_mods"] as
+			Dictionary).get("fireball", {}).get(
+				"dmg_mult", 1.0))
+		var ma2 := float((agg_a2["skill_mods"] as
+			Dictionary).get("fireball", {}).get(
+				"dmg_mult", 1.0))
+		if mb2 < 1.60 and is_equal_approx(ma2, 1.60):
+			cross_node = nid
+			break
+		grow_owned.append(nid)
+	_assert(cross_node > 0,
+		"215-4: a clamp-crossing fire node exists in generation")
+	if cross_node > 0:
+		var fix_sat = _dt_ui_fixture(grow_owned,
+			{"fireball": 9000.0}, sig_fire, 30)
+		var d_sat: Dictionary = cv.detail_for(fix_sat,
+			cross_node, abils)
+		var joined := " ".join(d_sat["diff_lines"])
+		_assert(joined.contains("x1.60"),
+			"215-4: a saturating node's after value is the clamp (x1.60)")
+	# --- 5. Branch + core detail.
+	var d_br: Dictionary = cv.branch_detail_for(
+		fix_lock, 2)
+	_assert(not bool(d_br["unlocked"])
+		and str(d_br["requirement"]).contains(
+			"signature")
+		and int(d_br["wallet"]) == dt.wallet(fix_lock,
+			2),
+		"215-5: locked frost detail states the signature requirement + real wallet")
+	var fix_arch = _dt_ui_fixture([],
+		{"hammer_smash": 40.0}, {}, 12, "architect")
+	var d_arch: Dictionary = cv.branch_detail_for(
+		fix_arch, 8)
+	_assert(str(d_arch["requirement"]).contains(
+		"40 / 100"),
+		"215-5: architect detail shows best lifetime progress (40 / 100)")
+	var d_uni: Dictionary = cv.branch_detail_for(
+		_dt_ui_fixture([], {}, {}, 7), 0)
+	_assert(str(d_uni["requirement"]).contains(
+		"currently 7"),
+		"215-5: universal detail shows the level progress")
+	var d_core: Dictionary = cv.core_detail_for(fix_mid)
+	_assert(int(d_core["total_owned"]) == 2
+		and (d_core["branches"] as Array).size() == 4,
+		"215-5: core overview totals owned + lists every branch")
+	# --- 7. Search + path (group 6 is below, needs
+	# live fixtures).
+	var built_search: Dictionary = cv.build_entries(
+		fix_deep)
+	var first_node: Dictionary = built_search[
+		"nodes"][0]
+	var word := str(first_node["name"]).split(" ")[0]
+	var hits: Array = cv.search_matches(built_search,
+		abils, word)
+	_assert(hits.has(int(first_node["id"])),
+		"215-7: search finds a drawn node by name")
+	var hits_ab: Array = cv.search_matches(
+		built_search, abils, "Fireball")
+	var ab_ok := not hits_ab.is_empty()
+	for h in hits_ab:
+		if int(h) <= 0:
+			ab_ok = false
+			continue
+		var hn: Dictionary = dt.node_for(seed, "mage",
+			dt.id_branch(int(h)), dt.id_ring(int(h)),
+			dt.id_index(int(h)))
+		if str(hn["target"]) != "fireball" and str(
+				hn["name"]).to_lower().find(
+					"fireball") < 0 and str(
+					hn["desc"]).to_lower().find(
+						"fireball") < 0:
+			ab_ok = false
+	_assert(ab_ok,
+		"215-7: ability search returns only matching drawn nodes")
+	# Path with an OR choice + the bridge case: fire
+	# spine owned to 7, frost to 5; target frost 8/0.
+	var own_path: Array = []
+	for r in range(1, 8):
+		own_path.append(dt.pack_id(1, r, 0))
+	for r in range(1, 7):
+		own_path.append(dt.pack_id(2, r, 0))
+	var fix_path = _dt_ui_fixture(own_path,
+		{"fireball": 9000.0, "frost": 9000.0},
+		{"fire": {"signature": true},
+			"frost": {"signature": true}}, 30)
+	var built_path: Dictionary = cv.build_entries(
+		fix_path)
+	var drawn_ids: Array = []
+	for e in built_path["nodes"]:
+		drawn_ids.append(int(e["id"]))
+	var target: int = dt.pack_id(2, 8, 0)
+	var path: Dictionary = cv.path_to(fix_path, target,
+		drawn_ids)
+	var cost_spine := int(dt.node_for(seed, "mage", 2,
+		7, 0)["cost"])
+	var cost_bridge := int(dt.node_for(seed, "mage", 1,
+		8, 0)["cost"])
+	var expected_min := mini(cost_spine, cost_bridge) \
+		+ int(dt.node_for(seed, "mage", 2, 8,
+			0)["cost"])
+	_assert(int(path.get("cost", -1)) == expected_min,
+		"215-7: path returns the minimum-cost route (OR parents)")
+	if cost_bridge < cost_spine:
+		_assert(path.has("chain") and (path["chain"]
+			as Array).has(dt.pack_id(1, 8, 0)),
+			"215-7: the bridge parent is the cheaper route and the chain uses it")
+	# --- 8. Pad chooser.
+	var focusables: Array = []
+	var pmap := {}
+	for e in built_path["nodes"]:
+		focusables.append({"id": int(e["id"]),
+			"pos": e["pos"], "branch": int(e["branch"]),
+			"ring": int(e["ring"])})
+		var ps: Array = []
+		for pp in dt.parent_of(seed, "mage",
+				int(e["id"])):
+			ps.append(int(pp))
+		pmap[int(e["id"])] = ps
+	focusables.append({"id": 0, "pos": Vector2.ZERO})
+	var f_r1: int = dt.pack_id(1, 1, 0)
+	var to_core: int = cv.choose_neighbor(focusables, pmap,
+		f_r1, Vector2.RIGHT)
+	_assert(to_core == 0,
+		"215-8: chooser walks from fire ring 1 toward the core (parent)")
+	var core_down: int = cv.choose_neighbor(focusables,
+		pmap, 0, Vector2.DOWN)
+	var exp_down := -1
+	var exp_dot := 0.35
+	for f in focusables:
+		var fv: Vector2 = f["pos"]
+		if fv.length() < 1.0:
+			continue
+		var dd := Vector2.DOWN.dot(fv.normalized())
+		if dd > exp_dot:
+			exp_dot = dd
+			exp_down = int(f["id"])
+	_assert(core_down == exp_down and core_down > 0
+		and dt.id_branch(core_down) == 0,
+		"215-8: chooser from the core picks the best-aligned candidate (the wayfaring spine)")
+	# --- 9. InputMap values (the #196 rule).
+	var evs := InputMap.action_get_events(
+		"deep_tree_open")
+	var key_ok := evs.size() == 1 \
+		and evs[0] is InputEventKey \
+		and int((evs[0] as InputEventKey
+			).physical_keycode) == 78
+	_assert(key_ok,
+		"215-9: deep_tree_open is bound to exactly KEY_N (physical 78)")
+	# --- 6. Purchase + denial (live fixtures).
+	var pl = load("res://scenes/player/player.tscn"
+		).instantiate()
+	pl.class_id = "mage"
+	hold.add_child(pl)
+	pl.set("family_collection", sig_fire)
+	pl.set("tree_lifetime", {"fireball": 500.0})
+	pl.set("tree_owned", [])
+	pl.set("level", 30)
+	var buy_id: int = dt.pack_id(1, 1, 0)
+	var cost_buy := int(dt.node_for(seed, "mage", 1, 1,
+		0)["cost"])
+	var wallet_before: int = dt.wallet(pl, 1)
+	var canvas6 = cv.new()
+	hold.add_child(canvas6)
+	canvas6.open_for(pl, abils)
+	canvas6.call("_select", buy_id)
+	_assert(canvas6.get("_buy_btn") != null
+		and not bool(canvas6.get("_buy_btn").get(
+			"disabled")),
+		"215-6: the panel offers an enabled Buy for a purchasable node")
+	canvas6.call("_on_buy_pressed")
+	_assert((pl.get("tree_owned") as Array).has(buy_id)
+		and dt.wallet(pl, 1) == wallet_before - cost_buy,
+		"215-6: panel Buy drives try_purchase; the wallet drops by the cost")
+	var ent6: Dictionary = (canvas6.get("_built")[
+		"by_id"] as Dictionary).get(buy_id, {})
+	_assert(str(ent6.get("state", "")) == "owned",
+		"215-6: after the refresh the entry shows owned")
+	# Denial: drive the factored hud receiver directly
+	# (the #135 discipline) + the forwarding source pin.
+	var hud6 = load("res://scenes/ui/hud.tscn"
+		).instantiate()
+	hold.add_child(hud6)
+	hud6.set("_tree_surface", canvas6)
+	hud6.tree_denial_received(buy_id, "insufficient")
+	_assert(str(canvas6.get("_denial")) == "insufficient",
+		"215-6: the hud receiver forwards the denial to the surface verbatim")
+	var denial_shown := false
+	var stack: Array = [canvas6.get("_panel_box")]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		if n is Label and str((n as Label).text) == \
+				"insufficient":
+			denial_shown = true
+		for c in n.get_children():
+			stack.append(c)
+	_assert(denial_shown,
+		"215-6: the panel renders the denial line")
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	var dh := psrc.find("func tree_purchase_denied")
+	_assert(dh >= 0 and psrc.substr(dh, 1200).contains(
+		"tree_denial_received"),
+		"215-6: the denial handler forwards to the hud receiver (source pin)")
+	canvas6.queue_free()
+	hud6.queue_free()
+	pl.queue_free()
+	# --- 11. Fog discipline.
+	var fog: Array = cv.fog_entries(fix_deep)
+	var fog_fire := 0
+	var fog_keys_ok := true
+	for f in fog:
+		if int(f["branch"]) == 1:
+			fog_fire += 1
+		for k in f.keys():
+			if not ["pos", "branch", "ring"].has(k):
+				fog_keys_ok = false
+	_assert(fog_fire == dt.width(seed, 1, 43) + dt.width(
+		seed, 1, 44),
+		"215-11: fire fog covers exactly rings deepest+3/+4")
+	_assert(fog_keys_ok,
+		"215-11: fog entries carry no id, name, cost, state, or archetype")
+	var fog_frost := 0
+	for f in fog:
+		if int(f["branch"]) == 2:
+			fog_frost += 1
+	_assert(fog_frost == 0,
+		"215-11: locked branches draw no fog")
+	current_scene = null
+	hold.queue_free()
+	print("[Playtest] Deep Tree UI test done.")
 
 
 func _b5_goblin(hold: Node, pos: Vector3) -> Node:

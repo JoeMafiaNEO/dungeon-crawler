@@ -1554,6 +1554,13 @@ func tree_purchase_denied(node_id: int, reason: String) -> void:
 	# the denial is surfaced for the inspector/HUD only.
 	print("[DeepTree] purchase denied node=%d reason=%s"
 		% [node_id, reason])
+	# Issue #215 (node-UI spec 5.3): forward the denial
+	# to the HUD, whose canvas surface shows the reason
+	# verbatim. Guarded; nothing else about this handler
+	# changes.
+	if hud != null and hud.has_method(
+			"tree_denial_received"):
+		hud.tree_denial_received(node_id, reason)
 
 
 # --- Co-op ping ---
