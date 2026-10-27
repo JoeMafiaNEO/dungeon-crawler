@@ -136,6 +136,7 @@ func _run() -> void:
 	_test_atk_spd_retune_192()
 	_test_menu_pad_191()
 	_test_pad_input_193()
+	_test_voice_chat_196()
 	_test_health_bar_depth_195()
 	_test_world_gen_197()
 	_test_building_variety_200()
@@ -17669,7 +17670,9 @@ func _test_input_vocabulary_144() -> void:
 	# Issue #215: the count rises 30 -> 31 - the spec's
 	# ruled direct-open action (deep_tree_open, node-UI
 	# spec 7.1/9.2) is a new verb, counted in daylight.
-	_assert(custom == 31, "144: exactly 31 project actions (27 verbs + 4 look)")
+	# The 2026-10-27 fold adds #196's two voice actions
+	# on top: 31 -> 33, both additions counted.
+	_assert(custom == 33, "144: exactly 33 project actions (29 verbs + 4 look; deep_tree_open #215 + 2 voice actions #196)")
 	_assert(InputMap.has_action("ui_accept") and not InputMap.action_get_events("ui_accept").is_empty(),
 		"144: built-in ui actions intact")
 	# Byte-for-byte spot check: the raw poll the game used to read and
@@ -22952,6 +22955,391 @@ class _FakeBackend193:
 	func glyph_for_origin(_o: int) -> String: return ""
 	func string_for_origin(o: int) -> String: return "origin_%d" % o
 	func show_binding_panel(_c: int) -> bool: return true
+
+
+## Issue #196 fake capture backend: scripted blobs in, scripted PCM
+## out; records starts/stops/speaking brackets for the gating pins.
+class _FakeVoiceBackend196:
+	extends RefCounted
+	var avail := true
+	var ready := true
+	var start_calls := 0
+	var stop_calls := 0
+	var speaking_log: Array = []
+	var scripted_blobs: Array = []
+	var pcm_by_blob := {}
+	var rate := 48000
+	func available() -> bool: return avail
+	func session_ready() -> bool: return ready
+	func start_capture() -> bool:
+		start_calls += 1
+		return true
+	func stop_capture() -> void: stop_calls += 1
+	func poll_capture() -> Array:
+		var out := scripted_blobs.duplicate()
+		scripted_blobs.clear()
+		return out
+	func decompress(blob: PackedByteArray) -> Dictionary:
+		var key := blob.hex_encode()
+		if pcm_by_blob.has(key):
+			return {"pcm": pcm_by_blob[key], "rate": rate}
+		return {"pcm": PackedByteArray(), "rate": rate}
+	func set_speaking(b: bool) -> void: speaking_log.append(b)
+	func output_rate() -> int: return rate
+
+
+## Issue #196 RTS fixture: carries the faction map the audibility
+## resolver reads, without standing up a real RTSManager.
+class _RtsFixture196:
+	extends Node
+	var faction_peers := {}
+
+
+## Issue #196 (Phase A): spatial voice chat on the fake-backend seam —
+## packet routing + sequence discipline, gap silence accounting, mute/
+## volume application, PTT/VA gating, settings persistence, solo
+## inertness, the PROVISIONAL §4 audibility rule on fixtures, and the
+## lobby/world rig shapes. Live audio is hardware-held by design.
+func _test_voice_chat_196() -> void:
+	print("[Playtest] Voice chat Phase A (issue #196)...")
+	# Profile backup: this section drives profile-writing setters.
+	var prof_path := "user://profile_local.cfg"
+	var prof_bytes := FileAccess.get_file_as_bytes(prof_path) \
+		if FileAccess.file_exists(prof_path) else PackedByteArray()
+	var holder := Node3D.new()
+	holder.name = "Voice196Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var VM = load("res://scripts/autoload/voice_manager.gd")
+	var IS = root.get_node("InputSource")
+	var prior_source: int = IS.call("current_source")
+	var mk_pcm := func(frames: int, val: int) -> PackedByteArray:
+		var b := PackedByteArray()
+		b.resize(frames * 2)
+		for i in frames:
+			b[2 * i] = val & 0xFF
+			b[2 * i + 1] = (val >> 8) & 0xFF
+		return b
+	var mk_packet := func(seq: int, blob: PackedByteArray) -> PackedByteArray:
+		var p := PackedByteArray()
+		p.resize(2 + blob.size())
+		p[0] = seq & 0xFF
+		p[1] = (seq >> 8) & 0xFF
+		for i in blob.size():
+			p[2 + i] = blob[i]
+		return p
+	var mk_vm := func(fake: RefCounted) -> Node:
+		var vm = VM.new()
+		holder.add_child(vm)
+		vm.call("set_backend", fake)
+		return vm
+	# ---------- pure functions ----------
+	var probe = mk_vm.call(_FakeVoiceBackend196.new())
+	var pa := PackedByteArray([1, 2, 3])
+	var pb := PackedByteArray([9, 9])
+	_assert(VM.extract_payload({"voice_data": pa, "other": pb}) == pa,
+		"196: extract_payload prefers the voice_data key")
+	_assert(VM.extract_payload({"other": pb}) == pb,
+		"196: extract_payload falls back to the first byte-array value")
+	_assert(VM.extract_payload({}).is_empty(),
+		"196: extract_payload of an empty Dictionary is empty")
+	_assert(VM.extract_rate({"sample_rate": 24000}, 48000) == 24000,
+		"196: extract_rate reads sample_rate")
+	_assert(VM.extract_rate({}, 48000) == 48000,
+		"196: extract_rate falls back when sample_rate is absent")
+	# The actions' ACTUAL bound events (gate catch: button_index 5
+	# is MOUSE wheel-down, XBUTTON1 is 8 — the gating pins below
+	# drive the actions programmatically and can never see a
+	# binding-value regression, so it is pinned here).
+	var ptt_mouse := -1
+	var ptt_key := -1
+	for ev in InputMap.action_get_events("voice_ptt"):
+		if ev is InputEventMouseButton:
+			ptt_mouse = int((ev as InputEventMouseButton).button_index)
+		elif ev is InputEventKey:
+			ptt_key = int((ev as InputEventKey).physical_keycode)
+	_assert(ptt_mouse == 8,
+		"196: voice_ptt binds mouse XBUTTON1 (index 8), not the wheel")
+	_assert(ptt_key == 67, "196: voice_ptt binds key C (physical 67)")
+	var mute_key := -1
+	for ev in InputMap.action_get_events("voice_mute"):
+		if ev is InputEventKey:
+			mute_key = int((ev as InputEventKey).physical_keycode)
+	_assert(mute_key == 77, "196: voice_mute binds key M (physical 77)")
+	# Relation literals: PARTY = 0, ENEMY = 1 (the manager's enum).
+	_assert(VM.audibility_for(3, 0, 100.0) == 1.0,
+		"196: audibility (iii) — party audible at any distance")
+	_assert(VM.audibility_for(3, 1, 5.0) == 0.5,
+		"196: audibility (iii) PROVISIONAL — enemy inside 8 m is ducked")
+	_assert(VM.audibility_for(3, 1, 20.0) == 0.0,
+		"196: audibility (iii) PROVISIONAL — enemy beyond 8 m is silent")
+	_assert(VM.audibility_for(1, 1, 20.0) == 1.0,
+		"196: audibility (i) — open proximity hears enemies")
+	_assert(VM.audibility_for(2, 1, 5.0) == 0.0,
+		"196: audibility (ii) — faction-private silences enemies")
+	_assert(VM.audibility_for(2, 0, 5.0) == 1.0,
+		"196: audibility (ii) — party still audible")
+	_assert(VM._pcm_level_db(mk_pcm.call(480, 30000)) > -3.0,
+		"196: PCM level of a loud signal reads near 0 dB")
+	_assert(VM._pcm_level_db(mk_pcm.call(480, 0)) < -100.0,
+		"196: PCM level of silence reads as silence")
+	_assert(VM._pcm_to_frames(mk_pcm.call(2, 16384)).size() == 2,
+		"196: PCM16 converts frame-per-sample")
+	probe.free()
+	# ---------- solo / session-less inertness ----------
+	var fake0 := _FakeVoiceBackend196.new()
+	var vm0 = mk_vm.call(fake0)
+	vm0.set("transmit_enabled", true)
+	vm0.call("_housekeeping")
+	vm0.call("_capture_tick", 0.016)
+	_assert(fake0.start_calls == 0,
+		"196: no session — the capture backend never starts (inert)")
+	_assert(vm0.call("get_rig_state", 77).is_empty(),
+		"196: no session — no speaker rigs exist")
+	vm0.call("_handle_voice_packet", 77, mk_packet.call(0, PackedByteArray([7, 7, 7])))
+	_assert(vm0.call("get_rig_state", 77).is_empty(),
+		"196: a packet with no session is discarded, no rig appears")
+	vm0.free()
+	# ---------- receive: routing, sequence, gaps, mute, rate cap ----
+	var fake1 := _FakeVoiceBackend196.new()
+	var blob_a := PackedByteArray([11, 12, 13, 14])
+	var blob_b := PackedByteArray([21, 22, 23, 24])
+	fake1.pcm_by_blob[blob_a.hex_encode()] = mk_pcm.call(4800, 12000)
+	fake1.pcm_by_blob[blob_b.hex_encode()] = mk_pcm.call(2400, 12000)
+	var vm1 = mk_vm.call(fake1)
+	vm1.call("debug_set_session", [77, 78], "world", 99)
+	var st: Dictionary = vm1.call("get_rig_state", 77)
+	_assert(not st.is_empty() and bool(st["spatial"]),
+		"196: a world session builds a SPATIAL rig per remote peer")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(0, blob_a))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["queued_frames"]) == 4800 and int(st["last_seq"]) == 0,
+		"196: a received packet decodes into ITS speaker's rig only")
+	_assert(int(vm1.call("get_rig_state", 78)["queued_frames"]) == 0,
+		"196: the other peer's rig stays empty (routing is per-peer)")
+	vm1.call("_feed_rigs")
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["frames_fed"]) == 4800 and bool(st["primed"]),
+		"196: the jitter buffer primes at 100 ms and feeds the generator")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(2, blob_b))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["silence_frames"]) == 4800,
+		"196: a one-step sequence gap inserts one packet of silence")
+	_assert(int(st["queued_frames"]) == 4800 + 2400,
+		"196: the gap packet's audio queues AFTER the inserted silence")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(2, blob_b))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["queued_frames"]) == 7200,
+		"196: a duplicate packet is dropped, never played twice")
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(1, blob_b))
+	_assert(int(vm1.call("get_rig_state", 77)["queued_frames"]) == 7200,
+		"196: a stale (late) packet is dropped, never played late")
+	vm1.call("set_peer_muted", 77, true)
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(3, blob_b))
+	st = vm1.call("get_rig_state", 77)
+	_assert(int(st["last_seq"]) == 2 and int(st["queued_frames"]) == 7200,
+		"196: a muted peer's packet drops PRE-DECODE (sequence untouched)")
+	vm1.call("set_peer_muted", 77, false)
+	vm1.call("_handle_voice_packet", 99, mk_packet.call(0, blob_a))
+	_assert(vm1.call("get_rig_state", 99).is_empty(),
+		"196: the local player's own voice is never played back")
+	# Rate cap on a fresh peer: 40 packets land, the 41st drops.
+	for i in range(40):
+		vm1.call("_handle_voice_packet", 78, mk_packet.call(100 + i, blob_b))
+	vm1.call("_handle_voice_packet", 78, mk_packet.call(140, blob_b))
+	_assert(int(vm1.call("get_rig_state", 78)["last_seq"]) == 139,
+		"196: the per-sender rate cap drops a flood packet")
+	# ---------- §4 live resolver (fixtures) --------------------------
+	var displaced: Array = []
+	for n in get_nodes_in_group("rts_manager"):
+		n.remove_from_group("rts_manager")
+		displaced.append(n)
+	var rts_fix := _RtsFixture196.new()
+	rts_fix.name = "RtsFixture196"
+	rts_fix.faction_peers = {1: 99, 2: 77}
+	holder.add_child(rts_fix)
+	rts_fix.add_to_group("rts_manager")
+	var me_fix := Node3D.new()
+	me_fix.set_multiplayer_authority(99)
+	holder.add_child(me_fix)
+	me_fix.global_position = Vector3.ZERO
+	me_fix.add_to_group("players")
+	var foe_fix := Node3D.new()
+	foe_fix.set_multiplayer_authority(77)
+	holder.add_child(foe_fix)
+	foe_fix.global_position = Vector3(5, 0, 0)
+	foe_fix.add_to_group("players")
+	_assert(is_equal_approx(float(vm1.call("_audibility_gain", 77)), 0.5),
+		"196: live resolver — an enemy 5 m away is ducked (provisional iii)")
+	foe_fix.global_position = Vector3(20, 0, 0)
+	_assert(float(vm1.call("_audibility_gain", 77)) == 0.0,
+		"196: live resolver — an enemy 20 m away is inaudible")
+	var q_before := int(vm1.call("get_rig_state", 77)["queued_frames"])
+	vm1.call("_handle_voice_packet", 77, mk_packet.call(3, blob_b))
+	_assert(int(vm1.call("get_rig_state", 77)["queued_frames"]) == q_before,
+		"196: an inaudible enemy's packet drops at receipt")
+	me_fix.remove_from_group("players")
+	foe_fix.remove_from_group("players")
+	me_fix.free()
+	foe_fix.free()
+	rts_fix.remove_from_group("rts_manager")
+	rts_fix.free()
+	for n in displaced:
+		n.add_to_group("rts_manager")
+	# ---------- lobby rigs are flat; context flip flushes ------------
+	vm1.call("debug_set_session", [77], "lobby", 99)
+	st = vm1.call("get_rig_state", 77)
+	_assert(not st.is_empty() and not bool(st["spatial"]),
+		"196: the lobby builds FLAT rigs (no player nodes there)")
+	_assert(int(st["last_seq"]) == -1 and int(st["queued_frames"]) == 0,
+		"196: a scene-context flip rebuilds rigs with buffers flushed")
+	vm1.call("debug_end_session")
+	vm1.free()
+	# ---------- send path: PTT gating + the 512 B / 50 ms cadence ----
+	var fake2 := _FakeVoiceBackend196.new()
+	var vm2 = mk_vm.call(fake2)
+	vm2.call("debug_set_session", [77], "world", 99)
+	vm2.call("set_transmit_enabled", true)
+	vm2.call("set_mode", "ptt")
+	var sent: Array = []
+	vm2.connect("packet_broadcast", func(d: PackedByteArray) -> void: sent.append(d))
+	var big := PackedByteArray()
+	big.resize(600)
+	for i in 600:
+		big[i] = 5
+	fake2.scripted_blobs = [big]
+	Input.action_press("voice_ptt")
+	vm2.call("_capture_tick", 0.016)
+	_assert(fake2.start_calls == 1,
+		"196: PTT held starts capture exactly once")
+	_assert(sent.size() == 1 and int(sent[0][0]) == 0 and int(sent[0][1]) == 0
+		and sent[0].slice(2) == big,
+		"196: a >=512 B drain flushes at once, seq 0, payload intact")
+	_assert(fake2.speaking_log == [true],
+		"196: setInGameVoiceSpeaking brackets the transmission (on)")
+	var small := PackedByteArray([3, 3, 3])
+	small.resize(100)
+	fake2.scripted_blobs = [small]
+	vm2.call("_capture_tick", 0.016)
+	_assert(sent.size() == 1,
+		"196: a small drain waits (under 512 B and under 50 ms)")
+	vm2.call("_capture_tick", 0.04)
+	_assert(sent.size() == 2 and int(sent[1][0]) == 1,
+		"196: the 50 ms wait flushes the small packet with the next seq")
+	Input.action_release("voice_ptt")
+	vm2.call("_capture_tick", 0.016)
+	_assert(fake2.stop_calls == 1 and fake2.speaking_log == [true, false],
+		"196: PTT released stops capture and closes the speaking bracket")
+	vm2.call("debug_end_session")
+	vm2.free()
+	# ---------- send path: VA gating on scripted levels --------------
+	var fake3 := _FakeVoiceBackend196.new()
+	var loud := PackedByteArray([31, 32, 33])
+	var quiet := PackedByteArray([41, 42, 43])
+	fake3.pcm_by_blob[loud.hex_encode()] = mk_pcm.call(480, 30000)
+	fake3.pcm_by_blob[quiet.hex_encode()] = mk_pcm.call(480, 0)
+	var vm3 = mk_vm.call(fake3)
+	vm3.call("debug_set_session", [77], "world", 99)
+	vm3.call("set_transmit_enabled", true)
+	vm3.call("set_mode", "va")
+	vm3.call("set_va_threshold_db", -40.0)
+	var sent3: Array = []
+	vm3.connect("packet_broadcast", func(d: PackedByteArray) -> void: sent3.append(d))
+	fake3.scripted_blobs = [quiet]
+	vm3.call("_capture_tick", 0.016)
+	_assert(fake3.start_calls == 1 and sent3.is_empty(),
+		"196: VA captures to meter, but silence sends nothing")
+	fake3.scripted_blobs = [loud]
+	vm3.call("_capture_tick", 0.06)
+	_assert(sent3.size() == 1 and fake3.speaking_log == [true],
+		"196: VA above the threshold opens the gate and sends")
+	fake3.scripted_blobs = [quiet]
+	vm3.call("_capture_tick", 0.05)
+	_assert(sent3.size() == 2,
+		"196: the 250 ms hangover keeps the gate open across a syllable gap")
+	vm3.call("_capture_tick", 0.30)
+	_assert(fake3.speaking_log == [true, false],
+		"196: after the hangover the gate closes (speaking bracket off)")
+	# Auto resolution per input source.
+	vm3.call("set_mode", "auto")
+	IS.call("set_source", 1) # PAD
+	_assert(str(vm3.call("effective_mode")) == "va",
+		"196: Auto resolves to VA on pad (no free pad button)")
+	IS.call("set_source", 0) # KB_MOUSE
+	_assert(str(vm3.call("effective_mode")) == "ptt",
+		"196: Auto resolves to PTT on keyboard/mouse")
+	vm3.call("debug_end_session")
+	vm3.free()
+	# ---------- persistence round-trips ------------------------------
+	var fake4 := _FakeVoiceBackend196.new()
+	var vm4 = mk_vm.call(fake4)
+	vm4.call("set_transmit_enabled", true)
+	vm4.call("set_mode", "va")
+	vm4.call("set_va_threshold_db", -30.0)
+	vm4.call("set_mic_muted", true)
+	vm4.call("set_peer_volume", 77, 0.5)
+	vm4.call("set_peer_muted", 78, true)
+	var SM = root.get_node("SaveManager")
+	_assert(bool(SM.call("get_profile_setting", "voice", "transmit_enabled", false))
+		and str(SM.call("get_profile_setting", "voice", "mode", "")) == "va"
+		and is_equal_approx(float(SM.call("get_profile_setting", "voice", "va_threshold_db", 0.0)), -30.0)
+		and bool(SM.call("get_profile_setting", "voice", "mic_muted", false)),
+		"196: voice settings persist to the profile voice section")
+	var vm5 = mk_vm.call(_FakeVoiceBackend196.new())
+	vm5.call("_load_settings")
+	vm5.call("_load_peer_settings")
+	_assert(bool(vm5.get("transmit_enabled")) and str(vm5.get("mode")) == "va"
+		and is_equal_approx(float(vm5.get("va_threshold_db")), -30.0)
+		and bool(vm5.get("mic_muted")),
+		"196: a fresh manager loads the persisted voice settings")
+	_assert(is_equal_approx(float(vm5.call("peer_volume", 77)), 0.5)
+		and bool(vm5.call("is_peer_muted", 78)),
+		"196: per-player volume + mute persist across managers")
+	vm5.free()
+	vm4.free()
+	var AM = root.get_node("AudioManager")
+	AM.call("set_voice_vol", 0.4)
+	_assert(is_equal_approx(float(SM.call("get_profile_setting", "settings", "voice_vol", 1.0)), 0.4),
+		"196: voice playback volume persists beside Music/SFX")
+	_assert(absf(AudioServer.get_bus_volume_db(AudioServer.get_bus_index("Voice"))
+		- linear_to_db(0.4)) < 0.1,
+		"196: the Voice bus volume applies the playback setting")
+	AM.call("set_voice_vol", 1.0)
+	# Mic failure surface: an unavailable backend reports, never loops.
+	var fake6 := _FakeVoiceBackend196.new()
+	fake6.avail = false
+	var vm6 = mk_vm.call(fake6)
+	_assert(str(vm6.call("mic_status_text")).begins_with("Microphone unavailable"),
+		"196: mic failure surfaces as settings text (reception unaffected)")
+	vm6.call("debug_set_session", [77], "world", 99)
+	vm6.call("set_transmit_enabled", true)
+	vm6.call("_capture_tick", 0.016)
+	_assert(fake6.start_calls == 0,
+		"196: an unavailable mic never starts and never retry-loops")
+	vm6.call("debug_end_session")
+	vm6.free()
+	# ---------- settings surface rows exist --------------------------
+	var mm = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(mm)
+	_assert(mm.get("_voice_transmit_tog") != null
+		and mm.get("_voice_mode_opt") != null
+		and int(mm.get("_voice_mode_opt").call("get_item_count")) == 3
+		and mm.get("_voice_status_label") != null,
+		"196: the settings panel carries the voice rows (transmit/mode/status)")
+	var so: Control = mm.get("_settings_overlay")
+	_assert(so != null and so.find_child("Val_voice_vol", true, false) != null,
+		"196: a Voice slider joins the settings volume family")
+	mm.queue_free()
+	# ---------- restore ----------
+	IS.call("set_source", prior_source)
+	if prof_bytes.size() > 0:
+		var f := FileAccess.open(prof_path, FileAccess.WRITE)
+		if f != null:
+			f.store_buffer(prof_bytes)
+			f.close()
+		SM.call("load_game")
+	holder.queue_free()
+	print("[Playtest] Voice chat test done.")
 
 
 func _test_menu_pad_191() -> void:

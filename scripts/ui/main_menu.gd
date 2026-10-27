@@ -14,6 +14,11 @@ var _confirm_mode := ""
 var _confirm_slot := 0
 ## Issue #17 settings panel state.
 var _settings_overlay: Control
+## Issue #196: voice settings rows (built with the settings panel).
+var _voice_transmit_tog: CheckButton
+var _voice_mode_opt: OptionButton
+var _voice_thresh_slider: HSlider
+var _voice_status_label: Label
 ## Issue #152: the solo class-choice popup overlay (pad B closes it).
 var _solo_popup: Control = null
 ## Issue #152: the confirm modal's Cancel button (its focus primary —
@@ -2134,7 +2139,7 @@ func _build_settings_panel() -> void:
 	title.add_theme_font_size_override("font_size", 22)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	vb.add_child(title)
-	for spec in [["Master", "master_vol"], ["Music", "music_vol"], ["SFX", "sfx_vol"]]:
+	for spec in [["Master", "master_vol"], ["Music", "music_vol"], ["SFX", "sfx_vol"], ["Voice", "voice_vol"]]:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
 		row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -2244,6 +2249,67 @@ func _build_settings_panel() -> void:
 		tog.toggled.connect(_on_settings_toggle_changed.bind(spec[1]))
 		trow.add_child(tog)
 		vb.add_child(trow)
+	# Issue #196: voice chat rows (Phase A — master settings only;
+	# per-player roster controls are Phase B). Wired straight to the
+	# VoiceManager autoload, which persists + applies.
+	var vtitle := Label.new()
+	vtitle.text = "Voice Chat"
+	vtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vtitle.add_theme_font_size_override("font_size", 18)
+	vtitle.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(vtitle)
+	var vtrow := HBoxContainer.new()
+	vtrow.add_theme_constant_override("separation", 12)
+	vtrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var vtlab := Label.new()
+	vtlab.text = "Transmit"
+	vtlab.custom_minimum_size = Vector2(150, 0)
+	vtrow.add_child(vtlab)
+	_voice_transmit_tog = CheckButton.new()
+	_voice_transmit_tog.toggled.connect(_on_voice_transmit_toggled)
+	vtrow.add_child(_voice_transmit_tog)
+	vb.add_child(vtrow)
+	var vmrow := HBoxContainer.new()
+	vmrow.add_theme_constant_override("separation", 12)
+	vmrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var vmlab := Label.new()
+	vmlab.text = "Mode"
+	vmlab.custom_minimum_size = Vector2(150, 0)
+	vmrow.add_child(vmlab)
+	_voice_mode_opt = OptionButton.new()
+	_voice_mode_opt.add_item("Auto", 0)
+	_voice_mode_opt.add_item("Push-to-talk", 1)
+	_voice_mode_opt.add_item("Voice activation", 2)
+	_voice_mode_opt.item_selected.connect(_on_voice_mode_selected)
+	vmrow.add_child(_voice_mode_opt)
+	vb.add_child(vmrow)
+	var vhrow := HBoxContainer.new()
+	vhrow.add_theme_constant_override("separation", 12)
+	vhrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var vhlab := Label.new()
+	vhlab.text = "Mic threshold"
+	vhlab.custom_minimum_size = Vector2(120, 0)
+	vhrow.add_child(vhlab)
+	_voice_thresh_slider = HSlider.new()
+	_voice_thresh_slider.custom_minimum_size = Vector2(220, 0)
+	_voice_thresh_slider.min_value = -60
+	_voice_thresh_slider.max_value = -10
+	_voice_thresh_slider.step = 1
+	_voice_thresh_slider.value_changed.connect(_on_voice_thresh_changed)
+	vhrow.add_child(_voice_thresh_slider)
+	var vhval := Label.new()
+	vhval.name = "Val_voice_thresh"
+	vhval.custom_minimum_size = Vector2(40, 0)
+	vhrow.add_child(vhval)
+	vb.add_child(vhrow)
+	_voice_status_label = Label.new()
+	_voice_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(_voice_status_label)
+	var vnote := Label.new()
+	vnote.text = "Microphone device: set in Steam / system settings."
+	vnote.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(vnote)
+	_refresh_voice_rows()
 	# Issue #33 Phase 1: language picker. OptionButton with supported locales.
 	# Phase 1 ships English only; es/fr/de are listed for Phase 3 (selecting
 	# them falls back to English until translations land).
@@ -2270,6 +2336,8 @@ func _settings_vol_default(key: String) -> float:
 			return float(SaveManager.get_profile_setting("settings", "music_vol", 0.8)) * 100.0
 		"sfx_vol":
 			return float(SaveManager.get_profile_setting("settings", "sfx_vol", 1.0)) * 100.0
+		"voice_vol":
+			return float(SaveManager.get_profile_setting("settings", "voice_vol", 1.0)) * 100.0
 	return 100.0
 
 
@@ -2304,6 +2372,8 @@ func _on_settings_vol_changed(value: float, key: String) -> void:
 			AudioManager.set_music_vol(v)
 		"sfx_vol":
 			AudioManager.set_sfx_vol(v)
+		"voice_vol":
+			AudioManager.set_voice_vol(v)
 		"fov":
 			SaveManager.set_profile_setting("settings", "fov", float(value))
 		"look_sens":
@@ -2314,6 +2384,52 @@ func _on_settings_vol_changed(value: float, key: String) -> void:
 		var lab := _settings_overlay.find_child("Val_%s" % key, true, false) as Label
 		if lab != null:
 			lab.text = "%d" % int(value)
+
+
+## Issue #196: voice rows — thin wiring to the VoiceManager autoload.
+func _voice_manager() -> Node:
+	return get_node_or_null("/root/VoiceManager")
+
+
+func _refresh_voice_rows() -> void:
+	var vm := _voice_manager()
+	if vm == null:
+		return
+	if _voice_transmit_tog != null:
+		_voice_transmit_tog.set_pressed_no_signal(bool(vm.get("transmit_enabled")))
+	if _voice_mode_opt != null:
+		var modes := ["auto", "ptt", "va"]
+		_voice_mode_opt.select(maxi(modes.find(str(vm.get("mode"))), 0))
+	if _voice_thresh_slider != null:
+		_voice_thresh_slider.set_value_no_signal(float(vm.get("va_threshold_db")))
+		var lab := _settings_overlay.find_child("Val_voice_thresh", true, false) as Label
+		if lab != null:
+			lab.text = "%d" % int(float(vm.get("va_threshold_db")))
+	if _voice_status_label != null:
+		_voice_status_label.text = str(vm.call("mic_status_text"))
+
+
+func _on_voice_transmit_toggled(on: bool) -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		vm.call("set_transmit_enabled", on)
+	_refresh_voice_rows()
+
+
+func _on_voice_mode_selected(idx: int) -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		vm.call("set_mode", ["auto", "ptt", "va"][idx])
+	_refresh_voice_rows()
+
+
+func _on_voice_thresh_changed(value: float) -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		vm.call("set_va_threshold_db", value)
+	var lab := _settings_overlay.find_child("Val_voice_thresh", true, false) as Label
+	if lab != null:
+		lab.text = "%d" % int(value)
 
 
 func _on_settings_toggle_changed(pressed: bool, key: String) -> void:
@@ -2347,6 +2463,7 @@ func _apply_saved_fullscreen() -> void:
 func _on_settings_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	_capture_overlay_return()
+	_refresh_voice_rows()
 	_settings_overlay.visible = true
 	# Issue #152: chain the panel (sliders/toggles ride native focus
 	# behavior — ui_left/right adjust, ui_accept flips).

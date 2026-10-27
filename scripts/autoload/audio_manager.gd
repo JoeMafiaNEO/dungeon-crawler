@@ -26,11 +26,13 @@ var _queued_theme := ""
 var master_vol := 1.0
 var music_vol := 0.8
 var sfx_vol := 1.0
+var voice_vol := 1.0
 
 
 func _ready() -> void:
 	_ensure_bus("Music")
 	_ensure_bus("SFX")
+	_ensure_bus("Voice")
 	for b in ["swing", "hit", "mob_die", "player_hurt", "player_die", "fireball_cast",
 			"explosion", "pickup", "coin", "levelup", "wave_horn", "wave_clear",
 			"shield_clang", "dagger_throw", "dagger_catch",
@@ -115,10 +117,20 @@ func set_sfx_vol(v: float) -> void:
 	_save_volumes()
 
 
+## Voice playback volume (issue #196): rides the same profile
+## family as Music/SFX; the Voice bus carries voice rigs only.
+func set_voice_vol(v: float) -> void:
+	voice_vol = clampf(v, 0.0, 1.0)
+	_apply_volumes()
+	_save_volumes()
+
+
 func _apply_volumes() -> void:
 	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Master"), linear_to_db(maxf(master_vol, 0.001)))
 	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Music"), linear_to_db(maxf(music_vol, 0.001)))
 	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("SFX"), linear_to_db(maxf(sfx_vol, 0.001)))
+	if AudioServer.get_bus_index("Voice") != -1:
+		AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Voice"), linear_to_db(maxf(voice_vol, 0.001)))
 
 
 func _save_volumes() -> void:
@@ -129,12 +141,14 @@ func _save_volumes() -> void:
 		sm.set_profile_setting("settings", "master_vol", master_vol)
 		sm.set_profile_setting("settings", "music_vol", music_vol)
 		sm.set_profile_setting("settings", "sfx_vol", sfx_vol)
+		sm.set_profile_setting("settings", "voice_vol", voice_vol)
 	else:
 		# Fallback to legacy path if SaveManager isn't up yet.
 		var c := ConfigFile.new()
 		c.set_value("vol", "master", master_vol)
 		c.set_value("vol", "music", music_vol)
 		c.set_value("vol", "sfx", sfx_vol)
+		c.set_value("vol", "voice", voice_vol)
 		c.save(CFG_PATH)
 
 
@@ -151,18 +165,21 @@ func _load_volumes() -> void:
 				master_vol = float(c.get_value("vol", "master", 1.0))
 				music_vol = float(c.get_value("vol", "music", 0.8))
 				sfx_vol = float(c.get_value("vol", "sfx", 1.0))
+				voice_vol = float(c.get_value("vol", "voice", 1.0))
 				migrated = true
 	if not migrated and has_node("/root/SaveManager"):
 		var sm2 := get_node("/root/SaveManager")
 		master_vol = float(sm2.get_profile_setting("settings", "master_vol", 1.0))
 		music_vol = float(sm2.get_profile_setting("settings", "music_vol", 0.8))
 		sfx_vol = float(sm2.get_profile_setting("settings", "sfx_vol", 1.0))
+		voice_vol = float(sm2.get_profile_setting("settings", "voice_vol", 1.0))
 	elif not migrated:
 		var c2 := ConfigFile.new()
 		if c2.load(CFG_PATH) == OK:
 			master_vol = float(c2.get_value("vol", "master", 1.0))
 			music_vol = float(c2.get_value("vol", "music", 0.8))
 			sfx_vol = float(c2.get_value("vol", "sfx", 1.0))
+			voice_vol = float(c2.get_value("vol", "voice", 1.0))
 
 
 # --- SFX ---
