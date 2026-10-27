@@ -149,6 +149,7 @@ func _run() -> void:
 	_test_deep_tree_b5_210()
 	_test_deep_tree_ui_215()
 	_test_deep_tree_save_217()
+	_test_chunk_radius_219()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -22187,6 +22188,13 @@ func _test_building_variety_200() -> void:
 
 func _test_world_streamer_198() -> void:
 	print("[Playtest] World streamer winding (issue #198)...")
+	# Issue #219: the ring radius is a player setting now
+	# (default 4); this section's premises are the radius-8
+	# world (item 4 builds a chunk at Chebyshev 5), so set
+	# it explicitly - disclosed retarget, erased at the
+	# section's end.
+	(root.get_node("SaveManager") as Node).call(
+		"set_setting", "world", "load_radius", 8)
 	var holder := Node3D.new()
 	holder.name = "WorldStreamer198Holder"
 	root.add_child(holder)
@@ -22276,6 +22284,10 @@ func _test_world_streamer_198() -> void:
 	_assert(bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
 		"198(4): buildings rematerialize when the chunk is seen again")
 	holder.queue_free()
+	var sm198 = root.get_node("SaveManager")
+	(sm198.get("_settings") as ConfigFile
+		).erase_section_key("world", "load_radius")
+	sm198.call("save_settings")
 	print("[Playtest] World streamer winding test done.")
 
 
@@ -22570,6 +22582,14 @@ func _test_world_gen_197() -> void:
 			"197(A3): >= 2 of the 4 corner chunks contain buildings (got %d)"
 				% with_buildings)
 	# --- pin 7: streamer bookkeeping ----------------------------------
+	# Issue #219: the ring radius is a player setting now
+	# (default 4); these pins' premise is the MAX ring, so
+	# set it explicitly - the same disclosed-retarget
+	# discipline as the #198 widening below. The key is
+	# erased at the end of the section so later sections
+	# see the absent-setting default again.
+	(root.get_node("SaveManager") as Node).call(
+		"set_setting", "world", "load_radius", 8)
 	var Streamer = load("res://scripts/world/world_streamer.gd")
 	var st = Streamer.new()
 	holder.add_child(st)
@@ -22608,6 +22628,10 @@ func _test_world_gen_197() -> void:
 		guard += 1
 	_assert(st.call("active_chunks").size() == 289,
 		"197(7): the new neighborhood builds out to the full set")
+	var sm197 = root.get_node("SaveManager")
+	(sm197.get("_settings") as ConfigFile
+		).erase_section_key("world", "load_radius")
+	sm197.call("save_settings")
 	holder.queue_free()
 	print("[Playtest] Procedural world gen test done.")
 
@@ -27828,6 +27852,111 @@ func _test_deep_tree_save_217() -> void:
 	current_scene = null
 	hold.queue_free()
 	print("[Playtest] Deep Tree save roundtrip done.")
+
+
+## Issue #219: the chunk load distance setting - the
+## roundtrip (set -> settings.cfg -> a FRESH SaveManager
+## instance reads the same value), the absent-setting
+## default (4), the (2r+1)^2 desired set at min/default/
+## max, clamping, and the derived unload ring. The
+## streamer reads the setting at _ready (world init).
+func _test_chunk_radius_219() -> void:
+	print("[Playtest] Chunk load distance (issue #219)...")
+	var Streamer = load(
+		"res://scripts/world/world_streamer.gd")
+	var SaveScript := load(
+		"res://scripts/autoload/save_manager.gd")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	# The autoload, reached dynamically: the suite
+	# script compiles before autoload names register,
+	# and the streamer's _ready reads through THIS
+	# instance - writes must land on it, not on a
+	# SaveScript instance (those read the file fresh,
+	# which is what the roundtrip leg proves with).
+	var SM = root.get_node("SaveManager")
+	current_scene = holder
+	# Start from a provably absent setting.
+	(SM.get("_settings") as ConfigFile).erase_section_key("world",
+		"load_radius")
+	SM.call("save_settings")
+	_assert(int(SM.call("get_setting", "world",
+		"load_radius", 2)) == 2,
+		"219: absent setting reads as the default 2 (Jesse's amended default)")
+	var build_set = func(r: int) -> int:
+		SM.call("set_setting", "world",
+			"load_radius", r)
+		var st = Streamer.new()
+		holder.add_child(st)
+		st.call("set_target_position",
+			Vector3(64, 0, 64))
+		var guard := 0
+		var want := (2 * r + 1) * (2 * r + 1)
+		while st.call("active_chunks").size() < want \
+				and guard < 400:
+			st.call("update_streaming")
+			guard += 1
+		var n: int = st.call("active_chunks").size()
+		var lr: int = st.get("load_radius")
+		var ur: int = st.get("unload_radius")
+		st.queue_free()
+		_assert(lr == r,
+			"219: streamer honors radius %d" % r)
+		_assert(ur == r + 2,
+			"219: unload ring derives as load + 2 at radius %d" % r)
+		return n
+	# Default (absent) streamer: Jesse's amended default
+	# 2 -> 25 chunks, unload 4.
+	var st0 = Streamer.new()
+	holder.add_child(st0)
+	_assert(int(st0.get("load_radius")) == 2
+		and int(st0.get("unload_radius")) == 4,
+		"219: an absent-setting streamer inits at 2 / unload 4")
+	st0.queue_free()
+	_assert(build_set.call(2) == 25,
+		"219: default/min radius builds the 25-chunk set")
+	_assert(build_set.call(4) == 81,
+		"219: mid radius builds the 81-chunk set")
+	_assert(build_set.call(8) == 289,
+		"219: max radius builds the 289-chunk set")
+	# The file roundtrip: a fresh SaveManager instance
+	# reads what set_setting persisted.
+	SM.call("set_setting", "world", "load_radius", 7)
+	var fresh = SaveScript.new()
+	root.add_child(fresh)
+	_assert(int(fresh.get_setting("world",
+		"load_radius", -1)) == 7,
+		"219: the setting roundtrips through settings.cfg to a fresh reader")
+	fresh.queue_free()
+	# Clamping at the streamer's read.
+	SM.call("set_setting", "world", "load_radius", 99)
+	var stc = Streamer.new()
+	holder.add_child(stc)
+	_assert(int(stc.get("load_radius")) == 8,
+		"219: an over-range setting clamps to 8")
+	stc.queue_free()
+	SM.call("set_setting", "world", "load_radius", 0)
+	var stc2 = Streamer.new()
+	holder.add_child(stc2)
+	_assert(int(stc2.get("load_radius")) == 2,
+		"219: an under-range setting clamps to 2")
+	stc2.queue_free()
+	# The slider + readout ride the settings panel
+	# (source pins; the panel is menu-scene state).
+	var msrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("Chunk load distance"),
+		"219: the settings panel carries the slider label")
+	_assert(msrc.contains("Val_load_radius")
+		and msrc.contains("chunks"),
+		"219: the live chunk-count readout is wired")
+	# Restore the absent state for later sections.
+	(SM.get("_settings") as ConfigFile).erase_section_key("world",
+		"load_radius")
+	SM.call("save_settings")
+	current_scene = null
+	holder.queue_free()
+	print("[Playtest] Chunk load distance test done.")
 
 
 func _dt_ui_fixture(owned: Array, lifetime: Dictionary,

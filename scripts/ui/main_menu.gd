@@ -2178,6 +2178,34 @@ func _build_settings_panel() -> void:
 	fval.custom_minimum_size = Vector2(40, 0)
 	frow.add_child(fval)
 	vb.add_child(frow)
+	# Issue #219 (Jesse's order): chunk load distance -
+	# the world streamer's terrain ring radius, persisted
+	# via SaveManager settings (world/load_radius) and
+	# read by the streamer at world entry. The readout
+	# shows radius + total chunks, (2r+1)^2.
+	var crow := HBoxContainer.new()
+	crow.add_theme_constant_override("separation", 12)
+	crow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var clab := Label.new()
+	clab.text = "Chunk load distance"
+	clab.custom_minimum_size = Vector2(120, 0)
+	crow.add_child(clab)
+	var cslider := HSlider.new()
+	cslider.custom_minimum_size = Vector2(220, 0)
+	cslider.min_value = 2
+	cslider.max_value = 8
+	cslider.step = 1
+	cslider.value = clampf(float(SaveManager.get_setting(
+		"world", "load_radius", 2)), 2, 8)
+	cslider.value_changed.connect(
+		_on_chunk_radius_changed)
+	crow.add_child(cslider)
+	var cval := Label.new()
+	cval.name = "Val_load_radius"
+	cval.text = _chunk_radius_text(int(cslider.value))
+	cval.custom_minimum_size = Vector2(110, 0)
+	crow.add_child(cval)
+	vb.add_child(crow)
 	# Issue #144 Phase 1 (Q2): look sensitivity + stick deadzone sliders.
 	# Stored as fractions via the shared handler (slider % / 100):
 	# sensitivity 10-200% (default 100 = 1.0x), deadzone 0-50% (default 20).
@@ -2247,6 +2275,24 @@ func _settings_vol_default(key: String) -> float:
 
 func _settings_toggle_default(key: String, fallback: bool) -> bool:
 	return bool(SaveManager.get_profile_setting("settings", key, fallback))
+
+
+## Issue #219: the chunk-count readout for the load
+## radius ("4 - 81 chunks"), and the slider's handler -
+## persist via settings, refresh the readout live.
+func _chunk_radius_text(r: int) -> String:
+	var n := (2 * r + 1) * (2 * r + 1)
+	return "%d \u2014 %d chunks" % [r, n]
+
+
+func _on_chunk_radius_changed(value: float) -> void:
+	var r := int(value)
+	SaveManager.set_setting("world", "load_radius", r)
+	if _settings_overlay != null:
+		var lab := _settings_overlay.find_child(
+			"Val_load_radius", true, false) as Label
+		if lab != null:
+			lab.text = _chunk_radius_text(r)
 
 
 func _on_settings_vol_changed(value: float, key: String) -> void:

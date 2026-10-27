@@ -1,7 +1,7 @@
 extends Node3D
 ## WorldStreamer (issues #197/#198): the scene side of the
 ## procedural world prototype. Keeps chunk nodes alive within
-## LOAD_RADIUS of the target and unloads beyond UNLOAD_RADIUS,
+## the load radius of the target and unloads beyond it,
 ## building at most BUILD_PER_FRAME chunks per step. A chunk is
 ## generated ONLY when the target enters proximity — nothing here
 ## pre-generates the world.
@@ -26,8 +26,18 @@ extends Node3D
 ## Prototype visuals by design — Jesse is testing generation and
 ## culling, not art.
 
-const LOAD_RADIUS := 8
-const UNLOAD_RADIUS := 10
+## Issue #219 (Jesse's order): the terrain ring radius is
+## a player setting - the main menu's "Chunk load distance"
+## slider, persisted via SaveManager settings
+## (world/load_radius). Read ONCE here at world init; the
+## unload ring is DERIVED (load + 2), never a second
+## control. The vars carry the default so an untreed
+## streamer behaves as the default too.
+const MIN_LOAD_RADIUS := 2
+const MAX_LOAD_RADIUS := 8
+const DEFAULT_LOAD_RADIUS := 2
+var load_radius: int = DEFAULT_LOAD_RADIUS
+var unload_radius: int = DEFAULT_LOAD_RADIUS + 2
 const BUILD_PER_FRAME := 2
 const BUILDING_RADIUS := 3
 const BUILDING_DESPAWN_MSEC := 5000 ## tuning placeholder (#198)
@@ -253,23 +263,31 @@ func _priority_key(cx: int, cz: int, tcx: int, tcz: int) -> Array:
 
 ## One streaming step. `now_msec` is injectable so the building
 ## hysteresis is pinnable headlessly; -1 uses the real clock.
+func _ready() -> void:
+	var v := int(SaveManager.get_setting("world",
+		"load_radius", DEFAULT_LOAD_RADIUS))
+	load_radius = clampi(v, MIN_LOAD_RADIUS,
+		MAX_LOAD_RADIUS)
+	unload_radius = load_radius + 2
+
+
 func update_streaming(now_msec: int = -1) -> void:
 	if not _has_target:
 		return
 	var now := now_msec if now_msec >= 0 else Time.get_ticks_msec()
 	var tcx := int(floor(_target_pos.x / WorldGen.CHUNK_SIZE))
 	var tcz := int(floor(_target_pos.z / WorldGen.CHUNK_SIZE))
-	# Unload chunks beyond UNLOAD_RADIUS (immediate).
+	# Unload chunks beyond the unload ring (immediate).
 	for k in _active.keys():
 		var parts := str(k).split(",")
-		if maxi(absi(int(parts[0]) - tcx), absi(int(parts[1]) - tcz)) > UNLOAD_RADIUS:
+		if maxi(absi(int(parts[0]) - tcx), absi(int(parts[1]) - tcz)) > unload_radius:
 			(_active[k]["node"] as Node).queue_free()
 			_active.erase(k)
 			_vis.erase(k)
 	# Desired set + scouts for the unbuilt.
 	var desired := {}
-	for dx in range(-LOAD_RADIUS, LOAD_RADIUS + 1):
-		for dz in range(-LOAD_RADIUS, LOAD_RADIUS + 1):
+	for dx in range(-load_radius, load_radius + 1):
+		for dz in range(-load_radius, load_radius + 1):
 			desired[_key(tcx + dx, tcz + dz)] = Vector2i(tcx + dx, tcz + dz)
 	for k in _scouts.keys():
 		if not desired.has(k) or _active.has(k):
