@@ -38,18 +38,20 @@ const MAX_LOAD_RADIUS := 8
 const DEFAULT_LOAD_RADIUS := 1
 var load_radius: int = DEFAULT_LOAD_RADIUS
 var unload_radius: int = DEFAULT_LOAD_RADIUS + 2
-const BUILD_PER_FRAME := 1 ## Staged building (Jesse's order 2026-10-26): was 2. One terrain build carries a whole data generation (~tens of ms); two in one step stacks two spikes. The 197(7) pin's "at most 2 per step" still holds.
+const BUILD_PER_FRAME := 1 ## Terrain ASSEMBLIES per streaming step (anti-hitch package, Jesse 2026-10-26): data generation itself no longer happens on this thread at all (worker pool + disk cache), but assembly (mesh + heightfield, ~7-11 ms VM) still does, so it stays capped at one per step. The 197(7) pin's "at most 2 per step" still holds.
 ## Staged detail building (Jesse's order 2026-10-26): the
 ## detail pass (buildings + scatter) no longer runs whole
 ## per chunk in one streaming step. It advances in bounded
 ## steps — BUILDINGS_PER_STEP buildings, or a slice of one
-## scatter type — with DETAIL_STEPS_PER_FRAME steps
+## scatter type — under a per-step TIME allowance
 ## granted per streaming step, so no single frame pays
 ## for a whole dense chunk.
-const DETAIL_STEPS_PER_FRAME := 2
+const DETAIL_BUDGET_USEC := 4000 ## Anti-hitch package (Jesse 2026-10-26): the detail pass is budgeted by TIME, not step counts — it works until the allowance is spent, so the cap means the same thing on a fast PC and a slow VM. Halved on a step that also assembled terrain (stacking is the spike being flattened); the first eligible chunk always gets one step, so progress never stalls.
+const DETAIL_BUDGET_BUSY_USEC := 2000
+const GEN_DISPATCH_WINDOW := 4 ## Chunk generations in flight per streamer on the worker pool.
 const BUILDINGS_PER_STEP := 2
 const SCATTER_ITEMS_PER_STEP := 200
-const SCATTER_CANDIDATES_PER_STEP := 256
+const SCATTER_CANDIDATES_PER_STEP := 64 ## Anti-hitch package: was 256 (~19 ms VM per slice — too coarse for the time budget to bind); 64 is ~5 ms VM / ~1 ms on Jesse's PC.
 const BUILDING_RADIUS := 3
 const BUILDING_DESPAWN_MSEC := 5000 ## tuning placeholder (#198)
 const CONE_COS := 0.4226 ## cos(65 deg): the view-cone priority band
@@ -59,6 +61,7 @@ const ChunkData := preload("res://scripts/world/chunk_data.gd")
 const BuildingGen := preload("res://scripts/world/building_gen.gd")
 const BuildingSelect := preload("res://scripts/world/building_select.gd")
 const ScatterGen := preload("res://scripts/world/scatter_gen.gd")
+const WorldCache := preload("res://scripts/world/world_cache.gd")
 const TransferTrigger := preload("res://scripts/world/transfer_trigger.gd")
 
 ## Issue #204 (P4): Kenney nature pack, one mesh per scatter
@@ -130,6 +133,11 @@ var _has_target := false
 var _active := {}
 ## "cx,cz" -> Node3D scout (unbuilt chunks in the desired set)
 var _scouts := {}
+## Anti-hitch package: generations in flight (key ->
+## {"task": int, "data": ChunkData-or-null}) and data
+## harvested but not yet assembled (key -> ChunkData).
+var _pending := {}
+var _ready_data := {}
 ## "cx,cz" -> int visibility: 1 visible, 0 hidden, absent = unknown
 var _vis := {}
 
@@ -282,6 +290,35 @@ func _ready() -> void:
 	unload_radius = load_radius + 2
 
 
+## Worker-thread generation (Jesse's anti-hitch package,
+## 2026-10-26): generate_chunk is a pure function of
+## (seed, cx, cz) — hash-seeded, no shared mutable state
+## (audited first-hand) — so it runs on the worker pool.
+## The main thread only polls for completion and assembles
+## the result; the lambda writes into a slot dictionary,
+## and the slot is read only after the pool reports the
+## task complete.
+func _dispatch_gen(cx: int, cz: int) -> void:
+	var slot := {"task": -1, "data": null}
+	var task := WorkerThreadPool.add_task(
+		func() -> void:
+			slot["data"] = WorldGen.generate_chunk(
+				cx, cz, WorldGen.WORLD_SEED),
+		false, "chunk gen %d,%d" % [cx, cz])
+	slot["task"] = task
+	_pending[_key(cx, cz)] = slot
+
+
+func _exit_tree() -> void:
+	# Never leave the pool holding tasks whose slots die
+	# with this streamer. In-flight generations are few
+	# (dispatch window) and short.
+	for k in _pending.keys():
+		WorkerThreadPool.wait_for_task_completion(
+			int(_pending[k]["task"]))
+	_pending.clear()
+
+
 func update_streaming(now_msec: int = -1) -> void:
 	if not _has_target:
 		return
@@ -295,6 +332,11 @@ func update_streaming(now_msec: int = -1) -> void:
 			(_active[k]["node"] as Node).queue_free()
 			_active.erase(k)
 			_vis.erase(k)
+	for k in _ready_data.keys():
+		var rparts := str(k).split(",")
+		if maxi(absi(int(rparts[0]) - tcx),
+				absi(int(rparts[1]) - tcz)) > unload_radius:
+			_ready_data.erase(k)
 	# Desired set + scouts for the unbuilt.
 	var desired := {}
 	for dx in range(-load_radius, load_radius + 1):
@@ -307,7 +349,7 @@ func update_streaming(now_msec: int = -1) -> void:
 	for k in desired.keys():
 		if not _active.has(k) and not _scouts.has(k):
 			_make_scout(desired[k].x, desired[k].y)
-	# Build queue by priority, budget BUILD_PER_FRAME.
+	# Build queue by priority (unchanged ordering).
 	var missing: Array = []
 	for k in desired.keys():
 		if not _active.has(k):
@@ -319,26 +361,88 @@ func update_streaming(now_msec: int = -1) -> void:
 			if ka[i] != kb[i]:
 				return ka[i] < kb[i]
 		return false)
-	var built_now := mini(BUILD_PER_FRAME, missing.size())
-	for i in built_now:
-		_build_chunk(missing[i].x, missing[i].y)
-	# A step that paid for a terrain build (a whole data
-	# generation) grants the detail pass a REDUCED budget:
-	# stacking both full budgets in one step is the
-	# compound spike the staging exists to flatten, but a
-	# zero grant would starve the near chunks' detail for
-	# the whole terrain fill (the 198(4) pin's materialize
-	# leg measured exactly that starvation).
+	# Anti-hitch data pipeline: request data for every
+	# missing chunk — from the disk cache when present
+	# (~0.05 ms), else from the worker pool (bounded by
+	# the dispatch window; the rest queue as slots free).
+	var inflight := _pending.size()
+	for c in missing:
+		var k := _key(c.x, c.y)
+		if _ready_data.has(k) or _pending.has(k):
+			continue
+		var cached := WorldCache.read_data(c.x, c.y)
+		if cached != null:
+			_ready_data[k] = cached
+		elif inflight < GEN_DISPATCH_WINDOW:
+			_dispatch_gen(c.x, c.y)
+			inflight += 1
+	# Harvest completed generations: cache the output,
+	# keep it for assembly only while the chunk is wanted.
+	for k in _pending.keys():
+		var slot: Dictionary = _pending[k]
+		if WorkerThreadPool.is_task_completed(int(slot["task"])):
+			WorkerThreadPool.wait_for_task_completion(
+				int(slot["task"]))
+			_pending.erase(k)
+			var gdata: RefCounted = slot["data"]
+			if gdata != null:
+				WorldCache.write_data(gdata)
+				if desired.has(k):
+					_ready_data[k] = gdata
+	# Assemble at most BUILD_PER_FRAME terrains, priority
+	# order (assembly is the only generation cost left on
+	# this thread, ~7-11 ms VM / ~2-3 ms on Jesse's PC).
+	var built_now := 0
+	for c in missing:
+		if built_now >= BUILD_PER_FRAME:
+			break
+		var k := _key(c.x, c.y)
+		if _ready_data.has(k):
+			_assemble_chunk(c.x, c.y, _ready_data[k])
+			_ready_data.erase(k)
+			built_now += 1
+	# Detail pass, TIME-budgeted — halved on a step that
+	# paid for a terrain assembly (stacking both full
+	# budgets in one step is the compound spike the
+	# staging exists to flatten; a zero grant would starve
+	# the near chunks' detail for the whole fill — the
+	# 198(4) pin measured exactly that starvation against
+	# the step-count form of this rule).
 	_update_buildings(tcx, tcz, now,
-		maxi(0, DETAIL_STEPS_PER_FRAME - built_now))
+		DETAIL_BUDGET_USEC if built_now == 0
+			else DETAIL_BUDGET_BUSY_USEC)
+	# Catch-up wait: nothing assembled this step but
+	# generations are in flight — wait for the nearest
+	# one and assemble it. A caller looping
+	# update_streaming (the suite's build loops, the
+	# world entry ready-gate) therefore always makes
+	# progress. In live play this fires only when the
+	# ring is actually behind (a missing chunk whose
+	# generation has not landed), where a bounded wait
+	# beats a hole in the world; when the ring is full,
+	# nothing is pending and it never fires.
+	if built_now == 0 and not _pending.is_empty():
+		for c in missing:
+			var k := _key(c.x, c.y)
+			if _pending.has(k):
+				var slot: Dictionary = _pending[k]
+				WorkerThreadPool.wait_for_task_completion(
+					int(slot["task"]))
+				_pending.erase(k)
+				var wdata: RefCounted = slot["data"]
+				if wdata != null:
+					WorldCache.write_data(wdata)
+					_assemble_chunk(c.x, c.y, wdata)
+				break
 
 
 ## Buildings: materialize inside BUILDING_RADIUS when not reported
 ## hidden; despawn outside the ring or after BUILDING_DESPAWN_MSEC
 ## of sustained off-screen time.
 func _update_buildings(tcx: int, tcz: int, now: int,
-		step_budget: int = DETAIL_STEPS_PER_FRAME) -> void:
-	var steps := step_budget
+		allowance_usec: int = DETAIL_BUDGET_USEC) -> bool:
+	var deadline := Time.get_ticks_usec() + allowance_usec
+	var advanced := false
 	for k in _active.keys():
 		var parts := str(k).split(",")
 		var cx := int(parts[0])
@@ -388,16 +492,20 @@ func _update_buildings(tcx: int, tcz: int, now: int,
 			rec["detail_job"] = null
 		elif not bool(rec.get("detail_done", false)) \
 				and in_ring and vis != 0:
-			# Staged detail (Jesse's order 2026-10-26):
-			# advance this chunk's detail job in bounded
-			# steps until the step budget is spent or the
-			# pass completes — no single streaming step
-			# pays for a whole dense chunk. The despawn
-			# checks above still run for every chunk on
-			# every call, budget or not.
-			while steps > 0 and not bool(rec.get("detail_done", false)):
+			# Staged detail (Jesse's order 2026-10-26),
+			# time-budgeted (anti-hitch package): advance
+			# this chunk's job until the allowance is
+			# spent or the pass completes — the first
+			# eligible chunk always gets one step, so
+			# progress never stalls. The despawn checks
+			# above still run for every chunk on every
+			# call, budget or not.
+			while not bool(rec.get("detail_done", false)) \
+					and (not advanced \
+						or Time.get_ticks_usec() < deadline):
 				_detail_step(rec)
-				steps -= 1
+				advanced = true
+	return advanced
 
 
 ## The staged detail job for a chunk record, created on
@@ -460,9 +568,28 @@ func _make_scout(cx: int, cz: int) -> void:
 	_scouts[_key(cx, cz)] = node
 
 
+## Synchronous chunk build (the direct-call contract the
+## pins use): data from cache or generation, then terrain
+## assembly. The streaming path normally reaches assembly
+## through the threaded pipeline (update_streaming).
 func _build_chunk(cx: int, cz: int) -> void:
-	_ensure_assets()
+	_assemble_chunk(cx, cz, _chunk_data_sync(cx, cz))
+
+
+## Chunk data the synchronous way: cache first (a ~0.05 ms
+## roundtrip against generation's 42-62 ms), generating —
+## and caching — on a miss.
+func _chunk_data_sync(cx: int, cz: int) -> RefCounted:
+	var cached := WorldCache.read_data(cx, cz)
+	if cached != null:
+		return cached
 	var data := WorldGen.generate_chunk(cx, cz)
+	WorldCache.write_data(data)
+	return data
+
+
+func _assemble_chunk(cx: int, cz: int, data: RefCounted) -> void:
+	_ensure_assets()
 	var node := Node3D.new()
 	node.name = "Chunk_%d_%d" % [cx, cz]
 	node.position = Vector3(float(cx) * WorldGen.CHUNK_SIZE, 0,
@@ -842,8 +969,20 @@ func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
 		if suppress_enabled:
 			spill.append(Rect2(suppress_rect.position - Vector2(0.6,
 				0.6), suppress_rect.size + Vector2(1.2, 1.2)))
-		job["gen"] = ScatterGen.scatter_start(
-			WorldGen.WORLD_SEED, cx, cz, data, spill)
+		var cached_scatter = WorldCache.read_scatter(cx, cz)
+		if cached_scatter != null:
+			# Cache hit: the pure walk already ran in
+			# some earlier visit — adopt its output
+			# wholesale (identical by construction).
+			job["gen_done"] = true
+			job["scatter"] = cached_scatter
+			var ctotal := 0
+			for t in ScatterGen.TYPES:
+				ctotal += (cached_scatter[t] as Array).size()
+			job["total"] = ctotal
+		else:
+			job["gen"] = ScatterGen.scatter_start(
+				WorldGen.WORLD_SEED, cx, cz, data, spill)
 		var snode := Node3D.new()
 		snode.name = "Scatter"
 		(rec["node"] as Node).add_child(snode)
@@ -859,6 +998,7 @@ func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
 			SCATTER_CANDIDATES_PER_STEP)
 		if bool(job["gen_done"]):
 			job["scatter"] = job["gen"]["out"]
+			WorldCache.write_scatter(cx, cz, job["scatter"])
 			var total := 0
 			for t in ScatterGen.TYPES:
 				total += (job["scatter"][t] as Array).size()
