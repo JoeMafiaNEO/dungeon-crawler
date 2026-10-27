@@ -1947,6 +1947,14 @@ func _refresh_spec_list() -> void:
 	tbtn.pressed.connect(_on_open_tree_pressed)
 	trow.add_child(tbtn)
 	%SpecList.add_child(trow)
+	# Issue #217 (Jesse's order): the direct-key tip,
+	# styled like the unlock hint above.
+	var tip := Label.new()
+	tip.text = "Tip: press N to open the Deep Tree."
+	tip.add_theme_color_override("font_color",
+		Color(0.7, 0.7, 0.75))
+	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	%SpecList.add_child(tip)
 	# Issue #152: spec rows are dynamic — re-chain while paused.
 	if is_paused:
 		FocusChain.apply(_pause_surface(), _pause_primary())

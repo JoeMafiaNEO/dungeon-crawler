@@ -135,6 +135,7 @@ func _run() -> void:
 	_test_deep_tree_b4_210()
 	_test_deep_tree_b5_210()
 	_test_deep_tree_ui_215()
+	_test_deep_tree_save_217()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -24361,6 +24362,170 @@ func _test_deep_tree_b5_210() -> void:
 	hold.free()
 	current_scene = null
 	print("[Playtest] deep tree 210 B5 section done")
+
+
+func _canon_217(v: Variant) -> String:
+	if v is Dictionary:
+		var keys := (v as Dictionary).keys()
+		keys.sort()
+		var parts: Array = []
+		for k in keys:
+			parts.append(str(k) + "=" + _canon_217(
+				(v as Dictionary)[k]))
+		return "{" + ",".join(PackedStringArray(parts)) \
+			+ "}"
+	if v is Array:
+		var parts2: Array = []
+		for e in v:
+			parts2.append(_canon_217(e))
+		return "[" + ",".join(PackedStringArray(parts2)) \
+			+ "]"
+	if v is float:
+		return "%.4f" % v
+	return str(v)
+
+
+## Issue #217 Part 1: the save-roundtrip proof for
+## specialization + the Deep Tree, through the REAL
+## SaveManager slot path (an actual slot file, the
+## load_run funnel, and apply_state on a fresh player -
+## the game's own continue path). The expected values
+## are read from the fixture's own state before the
+## save; identity after load is the assertion.
+func _test_deep_tree_save_217() -> void:
+	print("[Playtest] Deep Tree save roundtrip (issue #217)...")
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var SaveScript := load(
+		"res://scripts/autoload/save_manager.gd")
+	var mgr = SaveScript.new()
+	var hold := Node.new()
+	root.add_child(hold)
+	current_scene = hold
+	# Build the character through the real funnels:
+	# specialize -> gain lifetime -> respec -> specialize
+	# the other branch -> buy two nodes.
+	var p1 = load("res://scenes/player/player.tscn"
+		).instantiate()
+	p1.class_id = "mage"
+	hold.add_child(p1)
+	p1.set("level", 30)
+	p1.set("family_collection",
+		{"fire": {"traits": [], "signature": true},
+			"frost": {"traits": [],
+				"signature": true}})
+	p1.specialize("frost")
+	p1.gain_affinity("frost", 4000.0, -1)
+	p1.respec()
+	p1.specialize("fireball")
+	p1.gain_affinity("fireball", 4000.0, -1)
+	_assert(str(p1.get("specialization")) == "fireball",
+		"217: fixture specialized in fireball through the real funnel")
+	_assert(float(p1.get("tree_lifetime").get(
+		"frost", 0.0)) > 0.0 and float(p1.get(
+			"tree_lifetime").get("fireball", 0.0)) > 0.0,
+		"217: lifetime earned in two branches through gain_affinity")
+	var n1: int = dt.pack_id(1, 1, 0)
+	var n2: int = dt.pack_id(1, 2, 0)
+	var w0: int = dt.wallet(p1, 1)
+	_assert(bool(p1.call("try_purchase", n1))
+		and bool(p1.call("try_purchase", n2)),
+		"217: two nodes purchased through try_purchase")
+	var w1: int = dt.wallet(p1, 1)
+	_assert(w1 < w0 and w1 > 0,
+		"217: the fire wallet is partially spent (not drained, not untouched)")
+	# Expectations, read pre-save.
+	var state0: Dictionary = p1.get_state()
+	var wallets0 := {}
+	for b in dt.branches_for("mage"):
+		wallets0[int(b["id"])] = dt.wallet(p1,
+			int(b["id"]))
+	var agg0 := _canon_217(p1.get("tree_aggregates"))
+	var owned0: Array = (state0["tree_owned"] as
+		Array).duplicate()
+	owned0.sort()
+	# The identity battery, applied to a state dict and
+	# to a fresh player that applied it.
+	var check_state = func(st: Dictionary, tag: String) -> void:
+		_assert(str(st.get("specialization", "")) == \
+			"fireball",
+			"217: %s specialization survives" % tag)
+		var ow: Array = (st.get("tree_owned", []) as
+			Array).duplicate()
+		ow.sort()
+		_assert(_canon_217(ow) == _canon_217(owned0),
+			"217: %s tree_owned set identical" % tag)
+		_assert(_canon_217(st.get("tree_lifetime", {}))
+			== _canon_217(state0["tree_lifetime"]),
+			"217: %s tree_lifetime totals identical" % tag)
+	var check_player = func(pl: Variant, tag: String) -> void:
+		check_state.call(pl.get_state(), tag)
+		for bid in wallets0:
+			_assert(dt.wallet(pl, bid) == int(
+				wallets0[bid]),
+				"217: %s derived wallet for branch %d identical (lifetime - spent)" % [tag, bid])
+		_assert(_canon_217(pl.get("tree_aggregates")) \
+			== agg0,
+			"217: %s recomputed aggregates identical" % tag)
+	# SOLO leg: real slot file roundtrip.
+	var run := {"class_id": "mage",
+		"theme_id": "dungeon", "level_number": 3,
+		"cycle": 1, "seed": 777,
+		"player_state": state0}
+	_assert(mgr.save_run(run, "solo", 9),
+		"217: solo run with tree state saves to a real slot")
+	var loaded: Dictionary = mgr.load_run("solo", 9)
+	_assert(not loaded.is_empty(),
+		"217: solo slot loads back")
+	check_state.call(loaded.get("player_state", {}),
+		"solo slot")
+	var p2 = load("res://scenes/player/player.tscn"
+		).instantiate()
+	p2.class_id = "mage"
+	hold.add_child(p2)
+	p2.apply_state(loaded.get("player_state", {}))
+	check_player.call(p2, "solo continue")
+	# MP leg: the same state through a roster record.
+	var mp_run := {"theme_id": "dungeon",
+		"level_number": 3, "seed": 777,
+		"roster": [
+			{"steam_id": 111, "player_name": "Host",
+				"class_id": "mage",
+				"player_state": state0,
+				"rts_faction": 0, "is_host": true},
+			{"steam_id": 222, "player_name": "Guest",
+				"class_id": "warrior",
+				"player_state": {"level": 3},
+				"rts_faction": 1, "is_host": false}]}
+	_assert(mgr.save_run(mp_run, "mp", 9),
+		"217: MP run with a tree-state roster saves")
+	var mp_loaded: Dictionary = mgr.load_run("mp", 9)
+	var roster: Array = mp_loaded.get("roster", [])
+	_assert(roster.size() == 2,
+		"217: MP roster survives the slot roundtrip")
+	if roster.size() == 2:
+		var host_state: Dictionary = (roster[0] as
+			Dictionary).get("player_state", {})
+		check_state.call(host_state, "MP roster")
+		var p3 = load("res://scenes/player/player.tscn"
+			).instantiate()
+		p3.class_id = "mage"
+		hold.add_child(p3)
+		p3.apply_state(host_state)
+		check_player.call(p3, "MP continue")
+		p3.queue_free()
+	# Part 2: the tip label rides the spec tab (source
+	# pin; the label itself is scene-built at runtime).
+	var hsrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/hud.gd")
+	_assert(hsrc.contains(
+		"Tip: press N to open the Deep Tree."),
+		"217: the spec tab carries the exact Deep Tree tip")
+	mgr.clear_run("solo", 9)
+	mgr.clear_run("mp", 9)
+	mgr.free()
+	current_scene = null
+	hold.queue_free()
+	print("[Playtest] Deep Tree save roundtrip done.")
 
 
 func _dt_ui_fixture(owned: Array, lifetime: Dictionary,
