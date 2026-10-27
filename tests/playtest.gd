@@ -7171,9 +7171,50 @@ func _test_world_204() -> void:
 	_assert(int(astate["playable_doors"]) == exp_playable_keys.size()
 			and int(astate["solid_buildings"]) == exp_empty_keys.size(),
 		"204: playable + solid counts match the selection roll")
+	# Geometry pin (2026-10-27, Jesse's invisible-walls
+	# report): the count pins above cannot see a box that
+	# is the WRONG SIZE at the right center. Build the
+	# expected AABB multiset (every shell piece + every
+	# door slab, world space) from the same plans and
+	# compare the built shapes against it exactly.
+	var exp_boxes := {}
+	var coff := Vector3(float(asm.x) * 128.0, 0, float(asm.y) * 128.0)
+	for b in asm_data.buildings:
+		var plan2: Dictionary = BuildingGenRes.plan_for(seed,
+			asm.x * 16 + int(b[0]), asm.y * 16 + int(b[1]),
+			int(b[2]), int(b[3]),
+			int(b[4]) if b.size() > 4 else 1,
+			int(b[5]) if b.size() > 5 else 1,
+			int(b[6]) if b.size() > 6 else 0)
+		var spx := int(b[4]) if b.size() > 4 else 1
+		var spz := int(b[5]) if b.size() > 5 else 1
+		var wx2: float = (float(asm.x * 16 + int(b[0])) + float(spx) * 0.5) * float(WorldGenRes.LOT_SIZE)
+		var wz2: float = (float(asm.y * 16 + int(b[1])) + float(spz) * 0.5) * float(WorldGenRes.LOT_SIZE)
+		var org2 := Vector3(
+			(float(int(b[0])) + float(spx) * 0.5) * WorldGenRes.LOT_SIZE,
+			WorldGenRes.height_at(seed, wx2, wz2),
+			(float(int(b[1])) + float(spz) * 0.5) * WorldGenRes.LOT_SIZE)
+		for pc in plan2["pieces"]:
+			if not bool(pc["shell"]):
+				continue
+			var cen: Vector3 = coff + org2 + (pc["c"] as Vector3)
+			var siz: Vector3 = pc["s"]
+			var kk := "%.2f,%.2f,%.2f|%.2f,%.2f,%.2f" % [cen.x, cen.y, cen.z, siz.x, siz.y, siz.z]
+			exp_boxes[kk] = int(exp_boxes.get(kk, 0)) + 1
+		var door2: Dictionary = BuildingGenRes.door_world(plan2, org2)
+		var wall2 := int(door2["wall"])
+		var slab2 := Vector3(BuildingGenRes.DOOR_W,
+			BuildingGenRes.DOOR_H, BuildingGenRes.WALL_T) if wall2 < 2 \
+			else Vector3(BuildingGenRes.WALL_T,
+				BuildingGenRes.DOOR_H, BuildingGenRes.DOOR_W)
+		var scen: Vector3 = coff + (door2["gap_center"] as Vector3) \
+			+ Vector3(0, BuildingGenRes.DOOR_H * 0.5, 0)
+		var skk := "%.2f,%.2f,%.2f|%.2f,%.2f,%.2f" % [scen.x, scen.y, scen.z, slab2.x, slab2.y, slab2.z]
+		exp_boxes[skk] = int(exp_boxes.get(skk, 0)) + 1
 	var bnode: Node = built_node
 	var trig_keys := {}
 	var shape_count := 0
+	var act_boxes := {}
 	var stack2: Array = [bnode]
 	while not stack2.is_empty():
 		var n: Node = stack2.pop_back()
@@ -7183,6 +7224,14 @@ func _test_world_204() -> void:
 		# triggers carry their own shape, excluded by parent).
 		if n is CollisionShape3D and n.get_parent() is StaticBody3D:
 			shape_count += 1
+			var csx := n as CollisionShape3D
+			var bsz := (csx.shape as BoxShape3D).size
+			var scl := csx.global_transform.basis.get_scale()
+			var eff := Vector3(absf(bsz.x * scl.x),
+				absf(bsz.y * scl.y), absf(bsz.z * scl.z))
+			var ctr := csx.global_transform.origin
+			var akk := "%.2f,%.2f,%.2f|%.2f,%.2f,%.2f" % [ctr.x, ctr.y, ctr.z, eff.x, eff.y, eff.z]
+			act_boxes[akk] = int(act_boxes.get(akk, 0)) + 1
 		for c in n.get_children():
 			stack2.append(c)
 	_assert(trig_keys.size() == exp_playable_keys.size(),
@@ -7195,6 +7244,8 @@ func _test_world_204() -> void:
 			"204: empty building %s has NO door (builds solid)" % k)
 	_assert(shape_count == int(astate["collision_shapes"]),
 		"204: the collision bodies in the tree match the count")
+	_assert(act_boxes == exp_boxes,
+		"204: every collision box's AABB equals its building piece's AABB (center AND size)")
 	var pre_scatter_shapes := shape_count
 	st.call("_make_scatter", arec)
 	astate = st.call("debug_chunk_state", asm.x, asm.y)

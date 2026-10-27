@@ -913,7 +913,16 @@ func _add_box_shape(body: StaticBody3D, xf: Transform3D) -> void:
 	var box := BoxShape3D.new()
 	box.size = xf.basis.get_scale()
 	cs.shape = box
-	cs.transform = xf
+	# The piece size lives in the shape ALONE: the node
+	# transform must carry only the position. (Setting
+	# cs.transform = xf here double-applied the scale —
+	# every collision box came out piece-size-squared:
+	# a 6.4 m wall collided as a 41 m slab. Found by
+	# Jesse's feet, 2026-10-27: centers were always
+	# exact, sizes never were. Pieces are axis-aligned
+	# by construction, so dropping the basis loses
+	# nothing.)
+	cs.transform = Transform3D(Basis.IDENTITY, xf.origin)
 	body.add_child(cs)
 
 
