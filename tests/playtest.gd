@@ -7333,10 +7333,19 @@ func _test_world_204() -> void:
 	_assert(not bool(wroot.call("_entry_ring_ready")),
 		"204: the entry ready-gate starts closed (no pop-in at the threshold)")
 	var wstreamer = wroot.get_node("WorldStreamer")
-	var tries := 0
-	while not bool(wroot.call("_entry_ring_ready")) and tries < 400:
+	# Anti-hitch package (2026-10-26): detail work is
+	# TIME-budgeted per streaming step now, so readiness
+	# is a wall-clock property, not a step-count one —
+	# this loop pumps against a generous clock deadline
+	# instead of the old 400-call budget (which encoded
+	# the retired per-call work quantum and flaked when
+	# worker-thread completion paced the fill). The
+	# premise under test is unchanged: the inner ring
+	# fully builds and the gate opens on readiness.
+	var wdeadline := Time.get_ticks_msec() + 30000
+	while not bool(wroot.call("_entry_ring_ready")) \
+			and Time.get_ticks_msec() < wdeadline:
 		wstreamer.call("update_streaming")
-		tries += 1
 	_assert(bool(wroot.call("_entry_ring_ready")),
 		"204: the ready-gate opens when the inner ring is fully built")
 	var snap: Dictionary = wroot.call("state_snapshot")
