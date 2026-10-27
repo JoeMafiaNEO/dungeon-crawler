@@ -226,6 +226,15 @@ var eagle_eye_used_wave := -1
 var specialization := ""  # skill_id, or "" for none
 var affinity := {}  # skill_id -> float (0-100)
 var family_collection := {}  # family_id -> {"traits": [trait_ids], "signature": bool}
+## Signatures earned IN THIS RUN (family_id -> true), set only when the
+## 100-affinity milestone trips during play. Jesse 2026-10-27: the profile
+## collection book (family_collection, permanent account meta per issue #4
+## Phase 2) must NOT put a specialized skill on the hotbar at a new level —
+## the book stays the lifetime record (family panel, Deep Tree branch
+## gates), but the usable signature unlock is run-scoped: earn 100 family
+## affinity in the current run and it appears; start a new level/run
+## without having earned it there and it does not.
+var run_signatures := {}
 ## Issue #206 (Deep Tree): the character's tree seed (stored
 ## per save; initialized from DeepTree.TREE_SEED, stored
 ## value wins on apply), owned packed node ids, and the
@@ -3569,6 +3578,10 @@ func switch_class(new_class: String) -> void:
 	specialization = ""
 	affinity.clear()
 	family_collection.clear()
+	# A class switch is a fresh start for the incoming class (level resets
+	# to 1): its run-scoped signature unlocks clear with everything else —
+	# the profile book load below restores the record, not the unlock.
+	run_signatures.clear()
 	# Issue #4 Phase 2: restore the incoming class's earned collection —
 	# collections are permanent account meta, not per-run state.
 	family_collection = SaveManager.load_collections(new_class)
@@ -3629,6 +3642,9 @@ func specialize(skill_id: String) -> void:
 func respec() -> void:
 	if specialization != "":
 		affinity[specialization] = 0.0
+		# The zeroed affinity was what earned this family's run signature —
+		# the unlock goes with it (re-earn by climbing back to 100).
+		run_signatures.erase(Player.family_of(specialization))
 		specialization = ""
 		if hud != null:
 			hud.toast("Specialization cleared")
@@ -3691,11 +3707,16 @@ func _check_family_milestones(skill_id: String) -> void:
 			if hud != null:
 				hud.toast("Family trait earned: %s — %s" % [tdata["name"], tdata["desc"]])
 				AudioManager.sfx("milestone")
-	if aff >= 100.0 and not bool(coll.get("signature", false)):
-		coll["signature"] = true
-		var sig: Dictionary = fams[fid]["signature"]
-		if hud != null:
-			hud.toast("SIGNATURE SKILL UNLOCKED: %s!" % sig["name"])
+	if aff >= 100.0:
+		# The run-scoped unlock trips on the milestone itself, whether or
+		# not the profile book already holds this signature (Jesse
+		# 2026-10-27) — re-earning in a later run is silent bookkeeping.
+		run_signatures[fid] = true
+		if not bool(coll.get("signature", false)):
+			coll["signature"] = true
+			var sig: Dictionary = fams[fid]["signature"]
+			if hud != null:
+				hud.toast("SIGNATURE SKILL UNLOCKED: %s!" % sig["name"])
 
 
 func _has_trait(coll: Dictionary, milestone: int, fams: Dictionary, fid: String) -> bool:
@@ -3737,12 +3758,13 @@ func has_signature(sig_id: String) -> bool:
 	return false
 
 
-## Returns the signature skill dict for a family, or {} if not unlocked.
+## Returns the signature skill dict for a family, or {} if not unlocked
+## IN THIS RUN. The gate is run_signatures (Jesse 2026-10-27): every
+## consumer — mage hotbar slots, warrior/rogue cycle membership, the mage
+## cast itself — routes through here, so the profile collection book alone
+## never grants a usable signature at a new level.
 func family_signature(fid: String) -> Dictionary:
-	if not family_collection.has(fid):
-		return {}
-	var coll: Dictionary = family_collection[fid]
-	if not bool(coll.get("signature", false)):
+	if not bool(run_signatures.get(fid, false)):
 		return {}
 	var fams := Player.families()
 	if fams.has(fid):
@@ -7039,7 +7061,7 @@ const STATE_KEYS: Array[String] = [
 	"bonus_health", "bonus_speed", "bonus_aura", "bonus_atk_spd", "inventory",
 	"run_start_msec", "run_kills", "run_damage_dealt",
 	"supermarket_cash", "bounty_progress", "totem_charges",
-	"specialization", "affinity", "family_collection",
+	"specialization", "affinity", "family_collection", "run_signatures",
 	"tree_seed", "tree_owned", "tree_lifetime",
 	"equipped_special", "no_death_streak", "second_wind_armed",
 	"second_wind_used",
@@ -7092,6 +7114,7 @@ func get_state() -> Dictionary:
 		"specialization": specialization,
 		"affinity": affinity.duplicate(true),
 		"family_collection": family_collection.duplicate(true),
+		"run_signatures": run_signatures.duplicate(true),
 		# Issue #206 (spec section 7): three additive keys,
 		# no SAVE_VERSION bump — derived state stays unsaved.
 		"tree_seed": tree_seed,
@@ -7147,6 +7170,20 @@ func apply_state(s: Dictionary) -> void:
 	specialization = str(s.get("specialization", ""))
 	affinity = (s.get("affinity", {}) as Dictionary).duplicate(true)
 	family_collection = (s.get("family_collection", {}) as Dictionary).duplicate(true)
+	run_signatures = (s.get("run_signatures", {}) as Dictionary).duplicate(true)
+	# Legacy states saved before the run gate existed carry no
+	# run_signatures key: a signature counts as run-earned there only if
+	# THIS run's own affinity already reached 100 in that family (the book
+	# flag plus maxed affinity is exactly what earning it produced) —
+	# anything less stays locked until the milestone trips in play.
+	if run_signatures.is_empty():
+		var fams_legacy := Player.families()
+		for fid_l in family_collection:
+			var coll_l: Dictionary = family_collection[fid_l]
+			if bool(coll_l.get("signature", false)) and fams_legacy.has(fid_l):
+				for sk_l in fams_legacy[fid_l]["skills"]:
+					if float(affinity.get(sk_l, 0.0)) >= 100.0:
+						run_signatures[fid_l] = true
 	# Issue #206: the stored seed wins; aggregates recompute
 	# here so the recalc at this function's tail folds them.
 	tree_seed = int(s.get("tree_seed", DeepTree.TREE_SEED))

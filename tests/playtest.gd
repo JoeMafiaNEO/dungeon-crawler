@@ -1872,6 +1872,58 @@ func _test_save_collections() -> void:
 		"respec preserves family_collection")
 	p.free()
 
+	# Jesse 2026-10-27: the profile collection book must NOT put a
+	# specialized (signature) skill on the hotbar at a new level — the
+	# usable unlock is earned in the current run at 100 family affinity.
+	var pg = PlayerScript.new()
+	pg.class_id = "mage"
+	pg.family_collection = {"fire": {"traits": ["kindled"], "signature": true}}
+	_assert(pg.family_signature("fire").is_empty(),
+		"run gate: book-only signature stays off the hotbar at a new level")
+	pg.affinity = {"fireball": 100.0}
+	pg._check_family_milestones("fireball")
+	_assert(String(pg.family_signature("fire").get("id", "")) == "inferno",
+		"run gate: hitting 100 affinity in this run unlocks the signature")
+	# State roundtrip carries the run unlock; a book-only state does not
+	# acquire it by being saved and restored. (Targets are scene instances
+	# in the tree — the proven apply_state idiom from the bughunt section.)
+	var PlayerSceneG: PackedScene = load("res://scenes/player/player.tscn")
+	var stg: Dictionary = pg.get_state()
+	var pg2 = PlayerSceneG.instantiate()
+	pg2.class_id = "mage"
+	root.add_child(pg2)
+	pg2.apply_state(stg)
+	_assert(String(pg2.family_signature("fire").get("id", "")) == "inferno",
+		"run gate: run-earned signature survives a state roundtrip")
+	root.remove_child(pg2)
+	pg2.free()
+	pg.free()
+	var pb = PlayerScript.new()
+	pb.class_id = "mage"
+	pb.family_collection = {"fire": {"traits": [], "signature": true}}
+	pb.affinity = {"fireball": 40.0}
+	var stb: Dictionary = pb.get_state()
+	var pb2 = PlayerSceneG.instantiate()
+	pb2.class_id = "mage"
+	root.add_child(pb2)
+	pb2.apply_state(stb)
+	_assert(pb2.family_signature("fire").is_empty(),
+		"run gate: book-only signature stays locked through a state roundtrip")
+	root.remove_child(pb2)
+	pb2.free()
+	pb.free()
+	# Respec zeroes the specialized skill's affinity — the run unlock it
+	# earned goes with it.
+	var pr = PlayerScript.new()
+	pr.class_id = "mage"
+	pr.specialization = "fireball"
+	pr.affinity = {"fireball": 100.0}
+	pr._check_family_milestones("fireball")
+	pr.respec()
+	_assert(pr.family_signature("fire").is_empty(),
+		"run gate: respec drops the run signature of the zeroed family")
+	pr.free()
+
 	# Wiring: spawn merges the profile copy, departure persists per-peer,
 	# class switch persists outgoing + loads incoming, save_run funnels.
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
@@ -22763,6 +22815,10 @@ func _test_hotbar_scaling_194() -> void:
 	p.set("unlocked_abilities", PD.class_abilities("mage"))
 	p.set("class_id", "mage")
 	p.set("family_collection", {"fire": {"signature": true}, "frost": {"signature": true}, "storm": {"signature": true}})
+	# Fixture retarget (Jesse 2026-10-27 run gate): signature slots render
+	# only for signatures earned in the current run — the fixture grants
+	# them through run_signatures now; the book alone no longer suffices.
+	p.set("run_signatures", {"fire": true, "frost": true, "storm": true})
 	hud.call("refresh_abilities", p)
 	var live_slots := 0
 	for c in bar.get_children():
