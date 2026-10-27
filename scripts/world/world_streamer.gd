@@ -38,7 +38,18 @@ const MAX_LOAD_RADIUS := 8
 const DEFAULT_LOAD_RADIUS := 2
 var load_radius: int = DEFAULT_LOAD_RADIUS
 var unload_radius: int = DEFAULT_LOAD_RADIUS + 2
-const BUILD_PER_FRAME := 2
+const BUILD_PER_FRAME := 1 ## Staged building (Jesse's order 2026-10-26): was 2. One terrain build carries a whole data generation (~tens of ms); two in one step stacks two spikes. The 197(7) pin's "at most 2 per step" still holds.
+## Staged detail building (Jesse's order 2026-10-26): the
+## detail pass (buildings + scatter) no longer runs whole
+## per chunk in one streaming step. It advances in bounded
+## steps — BUILDINGS_PER_STEP buildings, or a slice of one
+## scatter type — with DETAIL_STEPS_PER_FRAME steps
+## granted per streaming step, so no single frame pays
+## for a whole dense chunk.
+const DETAIL_STEPS_PER_FRAME := 2
+const BUILDINGS_PER_STEP := 2
+const SCATTER_ITEMS_PER_STEP := 200
+const SCATTER_CANDIDATES_PER_STEP := 256
 const BUILDING_RADIUS := 3
 const BUILDING_DESPAWN_MSEC := 5000 ## tuning placeholder (#198)
 const CONE_COS := 0.4226 ## cos(65 deg): the view-cone priority band
@@ -308,16 +319,26 @@ func update_streaming(now_msec: int = -1) -> void:
 			if ka[i] != kb[i]:
 				return ka[i] < kb[i]
 		return false)
-	for i in mini(BUILD_PER_FRAME, missing.size()):
+	var built_now := mini(BUILD_PER_FRAME, missing.size())
+	for i in built_now:
 		_build_chunk(missing[i].x, missing[i].y)
-	_update_buildings(tcx, tcz, now)
+	# A step that paid for a terrain build (a whole data
+	# generation) grants the detail pass a REDUCED budget:
+	# stacking both full budgets in one step is the
+	# compound spike the staging exists to flatten, but a
+	# zero grant would starve the near chunks' detail for
+	# the whole terrain fill (the 198(4) pin's materialize
+	# leg measured exactly that starvation).
+	_update_buildings(tcx, tcz, now,
+		maxi(0, DETAIL_STEPS_PER_FRAME - built_now))
 
 
 ## Buildings: materialize inside BUILDING_RADIUS when not reported
 ## hidden; despawn outside the ring or after BUILDING_DESPAWN_MSEC
 ## of sustained off-screen time.
-func _update_buildings(tcx: int, tcz: int, now: int) -> void:
-	var budget := 2
+func _update_buildings(tcx: int, tcz: int, now: int,
+		step_budget: int = DETAIL_STEPS_PER_FRAME) -> void:
+	var steps := step_budget
 	for k in _active.keys():
 		var parts := str(k).split(",")
 		var cx := int(parts[0])
@@ -336,8 +357,21 @@ func _update_buildings(tcx: int, tcz: int, now: int) -> void:
 		# chunks — starving the rest of the ring of detail
 		# budget and leaking the rebuilt scatter nodes.
 		# (Found by the #204 entry ready-gate pin.)
-		if bool(rec.get("detail_done", false)) \
+		if (bool(rec.get("detail_done", false)) \
+				or rec.get("detail_job") != null) \
 				and (not in_ring or hidden_long):
+			# A mid-flight job sheds its partial nodes
+			# too (they are not rec["buildings"] /
+			# rec["scatter"] yet — those land only when
+			# a stage completes).
+			var dj = rec.get("detail_job")
+			if dj != null:
+				var jb = dj["b"]["bnode"]
+				if jb != null and jb != rec["buildings"]:
+					(jb as Node).queue_free()
+				var js = dj["s"]["snode"]
+				if js != null and js != rec["scatter"]:
+					(js as Node).queue_free()
 			if rec["buildings"] != null:
 				(rec["buildings"] as Node).queue_free()
 				rec["buildings"] = null
@@ -351,12 +385,65 @@ func _update_buildings(tcx: int, tcz: int, now: int) -> void:
 				(rec["scatter"] as Node).queue_free()
 				rec["scatter"] = null
 			rec["detail_done"] = false
+			rec["detail_job"] = null
 		elif not bool(rec.get("detail_done", false)) \
-				and in_ring and vis != 0 and budget > 0:
-			rec["buildings"] = _make_buildings(rec)
-			rec["scatter"] = _make_scatter(rec)
-			rec["detail_done"] = true
-			budget -= 1
+				and in_ring and vis != 0:
+			# Staged detail (Jesse's order 2026-10-26):
+			# advance this chunk's detail job in bounded
+			# steps until the step budget is spent or the
+			# pass completes — no single streaming step
+			# pays for a whole dense chunk. The despawn
+			# checks above still run for every chunk on
+			# every call, budget or not.
+			while steps > 0 and not bool(rec.get("detail_done", false)):
+				_detail_step(rec)
+				steps -= 1
+
+
+## The staged detail job for a chunk record, created on
+## first use: a buildings sub-job ("b") and a scatter
+## sub-job ("s"), each resumable across streaming steps.
+## The Buildings node joins the chunk immediately, so
+## collision bodies come online building by building;
+## rec["buildings"] itself is assigned only when the
+## buildings stage completes, keeping has_buildings'
+## meaning (buildings ASSEMBLED). Same for scatter.
+func _detail_job(rec: Dictionary) -> Dictionary:
+	var dj = rec.get("detail_job")
+	if dj == null:
+		dj = {"b": {"b_done": false, "cursor": 0, "bnode": null,
+				"buckets": {}, "door_xforms": [], "shell_total": 0,
+				"collision_shapes": 0, "playable_doors": 0,
+				"solid_buildings": 0},
+			"s": {"s_done": false, "started": false,
+				"gen": null, "gen_done": false,
+				"scatter": null, "snode": null, "sbody": null,
+				"type_idx": 0, "item_idx": 0, "mm": null,
+				"shapes": 0, "total": 0}}
+		rec["detail_job"] = dj
+		var data: RefCounted = rec["data"]
+		if not (data.buildings as Array).is_empty():
+			var bnode := Node3D.new()
+			bnode.name = "Buildings"
+			(rec["node"] as Node).add_child(bnode)
+			dj["b"]["bnode"] = bnode
+	return dj
+
+
+## Advance one chunk's staged detail pass by ONE bounded
+## step: a slice of the buildings stage, or a slice of the
+## scatter stage. detail_done is set only when BOTH stages
+## complete — the completion meaning chunk_fully_built
+## has always read.
+func _detail_step(rec: Dictionary) -> void:
+	var dj := _detail_job(rec)
+	if not bool(dj["b"]["b_done"]):
+		_buildings_job_step(rec, dj["b"])
+	elif not bool(dj["s"]["s_done"]):
+		_scatter_job_step(rec, dj["s"])
+	if bool(dj["b"]["b_done"]) and bool(dj["s"]["s_done"]):
+		rec["detail_done"] = true
+		rec["detail_job"] = null
 
 
 func _make_scout(cx: int, cz: int) -> void:
@@ -413,7 +500,7 @@ func _build_chunk(cx: int, cz: int) -> void:
 	notifier.screen_exited.connect(_note_hidden.bind(cx, cz))
 	_active[_key(cx, cz)] = {"node": node, "data": data,
 		"buildings": null, "scatter": null, "off_since": -1,
-		"plans": {}, "shell_pieces": 0, "interior_pieces": 0,
+		"detail_job": null, "plans": {}, "shell_pieces": 0, "interior_pieces": 0,
 		"collision_shapes": 0, "scatter_count": 0,
 		"playable_doors": 0, "solid_buildings": 0,
 		"detail_done": false}
@@ -438,21 +525,49 @@ func _build_chunk(cx: int, cz: int) -> void:
 ## so a despawn / rematerialize cycle rebuilds the identical
 ## structures.
 func _make_buildings(rec: Dictionary) -> Node:
+	# One-shot form (pins + standalone callers): drain the
+	# staged buildings job synchronously and return the
+	# finished node — the same contract this function has
+	# always had. The streaming driver uses the stepped
+	# form (_buildings_job_step) instead.
+	var dj := _detail_job(rec)
+	while not bool(dj["b"]["b_done"]):
+		_buildings_job_step(rec, dj["b"])
+	return rec["buildings"]
+
+
+## One bounded step of a chunk's buildings stage: up to
+## BUILDINGS_PER_STEP buildings assembled (plans, shell
+## buckets, collision bodies, doors) into the job's
+## Buildings node. Returns true when the stage completes
+## (counts written, shell batches flushed, rec["buildings"]
+## assigned). State lives in the job dict so the pass can
+## pause and resume across frames.
+func _buildings_job_step(rec: Dictionary, job: Dictionary) -> bool:
+	if bool(job["b_done"]):
+		return true
 	var data: RefCounted = rec["data"]
-	if data.buildings.is_empty():
-		return null
-	var node := Node3D.new()
-	node.name = "Buildings"
-	(rec["node"] as Node).add_child(node)
+	var buildings: Array = data.buildings
+	if buildings.is_empty():
+		job["b_done"] = true
+		return true
+	var node: Node3D = job["bnode"]
 	var cx: int = data.cx
 	var cz: int = data.cz
-	var shell_buckets := {}
-	var shell_total := 0
-	var door_xforms: Array = []
-	var collision_shapes := 0
-	var playable_doors := 0
-	var solid_buildings := 0
-	for b in data.buildings:
+	var shell_buckets: Dictionary = job["buckets"]
+	var door_xforms: Array = job["door_xforms"]
+	var shell_total := int(job["shell_total"])
+	var collision_shapes := int(job["collision_shapes"])
+	var playable_doors := int(job["playable_doors"])
+	var solid_buildings := int(job["solid_buildings"])
+	var idx := 0
+	for b in buildings:
+		if idx < int(job["cursor"]):
+			idx += 1
+			continue
+		if idx >= int(job["cursor"]) + BUILDINGS_PER_STEP:
+			break
+		idx += 1
 		var lx := int(b[0])
 		var lz := int(b[1])
 		var floors := int(b[2])
@@ -556,6 +671,13 @@ func _make_buildings(rec: Dictionary) -> Node:
 				facade_color(WorldGen.WORLD_SEED, wlx, wlz,
 					style, 0))
 			shell_total += 1
+	job["cursor"] = idx
+	job["shell_total"] = shell_total
+	job["collision_shapes"] = collision_shapes
+	job["playable_doors"] = playable_doors
+	job["solid_buildings"] = solid_buildings
+	if idx < buildings.size():
+		return false
 	rec["shell_pieces"] = shell_total
 	rec["interior_pieces"] = 0
 	rec["collision_shapes"] = collision_shapes
@@ -571,7 +693,9 @@ func _make_buildings(rec: Dictionary) -> Node:
 			whites.append(Color.WHITE)
 		node.add_child(_piece_multimesh(door_xforms, whites,
 			_door_mat))
-	return node
+	rec["buildings"] = node
+	job["b_done"] = true
+	return true
 
 
 ## Issue #204 (P4): assemble ONE building standalone, in the
@@ -675,83 +799,146 @@ func _add_box_shape(body: StaticBody3D, xf: Transform3D) -> void:
 ## west / north neighbors' buildings (their +x/+z spans can
 ## cross into this chunk) when those chunks are loaded.
 func _make_scatter(rec: Dictionary) -> Node:
-	_ensure_assets()
+	# One-shot form (pins + standalone callers): drain the
+	# staged scatter job synchronously and return the
+	# finished node — the same contract this function has
+	# always had. The streaming driver uses the stepped
+	# form (_scatter_job_step) instead.
+	var dj := _detail_job(rec)
+	while not bool(dj["s"]["s_done"]):
+		_scatter_job_step(rec, dj["s"])
+	return rec["scatter"]
+
+
+## One bounded step of a chunk's scatter stage. The first
+## step runs the pure generation (spill rects +
+## ScatterGen) and creates the Scatter node; later steps
+## fill one scatter type's MultiMesh in slices of
+## SCATTER_ITEMS_PER_STEP instances (collision shapes ride
+## the same slice), adding the type's MultiMeshInstance3D
+## when the type completes. Returns true when every type
+## is done (counts written, rec["scatter"] assigned).
+func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
+	if bool(job["s_done"]):
+		return true
 	var data: RefCounted = rec["data"]
 	var cx: int = data.cx
 	var cz: int = data.cz
-	var spill: Array = []
-	for off in [Vector2i(-1, 0), Vector2i(0, -1),
-			Vector2i(-1, -1)]:
-		var nk := _key(cx + off.x, cz + off.y)
-		if not _active.has(nk):
-			continue
-		var ndata: RefCounted = _active[nk]["data"]
-		for b in ndata.buildings:
-			var bx := float((cx + off.x) * 16 + int(b[0])) \
-				* WorldGen.LOT_SIZE
-			var bz := float((cz + off.y) * 16 + int(b[1])) \
-				* WorldGen.LOT_SIZE
-			spill.append(Rect2(bx - 0.6, bz - 0.6,
-				float(int(b[4])) * WorldGen.LOT_SIZE + 1.2,
-				float(int(b[5])) * WorldGen.LOT_SIZE + 1.2))
-	if suppress_enabled:
-		spill.append(Rect2(suppress_rect.position - Vector2(0.6,
-			0.6), suppress_rect.size + Vector2(1.2, 1.2)))
-	var scatter := ScatterGen.scatter_for_chunk(
-		WorldGen.WORLD_SEED, cx, cz, data, spill)
-	var node := Node3D.new()
-	node.name = "Scatter"
-	(rec["node"] as Node).add_child(node)
-	var chunk_origin := Vector3(float(cx) * WorldGen.CHUNK_SIZE,
-		0, float(cz) * WorldGen.CHUNK_SIZE)
-	var body := StaticBody3D.new()
-	body.name = "ScatterCollision"
-	body.collision_layer = 1
-	body.collision_mask = 0
-	node.add_child(body)
-	var shapes := 0
-	var total := 0
-	for t in ScatterGen.TYPES:
-		var items: Array = scatter[t]
-		if items.is_empty():
-			continue
-		total += items.size()
-		var mesh: Mesh = _scatter_meshes.get(t)
-		if mesh == null:
-			continue
-		var mm := MultiMesh.new()
+	if not bool(job["started"]):
+		_ensure_assets()
+		var spill: Array = []
+		for off in [Vector2i(-1, 0), Vector2i(0, -1),
+				Vector2i(-1, -1)]:
+			var nk := _key(cx + off.x, cz + off.y)
+			if not _active.has(nk):
+				continue
+			var ndata: RefCounted = _active[nk]["data"]
+			for b in ndata.buildings:
+				var bx := float((cx + off.x) * 16 + int(b[0])) \
+					* WorldGen.LOT_SIZE
+				var bz := float((cz + off.y) * 16 + int(b[1])) \
+					* WorldGen.LOT_SIZE
+				spill.append(Rect2(bx - 0.6, bz - 0.6,
+					float(int(b[4])) * WorldGen.LOT_SIZE + 1.2,
+					float(int(b[5])) * WorldGen.LOT_SIZE + 1.2))
+		if suppress_enabled:
+			spill.append(Rect2(suppress_rect.position - Vector2(0.6,
+				0.6), suppress_rect.size + Vector2(1.2, 1.2)))
+		job["gen"] = ScatterGen.scatter_start(
+			WorldGen.WORLD_SEED, cx, cz, data, spill)
+		var snode := Node3D.new()
+		snode.name = "Scatter"
+		(rec["node"] as Node).add_child(snode)
+		job["snode"] = snode
+		var sbody := StaticBody3D.new()
+		sbody.name = "ScatterCollision"
+		sbody.collision_layer = 1
+		sbody.collision_mask = 0
+		snode.add_child(sbody)
+		job["sbody"] = sbody
+		job["started"] = true
+		return false
+	# Generation stage: the pure candidate walk, sliced
+	# across steps — it is the scatter pass's largest
+	# single cost on a dense chunk, so it never runs
+	# whole inside one streaming step either.
+	if not bool(job["gen_done"]):
+		job["gen_done"] = ScatterGen.scatter_step(job["gen"],
+			SCATTER_CANDIDATES_PER_STEP)
+		if bool(job["gen_done"]):
+			job["scatter"] = job["gen"]["out"]
+			var total := 0
+			for t in ScatterGen.TYPES:
+				total += (job["scatter"][t] as Array).size()
+			job["total"] = total
+		return false
+	var scatter: Dictionary = job["scatter"]
+	var types: Array = ScatterGen.TYPES
+	if int(job["type_idx"]) >= types.size():
+		rec["scatter_count"] = int(job["total"])
+		rec["collision_shapes"] = int(rec.get("collision_shapes", 0)) \
+			+ int(job["shapes"])
+		rec["scatter"] = job["snode"]
+		job["s_done"] = true
+		return true
+	var t: String = types[int(job["type_idx"])]
+	var items: Array = scatter[t]
+	if items.is_empty():
+		job["type_idx"] = int(job["type_idx"]) + 1
+		return false
+	var mesh: Mesh = _scatter_meshes.get(t)
+	if mesh == null:
+		job["type_idx"] = int(job["type_idx"]) + 1
+		job["item_idx"] = 0
+		return false
+	var mm: MultiMesh = job["mm"]
+	if mm == null:
+		mm = MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.mesh = mesh
 		mm.instance_count = items.size()
-		for i in items.size():
-			var it: Dictionary = items[i]
-			var local := (it["p"] as Vector3) - chunk_origin
-			var basis := Basis(Vector3.UP, float(it["r"])) \
-				.scaled(Vector3.ONE * float(it["s"]))
-			mm.set_instance_transform(i, Transform3D(basis,
-				local))
-			if t == "oak" or t == "detailed" or t == "pine":
-				var cs := CollisionShape3D.new()
-				var cyl := CylinderShape3D.new()
-				cyl.radius = 0.35
-				cyl.height = 2.2
-				cs.shape = cyl
-				cs.position = local + Vector3(0, 1.1, 0)
-				body.add_child(cs)
-				shapes += 1
-			elif t == "rock_big":
-				_add_box_shape(body, Transform3D(
-					Basis.from_scale(Vector3(1.6, 1.2, 1.6)
-						* float(it["s"])),
-					local + Vector3(0, 0.5, 0)))
-				shapes += 1
+		job["mm"] = mm
+	var node: Node3D = job["snode"]
+	var body: StaticBody3D = job["sbody"]
+	var chunk_origin := Vector3(float(cx) * WorldGen.CHUNK_SIZE,
+		0, float(cz) * WorldGen.CHUNK_SIZE)
+	var shapes := int(job["shapes"])
+	var end := mini(int(job["item_idx"]) + SCATTER_ITEMS_PER_STEP,
+		items.size())
+	var i := int(job["item_idx"])
+	while i < end:
+		var it: Dictionary = items[i]
+		var local := (it["p"] as Vector3) - chunk_origin
+		var basis := Basis(Vector3.UP, float(it["r"])) \
+			.scaled(Vector3.ONE * float(it["s"]))
+		mm.set_instance_transform(i, Transform3D(basis,
+			local))
+		if t == "oak" or t == "detailed" or t == "pine":
+			var cs := CollisionShape3D.new()
+			var cyl := CylinderShape3D.new()
+			cyl.radius = 0.35
+			cyl.height = 2.2
+			cs.shape = cyl
+			cs.position = local + Vector3(0, 1.1, 0)
+			body.add_child(cs)
+			shapes += 1
+		elif t == "rock_big":
+			_add_box_shape(body, Transform3D(
+				Basis.from_scale(Vector3(1.6, 1.2, 1.6)
+					* float(it["s"])),
+				local + Vector3(0, 0.5, 0)))
+			shapes += 1
+		i += 1
+	job["shapes"] = shapes
+	job["item_idx"] = i
+	if i >= items.size():
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		node.add_child(mmi)
-	rec["scatter_count"] = total
-	rec["collision_shapes"] = int(rec.get("collision_shapes", 0)) \
-		+ shapes
-	return node
+		job["mm"] = null
+		job["item_idx"] = 0
+		job["type_idx"] = int(job["type_idx"]) + 1
+	return false
 
 
 ## Issue #208: accumulate a shell piece into its texture

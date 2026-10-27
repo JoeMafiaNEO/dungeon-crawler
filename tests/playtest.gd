@@ -21960,8 +21960,14 @@ func _test_building_gen_199() -> void:
 	var stb = StreamerB.new()
 	holder.add_child(stb)
 	stb.call("set_target_position", Vector3(362.5, 0, -1097.8))
+	# Staged detail (Jesse's order 2026-10-26): the detail
+	# pass advances in bounded steps per streaming step, so
+	# materialization is awaited with a generous loop, not
+	# the old one-pass-per-step count. The premise under
+	# test is unchanged: the chunk materializes, despawns
+	# on the #198 hysteresis, and rematerializes identical.
 	var gb := 0
-	while not bool(stb.call("debug_chunk_state", 2, -9)["has_buildings"]) and gb < 40:
+	while not bool(stb.call("debug_chunk_state", 2, -9)["has_buildings"]) and gb < 300:
 		stb.call("update_streaming", 1000)
 		gb += 1
 	var st_first: Dictionary = stb.call("debug_chunk_state", 2, -9)
@@ -21981,7 +21987,10 @@ func _test_building_gen_199() -> void:
 	_assert(not bool(stb.call("debug_chunk_state", 2, -9)["has_buildings"]),
 		"199: the interior despawn follows the #198 hysteresis")
 	stb.call("_note_visible", 2, -9)
-	stb.call("update_streaming", 6002)
+	var gb2 := 0
+	while not bool(stb.call("debug_chunk_state", 2, -9)["has_buildings"]) and gb2 < 300:
+		stb.call("update_streaming", 6002)
+		gb2 += 1
 	var st_second: Dictionary = stb.call("debug_chunk_state", 2, -9)
 	_assert(bool(st_second["has_buildings"])
 		and int(st_second["shell_pieces"]) == int(st_first["shell_pieces"])
@@ -22259,8 +22268,11 @@ func _test_world_streamer_198() -> void:
 	var st4 = StreamerW.new()
 	holder.add_child(st4)
 	st4.call("set_target_position", Vector3(362.5, 0, -1097.8))
+	# Staged detail (Jesse's order 2026-10-26): awaited
+	# with a generous loop, as in the 199 section — the
+	# pass advances in bounded steps now.
 	var guard4 := 0
-	while not bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]) and guard4 < 40:
+	while not bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]) and guard4 < 300:
 		st4.call("update_streaming", 1000)
 		guard4 += 1
 	_assert(bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
@@ -22280,7 +22292,10 @@ func _test_world_streamer_198() -> void:
 	_assert(not bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
 		"198(4): buildings despawn after ~5 s sustained off-screen")
 	st4.call("_note_visible", 2, -9)
-	st4.call("update_streaming", 6002)
+	guard4 = 0
+	while not bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]) and guard4 < 300:
+		st4.call("update_streaming", 6002)
+		guard4 += 1
 	_assert(bool(st4.call("debug_chunk_state", 2, -9)["has_buildings"]),
 		"198(4): buildings rematerialize when the chunk is seen again")
 	holder.queue_free()

@@ -161,7 +161,7 @@ static func _item(seed: int, hx: int, hz: int, wx: float,
 ## The chunk's scatter. `data` is the chunk's own ChunkData;
 ## `spill_rects` are world-space building footprints (already
 ## expanded) from neighboring chunks that can overlap this one.
-static func scatter_for_chunk(seed: int, cx: int, cz: int,
+static func scatter_start(seed: int, cx: int, cz: int,
 		data: RefCounted, spill_rects: Array = []) -> Dictionary:
 	var out := {}
 	for t in TYPES:
@@ -180,115 +180,160 @@ static func scatter_for_chunk(seed: int, cx: int, cz: int,
 	var steps := int(WorldGen.CHUNK_SIZE / CELL)
 	var dens_by_lot := {}
 	var grove_by_cell := {}
-	for iz in steps:
-		for ix in steps:
-			var cxm := x0 + (float(ix) + 0.5) * CELL
-			var czm := z0 + (float(iz) + 0.5) * CELL
-			var hx := int(floor(cxm / CELL))
-			var hz := int(floor(czm / CELL))
-			# Issue #207: full-cell positional jitter — up to
-			# the whole cell pitch, from the same hash
-			# discipline. The candidate's identity stays its
-			# cell (hx, hz); only where it STANDS moves, and
-			# every legality rule below (lots, footprints,
-			# slope) reads at the jittered position, so the
-			# exclusions hold exactly, not approximately.
-			var wx := cxm + (WorldGen.rand01(seed, hx, hz,
-				SALT_JX) - 0.5) * CELL
-			var wz := czm + (WorldGen.rand01(seed, hx, hz,
-				SALT_JZ) - 0.5) * CELL
-			# Ownership stays by position (#204's border
-			# rule): fold the jitter at the chunk's edges
-			# (mirror, so nothing piles up on the seam and
-			# a chunk owns only points standing inside it).
-			if wx < x0:
-				wx = x0 + (x0 - wx)
-			elif wx > x0 + WorldGen.CHUNK_SIZE:
-				wx = x0 + WorldGen.CHUNK_SIZE \
-					- (wx - x0 - WorldGen.CHUNK_SIZE)
-			if wz < z0:
-				wz = z0 + (z0 - wz)
-			elif wz > z0 + WorldGen.CHUNK_SIZE:
-				wz = z0 + WorldGen.CHUNK_SIZE \
-					- (wz - z0 - WorldGen.CHUNK_SIZE)
-			var llx := int(floor((wx - x0) / WorldGen.LOT_SIZE))
-			var llz := int(floor((wz - z0) / WorldGen.LOT_SIZE))
-			if llx < 0 or llx > 15 or llz < 0 or llz > 15:
-				# Jitter carried the point across the chunk
-				# border (<= 1 m): the neighbor's lots are
-				# not this call's to read — judge by the
-				# candidate's own lot.
-				llx = int(floor((cxm - x0) / WorldGen.LOT_SIZE))
-				llz = int(floor((czm - z0) / WorldGen.LOT_SIZE))
-			var cls: int = data.lot_class(llx, llz)
-			if cls == ChunkData.ROAD or cls == ChunkData.BUILDING \
-					or cls == ChunkData.PLAZA:
-				continue
-			var in_rect := false
-			for r in rects:
-				if (r as Rect2).has_point(Vector2(wx, wz)):
-					in_rect = true
-					break
-			if in_rect:
-				continue
-			var lkey := "%d,%d" % [llx, llz]
-			if not dens_by_lot.has(lkey):
-				var lc := Vector2(x0 + (float(llx) + 0.5)
-					* WorldGen.LOT_SIZE, z0 + (float(llz) + 0.5)
-					* WorldGen.LOT_SIZE)
-				dens_by_lot[lkey] = float(WorldGen.density_at_world(
-					seed, lc.x, lc.y)["density"])
-			var dens: float = dens_by_lot[lkey]
-			var gkey := "%d,%d" % [int(floor(wx / GROVE_CELL)),
-				int(floor(wz / GROVE_CELL))]
-			if not grove_by_cell.has(gkey):
-				grove_by_cell[gkey] = grove_at(seed, wx, wz)
-			var grove: bool = grove_by_cell[gkey]
-			# #207: the clumping factor, layered WITH the N1
-			# falloff (dens) — thickets and clearings over
-			# the settlement gradient.
-			var clump := clump_at(seed, wx, wz)
-			# Grass: fine-grained in groves (sparser on open
-			# GREEN lots); follows the ground anywhere (N5).
-			var gh := WorldGen.rand01(seed, hx, hz, SALT_GRASS)
-			if (grove and gh < GRASS_P * clump) or (not grove
-					and cls == ChunkData.GREEN
-					and gh < GRASS_P * 0.6 * clump):
-				out["grass"].append(_item(seed, hx, hz, wx, wz,
-					gh, 1.0))
-			if grove:
-				var th := WorldGen.rand01(seed, hx, hz, SALT_TREE)
-				if th < TREE_P * clump and slope_at(seed, wx,
-						wz) <= MAX_SLOPE:
-					var kind := "pine"
-					if dens >= NEAR_DENSITY:
-						kind = "oak" if WorldGen.rand01(seed,
-							hx, hz, SALT_TREE_TYPE) < 0.6 \
-							else "detailed"
-					out[kind].append(_item(seed, hx, hz, wx,
-						wz, th, 1.0))
-				var mh := WorldGen.rand01(seed, hx, hz, SALT_MUSH)
-				if mh < MUSH_P * clump:
-					out["mushroom"].append(_item(seed, hx, hz,
-						wx, wz, mh, 1.0))
-			var rh := WorldGen.rand01(seed, hx, hz, SALT_ROCK)
-			if rh < ROCK_P * (1.0 - 0.6 * dens) * clump \
-					and slope_at(seed, wx, wz) <= MAX_SLOPE:
-				var big := WorldGen.rand01(seed, hx, hz,
-					SALT_ROCK_BIG) < 0.3
-				out["rock_big" if big else "rock_small"].append(
-					_item(seed, hx, hz, wx, wz, rh, 1.0))
-			# Fences: settlement-edge dressing, visual only.
-			# (Keyed to the settlement gradient alone — the
-			# clumping field is grove scatter's, not theirs.)
-			if dens >= 0.45:
-				var fh := WorldGen.rand01(seed, hx, hz,
-					SALT_FENCE)
-				if fh < FENCE_P:
-					out["fence"].append(_item(seed, hx, hz,
-						wx, wz, fh, 1.0))
-	_apply_caps(out)
-	return out
+	return {"seed": seed, "data": data, "out": out,
+		"rects": rects, "x0": x0, "z0": z0, "steps": steps,
+		"cursor": 0, "dens_by_lot": dens_by_lot,
+		"grove_by_cell": grove_by_cell, "done": false}
+
+
+## The chunk's scatter (one-shot form): the same walk,
+## drained synchronously. scatter_start + scatter_step
+## exist so the streamer can stage the generation across
+## frames (staged building, Jesse's order 2026-10-26);
+## the output is byte-identical either way — the walk is
+## the same candidates in the same order, and the caps
+## apply once, when the walk completes.
+static func scatter_for_chunk(seed: int, cx: int, cz: int,
+		data: RefCounted, spill_rects: Array = []) -> Dictionary:
+	var state := scatter_start(seed, cx, cz, data, spill_rects)
+	while not scatter_step(state, 1 << 30):
+		pass
+	return state["out"]
+
+
+## Advance a scatter walk by up to `budget` candidates.
+## Returns true when the grid is exhausted (caps applied
+## at that moment, exactly as the one-shot form).
+static func scatter_step(state: Dictionary, budget: int) -> bool:
+	if bool(state["done"]):
+		return true
+	var seed: int = state["seed"]
+	var data: RefCounted = state["data"]
+	var out: Dictionary = state["out"]
+	var rects: Array = state["rects"]
+	var x0: float = state["x0"]
+	var z0: float = state["z0"]
+	var steps: int = state["steps"]
+	var dens_by_lot: Dictionary = state["dens_by_lot"]
+	var grove_by_cell: Dictionary = state["grove_by_cell"]
+	var total_cells := steps * steps
+	var end := mini(int(state["cursor"]) + budget, total_cells)
+	var cur := int(state["cursor"])
+	while cur < end:
+		var iz := cur / steps
+		var ix := cur % steps
+		cur += 1
+		var cxm := x0 + (float(ix) + 0.5) * CELL
+		var czm := z0 + (float(iz) + 0.5) * CELL
+		var hx := int(floor(cxm / CELL))
+		var hz := int(floor(czm / CELL))
+		# Issue #207: full-cell positional jitter — up to
+		# the whole cell pitch, from the same hash
+		# discipline. The candidate's identity stays its
+		# cell (hx, hz); only where it STANDS moves, and
+		# every legality rule below (lots, footprints,
+		# slope) reads at the jittered position, so the
+		# exclusions hold exactly, not approximately.
+		var wx := cxm + (WorldGen.rand01(seed, hx, hz,
+			SALT_JX) - 0.5) * CELL
+		var wz := czm + (WorldGen.rand01(seed, hx, hz,
+			SALT_JZ) - 0.5) * CELL
+		# Ownership stays by position (#204's border
+		# rule): fold the jitter at the chunk's edges
+		# (mirror, so nothing piles up on the seam and
+		# a chunk owns only points standing inside it).
+		if wx < x0:
+			wx = x0 + (x0 - wx)
+		elif wx > x0 + WorldGen.CHUNK_SIZE:
+			wx = x0 + WorldGen.CHUNK_SIZE \
+				- (wx - x0 - WorldGen.CHUNK_SIZE)
+		if wz < z0:
+			wz = z0 + (z0 - wz)
+		elif wz > z0 + WorldGen.CHUNK_SIZE:
+			wz = z0 + WorldGen.CHUNK_SIZE \
+				- (wz - z0 - WorldGen.CHUNK_SIZE)
+		var llx := int(floor((wx - x0) / WorldGen.LOT_SIZE))
+		var llz := int(floor((wz - z0) / WorldGen.LOT_SIZE))
+		if llx < 0 or llx > 15 or llz < 0 or llz > 15:
+			# Jitter carried the point across the chunk
+			# border (<= 1 m): the neighbor's lots are
+			# not this call's to read — judge by the
+			# candidate's own lot.
+			llx = int(floor((cxm - x0) / WorldGen.LOT_SIZE))
+			llz = int(floor((czm - z0) / WorldGen.LOT_SIZE))
+		var cls: int = data.lot_class(llx, llz)
+		if cls == ChunkData.ROAD or cls == ChunkData.BUILDING \
+				or cls == ChunkData.PLAZA:
+			continue
+		var in_rect := false
+		for r in rects:
+			if (r as Rect2).has_point(Vector2(wx, wz)):
+				in_rect = true
+				break
+		if in_rect:
+			continue
+		var lkey := "%d,%d" % [llx, llz]
+		if not dens_by_lot.has(lkey):
+			var lc := Vector2(x0 + (float(llx) + 0.5)
+				* WorldGen.LOT_SIZE, z0 + (float(llz) + 0.5)
+				* WorldGen.LOT_SIZE)
+			dens_by_lot[lkey] = float(WorldGen.density_at_world(
+				seed, lc.x, lc.y)["density"])
+		var dens: float = dens_by_lot[lkey]
+		var gkey := "%d,%d" % [int(floor(wx / GROVE_CELL)),
+			int(floor(wz / GROVE_CELL))]
+		if not grove_by_cell.has(gkey):
+			grove_by_cell[gkey] = grove_at(seed, wx, wz)
+		var grove: bool = grove_by_cell[gkey]
+		# #207: the clumping factor, layered WITH the N1
+		# falloff (dens) — thickets and clearings over
+		# the settlement gradient.
+		var clump := clump_at(seed, wx, wz)
+		# Grass: fine-grained in groves (sparser on open
+		# GREEN lots); follows the ground anywhere (N5).
+		var gh := WorldGen.rand01(seed, hx, hz, SALT_GRASS)
+		if (grove and gh < GRASS_P * clump) or (not grove
+				and cls == ChunkData.GREEN
+				and gh < GRASS_P * 0.6 * clump):
+			out["grass"].append(_item(seed, hx, hz, wx, wz,
+				gh, 1.0))
+		if grove:
+			var th := WorldGen.rand01(seed, hx, hz, SALT_TREE)
+			if th < TREE_P * clump and slope_at(seed, wx,
+					wz) <= MAX_SLOPE:
+				var kind := "pine"
+				if dens >= NEAR_DENSITY:
+					kind = "oak" if WorldGen.rand01(seed,
+						hx, hz, SALT_TREE_TYPE) < 0.6 \
+						else "detailed"
+				out[kind].append(_item(seed, hx, hz, wx,
+					wz, th, 1.0))
+			var mh := WorldGen.rand01(seed, hx, hz, SALT_MUSH)
+			if mh < MUSH_P * clump:
+				out["mushroom"].append(_item(seed, hx, hz,
+					wx, wz, mh, 1.0))
+		var rh := WorldGen.rand01(seed, hx, hz, SALT_ROCK)
+		if rh < ROCK_P * (1.0 - 0.6 * dens) * clump \
+				and slope_at(seed, wx, wz) <= MAX_SLOPE:
+			var big := WorldGen.rand01(seed, hx, hz,
+				SALT_ROCK_BIG) < 0.3
+			out["rock_big" if big else "rock_small"].append(
+				_item(seed, hx, hz, wx, wz, rh, 1.0))
+		# Fences: settlement-edge dressing, visual only.
+		# (Keyed to the settlement gradient alone — the
+		# clumping field is grove scatter's, not theirs.)
+		if dens >= 0.45:
+			var fh := WorldGen.rand01(seed, hx, hz,
+				SALT_FENCE)
+			if fh < FENCE_P:
+				out["fence"].append(_item(seed, hx, hz,
+					wx, wz, fh, 1.0))
+	state["cursor"] = cur
+	if cur >= total_cells:
+		_apply_caps(out)
+		state["done"] = true
+		return true
+	return false
 
 
 ## N4: deterministic trim — the lowest deciding hashes win, so
