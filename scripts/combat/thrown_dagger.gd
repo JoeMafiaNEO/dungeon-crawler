@@ -146,6 +146,15 @@ func _check_mob_hits() -> void:
 			var hit_dmg := damage
 			if mob.is_marked():
 				hit_dmg *= 1.5
+			# Issue #210 slice B5: Wayfarer's Edge — the
+			# thrown dagger is the rogue's basic verb;
+			# +50% against full-health targets.
+			var downer := _owner_node()
+			if downer != null and downer.has_method(
+					"tree_wayfarers_edge") and bool(
+					downer.call("tree_wayfarers_edge")) \
+					and mob.hp >= mob.max_hp:
+				hit_dmg *= 1.5
 			if multiplayer.is_server():
 				mob.take_damage(hit_dmg, owner_peer, global_position)
 			else:

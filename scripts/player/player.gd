@@ -108,7 +108,17 @@ func cooldown_mult() -> float:
 ## guest's copy divides by the guest's true investment.
 func atk_spd_mult() -> float:
 	if is_multiplayer_authority():
-		return 1.0 + bonus_atk_spd
+		# Issue #210 section 1.2 (settled): the owner's own
+		# cadence folds the tree — the same combined value
+		# that already rides the snapshot.
+		return 1.0 + bonus_atk_spd + _tree_stat("atk_spd") \
+			+ (_tree_tempo_pct / 100.0 \
+				if Time.get_ticks_msec() < _tree_tempo_until \
+				else 0.0) \
+			+ (_tree_adrenaline_pct / 100.0 \
+				if Time.get_ticks_msec() \
+					< _tree_adrenaline_until \
+				else 0.0)
 	return 1.0 + net_bonus_atk_spd
 ## Bounty Board (issue #7): server-authoritative per-player progress,
 ## {bounty_id: count} (-1 = failed). Synced via player snapshots.
@@ -216,6 +226,42 @@ var eagle_eye_used_wave := -1
 var specialization := ""  # skill_id, or "" for none
 var affinity := {}  # skill_id -> float (0-100)
 var family_collection := {}  # family_id -> {"traits": [trait_ids], "signature": bool}
+## Issue #206 (Deep Tree): the character's tree seed (stored
+## per save; initialized from DeepTree.TREE_SEED, stored
+## value wins on apply), owned packed node ids, and the
+## NEVER-clamped lifetime affinity counters the insight
+## wallets derive from. Aggregates are derived state —
+## recomputed by DeepTree.compute_aggregates, never saved.
+var tree_seed := DeepTree.TREE_SEED
+var tree_owned: Array = []
+var tree_lifetime := {}  # skill_id -> float (lifetime, unclamped)
+var tree_aggregates := {}
+## Server-side monotone record: branch -> last claimed
+## lifetime total a validated purchase presented. Rollback
+## claims (below the record) reject (spec section 4).
+var tree_last_claimed := {}
+## Fuel for the Flame (issue #206 behavior): msec deadline
+## of the post-Inferno fire-damage window. Timed buff in
+## the _buff_mult pattern — a var + a clock check at the
+## read sites.
+var _tree_fuel_until := 0
+## Issue #210 (slice B2): Veilwalker's post-veil damage
+## window (msec), From the Dark's veil/step recency
+## stamp (msec), and Twin Step's free-recast window.
+var _tree_veil_until := 0
+var _tree_dark_stamp := 0
+var _tree_twin_until := 0
+var _tree_twin_armed := false
+## Issue #210 (slice B3): Warlord's Tempo — the totem
+## placement buff window (msec) and its percent.
+var _tree_tempo_until := 0
+var _tree_adrenaline_until := 0
+var _tree_adrenaline_pct := 0.0
+var _tree_tempo_pct := 0.0
+var _tree_tempered_until := 0
+var _reinforce_strength := 0.5
+## Issue #210: Stormcharged's window (10 s after Tempest).
+var _tree_storm_until := 0
 ## Anti-cheese: per-enemy cooldowns for affinity gain.
 var _affinity_enemy_cd := {}  # "%s:%d" % [skill_id, enemy_id] -> msec
 ## Per-cast caps: cast_id -> points granted so far.
@@ -578,9 +624,9 @@ func _recalc_stats() -> void:
 	var hp_m := 1.0
 	var spd_m := 1.0
 	xp_mult = 1.0
-	max_hp = class_data.base_health + float(level - 1) * 15.0 + bonus_health
-	damage = class_data.base_damage + float(level - 1) * 2.0 + bonus_damage
-	move_speed = class_data.base_move_speed + bonus_speed
+	max_hp = class_data.base_health + float(level - 1) * 15.0 + bonus_health + _tree_stat("health")
+	damage = class_data.base_damage + float(level - 1) * 2.0 + bonus_damage + _tree_stat("damage")
+	move_speed = class_data.base_move_speed + bonus_speed + _tree_stat("speed")
 	attack_cooldown = class_data.base_attack_cooldown
 	attack_range = class_data.base_attack_range
 	for entry in inventory:
@@ -608,6 +654,10 @@ func _recalc_stats() -> void:
 	max_hp *= special_hp_mult
 	damage *= dmg_m
 	move_speed *= spd_m
+	# Issue #210 slice B5 (spec section 3): the tree xp
+	# layer — base x item x tree; the section 1.5 envelope
+	# does not clamp xp (not a combat channel).
+	xp_mult *= 1.0 + _tree_skill_mod("xp", "xp_pct", 0.0)
 	# Milestone passives: 25/50/75/100.
 	var ms := milestone_mult()
 	damage *= ms
@@ -1127,14 +1177,14 @@ func _update_staff_glow() -> void:
 		return
 	var f := _aura_factor()
 	_staff_glow.light_energy = 0.5 * f
-	_staff_glow.omni_range = 3.5 + float(level) * 0.15 + bonus_aura * 0.5
+	_staff_glow.omni_range = 3.5 + float(level) * 0.15 + (bonus_aura + _tree_stat("aura")) * 0.5
 	if _staff_crystal_mat != null:
 		_staff_crystal_mat.emission_energy_multiplier = 2.0 * f
 
 
 ## Shared aura brightness factor (level + invested aura points).
 func _aura_factor() -> float:
-	return 1.0 + float(maxi(0, level - 1)) * 0.25 + bonus_aura * 0.5
+	return 1.0 + float(maxi(0, level - 1)) * 0.25 + (bonus_aura + _tree_stat("aura")) * 0.5
 
 
 ## Team-visible aura: a world-space light every peer renders, so the
@@ -1181,9 +1231,336 @@ func _push_aura() -> void:
 	if not is_multiplayer_authority():
 		return
 	net_aura_level = level
-	net_bonus_aura = bonus_aura
+	# Issue #206: the combined aura (base + tree) rides the
+	# sync channel, like the snapshot's combined atk_spd.
+	net_bonus_aura = bonus_aura + _tree_stat("aura")
 	_update_aura_visual()
-	rpc("sync_aura", level, bonus_aura)
+	rpc("sync_aura", level, bonus_aura + _tree_stat("aura"))
+
+
+# --- Deep Tree (issue #206) ---
+
+## One aggregate value, read-safe before the first
+## recompute (empty aggregates read as zero everywhere).
+func _tree_stat(key: String) -> float:
+	if tree_aggregates.is_empty():
+		return 0.0
+	return float((tree_aggregates.get("stat_adds", {})
+		as Dictionary).get(key, 0.0))
+
+
+func _tree_skill_mod(skill_id: String, key: String,
+		default_value: float) -> float:
+	if tree_aggregates.is_empty():
+		return default_value
+	var mods: Dictionary = tree_aggregates.get("skill_mods",
+		{})
+	if not mods.has(skill_id):
+		return default_value
+	return float((mods[skill_id] as Dictionary).get(key,
+		default_value))
+
+
+func _recompute_tree_aggregates() -> void:
+	tree_aggregates = DeepTree.compute_aggregates(tree_seed,
+		class_id, tree_owned)
+
+
+## Public read for effect scripts (spec section 5): the
+## caster's radius_add for a skill, fetched by the effects
+## through get_player_node(owner_peer) at the effect site.
+func tree_radius_add(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "radius_add", 0.0)
+
+
+## The fire-damage multiplier the three fire cast sites
+## fold in beside trait_damage_mult (spec section 5): the
+## skill's aggregate dmg_mult, with the two authored
+## behaviors multiplying under their conditions.
+func _tree_fire_mult(skill_id: String) -> float:
+	var m := _tree_skill_mod(skill_id, "dmg_mult", 1.0)
+	if tree_aggregates.is_empty():
+		return m
+	var beh: Dictionary = tree_aggregates.get("behaviors", {})
+	if beh.has("emberheart") and hp < max_hp * 0.35:
+		m *= 1.0 + float(beh["emberheart"]) / 100.0
+	if beh.has("fuel_for_the_flame") \
+			and Time.get_ticks_msec() < _tree_fuel_until:
+		m *= 1.0 + float(beh["fuel_for_the_flame"]) / 100.0
+	return m
+
+
+func _tree_variant(skill_id: String) -> String:
+	if tree_aggregates.is_empty():
+		return ""
+	return str((tree_aggregates.get("variants", {})
+		as Dictionary).get(skill_id, ""))
+
+
+## Issue #210: the plain aggregate damage multiplier for a
+## skill (echoes + the skill's own dmg_pct nodes) — the
+## frost/storm cast expressions fold this beside
+## trait_damage_mult, closing the prototype's unwired-echo
+## disclosure for frost/blizzard/lightning/barrage.
+func _tree_mult(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "dmg_mult", 1.0)
+
+
+func _tree_behavior_pct(behavior_id: String) -> float:
+	if tree_aggregates.is_empty():
+		return 0.0
+	return float((tree_aggregates.get("behaviors", {})
+		as Dictionary).get(behavior_id, 0.0))
+
+
+## Frost's cast multiplier: the aggregate dmg_mult with
+## Permafrost Heart multiplying while the caster is above
+## 75% health (Emberheart's high-HP mirror). Shatterglass
+## is target-conditioned and reads at the hit sites.
+func _tree_frost_mult(skill_id: String) -> float:
+	var m := _tree_mult(skill_id)
+	var pct := _tree_behavior_pct("permafrost_heart")
+	if pct > 0.0 and hp > max_hp * 0.75:
+		m *= 1.0 + pct / 100.0
+	return m
+
+
+## Issue #210 Amendment 1: the caster's Arcing Brand amp
+## for a skill. Public: the Fireball explode loop reads
+## the barrage amp via the caster.
+## Issue #210 (Veilwalker): the damage multiplier of the
+## post-veil window — 1.0 outside it or unowned.
+func _tree_veil_mult() -> float:
+	if Time.get_ticks_msec() < _tree_veil_until:
+		var p := _tree_behavior_pct("veilwalker")
+		if p > 0.0:
+			return 1.0 + p / 100.0
+	return 1.0
+
+
+## Issue #210 (slice B3): the Totem's reads of its
+## caster's tree — the public wrappers in the
+## tree_brand_amp pattern.
+func tree_totem_mod(skill_id: String, key: String,
+		default: float) -> float:
+	return _tree_skill_mod(skill_id, key, default)
+
+
+func tree_totem_behavior(behavior_id: String) -> float:
+	return _tree_behavior_pct(behavior_id)
+
+
+func tree_totem_variant(skill_id: String) -> String:
+	return _tree_variant(skill_id)
+
+
+## Issue #210 (slice B4): public structure reads for
+## Structure/Dungeon, same wrapper pattern.
+func tree_structure_mod(skill_id: String, key: String,
+		default: float) -> float:
+	return _tree_skill_mod(skill_id, key, default)
+
+
+func tree_structure_behavior(behavior_id: String) -> float:
+	return _tree_behavior_pct(behavior_id)
+
+
+func tree_structure_variant(skill_id: String) -> String:
+	return _tree_variant(skill_id)
+
+
+## Issue #210 (slice B4, Aegis Shell): true while this
+## player's Reinforce shell holds and the variant is
+## owned — read at the forge damage sites.
+func tree_aegis_active() -> bool:
+	return _reinforce_t > 0.0 and _tree_variant("reinforce") \
+		== "aegis_shell"
+
+
+## Issue #210 (slice B4, Salvage): a structure of this
+## player's was destroyed server-side — refund the
+## behavior's percent of its placement cooldown.
+func apply_tree_salvage(structure_id: String) -> void:
+	var pct := _tree_behavior_pct("salvage")
+	if pct <= 0.0:
+		return
+	var base := {"sentry_turret": 12.0, "bulwark_wall": 8.0,
+		"spike_trap": 10.0, "keystone": 30.0}
+	if not base.has(structure_id):
+		return
+	var cur := float(ability_cds.get(structure_id, 0.0))
+	if cur > 0.0:
+		ability_cds[structure_id] = maxf(0.0,
+			cur - float(base[structure_id]) * pct / 100.0)
+
+
+## Issue #210 slice B5 (Amendment 1 section C.1): the
+## caster's burn fraction for a skill (fireball / meteor).
+func tree_burn_pct(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "burn_pct", 0.0)
+
+
+## Issue #210 slice B5 (spec section 3): Wayfarer's Edge
+## governance for the basic-attack variant slot.
+## Public variant check for cross-object readers.
+func tree_variant_is(skill_id: String, vid: String) -> bool:
+	return _tree_variant(skill_id) == vid
+
+
+func tree_wayfarers_edge() -> bool:
+	return _tree_variant("basic_attack") == "wayfarers_edge"
+
+
+func tree_brand_amp(skill_id: String) -> float:
+	return _tree_skill_mod(skill_id, "brand_amp", 0.0)
+
+
+## Shatterglass (issue #210): frost damage against a
+## slowed or frozen target (the #173 status system's own
+## state — mob.is_slowed covers the frozen 0.0-mult case).
+## Public: the FrostShard hit site reads it via the caster.
+func tree_shatterglass_mult(mob: Variant) -> float:
+	var pct := _tree_behavior_pct("shatterglass")
+	if pct <= 0.0 or mob == null:
+		return 1.0
+	if bool(mob.call("is_slowed")):
+		return 1.0 + pct / 100.0
+	return 1.0
+
+
+## Owner-side purchase entry (spec sections 4/8): local
+## validation first, then the single server-validated claim
+## path. Returns true when the claim was SENT (or applied
+## host-locally); acceptance itself arrives via
+## tree_sync_player.
+func try_purchase(node_id: int) -> bool:
+	var branch := DeepTree.id_branch(node_id)
+	var node := DeepTree.node_for(tree_seed, class_id, branch,
+		DeepTree.id_ring(node_id), DeepTree.id_index(node_id))
+	if node.is_empty() or bool(node.get("inert", false)):
+		return false
+	if not DeepTree.branch_unlocked(family_collection,
+			class_id, branch, tree_lifetime, level):
+		return false
+	if tree_owned.has(node_id):
+		return false
+	if not DeepTree.prereq_met(tree_seed, class_id, node_id,
+			tree_owned):
+		return false
+	if DeepTree.wallet_of(tree_seed, class_id, tree_lifetime,
+			tree_owned, branch) < int(node["cost"]):
+		return false
+	var claimed := int(DeepTree.lifetime_total(tree_lifetime,
+		class_id, branch))
+	if _tree_is_server():
+		# Host: direct call (the standard host-routing
+		# pattern); the accept broadcasts the sync, whose
+		# call_local leg applies on this copy the same way
+		# as every replica (the validator already recorded
+		# it; the sync re-application is idempotent).
+		var reason := _tree_validate_claim(node_id, claimed,
+			get_multiplayer_authority())
+		if reason != "":
+			return false
+		if multiplayer.has_multiplayer_peer():
+			rpc("tree_sync_player",
+				get_multiplayer_authority(), tree_owned,
+				tree_aggregates)
+		return true
+	# Guest: claim to the server's copy of this node.
+	rpc_id(NetworkManager.server_peer_id,
+		"tree_claim_purchase", node_id, claimed)
+	return true
+
+
+func _tree_is_server() -> bool:
+	return not multiplayer.has_multiplayer_peer() \
+		or multiplayer.is_server()
+
+
+## The regeneration validator (spec section 4.2) — pure
+## enough to drive process-locally in tests: it consults
+## only this copy's state (which, on the server, is the
+## ledger). Returns "" on accept, else the reject reason.
+## On accept it RECORDS the purchase on this copy; the
+## caller broadcasts the sync.
+func _tree_validate_claim(node_id: int,
+		claimed_lifetime: int, claimant_peer: int) -> String:
+	if claimant_peer != get_multiplayer_authority():
+		return "not_owner"
+	var branch := DeepTree.id_branch(node_id)
+	var node := DeepTree.node_for(tree_seed, class_id, branch,
+		DeepTree.id_ring(node_id), DeepTree.id_index(node_id))
+	if node.is_empty() or bool(node.get("inert", false)):
+		return "inert"
+	if not DeepTree.branch_unlocked(family_collection,
+			class_id, branch, tree_lifetime, level):
+		return "locked"
+	if tree_owned.has(node_id):
+		return "duplicate"
+	if not DeepTree.prereq_met(tree_seed, class_id, node_id,
+			tree_owned):
+		return "prereq"
+	if claimed_lifetime < int(tree_last_claimed.get(branch,
+			0)):
+		return "rollback"
+	var spent := DeepTree.spent_total(tree_seed, class_id,
+		tree_owned, branch)
+	if claimed_lifetime - spent < int(node["cost"]):
+		return "insufficient"
+	tree_owned.append(node_id)
+	tree_last_claimed[branch] = claimed_lifetime
+	_recompute_tree_aggregates()
+	return ""
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func tree_claim_purchase(node_id: int,
+		claimed_lifetime: int) -> void:
+	if not _tree_is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var reason := _tree_validate_claim(node_id,
+		claimed_lifetime, sender)
+	if reason == "":
+		rpc("tree_sync_player", get_multiplayer_authority(),
+			tree_owned, tree_aggregates)
+	else:
+		rpc_id(sender, "tree_purchase_denied", node_id, reason)
+
+
+@rpc("any_peer", "call_local", "reliable")
+func tree_sync_player(peer_id: int, owned: Array,
+		aggregates: Dictionary) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		return # only the server originates syncs
+	if peer_id != get_multiplayer_authority():
+		return
+	tree_owned = []
+	for id in owned:
+		tree_owned.append(int(id))
+	tree_aggregates = aggregates.duplicate(true)
+	_recalc_stats()
+	_push_aura()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func tree_purchase_denied(node_id: int, reason: String) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		return
+	# Nothing changes anywhere on a reject (spec section 4);
+	# the denial is surfaced for the inspector/HUD only.
+	print("[DeepTree] purchase denied node=%d reason=%s"
+		% [node_id, reason])
+	# Issue #215 (node-UI spec 5.3): forward the denial
+	# to the HUD, whose canvas surface shows the reason
+	# verbatim. Guarded; nothing else about this handler
+	# changes.
+	if hud != null and hud.has_method(
+			"tree_denial_received"):
+		hud.tree_denial_received(node_id, reason)
 
 
 # --- Co-op ping ---
@@ -2233,8 +2610,19 @@ func _place_totem() -> void:
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon != null:
 		dungeon.rpc("place_totem", totem_id, global_position, int(multiplayer.get_unique_id()), ability_rank())
+	_tree_note_totem_placed()
 	if hud != null:
 		hud.refresh_abilities(self)
+
+
+## Issue #210 (Warlord's Tempo): placing a totem grants
+## the placer +X% attack speed for 5 s (read in the
+## atk_spd chain). Both placement paths call this.
+func _tree_note_totem_placed() -> void:
+	var tempo_pct := _tree_behavior_pct("warlords_tempo")
+	if tempo_pct > 0.0:
+		_tree_tempo_pct = tempo_pct
+		_tree_tempo_until = Time.get_ticks_msec() + 5000
 
 
 ## Rogue ability activation (implemented in the rogue task).
@@ -2275,6 +2663,11 @@ func _activate_eagle_eye() -> void:
 	# X-ray all mobs on every peer.
 	var cast_id := "eagle_%d" % _cast_seq
 	var revealed := 0
+	# Issue #210 (Surveyor): the reveal also marks the
+	# nearest elite or boss, through the mark's own path.
+	var surveyor := _tree_behavior_pct("surveyor") > 0.0
+	var survey_target: Mob = null
+	var survey_d := INF
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
 		if m != null and m.alive:
@@ -2283,7 +2676,21 @@ func _activate_eagle_eye() -> void:
 			var pts := 5.0 if (m.is_elite or m.data.is_boss) else 1.0
 			gain_affinity_capped("eagle_eye", pts, -1, cast_id, 10.0)
 			revealed += 1
-	await get_tree().create_timer(4.0).timeout
+			if surveyor and (m.is_elite or m.data.is_boss):
+				var d := m.global_position.distance_to(global_position)
+				if d < survey_d:
+					survey_d = d
+					survey_target = m
+	if survey_target != null:
+		var svuln := _tree_skill_mod("mark", "vuln_add", 0.0)
+		if _tree_variant("mark") == "death_sentence":
+			svuln += 0.25
+		if multiplayer.is_server():
+			survey_target.apply_mark(Mob.MARK_PERMANENT, 1.0, svuln)
+		else:
+			survey_target.rpc_id(NetworkManager.server_peer_id, "apply_mark", Mob.MARK_PERMANENT, 1.0, svuln)
+	await get_tree().create_timer(4.0 + _tree_skill_mod(
+		"eagle_eye", "duration_add", 0.0)).timeout
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
 		if m != null and is_instance_valid(m):
@@ -2297,19 +2704,33 @@ func _activate_smoke_veil() -> void:
 			hud.toast("Smoke Veil on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["smoke_veil"] = (30.0) * cooldown_mult()
+	ability_cds["smoke_veil"] = (30.0) * cooldown_mult() \
+		* _tree_skill_mod("smoke_veil", "cd_mult", 1.0)
 	stealthed = true
-	_stealth_t = 7.0 if has_trait("longer_shadows") else 6.0
+	_stealth_t = (7.0 if has_trait("longer_shadows") else 6.0) \
+		+ _tree_skill_mod("smoke_veil", "duration_add", 0.0)
+	# Issue #210 (From the Dark): the veil sets the recency
+	# the combo condition reads.
+	_tree_dark_stamp = Time.get_ticks_msec()
 	rpc("set_stealthed", true)
 	AudioManager.sfx("smoke_veil")
 	Effects.burst(get_parent(), global_position + Vector3(0, 1.0, 0), Color(0.5, 0.5, 0.55), 20, 4.0)
 	# Affinity: +5 if ≥1 enemy within 10m.
+	# Issue #210 (Choking Veil): the same scan slows its
+	# enemies 20% for 3 s (server-routed like the mark).
+	var choking := _tree_variant("smoke_veil") == "choking_veil"
 	var near := false
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
 		if m != null and m.alive and m.global_position.distance_to(global_position) < 10.0:
 			near = true
-			break
+			if choking:
+				if multiplayer.is_server():
+					m.apply_slow(3.0, 0.8)
+				else:
+					m.rpc_id(NetworkManager.server_peer_id, "rpc_apply_slow", 3.0, 0.8)
+			if not choking:
+				break
 	if near:
 		gain_affinity("smoke_veil", 5.0)
 	if hud != null:
@@ -2334,15 +2755,24 @@ func _activate_mark() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["mark"] = (25.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["mark"] = (25.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("mark", "cd_mult", 1.0)
 	# Hamstring Mark trait: marked targets are also slowed 20%.
 	var hamstring := 0.8 if has_trait("hamstring_mark") else 1.0
+	# Issue #210 (section 2.6): the caster's tree vuln add
+	# rides the application and is stored on the mark;
+	# Death Sentence deepens it by an authored +0.25 (the
+	# base game's amplification is already all-source, so
+	# the variant takes the deepen form).
+	var vuln := _tree_skill_mod("mark", "vuln_add", 0.0)
+	if _tree_variant("mark") == "death_sentence":
+		vuln += 0.25
 	# SteamMultiplayerPeer can't rpc_id its own peer ID: when this instance is
 	# the server, call directly (same outcome — the handler is call_local).
 	if multiplayer.is_server():
-		target.apply_mark(Mob.MARK_PERMANENT, hamstring)
+		target.apply_mark(Mob.MARK_PERMANENT, hamstring, vuln)
 	else:
-		target.rpc_id(NetworkManager.server_peer_id, "apply_mark", Mob.MARK_PERMANENT, hamstring)
+		target.rpc_id(NetworkManager.server_peer_id, "apply_mark", Mob.MARK_PERMANENT, hamstring, vuln)
 	AudioManager.sfx("mark")
 	if hud != null:
 		hud.toast("Target marked! +50% damage.")
@@ -2370,12 +2800,28 @@ func _nearest_mob_aimed(from: Vector3, dir: Vector3, max_dist: float) -> Mob:
 
 ## Shadow Step: blink 8m in the facing direction. 15s cooldown.
 func _activate_shadow_step() -> void:
+	# Issue #210 (Twin Step): one free re-cast within 2 s
+	# of a step — a recast window on the cd site.
+	var free_recast := false
 	if float(ability_cds.get("shadow_step", 0.0)) > 0.0:
-		if hud != null:
-			hud.toast("Shadow Step on cooldown.")
-			AudioManager.sfx("ui_error")
-		return
-	ability_cds["shadow_step"] = (15.0) * cooldown_mult()
+		if _tree_variant("shadow_step") == "twin_step" \
+				and _tree_twin_armed \
+				and Time.get_ticks_msec() < _tree_twin_until:
+			free_recast = true
+			_tree_twin_armed = false
+		else:
+			if hud != null:
+				hud.toast("Shadow Step on cooldown.")
+				AudioManager.sfx("ui_error")
+			return
+	if not free_recast:
+		ability_cds["shadow_step"] = (15.0) * cooldown_mult() \
+			* _tree_skill_mod("shadow_step", "cd_mult", 1.0)
+		if _tree_variant("shadow_step") == "twin_step":
+			_tree_twin_armed = true
+			_tree_twin_until = Time.get_ticks_msec() + 2000
+	# Issue #210 (From the Dark): the step sets the recency.
+	_tree_dark_stamp = Time.get_ticks_msec()
 	var fwd := -global_transform.basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized()
@@ -2393,6 +2839,24 @@ func _activate_shadow_step() -> void:
 	global_position = target
 	Effects.burst(get_parent(), global_position + Vector3(0, 1.0, 0), Color(0.6, 0.5, 0.9), 20, 5.0)
 	AudioManager.sfx("shadow_step")
+	# Amendment 1 section C.2 (Umbral Strike): at arrival,
+	# the step bites — weapon damage x the step_dmg
+	# aggregate to enemies within 2 m, server-executed
+	# with the assassinate strike's damage discipline. At
+	# zero aggregate the step damages nothing and moves
+	# exactly as today (neutrality).
+	var step_dmg := _tree_skill_mod("shadow_step",
+		"step_dmg", 0.0)
+	if step_dmg > 0.0:
+		var sdmg := damage * step_dmg
+		var me_step := int(multiplayer.get_unique_id())
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var m := n as Mob
+			if m != null and m.alive and m.global_position.distance_to(global_position) <= 2.0:
+				if multiplayer.is_server():
+					m.take_damage(sdmg, me_step, global_position)
+				else:
+					m.rpc_id(NetworkManager.server_peer_id, "take_damage", sdmg, me_step, global_position)
 	# Unseen trait: next attack after the blink crits.
 	if has_trait("unseen"):
 		unseen_crit_ready = true
@@ -2426,8 +2890,10 @@ func _activate_fan() -> void:
 			hud.toast("Fan of Knives on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["fan"] = (20.0) * cooldown_mult() / atk_spd_mult()
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 1.2
+	ability_cds["fan"] = (20.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("fan", "cd_mult", 1.0)
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 1.2 \
+		* _tree_mult("fan") * _tree_veil_mult()
 	# Unseen trait: first attack after veil/blink crits for 2x.
 	if unseen_crit_ready:
 		dmg *= 2.0
@@ -2439,6 +2905,16 @@ func _activate_fan() -> void:
 	if multiplayer.is_server():
 		var from := int(multiplayer.get_unique_id())
 		var cast_id := "fan_%d" % _cast_seq
+		# Issue #210 (Deadeye): the fan hits marked targets
+		# harder — the mob's mark state is the read.
+		var deadeye_pct := _tree_behavior_pct("deadeye")
+		# Issue #210 (Shuriken Storm, shape ruled on the
+		# corrected spec): the fan's +2-at-80% identity on
+		# its real radial-burst form — each in-radius
+		# target is struck two additional times at 80%
+		# (damage-only; the cast's affinity/combo
+		# bookkeeping stays on the first strike).
+		var shuriken := _tree_variant("fan") == "shuriken_storm"
 		for n in get_tree().get_nodes_in_group("mobs"):
 			var m := n as Mob
 			if m == null or not m.alive:
@@ -2446,10 +2922,19 @@ func _activate_fan() -> void:
 			if m.global_position.distance_to(global_position) < fan_radius:
 				var was_alive := m.alive
 				var was_slowed := m.is_slowed()
+				var hit_dmg := dmg
+				if deadeye_pct > 0.0 and m.is_marked():
+					hit_dmg = dmg * (1.0 + deadeye_pct / 100.0)
 				if multiplayer.is_server():
-					m.take_damage(dmg, from, global_position)
+					m.take_damage(hit_dmg, from, global_position)
 				else:
-					m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, from, global_position)
+					m.rpc_id(NetworkManager.server_peer_id, "take_damage", hit_dmg, from, global_position)
+				if shuriken:
+					for extra in 2:
+						if multiplayer.is_server():
+							m.take_damage(hit_dmg * 0.8, from, global_position)
+						else:
+							m.rpc_id(NetworkManager.server_peer_id, "take_damage", hit_dmg * 0.8, from, global_position)
 				# Affinity: +2 per enemy hit, max +8/cast.
 				gain_affinity_capped("fan", 2.0, m.get_instance_id(), cast_id, 8.0)
 				# Combo Finisher: Shatter Cascade (issue #8) -- Fan of Knives
@@ -2514,11 +2999,17 @@ func _activate_inferno() -> void:
 	var hit := space.intersect_ray(params)
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
-	ability_cds["inferno"] = (60.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["inferno"] = (60.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("inferno", "cd_mult", 1.0)
 	_cast_seq += 1
 	# 10 ticks x 0.6 = 6.0x base ≈ 1.5x rank-V meteor (4.0x), plus burn.
-	var dmg := damage * _buff_mult("damage") * 0.6 * trait_damage_mult("fireball")
+	var dmg := damage * _buff_mult("damage") * 0.6 * trait_damage_mult("fireball") * _tree_fire_mult("inferno")
 	rpc("cast_inferno", point, dmg, int(multiplayer.get_unique_id()), _cast_seq)
+	# Fuel for the Flame (issue #206): casting Inferno opens
+	# the 5 s fire-damage window the behavior prices.
+	if not tree_aggregates.is_empty() and (tree_aggregates.get(
+			"behaviors", {}) as Dictionary).has(
+			"fuel_for_the_flame"):
+		_tree_fuel_until = Time.get_ticks_msec() + 5000
 	AudioManager.sfx("milestone")
 	if hud != null:
 		hud.toast("INFERNO!")
@@ -2553,6 +3044,15 @@ func cast_inferno(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 					else:
 						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, point)
 					m.apply_burn(3.0, dmg * 0.3, owner)
+			# Phoenix Pyre (issue #206 variant): the tick also
+			# heals allies in the radius for a fraction of its
+			# damage (the Holy Light precedent). Heal fraction
+			# is an authored placeholder.
+			if _tree_variant("inferno") == "phoenix_pyre":
+				for pn in get_tree().get_nodes_in_group("players"):
+					var pl := pn as Player
+					if pl != null and pl.alive and pl.global_position.distance_to(point) < 8.0:
+						pl.heal(dmg * 0.25)
 		if i % 3 == 2 and is_inside_tree():
 			Effects.burst(get_parent(), point + Vector3(0, 1.0, 0), Color(1.0, 0.45, 0.1), 20, 7.0)
 	flames.emitting = false
@@ -2567,9 +3067,13 @@ func _activate_glacial_prison() -> void:
 			hud.toast("Glacial Prison on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["glacial_prison"] = (60.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["glacial_prison"] = (60.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("glacial_prison", "cd_mult", 1.0)
 	_cast_seq += 1
-	rpc("cast_glacial_prison", global_position, int(multiplayer.get_unique_id()), _cast_seq)
+	# Issue #210: Stasis Burst's authored damage — one full
+	# basic-skill hit (damage x 1.0), captured at activation.
+	var burst := damage if _tree_variant("glacial_prison") \
+		== "stasis_burst" else 0.0
+	rpc("cast_glacial_prison", global_position, int(multiplayer.get_unique_id()), _cast_seq, burst)
 	AudioManager.sfx("milestone")
 	if hud != null:
 		hud.toast("GLACIAL PRISON!")
@@ -2577,19 +3081,45 @@ func _activate_glacial_prison() -> void:
 
 
 @rpc("any_peer", "call_local")
-func cast_glacial_prison(center: Vector3, owner: int, seq: int) -> void:
-	Effects.telegraph_ring(get_parent(), center, 8.0, Color(0.6, 0.85, 1.0))
+func cast_glacial_prison(center: Vector3, owner: int, seq: int, burst: float = 0.0) -> void:
+	# Issue #210: radius_add + freeze_add read off the
+	# caster (this node) at cast.
+	var radius := 8.0 + _tree_skill_mod("glacial_prison",
+		"radius_add", 0.0)
+	var freeze := 3.0 + _tree_skill_mod("glacial_prison",
+		"freeze_add", 0.0)
+	Effects.telegraph_ring(get_parent(), center, radius, Color(0.6, 0.85, 1.0))
 	Effects.burst(get_parent(), center + Vector3(0, 1.0, 0), Color(0.7, 0.9, 1.0), 50, 9.0)
 	AudioManager.sfx("frost_hit", center)
 	AudioManager.sfx("blizzard_cast", center)
 	if multiplayer.is_server():
+		var frozen: Array = []
 		for n in get_tree().get_nodes_in_group("mobs"):
 			var m := n as Mob
 			if m == null or not m.alive:
 				continue
-			if m.global_position.distance_to(center) < 8.0:
+			if m.global_position.distance_to(center) < radius:
 				# 0.0 mult = frozen solid; also sets shatter for team synergy.
-				m.apply_slow(3.0, 0.0)
+				m.apply_slow(freeze, 0.0)
+				# Brittle Ice (Amendment 1): store the
+				# shatter — caster damage x the prison's
+				# shatter_pct aggregate, read on this node
+				# (the caster). Zero at zero aggregate.
+				m.prison_shatter = damage * _tree_skill_mod(
+					"glacial_prison", "shatter_pct", 0.0)
+				m.prison_shatter_owner = owner
+				frozen.append(m)
+		# Stasis Burst (issue #210): at freeze end the
+		# prison's targets take the authored burst damage.
+		if burst > 0.0 and not frozen.is_empty():
+			await get_tree().create_timer(freeze).timeout
+			if not is_inside_tree():
+				return
+			for m in frozen:
+				if is_instance_valid(m) and m.alive:
+					m.take_damage(burst, owner, center)
+			Effects.burst(get_parent(), center + Vector3(0, 1.0, 0), Color(0.7, 0.9, 1.0), 40, 8.0)
+			AudioManager.sfx("frost_hit", center)
 
 
 ## TEMPEST (storm signature): 6s channeled storm — lightning strikes random
@@ -2600,9 +3130,13 @@ func _activate_tempest() -> void:
 			hud.toast("Tempest on cooldown.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["tempest"] = (90.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["tempest"] = (90.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("tempest", "cd_mult", 1.0)
 	_cast_seq += 1
-	var dmg := damage * _buff_mult("damage") * 0.8 * 1.5 * trait_damage_mult("lightning")
+	# Issue #210: Stormcharged's 10 s window arms here (the
+	# fuel_for_the_flame window shape).
+	if _tree_behavior_pct("stormcharged") > 0.0:
+		_tree_storm_until = Time.get_ticks_msec() + 10000
+	var dmg := damage * _buff_mult("damage") * 0.8 * 1.5 * trait_damage_mult("lightning") * _tree_mult("tempest")
 	rpc("cast_tempest", dmg, int(multiplayer.get_unique_id()), _cast_seq)
 	AudioManager.sfx("milestone")
 	if hud != null:
@@ -2612,10 +3146,16 @@ func _activate_tempest() -> void:
 
 @rpc("any_peer", "call_local")
 func cast_tempest(dmg: float, owner: int, seq: int) -> void:
+	# Issue #210: radius_add + duration_add (1 s = 2 strikes
+	# per step) read off the caster (this node) at cast.
+	var radius := 15.0 + _tree_skill_mod("tempest",
+		"radius_add", 0.0)
+	var strikes := 12 + int(round(_tree_skill_mod("tempest",
+		"duration_add", 0.0) / 0.5))
 	AudioManager.sfx("lightning_cast", global_position)
-	Effects.telegraph_ring(get_parent(), global_position, 15.0, Color(0.7, 0.9, 1.0))
-	# 12 strikes over 6 seconds; the storm follows the caster.
-	for i in 12:
+	Effects.telegraph_ring(get_parent(), global_position, radius, Color(0.7, 0.9, 1.0))
+	# 12 strikes over 6 seconds (stock); the storm follows the caster.
+	for i in strikes:
 		await get_tree().create_timer(0.5).timeout
 		if not is_inside_tree():
 			break
@@ -2623,7 +3163,7 @@ func cast_tempest(dmg: float, owner: int, seq: int) -> void:
 			var candidates: Array = []
 			for n in get_tree().get_nodes_in_group("mobs"):
 				var m := n as Mob
-				if m != null and m.alive and m.global_position.distance_to(global_position) < 15.0:
+				if m != null and m.alive and m.global_position.distance_to(global_position) < radius:
 					candidates.append(m)
 			if candidates.is_empty():
 				continue
@@ -2636,6 +3176,24 @@ func cast_tempest(dmg: float, owner: int, seq: int) -> void:
 				target.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, global_position)
 			rpc("chain_fx", sky, hit_pos)
 			AudioManager.sfx("lightning_zap", hit_pos)
+	# Eye of the Storm (issue #210): when the channel ends,
+	# a final strike at 200% on the nearest target.
+	if multiplayer.is_server() and is_inside_tree() \
+			and _tree_variant("tempest") == "eye_of_the_storm":
+		var nearest: Mob = null
+		var best := radius
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var m := n as Mob
+			if m == null or not m.alive:
+				continue
+			var d := m.global_position.distance_to(global_position)
+			if d < best:
+				best = d
+				nearest = m
+		if nearest != null:
+			nearest.take_damage(dmg * 2.0, owner, global_position)
+			rpc("chain_fx", nearest.global_position + Vector3(0, 8.0, 0), nearest.global_position + Vector3(0, 1.0, 0))
+			AudioManager.sfx("lightning_zap", nearest.global_position)
 
 
 ## Warrior: signature totems via T (uses totem charges).
@@ -2654,10 +3212,12 @@ func _activate_signature_totem(totem_id: String) -> void:
 			AudioManager.sfx("ui_error")
 		return
 	totem_charges -= 1
-	ability_cds[cd_key] = (cd) * cooldown_mult()
+	ability_cds[cd_key] = (cd) * cooldown_mult() \
+		* _tree_skill_mod(cd_key, "cd_mult", 1.0)
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon != null:
 		dungeon.rpc("place_totem", totem_id, global_position, int(multiplayer.get_unique_id()), 1)
+	_tree_note_totem_placed()
 	AudioManager.sfx("milestone")
 	if hud != null:
 		var sig_name := "Sanctuary Totem" if totem_id == "sanctuary_totem" else "Doom Totem"
@@ -2693,7 +3253,8 @@ func _activate_assassinate() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["assassinate"] = (45.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["assassinate"] = (45.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("assassinate", "cd_mult", 1.0)
 	var origin := global_position
 	# Blink to behind the target (far side relative to our position).
 	var away: Vector3 = target.global_position - global_position
@@ -2712,12 +3273,25 @@ func _activate_assassinate() -> void:
 	Effects.burst(get_parent(), dest + Vector3(0, 1.0, 0), Color(0.6, 0.5, 0.9), 25, 6.0)
 	AudioManager.sfx("shadow_step")
 	# Strike for 300% damage (server-authoritative).
-	var strike := damage * _buff_mult("damage") * rank_mult() * 3.0
+	var strike := damage * _buff_mult("damage") * rank_mult() * 3.0 \
+		* _tree_mult("assassinate")
+	# Issue #210 (From the Dark): +X% when cast within 2 s
+	# of Smoke Veil or Shadow Step (the recency stamp).
+	var dark_pct := _tree_behavior_pct("from_the_dark")
+	if dark_pct > 0.0 and Time.get_ticks_msec() \
+			- _tree_dark_stamp <= 2000:
+		strike *= 1.0 + dark_pct / 100.0
+	# Issue #210 (Veilwalker): the post-veil window also
+	# feeds the strike.
+	strike *= _tree_veil_mult()
 	var me := int(multiplayer.get_unique_id())
+	# The strike routes through the mob's assassinate_hit
+	# wrapper so a kill is attributable at the kill sites
+	# (Coup de Grâce); damage discipline unchanged.
 	if multiplayer.is_server():
-		target.take_damage(strike, me, global_position)
+		target.assassinate_hit(strike, me, global_position)
 	else:
-		target.rpc_id(NetworkManager.server_peer_id, "take_damage", strike, me, global_position)
+		target.rpc_id(NetworkManager.server_peer_id, "assassinate_hit", strike, me, global_position)
 	Effects.burst(get_parent(), target.global_position + Vector3(0, 1.2, 0), Color(1.0, 0.85, 0.9), 30, 7.0)
 	AudioManager.sfx("fan")
 	if hud != null:
@@ -2741,19 +3315,30 @@ func _activate_execution() -> void:
 			hud.toast("No target in sight.")
 			AudioManager.sfx("ui_error")
 		return
-	ability_cds["execution"] = (60.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["execution"] = (60.0) * cooldown_mult() / atk_spd_mult() \
+		* _tree_skill_mod("execution", "cd_mult", 1.0)
 	var me := int(multiplayer.get_unique_id())
-	var base := damage * _buff_mult("damage") * rank_mult()
+	var base := damage * _buff_mult("damage") * rank_mult() \
+		* _tree_mult("execution") * _tree_veil_mult()
 	var is_boss: bool = (target.get("data") as MobData).is_boss
 	var frac := target.hp / maxf(target.max_hp, 0.01)
 	var dmg := base * 2.0
 	var executed := false
-	if not is_boss and frac < 0.15:
+	var exec_thr := 0.15 + _tree_skill_mod(
+		"execution", "threshold_add", 0.0)
+	if not is_boss and frac < exec_thr:
 		# Instant kill: overwhelming damage routes through the normal death path.
 		dmg = 999999.0
 		executed = true
 	elif is_boss:
-		dmg = base * 5.0
+		# Issue #210 (Headsman): bosses face the threshold
+		# at half effect instead of being immune to it.
+		if _tree_variant("execution") == "headsman" \
+				and frac < exec_thr * 0.5:
+			dmg = 999999.0
+			executed = true
+		else:
+			dmg = base * 5.0
 	if multiplayer.is_server():
 		target.take_damage(dmg, me, global_position)
 	else:
@@ -2836,10 +3421,12 @@ var _reinforce_shell: MeshInstance3D = null
 
 
 @rpc("any_peer", "call_local")
-func apply_reinforce(duration: float) -> void:
+func apply_reinforce(duration: float,
+		strength: float = 0.5) -> void:
 	if not is_multiplayer_authority():
 		return
 	_reinforce_t = maxf(_reinforce_t, duration)
+	_reinforce_strength = strength
 	_update_reinforce_shell()
 
 
@@ -3065,6 +3652,10 @@ func gain_affinity(skill_id: String, points: float, enemy_id: int = -1) -> float
 			return 0.0
 		_affinity_enemy_cd[key] = now
 	var gained := points * FOCUS_MULT * AFFINITY_RATE
+	# Issue #206 (spec section 3): the lifetime hook — ONE
+	# line in this funnel (gain_affinity_capped inherits it).
+	# Post caps, pre gauge-clamp; the counter never clamps.
+	tree_lifetime[skill_id] = float(tree_lifetime.get(skill_id, 0.0)) + gained
 	var cur := float(affinity.get(skill_id, 0.0))
 	affinity[skill_id] = minf(100.0, cur + gained)
 	print("[Affinity] %s +%.1f (%.0f/100)" % [skill_id, gained, affinity[skill_id]])
@@ -3292,6 +3883,10 @@ func _physics_process(delta: float) -> void:
 			_stealth_t -= delta
 			if _stealth_t <= 0.0 and stealthed:
 				stealthed = false
+				# Issue #210 (Veilwalker): EXITING the veil
+				# opens the 4 s damage window.
+				if _tree_behavior_pct("veilwalker") > 0.0:
+					_tree_veil_until = Time.get_ticks_msec() + 4000
 				if _mp_peer_connected():
 					rpc("set_stealthed", false)
 				# Unseen trait: first attack after the veil ends crits.
@@ -3315,8 +3910,15 @@ func _physics_process(delta: float) -> void:
 			if _camera != null:
 				_camera.fov = lerpf(_camera.fov, _base_fov() + 7.0, delta * 12.0)
 		else:
-			velocity.x = move_vec.x * move_speed * _buff_mult("speed")
-			velocity.z = move_vec.z * move_speed * _buff_mult("speed")
+			# Issue #210 slice B5 (spec section 3):
+			# Second Wind folds where move_speed is
+			# consumed — below 25% HP, +X% move speed.
+			var spd := _buff_mult("speed")
+			if hp < max_hp * 0.25:
+				spd *= 1.0 + _tree_behavior_pct(
+					"second_wind") / 100.0
+			velocity.x = move_vec.x * move_speed * spd
+			velocity.z = move_vec.z * move_speed * spd
 			if _camera != null:
 				_camera.fov = lerpf(_camera.fov, _base_fov(), delta * 8.0)
 		if _jump_queued:
@@ -3462,7 +4064,9 @@ func _do_attack() -> void:
 	fwd.y = 0.0
 	fwd = fwd.normalized()
 	# Unseen trait: first attack after veil/blink crits for 2x.
-	var melee_dmg := damage * _buff_mult("damage")
+	# Issue #210 slice B5: the universal basic-attack fold.
+	var melee_dmg := damage * _buff_mult("damage") \
+		* _tree_skill_mod("basic_attack", "dmg_mult", 1.0)
 	if unseen_crit_ready:
 		melee_dmg *= 2.0
 		unseen_crit_ready = false
@@ -3478,10 +4082,15 @@ func _do_attack() -> void:
 			continue
 		if fwd.angle_to(to_mob / dist) > 0.75:
 			continue
+		# Issue #210 slice B5: Wayfarer's Edge — +50%
+		# against full-health targets, read per target.
+		var dealt := melee_dmg
+		if tree_wayfarers_edge() and mob.hp >= mob.max_hp:
+			dealt *= 1.5
 		if multiplayer.is_server():
-			mob.take_damage(melee_dmg, from, global_position)
+			mob.take_damage(dealt, from, global_position)
 		else:
-			mob.rpc_id(NetworkManager.server_peer_id, "take_damage", melee_dmg, from, global_position)
+			mob.rpc_id(NetworkManager.server_peer_id, "take_damage", dealt, from, global_position)
 		# Affinity: hit on marked target → +1 mark, per-enemy 5s cd.
 		if mob.is_marked():
 			gain_affinity("mark", 1.0, mob.get_instance_id())
@@ -3509,7 +4118,7 @@ func _throw_dagger() -> void:
 	fwd.y = 0.0
 	fwd = fwd.normalized()
 	var throw_range := lerpf(DAGGER_RANGE_MIN, DAGGER_RANGE_MAX, charge)
-	var throw_dmg := damage * lerpf(DAGGER_DMG_MIN, DAGGER_DMG_MAX, charge) * _buff_mult("damage")
+	var throw_dmg := damage * lerpf(DAGGER_DMG_MIN, DAGGER_DMG_MAX, charge) * _buff_mult("damage") * _tree_skill_mod("basic_attack", "dmg_mult", 1.0)
 	# Unseen crit applies.
 	if unseen_crit_ready:
 		throw_dmg *= 2.0
@@ -3681,7 +4290,8 @@ func _place_structure(structure_id: String) -> void:
 		AudioManager.sfx("ui_error")
 		return
 	var point := _cursor_ground_point()
-	ability_cds[structure_id] = (cd) * cooldown_mult()
+	ability_cds[structure_id] = (cd) * cooldown_mult() \
+		* _tree_skill_mod(structure_id, "cd_mult", 1.0)
 	_structure_seq += 1
 	var uid := "%d_%d" % [me, _structure_seq]
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
@@ -3711,17 +4321,25 @@ func _cast_reinforce() -> void:
 		if to.length() < best_d:
 			best_d = to.length()
 			best = p
-	ability_cds["reinforce"] = (25.0) * cooldown_mult()
+	ability_cds["reinforce"] = (25.0) * cooldown_mult() \
+		* _tree_skill_mod("reinforce", "cd_mult", 1.0)
+	# Issue #210 (Tempered): the 5 s window arms at the
+	# cast, whatever the shell's target.
+	_tree_tempered_until = Time.get_ticks_msec() + 5000
 	AudioManager.sfx("totem_place")
 	var target: Player = best if best != null else self
 	# Issue #169: when the target's authority is THIS peer (a
 	# self-target — the common case), rpc_id would be self-addressed
 	# and a Steam peer cannot rpc_id its own id (the #165 D1
 	# family): the reinforce silently never landed. Call directly.
+	# Issue #210: shell_pct scales the shell's strength
+	# (its 0.5 base) at the apply site.
+	var shell := 0.5 * (1.0 + _tree_skill_mod("reinforce",
+		"shell_pct", 0.0))
 	if int(target.get_multiplayer_authority()) == int(multiplayer.get_unique_id()):
-		target.apply_reinforce(6.0)
+		target.apply_reinforce(6.0, shell)
 	else:
-		target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0)
+		target.rpc_id(target.get_multiplayer_authority(), "apply_reinforce", 6.0, shell)
 	if hud != null:
 		hud.refresh_abilities(self)
 
@@ -3743,7 +4361,9 @@ func _cast_demolish() -> void:
 			hud.toast("No structures to demolish!")
 		AudioManager.sfx("ui_error")
 		return
-	ability_cds["demolish"] = (45.0) * cooldown_mult() / atk_spd_mult()
+	ability_cds["demolish"] = (45.0) * cooldown_mult() \
+		/ atk_spd_mult() * _tree_skill_mod("demolish",
+			"cd_mult", 1.0)
 	var dungeon := get_tree().get_first_node_in_group("dungeon")
 	if dungeon != null:
 		dungeon.rpc("demolish_structures", me)
@@ -3770,8 +4390,14 @@ func _cast_hammer_smash() -> void:
 			hud.toast("Hammer Smash on cooldown!")
 		AudioManager.sfx("ui_error")
 		return
-	ability_cds["hammer_smash"] = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult()
-	var dmg := damage * _buff_mult("damage") * rank_mult() * SMASH_DAMAGE_MULT
+	ability_cds["hammer_smash"] = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("hammer_smash", "cd_mult", 1.0)
+	var dmg := damage * _buff_mult("damage") * rank_mult() * SMASH_DAMAGE_MULT * _tree_mult("hammer_smash")
+	# Issue #210 (Tempered + Aegis Shell at the cast
+	# expression).
+	if Time.get_ticks_msec() < _tree_tempered_until:
+		dmg *= 1.0 + _tree_behavior_pct("tempered") / 100.0
+	if tree_aegis_active():
+		dmg *= 1.25
 	if multiplayer.is_server():
 		request_hammer_smash(dmg)
 	else:
@@ -3801,7 +4427,7 @@ func request_hammer_smash(claimed_damage: float) -> void:
 	# this server copy holds the caster's equipped special, so
 	# the factor is evaluated HERE, on the enforcing node, and
 	# the HUD mirror's multiplied value becomes the truth.
-	_srv_smash_cd = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult()
+	_srv_smash_cd = SMASH_COOLDOWN * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("hammer_smash", "cd_mult", 1.0)
 	var attacker := int(get_multiplayer_authority())
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
@@ -3811,6 +4437,18 @@ func request_hammer_smash(claimed_damage: float) -> void:
 			m.take_damage(claimed_damage, attacker, global_position)
 			if m.alive:
 				m.apply_stun(SMASH_STUN_TIME)
+	# Issue #210 (Seismic Smash): a ring at 50% damage
+	# beyond the smash's own area, damage only.
+	if _tree_variant("hammer_smash") == "seismic_smash":
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var rm := n as Mob
+			if rm == null or not rm.alive:
+				continue
+			var rd := rm.global_position.distance_to(
+				global_position)
+			if rd > SMASH_RADIUS and rd <= SMASH_RADIUS * 1.5:
+				rm.take_damage(claimed_damage * 0.5,
+					attacker, global_position)
 	rpc("hammer_smash_fx", global_position)
 
 
@@ -4028,9 +4666,17 @@ func _hl_server_tick(delta: float) -> void:
 			beam["tick_t"] = 0.0
 			var aim: Vector3 = beam.get("aim", Vector3.ZERO)
 			var lingering := bool(beam.get("lingering", false))
-			if not lingering:
+			# Issue #210 slice B5: Dawnbringer — a
+			# lingering zone whose caster owns the
+			# variant keeps ticking (damage AND heal)
+			# at half rate for its first 4 s.
+			var dawn := bool(beam.get("dawn", false)) \
+				and float(beam.get("linger_t", 0.0)) < 4.0
+			if not lingering or dawn:
 				# Damage: 1.0x mage base per tick in the 4m beam column.
 				var dmg := _hl_beam_damage()
+				if dawn:
+					dmg *= 0.5
 				for n in get_tree().get_nodes_in_group("mobs"):
 					var mob := n as Mob
 					if mob == null or not bool(mob.get("alive")):
@@ -4044,7 +4690,9 @@ func _hl_server_tick(delta: float) -> void:
 				if p == null or not bool(p.get("alive")):
 					continue
 				if p.global_position.distance_to(aim) <= HOLY_LIGHT_HEAL_RADIUS:
-					var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC
+					var heal_amount := float(p.get("max_hp")) * HOLY_LIGHT_HEAL_FRAC * (1.0 + _tree_skill_mod("holy_light", "heal_pct", 0.0))
+					if dawn:
+						heal_amount *= 0.5
 					# Issue #162 routing audit: when the heal target's
 					# authority is THIS peer (the host healing himself),
 					# rpc_id would be self-addressed — a Steam peer cannot
@@ -4060,7 +4708,10 @@ func _hl_server_tick(delta: float) -> void:
 ## Issue #91 Phase 2: beam damage per 0.5s tick (1.0x mage base).
 func _hl_beam_damage() -> float:
 	# Mage base damage; non-mages use their own base.
-	return damage * _buff_mult("damage")
+	# Issue #210 slice B5: holy_light's modifiers live in
+	# the universal branch (familyless, spec section 3).
+	return damage * _buff_mult("damage") \
+		* _tree_mult("holy_light")
 
 
 ## Issue #91 Phase 1: 7 arms/disarms Holy Light (no longer instant-cast).
@@ -4194,7 +4845,7 @@ func _hl_strike() -> void:
 	_hl_active_t = 0.0
 	_hl_aim_send_t = 0.0
 	# 20s cooldown starts at STRIKE, not at arm.
-	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult()
+	ability_cds["holy_light"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult() * _tree_skill_mod("holy_light", "cd_mult", 1.0)
 	if hud != null:
 		hud.refresh_abilities(self)
 	# Clear the reticle; the beam takes over.
@@ -4276,6 +4927,8 @@ func _hl_start_linger() -> void:
 		return
 	beam["lingering"] = true
 	beam["linger_t"] = 0.0
+	if _tree_variant("holy_light") == "dawnbringer":
+		beam["dawn"] = true
 	rpc("hl_linger_beam", my_id, _hl_active_seq)
 
 
@@ -4286,6 +4939,17 @@ func hl_linger_beam(owner_id: int, seq: int) -> void:
 	if not beam.is_empty():
 		beam["lingering"] = true
 		beam["linger_t"] = 0.0
+		# Issue #210 slice B5: Dawnbringer is derived from
+		# the owner's synced tree state on every peer.
+		var dungeons := get_tree().get_nodes_in_group(
+			"dungeon")
+		if not dungeons.is_empty():
+			var op = dungeons[0].get_player_node(owner_id)
+			if op != null and op.has_method(
+					"tree_variant_is") and bool(op.call(
+					"tree_variant_is", "holy_light",
+					"dawnbringer")):
+				beam["dawn"] = true
 
 
 ## Jesse 2026-10-10: lingering beams fade over HL_LINGER_TIME, then the
@@ -4456,7 +5120,15 @@ func _cast_fireball() -> void:
 	var basis := _camera.global_transform.basis
 	var dir := -basis.z
 	var origin: Vector3 = _camera.global_position + dir * 0.7 + Vector3(0, -0.15, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("fireball")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("fireball") * _tree_fire_mult("fireball") * _tree_skill_mod("basic_attack", "dmg_mult", 1.0)
+	# Twin Suns (issue #206 variant): two bolts at 65% in a
+	# +-4 degree spread; the second carries the "twin" tag.
+	if _tree_variant("fireball") == "twin_suns":
+		var uid := int(multiplayer.get_unique_id())
+		rpc("cast_fireball", origin, dir.normalized().rotated(Vector3.UP, deg_to_rad(-4.0)), dmg * 0.65, uid, _cast_seq)
+		_cast_seq += 1
+		rpc("cast_fireball", origin, dir.normalized().rotated(Vector3.UP, deg_to_rad(4.0)), dmg * 0.65, uid, _cast_seq, "twin")
+		return
 	rpc("cast_fireball", origin, dir.normalized(), dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
@@ -4479,7 +5151,7 @@ func _cast_frost_shard() -> void:
 	var basis := _camera.global_transform.basis
 	var dir := -basis.z
 	var origin: Vector3 = _camera.global_position + dir * 0.7 + Vector3(0, -0.15, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("frost")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * trait_damage_mult("frost") * _tree_frost_mult("frost")
 	rpc("cast_frost", origin, dir.normalized(), dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
@@ -4488,11 +5160,25 @@ func cast_frost(origin: Vector3, dir: Vector3, dmg: float, owner: int, seq: int)
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon == null:
 		return
-	var fs := FrostShard.new()
-	fs.name = "Frost_%d_%d" % [owner, seq]
-	fs.setup(dir * 22.0, dmg * 0.7, owner)
-	dungeon.get_node("Projectiles").add_child(fs)
-	fs.global_position = origin
+	# Issue #210: slow_add reads off the caster at shard
+	# spawn (the fireball-radius pattern); Splinter Volley
+	# (the twin_suns shape on the shard path) fires a second
+	# shard at 65%.
+	var volley := _tree_variant("frost") == "splinter_volley"
+	var dirs: Array = [dir]
+	var dmgs: Array = [dmg * 0.7]
+	if volley:
+		dirs = [dir.rotated(Vector3.UP, -0.07),
+			dir.rotated(Vector3.UP, 0.07)]
+		dmgs = [dmg * 0.7 * 0.65, dmg * 0.7 * 0.65]
+	for k in dirs.size():
+		var fs := FrostShard.new()
+		fs.name = "Frost_%d_%d" % [owner, seq + k * 500]
+		fs.setup(dirs[k] * 22.0, dmgs[k], owner)
+		fs.slow_duration += _tree_skill_mod("frost",
+			"slow_add", 0.0)
+		dungeon.get_node("Projectiles").add_child(fs)
+		fs.global_position = origin
 
 
 func _cast_chain_lightning() -> void:
@@ -4501,7 +5187,7 @@ func _cast_chain_lightning() -> void:
 	# stats (the snapshot does not replicate damage/buffs/traits, so
 	# the server cannot recompute it) and rides the cast intent,
 	# exactly like Fan of Knives / Hammer Smash.
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.8 * trait_damage_mult("lightning")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.8 * trait_damage_mult("lightning") * _tree_mult("lightning")
 	if multiplayer.is_server():
 		# Issue #170 (I6): the host cast routes through the
 		# validated endpoint — the Hammer Smash template's
@@ -4550,6 +5236,22 @@ func _execute_chain_lightning(dmg: float) -> void:
 	var cast_id := "lightning_%d" % _cast_seq
 	# Arc Conduit: lightning chains +1 target.
 	var max_chains := 4 if has_trait("arc_conduit") else 3
+	# Issue #210: chains_add (aggregate-clamped at +2) and
+	# Stormcharged's window fold in beside Arc Conduit's
+	# read; the Stormcall finisher below still sets its own
+	# designed total when it triggers.
+	max_chains += int(_tree_skill_mod("lightning",
+		"chains_add", 0.0))
+	if _tree_behavior_pct("stormcharged") > 0.0 \
+			and Time.get_ticks_msec() < _tree_storm_until:
+		max_chains += 1
+	var static_bloom := _tree_behavior_pct("static_bloom")
+	var forked := _tree_variant("lightning") == "forked_sky"
+	# Arcing Brand (Amendment 1): this caster's lightning
+	# brand amp; zero means the mechanic does not exist in
+	# this game (no application, no reads take effect).
+	var brand_amp := _tree_skill_mod("lightning",
+		"brand_amp", 0.0)
 	# Combo Finisher: Stormcall (issue #8) -- cast while standing inside a
 	# War Horn damage aura: chains 6 targets, +25% damage. Per-enemy cooldown
 	# is keyed to the first chain target (current is already selected above).
@@ -4565,8 +5267,26 @@ func _execute_chain_lightning(dmg: float) -> void:
 		var mob_pos: Vector3 = current.global_position + Vector3(0, 1.0, 0)
 		# Overcharge: 15% chance to double-strike.
 		var zap_dmg := dmg * 2.0 if has_trait("overcharge") and randf() < 0.15 else dmg
+		# Static Bloom (issue #210): every chain target
+		# beyond the first takes +X%.
+		if i >= 1 and static_bloom > 0.0:
+			zap_dmg *= 1.0 + static_bloom / 100.0
+		# Arcing Brand (Amendment 1): a branded target
+		# takes the stored amp on a storm hit — the brand
+		# is not consumed.
+		if brand_amp > 0.0:
+			zap_dmg *= 1.0 + current.brand_amp_now()
 		# _execute only ever runs on the server.
 		current.take_damage(zap_dmg, from, global_position)
+		# Forked Sky (issue #210): the first target is
+		# struck twice, the second strike at 70%.
+		if i == 0 and forked:
+			current.take_damage(zap_dmg * 0.7, from,
+				global_position)
+			rpc("chain_fx", last_pos, mob_pos)
+		# The hit brands its target for the next 3 s.
+		if brand_amp > 0.0:
+			current.apply_brand(3.0, brand_amp, from)
 		# Affinity: +2 per enemy zapped, max +8/cast.
 		gain_affinity_capped("lightning", 2.0, current.get_instance_id(), cast_id, 8.0)
 		rpc("chain_fx", last_pos, mob_pos)
@@ -4643,7 +5363,17 @@ func _cast_meteor() -> void:
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
 	_cast_seq += 1
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 2.0 * trait_damage_mult("meteor")
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 2.0 * trait_damage_mult("meteor") * _tree_fire_mult("meteor")
+	# Meteor Shower (issue #206 variant): three meteors at
+	# 45% in a triangle (~2.2 m) on the target area.
+	if _tree_variant("meteor") == "meteor_shower":
+		var uid := int(multiplayer.get_unique_id())
+		for k in 3:
+			var ang := deg_to_rad(90.0 + 120.0 * float(k))
+			var off := Vector3(cos(ang), 0.0, sin(ang)) * 2.2
+			rpc("cast_meteor", point + off, dmg * 0.45, uid, _cast_seq)
+			_cast_seq += 1
+		return
 	rpc("cast_meteor", point, dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
@@ -4666,11 +5396,16 @@ func _cast_barrage() -> void:
 	var basis := _camera.global_transform.basis
 	var base_dir := -basis.z
 	var origin: Vector3 = _camera.global_position + base_dir * 0.7 + Vector3(0, -0.15, 0)
-	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.6 * trait_damage_mult("barrage")
-	for i in [-1, 0, 1]:
+	var dmg := damage * _buff_mult("damage") * rank_mult() * 0.6 * trait_damage_mult("barrage") * _tree_mult("barrage")
+	# Issue #210: Tempest Fan — five bolts at 50%.
+	var fan := _tree_variant("barrage") == "tempest_fan"
+	var spread: Array = [-2, -1, 0, 1, 2] if fan else [-1, 0, 1]
+	for i in spread:
 		var dir := base_dir.rotated(Vector3.UP, i * 0.12).normalized()
 		# Overcharge: 15% chance per bolt to double-strike.
 		var bolt_dmg := dmg * 2.0 if has_trait("overcharge") and randf() < 0.15 else dmg
+		if fan:
+			bolt_dmg *= 0.5
 		rpc("cast_fireball", origin, dir, bolt_dmg, int(multiplayer.get_unique_id()), _cast_seq + i, "barrage")
 
 
@@ -4687,12 +5422,24 @@ func _cast_blizzard() -> void:
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
 	_cast_seq += 1
-	var blizz_dmg := damage * _buff_mult("damage") * rank_mult() * 0.4 * trait_damage_mult("blizzard")
+	var blizz_dmg := damage * _buff_mult("damage") * rank_mult() * 0.4 * trait_damage_mult("blizzard") * _tree_frost_mult("blizzard")
 	rpc("cast_blizzard", point, blizz_dmg, int(multiplayer.get_unique_id()), _cast_seq)
 
 
 @rpc("any_peer", "call_local")
 func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
+	# Issue #210: radius_add + Whiteout (radius x1.5, tick
+	# dmg x1.4, ticks at 0.75 s) + duration_add (one 0.5 s
+	# tick per step) read off the caster (this node) at cast.
+	var radius := 4.0 + _tree_skill_mod("blizzard",
+		"radius_add", 0.0)
+	var whiteout := _tree_variant("blizzard") == "whiteout"
+	if whiteout:
+		radius *= 1.5
+	var tick_dmg := dmg * (1.4 if whiteout else 1.0)
+	var interval := 0.75 if whiteout else 0.5
+	var ticks := 8 + int(round(_tree_skill_mod("blizzard",
+		"duration_add", 0.0) / 0.5))
 	# Snowy visual: blue-white particles falling in the radius.
 	var storm := Effects.make_snow()
 	storm.amount = 60
@@ -4700,12 +5447,12 @@ func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 	storm.global_position = point + Vector3(0, 3.0, 0)
 	storm.emitting = true
 	AudioManager.sfx("blizzard_loop", point)
-	Effects.telegraph_ring(get_parent(), point, 4.0, Color(0.6, 0.85, 1.0))
-	# 8 ticks over 4 seconds.
+	Effects.telegraph_ring(get_parent(), point, radius, Color(0.6, 0.85, 1.0))
+	# 8 ticks over 4 seconds (stock).
 	var cast_id := "blizzard_%d" % seq
 	var granted_mobs := {}
-	for i in 8:
-		await get_tree().create_timer(0.5).timeout
+	for i in ticks:
+		await get_tree().create_timer(interval).timeout
 		if not is_inside_tree():
 			break
 		if multiplayer.is_server():
@@ -4715,11 +5462,14 @@ func cast_blizzard(point: Vector3, dmg: float, owner: int, seq: int) -> void:
 				var m := n as Mob
 				if m == null or not m.alive:
 					continue
-				if m.global_position.distance_to(point) < 4.0:
+				if m.global_position.distance_to(point) < radius:
+					# Shatterglass reads the target's slow
+					# state at the tick (issue #210).
+					var dealt := tick_dmg * tree_shatterglass_mult(m)
 					if multiplayer.is_server():
-						m.take_damage(dmg, owner, point)
+						m.take_damage(dealt, owner, point)
 					else:
-						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner, point)
+						m.rpc_id(NetworkManager.server_peer_id, "take_damage", dealt, owner, point)
 					# Permafrost: slows last +2s.
 					var bdur := 1.0
 					if caster != null and caster.has_trait("permafrost"):
@@ -5783,7 +6533,17 @@ func take_damage(amount: float, attacker_name: String = "") -> void:
 	# Reinforce (Architect): -50% damage taken. (take_damage applies no
 	# knockback, so there is nothing further to skip.)
 	if _reinforce_t > 0.0:
-		amount *= 0.5
+		amount *= 1.0 - _reinforce_strength
+	# Issue #210 (Rooted Ward): standing inside any of
+	# your own totems' radii reduces damage taken.
+	var ward_pct := _tree_behavior_pct("rooted_ward")
+	if ward_pct > 0.0:
+		var my_peer := int(multiplayer.get_unique_id())
+		for n in get_tree().get_nodes_in_group("totems"):
+			if int(n.get("owner_peer")) == my_peer \
+					and global_position.distance_to(n.global_position) < float(n.call("aura_radius")):
+				amount *= 1.0 - ward_pct / 100.0
+				break
 	# Barnacle Bulwark (issue #102): wave-counted damage reduction.
 	amount *= _buff_mult("defense")
 	# Remember who hit us so the death screen can name the killer.
@@ -6105,6 +6865,34 @@ func notify_mark_kill() -> void:
 ## guard means an unspent one gains nothing and no second
 ## charge can ever bank. Silent by ruling (section 4): no
 ## toast, no sfx — the slot visibly re-enables via
+## Issue #210 (Coup de Grâce): the server reports that
+## this player's Assassinate strike killed — a killing
+## Assassinate resets its own cooldown.
+## Issue #210 slice B5 (spec section 3): Adrenaline — the
+## server reports a kill credited to this player (routed
+## through the two mob death sites, the coup discipline);
+## the buff writes a timed var read by the atk_spd chain.
+@rpc("any_peer", "call_local")
+func notify_tree_kill() -> void:
+	if not is_multiplayer_authority():
+		return
+	var pct := _tree_behavior_pct("adrenaline")
+	if pct > 0.0:
+		_tree_adrenaline_pct = pct
+		_tree_adrenaline_until = \
+			Time.get_ticks_msec() + 3000
+
+
+@rpc("any_peer", "call_local")
+func notify_coup_kill() -> void:
+	if not is_multiplayer_authority():
+		return
+	if _tree_variant("assassinate") == "coup_de_grace":
+		ability_cds["assassinate"] = 0.0
+		if hud != null:
+			hud.refresh_abilities(self)
+
+
 ## refresh_abilities.
 @rpc("any_peer", "call_local")
 func notify_marked_target_died() -> void:
@@ -6179,7 +6967,9 @@ func spend_point(stat: String) -> bool:
 ## Called on spawn, on state restore, and on equip/unequip. Idempotent.
 func _apply_equipped_special() -> void:
 	# Migration: mages that invested 20 aura keep Holy Light via earn.
-	if class_id == "mage" and bonus_aura >= SpecialData.AURA_EARN_REQ:
+	# Issue #206 (spec section 5): the earn reads the COMBINED
+	# aura (base + tree), as specced.
+	if class_id == "mage" and bonus_aura + _tree_stat("aura") >= SpecialData.AURA_EARN_REQ:
 		SpecialData.earn_for(self, "holy_light")
 	# Derived effects reset first: unequipping or switching can never stack.
 	cash_mult = 1.0
@@ -6250,6 +7040,7 @@ const STATE_KEYS: Array[String] = [
 	"run_start_msec", "run_kills", "run_damage_dealt",
 	"supermarket_cash", "bounty_progress", "totem_charges",
 	"specialization", "affinity", "family_collection",
+	"tree_seed", "tree_owned", "tree_lifetime",
 	"equipped_special", "no_death_streak", "second_wind_armed",
 	"second_wind_used",
 ]
@@ -6301,6 +7092,11 @@ func get_state() -> Dictionary:
 		"specialization": specialization,
 		"affinity": affinity.duplicate(true),
 		"family_collection": family_collection.duplicate(true),
+		# Issue #206 (spec section 7): three additive keys,
+		# no SAVE_VERSION bump — derived state stays unsaved.
+		"tree_seed": tree_seed,
+		"tree_owned": tree_owned.duplicate(),
+		"tree_lifetime": tree_lifetime.duplicate(true),
 		# Relic Vault (issue #6): equipped special + earn tracking.
 		"equipped_special": equipped_special,
 		"no_death_streak": no_death_streak,
@@ -6351,6 +7147,16 @@ func apply_state(s: Dictionary) -> void:
 	specialization = str(s.get("specialization", ""))
 	affinity = (s.get("affinity", {}) as Dictionary).duplicate(true)
 	family_collection = (s.get("family_collection", {}) as Dictionary).duplicate(true)
+	# Issue #206: the stored seed wins; aggregates recompute
+	# here so the recalc at this function's tail folds them.
+	tree_seed = int(s.get("tree_seed", DeepTree.TREE_SEED))
+	if tree_seed == 0:
+		tree_seed = DeepTree.TREE_SEED
+	tree_owned = []
+	for tid in (s.get("tree_owned", []) as Array):
+		tree_owned.append(int(tid))
+	tree_lifetime = (s.get("tree_lifetime", {}) as Dictionary).duplicate(true)
+	_recompute_tree_aggregates()
 	# Relic Vault (issue #6): equipped special + earn tracking.
 	equipped_special = str(s.get("equipped_special", ""))
 	no_death_streak = int(s.get("no_death_streak", 0))
@@ -6504,7 +7310,7 @@ func _emit_snapshot(delta: float) -> void:
 		# Issue #133: never fire into a dead peer (the Oct 14 spam
 		# site — 10 Hz of not-connected errors after the host died).
 		if _mp_peer_connected():
-			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd)
+			rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd + _tree_stat("atk_spd"))
 
 
 ## Issue #164 (parts A + C): a puppet's presentation follows its

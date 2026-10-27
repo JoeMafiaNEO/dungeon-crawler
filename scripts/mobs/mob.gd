@@ -66,6 +66,18 @@ var is_champion := false
 ## Slow debuff (frost): _slow_t seconds remaining at _slow_mult speed.
 var _slow_t := 0.0
 var _slow_mult := 1.0
+## Issue #210 Amendment 1 (Brittle Ice): the shatter value
+## Glacial Prison stores on each mob it freezes. Zero for
+## every non-owner's game — the field is never read for
+## effect at zero.
+var prison_shatter := 0.0
+var prison_shatter_owner := 0
+## Issue #210 Amendment 1 (Arcing Brand): the branded
+## status — a storm caster's mark. Reapplication takes the
+## stronger amp and refreshes (the apply_burn precedent).
+var _brand_amp := 0.0
+var _brand_until := 0
+var _brand_owner := 0
 ## Stun (issue #113 Phase 4, Hammer Smash): while _stun_t > 0 the mob
 ## cannot move or attack. Server-side state, mirroring the slow pattern;
 ## boss special-think is NOT paused (movement/basic attacks only).
@@ -89,6 +101,10 @@ var _support_dmg_mult := 1.0
 var bulwark_slow_t := 0.0
 ## Doom Totem (Conqueror signature): mob takes +30% damage from all sources.
 var doom_t := 0.0
+## Issue #210 (section 2.4): the doom magnitude stored by
+## the refreshing totem (the caster's vuln_pct fold);
+## 0.30 is the shipped base value.
+var doom_vuln := 0.30
 ## Issue #173: status-effect rings (presentation ONLY — no
 ## gameplay state lives here). A server-computed status_mask
 ## rides the mob snapshot; each replica renders one ground
@@ -552,6 +568,21 @@ func is_stunned() -> bool:
 	return _stun_t > 0.0
 
 
+## Issue #210 (Choking Veil): apply_slow is server-context
+## only; this is its RPC route for owner-local casts, in
+## the apply_mark pattern. Claimed-value discipline (the
+## request_chain_lightning posture): only the server
+## executes, and the claimed values are sanity-clamped
+## server-side — a slow's duration lives in [0, 15] s and
+## its multiplier in [0, 1].
+@rpc("any_peer", "call_local")
+func rpc_apply_slow(duration: float, mult: float) -> void:
+	if not multiplayer.is_server():
+		return
+	apply_slow(clampf(duration, 0.0, 15.0),
+		clampf(mult, 0.0, 1.0))
+
+
 func apply_slow(duration: float, mult: float) -> void:
 	if not alive:
 		return
@@ -566,6 +597,28 @@ func apply_slow(duration: float, mult: float) -> void:
 ## Frost-slowed right now (combo-finisher world state).
 func is_slowed() -> bool:
 	return _slow_t > 0.0
+
+
+## Issue #210 Amendment 1: brand this mob for `duration`
+## seconds at `amp` (a damage fraction, e.g. 0.2 = +20%).
+func apply_brand(duration: float, amp: float,
+		attacker: int) -> void:
+	if not alive:
+		return
+	if not multiplayer.is_server():
+		return
+	var now := Time.get_ticks_msec()
+	_brand_amp = maxf(_brand_amp, amp) \
+		if now < _brand_until else amp
+	_brand_until = now + int(duration * 1000.0)
+	_brand_owner = attacker
+
+
+## The stored brand amp while the window is live, else 0.
+func brand_amp_now() -> float:
+	if Time.get_ticks_msec() < _brand_until:
+		return _brand_amp
+	return 0.0
 
 
 ## Applies blind (Smoke Bombard): the mob misses 50% of attacks while blind.
@@ -686,6 +739,10 @@ func _take_burn_tick() -> void:
 		# burn kills skip _drop_and_reward entirely, so the
 		# marker notification hooks HERE, not the reward path.
 		_notify_marked_death()
+		# Issue #210: kill-decision site 2 of 2 for Coup de
+		# Grâce (checked for symmetry; see _notify_coup).
+		_notify_coup(_burn_attacker)
+		_notify_tree_kill(_burn_attacker)
 
 
 ## Issue #189 (section 3): tell the MARKER's player that
@@ -736,6 +793,14 @@ func set_xray(enabled: bool) -> void:
 ## Marked target: takes +50% damage from everyone while marked.
 var _mark_t := 0.0
 
+## Issue #210 (section 2.6, the spec's one API extension):
+## the marking caster's Deep Tree vuln_add, stored on the
+## mark at application time (the caster's aggregate THEN,
+## never re-read from a possibly-changed build) and added
+## to the 1.5 amplification at the damage read. A re-mark
+## overwrites it — the last applier owns the mark.
+var _mark_vuln_add := 0.0
+
 ## Issue #189 (section 1): the permanent mark — the cast passes
 ## this in place of a duration. INF lives in the existing
 ## _mark_t: every consumer (damage +50%, True Aim, the status
@@ -750,14 +815,76 @@ const MARK_PERMANENT := INF
 ## player (the marker), never the killer.
 var _marked_by_peer := 0
 
+## Issue #210 (Coup de Grâce): the peer whose Assassinate
+## strike is currently being applied (see assassinate_hit)
+## — set only for the duration of that one damage call, so
+## the kill-decision sites can attribute the kill exactly.
+var _coup_from := 0
+
+
+## The Assassinate strike's damage route: identical damage
+## discipline to a direct take_damage call, with the strike
+## tagged for the duration of the call.
+@rpc("any_peer", "call_local")
+func assassinate_hit(amount: float, attacker: int,
+		attacker_pos: Vector3) -> void:
+	_coup_from = attacker
+	take_damage(amount, attacker, attacker_pos)
+	_coup_from = 0
+
+
+## Issue #210: tell the Assassinate striker's player that
+## their strike killed (Coup de Grâce). Mirrors
+## _notify_marked_death's addressing; fires from the two
+## kill-decision sites when the killing source carries the
+## strike tag (the burn site is checked for symmetry — a
+## burn tick never carries the tag, whose lifetime is one
+## take_damage call, so in practice the strike's own site
+## is the one that fires).
+## Issue #210 slice B5 (spec section 3): Adrenaline kill
+## credit — the general form of the coup notification,
+## fired at BOTH death sites for the credited killer.
+func _notify_tree_kill(killer: int) -> void:
+	if not multiplayer.is_server() or killer == 0:
+		return
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return
+	var striker = dungeon.get_player_node(killer)
+	if striker == null or not striker.has_method("notify_tree_kill"):
+		return
+	if killer == int(multiplayer.get_unique_id()):
+		striker.notify_tree_kill()
+	else:
+		striker.rpc_id(killer, "notify_tree_kill")
+
+
+func _notify_coup(killer: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if _coup_from == 0 or _coup_from != killer:
+		return
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return
+	var striker = dungeon.get_player_node(_coup_from)
+	if striker == null or not striker.has_method("notify_coup_kill"):
+		return
+	if _coup_from == int(multiplayer.get_unique_id()):
+		striker.notify_coup_kill()
+	else:
+		striker.rpc_id(_coup_from, "notify_coup_kill")
+
 
 func is_marked() -> bool:
 	return _mark_t > 0.0
 
 
 @rpc("any_peer", "call_local")
-func apply_mark(duration: float, slow_mult: float = 1.0) -> void:
+func apply_mark(duration: float, slow_mult: float = 1.0,
+		vuln_add: float = 0.0) -> void:
 	_mark_t = duration
+	_mark_vuln_add = vuln_add
 	# Issue #189 (section 3): record the marker on the server
 	# (sender resolution, house pattern; a local server cast
 	# reports sender 0 -> the server's own id). A re-mark
@@ -1830,9 +1957,24 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 	# Phaseshift: the apex Horror is untargetable during its 2s window.
 	if untargetable:
 		return
-	# Marked targets take +50% damage.
+	# Brittle Ice (issue #210 Amendment 1): a hit on a
+	# FROZEN mob (active slow multiplier 0.0) with a stored
+	# prison shatter breaks the ice — the shatter is added
+	# to the hit, the freeze is consumed (the expiry reset,
+	# applied early), and the value clears. One shatter per
+	# freeze application.
+	if prison_shatter > 0.0 and _slow_t > 0.0 \
+			and _slow_mult == 0.0:
+		amount += prison_shatter
+		prison_shatter = 0.0
+		prison_shatter_owner = 0
+		_slow_t = 0.0
+		_slow_mult = 1.0
+		_sprite.modulate = Color.WHITE
+	# Marked targets take +50% damage (plus the marking
+	# caster's stored Deep Tree vuln add, issue #210).
 	if _mark_t > 0.0:
-		amount *= 1.5
+		amount *= 1.5 + _mark_vuln_add
 	# True Aim trait: attacker's +10% damage vs marked or revealed targets.
 	if _mark_t > 0.0 or _xray:
 		for n in get_tree().get_nodes_in_group("players"):
@@ -1849,9 +1991,12 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 			if pl != null and pl.has_trait("brittle"):
 				amount *= 1.15
 				break
-	# Doom Totem (Conqueror signature): +30% damage from all sources.
+	# Doom Totem (Conqueror signature): +30% damage from
+	# all sources. Issue #210: the magnitude is stored on
+	# the mob by the totem that refreshed it (doom_vuln,
+	# default 0.30 = the shipped value).
 	if doom_t > 0.0:
-		amount *= 1.3
+		amount *= 1.0 + doom_vuln
 	# Shieldbearer (issue #67): frontal block. If the shield is up and the
 	# attacker is within the frontal arc, reduce damage. Meteor bypasses.
 	var blocked := false
@@ -1895,6 +2040,10 @@ func take_damage(amount: float, attacker: int, attacker_pos: Vector3, bypass_blo
 		# the marker hears of the death here, whatever the
 		# damage source was.
 		_notify_marked_death()
+		# Issue #210: kill-decision site 1 of 2 for Coup de
+		# Grâce — an Assassinate strike's own kill.
+		_notify_coup(attacker)
+		_notify_tree_kill(attacker)
 		_drop_and_reward(attacker)
 		# Splitter (issue #67 Phase 2): server-side spawn-on-death.
 		# Children have split_on_death=false (hard cap, no cascade).

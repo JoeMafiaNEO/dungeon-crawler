@@ -31,12 +31,15 @@ var hp := 100.0
 var uid := ""
 
 var _life := 60.0
+var _cluster_at := 0
+var _pulse_ready := 0
+var _heart_tick := 0.0
 var _fire_tick := 0.0
 var _triggered := false
 var _ring: MeshInstance3D = null
 
 
-func setup(p_id: String, p_owner: int, p_rank: int = 1, hp_mult: float = 1.0, p_uid: String = "") -> void:
+func setup(p_id: String, p_owner: int, p_rank: int = 1, hp_mult: float = 1.0, p_uid: String = "", life_add: float = 0.0) -> void:
 	structure_id = p_id
 	owner_peer = p_owner
 	rank = p_rank
@@ -45,6 +48,10 @@ func setup(p_id: String, p_owner: int, p_rank: int = 1, hp_mult: float = 1.0, p_
 	max_hp = float(st["hp"]) * hp_mult
 	hp = max_hp
 	_life = float(st["life"])
+	# Issue #210 (slice B4): life_add applies only where
+	# life > 0 — the turret's 0 is permanent (section 2.7).
+	if _life > 0.0:
+		_life += life_add
 
 
 func _ready() -> void:
@@ -193,6 +200,20 @@ func _physics_process(delta: float) -> void:
 		if _life <= 0.0:
 			_expire()
 			return
+	# Issue #210 (Cluster Trap): the second detonation,
+	# 0.5 s after the first, on every peer's copy; the
+	# damage is server-side.
+	if _cluster_at > 0 and Time.get_ticks_msec() >= _cluster_at:
+		_cluster_at = 0
+		_detonate_cluster()
+		return
+	# Issue #210 (Heartstone): the keystone heals nearby
+	# structures once a second (server-side).
+	if structure_id == "keystone" and multiplayer.is_server():
+		_heart_tick += delta
+		if _heart_tick >= 1.0:
+			_heart_tick = 0.0
+			_heartstone_tick()
 	match structure_id:
 		"sentry_turret":
 			_tick_turret(delta)
@@ -205,14 +226,28 @@ func _tick_turret(delta: float) -> void:
 	if _fire_tick > 0.0:
 		return
 	var interval := TURRET_TICK
-	if keystone_near(get_tree(), global_position, owner_peer):
-		interval /= 1.3
+	var oc := _caster()
+	# Issue #210: the keystone aura's magnitude consumer
+	# is this 1.3 divisor — the keystone owner's aura_pct
+	# scales it, and their keystone radius_add extends
+	# the aura's reach (keystone_near's extra).
+	var kextra := 0.0
+	if oc != null:
+		kextra = oc.tree_structure_mod("keystone",
+			"radius_add", 0.0)
+	if keystone_near(get_tree(), global_position,
+			owner_peer, kextra):
+		var kf := 1.3
+		if oc != null:
+			kf *= 1.0 + oc.tree_structure_mod("keystone",
+				"aura_pct", 0.0)
+		interval /= kf
 	# Issue #184 (Family F): the owner's ATK SPD divides the
 	# fire interval, resolved through _caster() and re-evaluated
 	# at EVERY shot's reset — mid-life investments apply from
 	# the next shot. On a guest's turret the caster copy's
 	# atk_spd_mult() reads its snapshot mirror.
-	var owner := _caster()
+	var owner := oc
 	if owner != null:
 		interval /= owner.atk_spd_mult()
 	_fire_tick = interval
@@ -227,24 +262,43 @@ func _tick_turret(delta: float) -> void:
 	if not multiplayer.is_server():
 		return
 	var dmg := _owner_damage() * 0.6 * _rank_mult()
+	# Issue #210: dmg_pct, Siege Mind (elites/bosses),
+	# Twin Bolts (a second bolt at 60%).
+	if oc != null:
+		dmg *= oc.tree_structure_mod("sentry_turret",
+			"dmg_mult", 1.0)
+		var siege := oc.tree_structure_behavior("siege_mind")
+		if siege > 0.0 and (target.is_elite or (
+				target.data != null and target.data.is_boss)):
+			dmg *= 1.0 + siege / 100.0
 	if multiplayer.is_server():
 		target.take_damage(dmg, owner_peer, target.global_position)
+		if oc != null and oc.tree_structure_variant(
+				"sentry_turret") == "twin_bolts":
+			target.take_damage(dmg * 0.6, owner_peer,
+				target.global_position)
 	else:
 		target.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner_peer, target.global_position)
 
 
 ## Nearest alive mob in range; marked targets (Rogue synergy) win ties.
 func _pick_target() -> Mob:
+	# Issue #210: range_add extends the turret's reach.
+	var rng := TURRET_RANGE
+	var oc2 := _caster()
+	if oc2 != null:
+		rng += oc2.tree_structure_mod("sentry_turret",
+			"range_add", 0.0)
 	var best: Mob = null
-	var best_d := TURRET_RANGE
+	var best_d := rng
 	var marked_best: Mob = null
-	var marked_d := TURRET_RANGE
+	var marked_d := rng
 	for n in get_tree().get_nodes_in_group("mobs"):
 		var m := n as Mob
 		if m == null or not m.alive:
 			continue
 		var d := global_position.distance_to(m.global_position)
-		if d > TURRET_RANGE:
+		if d > rng:
 			continue
 		if m.is_marked():
 			if d < marked_d:
@@ -288,18 +342,84 @@ func _tick_trap() -> void:
 		AudioManager.sfx("explosion", global_position, 1.3, 0.6)
 		if multiplayer.is_server():
 			var dmg := _owner_damage() * 1.5 * _rank_mult()
+			# Issue #210: dmg_pct and the AOE radius_add.
+			var oc3 := _caster()
+			var aoe := TRAP_AOE
+			if oc3 != null:
+				dmg *= oc3.tree_structure_mod("spike_trap",
+					"dmg_mult", 1.0)
+				aoe += oc3.tree_structure_mod("spike_trap",
+					"radius_add", 0.0)
 			for n2 in get_tree().get_nodes_in_group("mobs"):
 				var m2 := n2 as Mob
 				if m2 == null or not m2.alive:
 					continue
-				if m2.global_position.distance_to(global_position) < TRAP_AOE:
+				if m2.global_position.distance_to(global_position) < aoe:
 					if multiplayer.is_server():
 						m2.take_damage(dmg, owner_peer, global_position)
 					else:
 						m2.rpc_id(NetworkManager.server_peer_id, "take_damage", dmg, owner_peer, global_position)
 					m2.apply_slow(3.0, 0.6)
-		queue_free()
+		# Issue #210 (Cluster Trap): hold for the second
+		# detonation instead of freeing.
+		var oc4 := _caster()
+		if oc4 != null and oc4.tree_structure_variant(
+				"spike_trap") == "cluster_trap":
+			_cluster_at = Time.get_ticks_msec() + 500
+		else:
+			queue_free()
 		return
+
+
+## Issue #210 (Cluster Trap): the second detonation at
+## 70%, on the same folded radius; frees the trap.
+func _detonate_cluster() -> void:
+	Effects.burst(get_parent(), global_position + Vector3(0, 0.5, 0), Color(0.7, 0.7, 0.75), 20, 5.0)
+	AudioManager.sfx("explosion", global_position, 1.3, 0.6)
+	if multiplayer.is_server():
+		var dmg := _owner_damage() * 1.5 * _rank_mult() * 0.7
+		var oc5 := _caster()
+		var aoe := TRAP_AOE
+		if oc5 != null:
+			dmg *= oc5.tree_structure_mod("spike_trap",
+				"dmg_mult", 1.0)
+			aoe += oc5.tree_structure_mod("spike_trap",
+				"radius_add", 0.0)
+		for n in get_tree().get_nodes_in_group("mobs"):
+			var m := n as Mob
+			if m == null or not m.alive:
+				continue
+			if m.global_position.distance_to(global_position) < aoe:
+				m.take_damage(dmg, owner_peer, global_position)
+				m.apply_slow(3.0, 0.6)
+	queue_free()
+
+
+## Issue #210 (Heartstone): heal the owner's other
+## structures within the keystone's radius by 5.
+func _heartstone_tick() -> void:
+	var oc6 := _caster()
+	if oc6 == null or oc6.tree_structure_variant("keystone") \
+			!= "heartstone":
+		return
+	var reach := KEYSTONE_RADIUS + oc6.tree_structure_mod(
+		"keystone", "radius_add", 0.0)
+	var dungeon := get_tree().get_first_node_in_group(
+		"dungeon")
+	for n in get_tree().get_nodes_in_group("structures"):
+		var st := n as Structure
+		if st == null or st == self or st.owner_peer \
+				!= owner_peer or st.is_queued_for_deletion():
+			continue
+		if st.global_position.distance_to(global_position) \
+				> reach:
+			continue
+		var nh: float = minf(st.max_hp, st.hp + 5.0)
+		if nh > st.hp:
+			st.hp = nh
+			if dungeon != null:
+				dungeon.rpc("structure_repaired", st.uid,
+					nh)
 
 
 ## Server-side HP loss. Mobs call this directly (they only run on the server);
@@ -310,7 +430,34 @@ func take_structure_damage(amount: float, from_peer: int) -> void:
 	if hp <= 0.0:
 		return
 	hp -= amount
+	# Amendment 1 section C.3 (Thornwall Pulse): a
+	# bulwark wall whose owner's pulse_dmg aggregate is
+	# > 0 pulses on a hit taken — enemies within 2.5 m
+	# take owner damage x pulse_dmg, on a 1.0 s internal
+	# cadence. At zero the intake is exactly stock.
+	if structure_id == "bulwark_wall" and hp > 0.0:
+		var now := Time.get_ticks_msec()
+		if now >= _pulse_ready:
+			var oc7 := _caster()
+			if oc7 != null:
+				var pd: float = oc7.tree_structure_mod(
+					"bulwark_wall", "pulse_dmg", 0.0)
+				if pd > 0.0:
+					_pulse_ready = now + 1000
+					var pdmg: float = float(oc7.get(
+						"damage")) * pd
+					for n in get_tree().get_nodes_in_group("mobs"):
+						var pm := n as Mob
+						if pm == null or not pm.alive:
+							continue
+						if pm.global_position.distance_to(global_position) <= 2.5:
+							pm.take_damage(pdmg, owner_peer, global_position)
 	if hp <= 0.0:
+		# Issue #210 (Salvage): the refund routes to the
+		# owner's copy before the break broadcast.
+		var oc8 := _caster()
+		if oc8 != null:
+			oc8.apply_tree_salvage(structure_id)
 		var dungeon := get_tree().get_first_node_in_group("dungeon")
 		if dungeon != null:
 			dungeon.rpc("break_structure", uid)
@@ -385,7 +532,7 @@ func _rank_mult() -> float:
 
 
 ## True if one of owner's keystones is within 6m of pos.
-static func keystone_near(tree: SceneTree, pos: Vector3, owner: int) -> bool:
+static func keystone_near(tree: SceneTree, pos: Vector3, owner: int, extra: float = 0.0) -> bool:
 	for n in tree.get_nodes_in_group("structures"):
 		var k := n as Structure
 		if k == null or k.structure_id != "keystone":
@@ -394,6 +541,6 @@ static func keystone_near(tree: SceneTree, pos: Vector3, owner: int) -> bool:
 			continue
 		var d: Vector3 = k.global_position - pos
 		d.y = 0.0
-		if d.length() <= KEYSTONE_RADIUS:
+		if d.length() <= KEYSTONE_RADIUS + extra:
 			return true
 	return false

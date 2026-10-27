@@ -141,6 +141,14 @@ func _run() -> void:
 	_test_building_variety_200()
 	_test_building_gen_199()
 	_test_world_streamer_198()
+	_test_deep_tree_206()
+	_test_deep_tree_b1_210()
+	_test_deep_tree_b2_210()
+	_test_deep_tree_b3_210()
+	_test_deep_tree_b4_210()
+	_test_deep_tree_b5_210()
+	_test_deep_tree_ui_215()
+	_test_deep_tree_save_217()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -8620,7 +8628,7 @@ func _test_train_disembark_fallback() -> void:
 	var psrc_steam := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(psrc_steam.contains("_request_dagger_spawn(spawn_pos, dagger_vel, throw_dmg, from, throw_range)"),
 		"steam: host dagger calls spawn directly")
-	_assert(psrc_steam.contains("mob.take_damage(melee_dmg, from, global_position)"),
+	_assert(psrc_steam.contains("mob.take_damage(dealt, from, global_position)"),
 		"steam: host melee calls take_damage directly")
 	# Peer-ID namespace fix (Jesse 2026-10-10): SteamMultiplayerPeer peer IDs
 	# are NOT Steam IDs — the host is peer 1 (per GodotSteam docs), Steam64 is
@@ -10894,7 +10902,7 @@ func _test_warrior_signatures() -> void:
 	_assert(psrc.contains("_sanctuary_t > 0.0"), "Sanctuary immunity checked in take_damage")
 	var msrc := FileAccess.get_file_as_string("res://scripts/mobs/mob.gd")
 	_assert(msrc.contains("var doom_t"), "Doom debuff timer exists on mobs")
-	_assert(msrc.contains("amount *= 1.3"), "Doom +30% damage in mob take_damage")
+	_assert(msrc.contains("amount *= 1.0 + doom_vuln"), "Doom +30% damage in mob take_damage (stored magnitude, #210 B3)")
 	var tsrc := FileAccess.get_file_as_string("res://scripts/combat/totem.gd")
 	_assert(tsrc.contains('"sanctuary_totem"'), "Totem handles sanctuary type")
 	_assert(tsrc.contains('"doom_totem"'), "Totem handles doom type")
@@ -14782,8 +14790,8 @@ func _test_snapshot_yaw() -> void:
 	_assert(src.contains("yaw_v: float"), "push_snapshot takes yaw_v")
 	# Caller passes _yaw (and, since issue #104 Phase 3, equipped_ids;
 	# since issue #126 Phase 1, rod_out too).
-	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd)'),
-		"caller passes _yaw (and, since #167, max_hp; since #163, downed; since #172, the revive pool fraction; since #184, the ATK SPD investment)")
+	_assert(src.contains('rpc("push_snapshot", global_position, hp, level, alive, _yaw, equipped_ids, rod_out, max_hp, downed, _revive_pool_frac, bonus_atk_spd + _tree_stat("atk_spd"))'),
+		"caller passes _yaw (and, since #167, max_hp; since #163, downed; since #172, the revive pool fraction; since #184, the ATK SPD investment; since #206 that term is bonus + tree)")
 	_assert(src.contains("eq_ids: Dictionary = {}"), "push_snapshot takes eq_ids (#104 P3)")
 	_assert(src.contains("rod_out_v: bool = false"), "push_snapshot takes rod_out_v (#126 P1)")
 	# _remote_yaw stored and interpolated with lerp_angle.
@@ -17597,7 +17605,10 @@ func _test_input_vocabulary_144() -> void:
 	for a in InputMap.get_actions():
 		if not str(a).begins_with("ui_"):
 			custom += 1
-	_assert(custom == 30, "144: exactly 30 project actions (26 verbs + 4 look)")
+	# Issue #215: the count rises 30 -> 31 - the spec's
+	# ruled direct-open action (deep_tree_open, node-UI
+	# spec 7.1/9.2) is a new verb, counted in daylight.
+	_assert(custom == 31, "144: exactly 31 project actions (27 verbs + 4 look)")
 	_assert(InputMap.has_action("ui_accept") and not InputMap.action_get_events("ui_accept").is_empty(),
 		"144: built-in ui actions intact")
 	# Byte-for-byte spot check: the raw poll the game used to read and
@@ -20959,19 +20970,25 @@ func _test_atk_spd_184() -> void:
 			"ability_cds[\"tempest\"] = (90.0) * cooldown_mult() / atk_spd_mult()",
 			"ability_cds[\"assassinate\"] = (45.0) * cooldown_mult() / atk_spd_mult()",
 			"ability_cds[\"execution\"] = (60.0) * cooldown_mult() / atk_spd_mult()",
-			"ability_cds[\"demolish\"] = (45.0) * cooldown_mult() / atk_spd_mult()",
-			"ability_cds[\"holy_light\"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult()",
+			"ability_cds[\"demolish\"] = (45.0) * cooldown_mult() \\
+\t\t/ atk_spd_mult() * _tree_skill_mod(\"demolish\",",
+			"ability_cds[\"holy_light\"] = HL_COOLDOWN * cooldown_mult() / atk_spd_mult() * _tree_skill_mod(\"holy_light\", \"cd_mult\", 1.0)",
 			"_srv_lightning_cd = LIGHTNING_COOLDOWN / atk_spd_mult()",
 			"_dagger_catch_cd = DAGGER_CATCH_COOLDOWN / atk_spd_mult()"]:
 		_assert(psrc.contains(frag), "184(s1): divided set site present: " + frag.left(52))
 	# --- NON-BLEED: the five non-attack set sites byte-
-	# --- identical (first-class pin, section 1).
+	# --- identical (first-class pin, section 1). The two
+	# --- rogue sites carry issue #210's tree cd fold —
+	# --- still NO atk_spd division (the pin's substance);
+	# --- their fragments record the folded forms.
 	for frag in [
-			"ability_cds[\"smoke_veil\"] = (30.0) * cooldown_mult()\n",
-			"ability_cds[\"shadow_step\"] = (15.0) * cooldown_mult()\n",
-			"ability_cds[\"reinforce\"] = (25.0) * cooldown_mult()\n",
-			"ability_cds[cd_key] = (cd) * cooldown_mult()\n",
-			"ability_cds[structure_id] = (cd) * cooldown_mult()\n"]:
+			"ability_cds[\"smoke_veil\"] = (30.0) * cooldown_mult() \\\n\t\t* _tree_skill_mod(\"smoke_veil\", \"cd_mult\", 1.0)",
+			"ability_cds[\"shadow_step\"] = (15.0) * cooldown_mult() \\\n\t\t\t* _tree_skill_mod(\"shadow_step\", \"cd_mult\", 1.0)",
+			"ability_cds[\"reinforce\"] = (25.0) * cooldown_mult() \\
+\t\t* _tree_skill_mod(\"reinforce\", \"cd_mult\", 1.0)",
+			"ability_cds[cd_key] = (cd) * cooldown_mult() \\\n\t\t* _tree_skill_mod(cd_key, \"cd_mult\", 1.0)\n",
+			"ability_cds[structure_id] = (cd) * cooldown_mult() \\
+\t\t* _tree_skill_mod(structure_id, \"cd_mult\", 1.0)"]:
 		_assert(psrc.contains(frag),
 			"184(s1): NON-BLEED set site byte-identical: " + frag.left(52).strip_edges())
 	# --- Dagger: charge rate + catch lockout (rogue drives).
@@ -21020,8 +21037,8 @@ func _test_atk_spd_184() -> void:
 		"184(s2): the snapshot writes the mirror var net_bonus_atk_spd")
 	_assert(absf(mult_of.call(rep) - 1.25) < 0.001,
 		"184(s2): atk_spd_mult() off the replica reads the mirror (1.25)")
-	_assert(psrc.contains("downed, _revive_pool_frac, bonus_atk_spd)"),
-		"184(s2): the emit call site carries the sender's bonus_atk_spd (labeled source pin)")
+	_assert(psrc.contains("downed, _revive_pool_frac, bonus_atk_spd + _tree_stat(\"atk_spd\"))"),
+		"184(s2): the emit call site carries the sender's bonus_atk_spd (labeled source pin; since #206 the term is bonus + tree, spec section 4.5)")
 	# The divided SERVER gate at the mirror value: this replica
 	# is the server's copy of its player — its equipped state
 	# set as replication leaves it (equipped_ids; equip_stack
@@ -23152,7 +23169,7 @@ func _test_ability_matrix_162() -> void:
 	caster_c.hl_end_beam(7, 0)
 
 	# --- Part 4 (#169): Reinforce routing ---
-	_assert(psrc.contains("target.apply_reinforce(6.0)"),
+	_assert(psrc.contains("target.apply_reinforce(6.0, shell)"),
 		"matrix169: self-authority targets take the direct call")
 	# The cast measures from the cursor point (origin without a
 	# camera); sweep stray players out of its 3m reach first.
@@ -24769,3 +24786,3777 @@ func _test_held_prop_yaw_141() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] held prop yaw 141 done")
+
+
+func _test_deep_tree_206() -> void:
+	print("[Playtest] Deep Tree prototype (issue #206)...")
+	var DT := load("res://scripts/progression/deep_tree.gd")
+	var seed: int = DT.TREE_SEED
+
+	# --- 9.1 hash integrity: the splitmix emulation pinned
+	# against an INDEPENDENT (Python) reference's literals.
+	_assert(DT._h(20261025, 2, 1, 1, 0) == -2073421989123396619
+			and DT._h(20261025, 1, 1, 8, 0) == 6454757055857580857
+			and DT._h(12345, 5, 9, 30, 77) == -6644571716815453981,
+		"206: splitmix64 hash matches the independent reference")
+
+	# --- 9.1 determinism: rings 1-12 generated twice,
+	# identical node dicts.
+	var det_ok := true
+	for ring in range(1, 13):
+		for index in DT.width(seed, 1, ring):
+			var a: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			var b: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			if JSON.stringify(a) != JSON.stringify(b):
+				det_ok = false
+	_assert(det_ok,
+		"206: Fire graph rings 1-12 regenerate identically")
+
+	# --- 9.1 FIXTURE: recorded literals for Fire rings 1-3
+	# (the deliberate exception — any hash/table change
+	# breaks this loudly, by design).
+	var fix := {
+		"1,0": ["modifier", "", "inferno", {"components": [{"param": "radius_add", "steps": 3}]}, 16, "Charred Oath"],
+		"2,0": ["behavior", "", "fireball", {"behavior": "fuel_for_the_flame", "steps": 4}, 29, "Charred Throne"],
+		"2,1": ["behavior", "", "fireball", {"behavior": "emberheart", "steps": 3}, 29, "Ignited Crown"],
+		"2,2": ["modifier", "", "meteor", {"components": [{"param": "radius_add", "steps": 1}]}, 20, "Ember Conflagration"],
+		"3,0": ["modifier", "", "fireball", {"components": [{"param": "dmg_pct", "steps": 6}]}, 24, "Furnace Conflagration"],
+		"3,1": ["stat", "", "", {"channel": "health", "steps": 1}, 15, "Scorched Oath"],
+		"3,2": ["stat", "", "", {"channel": "speed", "steps": 1}, 15, "Scorched Pact"],
+	}
+	var fix_ok := true
+	for key in fix:
+		var parts: PackedStringArray = str(key).split(",")
+		var n: Dictionary = DT.node_for(seed, "mage", 1,
+			int(parts[0]), int(parts[1]))
+		var e: Array = fix[key]
+		if str(n["archetype"]) != e[0] or str(n["kind"]) != e[1] \
+				or str(n["target"]) != e[2] \
+				or JSON.stringify(n["params"]) != JSON.stringify(e[3]) \
+				or int(n["cost"]) != e[4] or str(n["name"]) != e[5]:
+			fix_ok = false
+	_assert(fix_ok,
+		"206: FIXTURE — Fire rings 1-3 match the recorded literals")
+	_assert(DT.width(seed, 1, 1) == 1 and DT.width(seed, 1, 2) == 3
+			and DT.width(seed, 1, 3) == 3,
+		"206: FIXTURE — ring widths 1-3 are 1/3/3")
+
+	# --- 9.2 graph rules.
+	var width_ok := true
+	var pc_ok := true
+	var all_ids: Array = []
+	for ring in range(1, 13):
+		var w: int = DT.width(seed, 1, ring)
+		if w < 1 or w > 3:
+			width_ok = false
+		for index in w:
+			all_ids.append(DT.pack_id(1, ring, index))
+	for id in all_ids:
+		for p in DT.parent_of(seed, "mage", int(id)):
+			if int(p) != 0 and not DT.children_of(seed, "mage",
+					int(p)).has(int(id)):
+				pc_ok = false
+		for c in DT.children_of(seed, "mage", int(id)):
+			if not DT.parent_of(seed, "mage", int(c)).has(int(id)):
+				pc_ok = false
+	_assert(width_ok, "206: width stays within 1-3, rings 1-12")
+	_assert(pc_ok,
+		"206: parent_of/children_of mutually consistent, rings 1-12")
+	_assert(DT.parent_of(seed, "mage", DT.pack_id(1, 1, 0)) == [0],
+		"206: ring-1 spine's parent is the core")
+	var p8: Array = DT.parent_of(seed, "mage", DT.pack_id(1, 8, 0))
+	var p7: Array = DT.parent_of(seed, "mage", DT.pack_id(1, 7, 0))
+	_assert(p8.has(DT.pack_id(0, 8, 0)) and p8.has(DT.pack_id(2, 8, 0))
+			and p7 == [DT.pack_id(1, 6, 0)],
+		"206: bridges exist exactly at r % 8 == 0 (ring 8 mutual, ring 7 plain)")
+
+	# --- Inert branches and foreign coordinates.
+	# (Every branch is populated since #210 slice B5; the
+	# inert example is now a FOREIGN branch coordinate.)
+	_assert(bool(DT.node_for(seed, "mage", 8, 1, 0).get("inert", false))
+			and bool(DT.node_for(seed, "warrior", 1, 1, 0).get("inert", false)),
+		"206: unpopulated + foreign branches return the inert marker")
+	_assert(DT.node_for(seed, "mage", 1, 1, 5).is_empty(),
+		"206: coordinates outside the graph return empty")
+
+	# --- 9.6 envelope: nothing beyond the clamps at any
+	# forced depth; saturation demonstrated where the
+	# placeholder tables reach it.
+	var owned30: Array = []
+	for ring in range(1, 31):
+		for index in DT.width(seed, 1, ring):
+			owned30.append(DT.pack_id(1, ring, index))
+	var agg30: Dictionary = DT.compute_aggregates(seed, "mage",
+		owned30)
+	var sa30: Dictionary = agg30["stat_adds"]
+	_assert(float(sa30["damage"]) <= 40.0 and float(sa30["health"]) <= 480.0
+			and float(sa30["speed"]) <= 1.50 and float(sa30["atk_spd"]) <= 0.60,
+		"206: envelope — stat adds never beyond clamps (rings 1-30 all nodes)")
+	var sm30_ok := true
+	for s in agg30["skill_mods"]:
+		var m: Dictionary = agg30["skill_mods"][s]
+		if float(m["dmg_mult"]) > 1.60 or float(m["cd_mult"]) < 0.65 \
+				or float(m["radius_add"]) > 1.5:
+			sm30_ok = false
+	_assert(sm30_ok,
+		"206: envelope — skill mods never beyond clamps (rings 1-30)")
+	_assert(float(agg30["skill_mods"]["fireball"]["radius_add"]) == 1.5,
+		"206: envelope — fireball radius saturates exactly at 1.5 by ring 30")
+	var owned120: Array = []
+	for ring in range(1, 121):
+		for index in DT.width(seed, 1, ring):
+			owned120.append(DT.pack_id(1, ring, index))
+	var agg120: Dictionary = DT.compute_aggregates(seed, "mage",
+		owned120)
+	_assert(float(agg120["stat_adds"]["speed"]) == 1.5
+			and float(agg120["skill_mods"]["fireball"]["dmg_mult"]) == 1.6
+			and float(agg120["skill_mods"]["inferno"]["cd_mult"]) == 0.65,
+		"206: envelope — speed/dmg_mult/cd_mult saturate exactly at their clamps by ring 120")
+	# (Meteor's dmg saturation depth moved to ring 240
+	# when Amendment 1's burn_pct row diluted its param
+	# draws — probed at the B5 closeout.)
+	var owned240: Array = []
+	for ring in range(1, 241):
+		for index in DT.width(seed, 1, ring):
+			owned240.append(DT.pack_id(1, ring, index))
+	var agg240: Dictionary = DT.compute_aggregates(seed, "mage",
+		owned240)
+	_assert(float(agg240["skill_mods"]["meteor"]["dmg_mult"]) == 1.6,
+		"206: envelope — meteor dmg_mult saturates exactly at its clamp by ring 240")
+
+	# --- Economy (module level): wallet = lifetime - spent.
+	var life := {"fireball": 100.0, "meteor": 50.0}
+	var bought: Array = [DT.pack_id(1, 1, 0), DT.pack_id(1, 2, 2)]
+	_assert(DT.wallet_of(seed, "mage", life, [], 1) == 150
+			and DT.wallet_of(seed, "mage", life, bought, 1) == 114,
+		"206: wallet derives as lifetime minus owned costs (150 - 36 = 114)")
+	_assert(not DT.branch_unlocked({}, "mage", 1)
+			and DT.branch_unlocked({"fire": {"signature": true}}, "mage", 1),
+		"206: Fire unlock reads the family signature flag")
+
+	# --- Data surface: a signature-locked branch exposes
+	# no nodes; unlocked shows the lookahead band.
+	var locked_stub := {"class_id": "mage", "tree_seed": seed,
+		"tree_owned": [], "family_collection": {}}
+	var unlocked_stub := {"class_id": "mage", "tree_seed": seed,
+		"tree_owned": [], "family_collection": {"fire": {"signature": true}}}
+	_assert(DT.visible_nodes(locked_stub).is_empty(),
+		"206: locked branch exposes no nodes on the data surface")
+	var vis: Array = DT.visible_nodes(unlocked_stub)
+	var vis_rings := {}
+	for e in vis:
+		vis_rings[int(e["ring"])] = true
+	_assert(vis_rings.has(1) and vis_rings.has(2)
+			and not vis_rings.has(3),
+		"206: visible band is deepest owned ring + 2")
+	_assert(DT.wallet(unlocked_stub, 1) == 0,
+		"206: wallet(player, branch) reads through the data surface")
+
+	# --- 9.9 looks (parameter level): stock on empty,
+	# deterministic, set-dependent, variant grammar.
+	_assert(bool(DT.look_for(seed, "mage", "fireball", []).get("stock", false)),
+		"206: empty governing set returns stock")
+	var shallow: Array = [DT.pack_id(1, 3, 0)]
+	var look_a: Dictionary = DT.look_for(seed, "mage", "fireball",
+		shallow)
+	var look_b: Dictionary = DT.look_for(seed, "mage", "fireball",
+		shallow)
+	_assert(JSON.stringify(look_a) == JSON.stringify(look_b)
+			and not bool(look_a["stock"]),
+		"206: the same owned set regenerates the identical look")
+	# Find the first variant-governed spine (capstone rings).
+	var variant_id := -1
+	for ring in [6, 12, 18, 24, 30, 36]:
+		var n: Dictionary = DT.node_for(seed, "mage", 1, ring, 0)
+		if str(n.get("kind", "")) == "variant":
+			variant_id = DT.pack_id(1, ring, 0)
+			break
+	_assert(variant_id > 0,
+		"206: a variant capstone exists within rings 6-36")
+	# Two different governing sets -> different bundles.
+	var deeper: Array = [DT.pack_id(1, 3, 0), DT.pack_id(1, 2, 0)]
+	var look_deep: Dictionary = DT.look_for(seed, "mage",
+		"fireball", deeper)
+	_assert(JSON.stringify(look_deep) != JSON.stringify(look_a),
+		"206: two different owned sets produce different fireball looks")
+	if variant_id > 0:
+		var vnode: Dictionary = DT.node_for(seed, "mage", 1,
+			DT.id_ring(variant_id), 0)
+		var vskill := str(vnode["target"])
+		# Base set governing the variant's skill, variant-free
+		# (rings 1-3 fixture nodes), then the same + variant.
+		var vbase_map := {"fireball": DT.pack_id(1, 3, 0),
+			"meteor": DT.pack_id(1, 2, 2),
+			"inferno": DT.pack_id(1, 1, 0)}
+		var vbase: Array = [vbase_map[vskill]]
+		var look_base_v: Dictionary = DT.look_for(seed, "mage",
+			vskill, vbase)
+		var deep: Array = vbase.duplicate()
+		deep.append(variant_id)
+		var look_v: Dictionary = DT.look_for(seed, "mage", vskill,
+			deep)
+		_assert(not bool(look_v["stock"]) and bool(look_v["variant"]),
+			"206: variant-governed look is non-stock and flags the variant")
+		_assert(int(look_v["trail_amount"]) >= 36
+				and int(look_base_v["trail_amount"]) <= 24,
+			"206: variant governance moves a named parameter (trail amount 36-48 vs <=24)")
+		var gram: Dictionary = look_v["grammar"]
+		_assert(not gram.is_empty()
+				and (gram["shells"] as Array).size() <= 2
+				and ["octahedron", "sphere8", "box", "crystal"].has(str(gram["core"])),
+			"206: variant bundle carries a grammar spec within budgets (core + <=2 shells)")
+	# --- Player integration (slices B): real Player
+	# instances through the real funnels.
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold := Node3D.new()
+	root.add_child(hold)
+	current_scene = hold
+
+	# 9.3 Wallet math through the real gain_affinity
+	# funnel: the lifetime counter outgrows the gauge's
+	# 100 clamp; the wallet tracks buys exactly.
+	var p = PlayerScene.instantiate()
+	p.set("class_id", "mage")
+	hold.add_child(p)
+	p.set("level", 25)
+	p.call("specialize", "fireball")
+	for i in 30:
+		p.call("gain_affinity", "fireball", 10.0, -1)
+	_assert(float(p.get("affinity")["fireball"]) == 100.0,
+		"206: affinity gauge clamps at 100 (unchanged behavior)")
+	_assert(float(p.get("tree_lifetime")["fireball"]) == 150.0,
+		"206: lifetime counter never clamps (30 x 5.0 = 150 past the gauge)")
+	p.set("family_collection", {"fire": {"signature": true}})
+	_assert(DT.wallet(p, 1) == 150,
+		"206: wallet starts at the full lifetime total")
+	_assert(bool(p.call("try_purchase", DT.pack_id(1, 1, 0))),
+		"206: buy ring-1 spine succeeds (prereq core + funds)")
+	_assert(DT.wallet(p, 1) == 134,
+		"206: wallet = lifetime - owned costs after buy 1 (150 - 16)")
+	_assert(bool(p.call("try_purchase", DT.pack_id(1, 2, 0))),
+		"206: buy ring-2 spine succeeds")
+	_assert(bool(p.call("try_purchase", DT.pack_id(1, 2, 2))),
+		"206: buy ring-2 side node succeeds (OR-parent owned)")
+	_assert(DT.wallet(p, 1) == 85,
+		"206: wallet after the scripted sequence (150 - 16 - 29 - 20 = 85)")
+
+	# 9.4 Purchase legality: each refusal changes nothing.
+	var owned_before: Array = (p.get("tree_owned") as Array).duplicate()
+	_assert(not bool(p.call("try_purchase", DT.pack_id(1, 1, 0))),
+		"206: re-buying an owned node is refused")
+	_assert(not bool(p.call("try_purchase", DT.pack_id(1, 4, 0))),
+		"206: buying past an unowned parent is refused")
+	_assert(not bool(p.call("try_purchase", DT.pack_id(2, 1, 0))),
+		"206: buying an inert branch node is refused")
+	_assert((p.get("tree_owned") as Array) == owned_before,
+		"206: refusals change nothing anywhere")
+	var p_poor = PlayerScene.instantiate()
+	p_poor.set("class_id", "mage")
+	hold.add_child(p_poor)
+	p_poor.set("family_collection", {"fire": {"signature": true}})
+	p_poor.set("tree_lifetime", {"fireball": 5.0})
+	_assert(not bool(p_poor.call("try_purchase",
+			DT.pack_id(1, 1, 0))),
+		"206: insufficient wallet is refused")
+	var p_locked = PlayerScene.instantiate()
+	p_locked.set("class_id", "mage")
+	hold.add_child(p_locked)
+	p_locked.set("tree_lifetime", {"fireball": 500.0})
+	_assert(not bool(p_locked.call("try_purchase",
+			DT.pack_id(1, 1, 0))),
+		"206: a signature-locked branch refuses purchases")
+
+	# 9.5 Server validation by regeneration, driven
+	# process-locally on a fresh server-copy player.
+	var srv = PlayerScene.instantiate()
+	srv.set("class_id", "mage")
+	hold.add_child(srv)
+	srv.set("family_collection", {"fire": {"signature": true}})
+	var auth := 1
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 3, 0), 1000, auth)) == "prereq",
+		"206: validator rejects an unmet prereq (regenerated graph)")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 2, 7), 1000, auth)) == "inert",
+		"206: validator rejects a forged node id (regeneration finds no such node)")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 1, 0), 10, auth)) == "insufficient",
+		"206: validator rejects a wallet-insufficient claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 1, 0), 100, auth)) == "",
+		"206: validator accepts a legal claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 1, 0), 100, auth)) == "duplicate",
+		"206: validator rejects a duplicate claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(1, 2, 0), 50, auth)) == "rollback",
+		"206: validator rejects a non-monotone lifetime claim")
+	_assert((srv.get("tree_owned") as Array).size() == 1,
+		"206: only the legal claim recorded anything")
+
+	# 9.7 Apply/derive round-trip through the real
+	# get_state/apply_state.
+	var agg_before: Dictionary = p.call("get_state") # state carries the keys
+	_assert(agg_before.has("tree_seed") and agg_before.has("tree_owned")
+			and agg_before.has("tree_lifetime"),
+		"206: get_state carries exactly the three additive tree keys")
+	var agg_json := JSON.stringify(DT.compute_aggregates(seed,
+		"mage", p.get("tree_owned")))
+	var p2 = PlayerScene.instantiate()
+	p2.set("class_id", "mage")
+	hold.add_child(p2)
+	p2.call("apply_state", agg_before)
+	_assert((p2.get("tree_owned") as Array) == (p.get("tree_owned") as Array)
+			and int(p2.get("tree_seed")) == seed
+			and JSON.stringify(p2.get("tree_aggregates")) == agg_json,
+		"206: state round-trips; aggregates after apply equal aggregates before save")
+	var p3 = PlayerScene.instantiate()
+	p3.set("class_id", "mage")
+	hold.add_child(p3)
+	p3.call("apply_state", {"level": 3})
+	_assert(int(p3.get("tree_seed")) == seed
+			and (p3.get("tree_owned") as Array).is_empty(),
+		"206: a pre-tree save (no tree keys) applies with defaults — no version bump needed")
+	# 9.8 Read sites live: a scripted owned set moves the
+	# real cast sites by exactly the aggregates' amounts.
+	for n in root.get_tree().get_nodes_in_group("dungeon"):
+		n.remove_from_group("dungeon")
+	for n in root.get_tree().get_nodes_in_group("players"):
+		n.remove_from_group("players")
+	var DungeonScript: GDScript = load(
+		"res://scripts/dungeon/dungeon.gd")
+	var dgn = DungeonScript.new()
+	dgn.name = "Dungeon206"
+	hold.add_child(dgn)
+	for holder_name in ["Players", "Projectiles"]:
+		if dgn.get_node_or_null(holder_name) == null:
+			var hn := Node3D.new()
+			hn.name = holder_name
+			dgn.add_child(hn)
+	# The bare dungeon spawns its own default Player_1 on
+	# entry — purge it, or get_player_node(1) resolves to
+	# the WRONG player and the caster legs go hollow.
+	for c in dgn.get_node("Players").get_children():
+		c.free()
+	var pc = PlayerScene.instantiate()
+	pc.set("class_id", "mage")
+	pc.name = "Player_1"
+	dgn.get_node("Players").add_child(pc)
+	_assert(dgn.call("get_player_node", 1) == pc,
+		"206: fixture integrity — the dungeon resolves peer 1 to the scripted player")
+	pc.set("damage", 100.0)
+	# Fireball damage: the ring-3 fixture node is +3%
+	# fireball damage (6 steps x 0.5%).
+	pc.set("tree_owned", [DT.pack_id(1, 3, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_cast_fireball")
+	var fb_found = null
+	for c in dgn.get_node("Projectiles").get_children():
+		if str(c.name).begins_with("Proj_"):
+			fb_found = c
+	_assert(fb_found != null
+			and absf(float(fb_found.get("damage")) - 103.0) < 0.01,
+		"206: read site — fireball cast damage moves by exactly the aggregate (+3% of 100 = 103)")
+	# Inferno cooldown: a scanned cd_pct node on inferno.
+	var cd_node := -1
+	var cd_steps := 0
+	for ring in range(1, 13):
+		for index in DT.width(seed, 1, ring):
+			var nd: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			if str(nd["target"]) == "inferno":
+				for comp in nd["params"].get("components", []):
+					if str(comp["param"]) == "cd_pct":
+						cd_node = int(nd["id"])
+						cd_steps = int(comp["steps"])
+	_assert(cd_node > 0,
+		"206: a cd_pct-on-inferno node exists in rings 1-12 (scan)")
+	if cd_node > 0:
+		pc.set("tree_owned", [cd_node])
+		pc.call("_recompute_tree_aggregates")
+		pc.call("_activate_inferno")
+		var expect_cd := 60.0 * (1.0 - float(cd_steps) * 0.005)
+		_assert(absf(float(pc.get("ability_cds")["inferno"])
+				- expect_cd) < 0.05,
+			"206: read site — inferno cooldown scales by exactly the aggregate cd_mult")
+	# Fireball blast radius: a scanned radius_add node.
+	var rad_node := -1
+	var rad_steps := 0
+	for ring in range(1, 13):
+		for index in DT.width(seed, 1, ring):
+			var nd: Dictionary = DT.node_for(seed, "mage", 1,
+				ring, index)
+			if str(nd["target"]) == "fireball":
+				for comp in nd["params"].get("components", []):
+					if str(comp["param"]) == "radius_add" \
+							and rad_node < 0:
+						rad_node = int(nd["id"])
+						rad_steps = int(comp["steps"])
+	_assert(rad_node > 0,
+		"206: a radius_add-on-fireball node exists in rings 1-12 (scan)")
+	if rad_node > 0:
+		pc.set("tree_owned", [rad_node])
+		pc.call("_recompute_tree_aggregates")
+		var MobScene: PackedScene = load(
+			"res://scenes/mobs/mob.tscn")
+		var sdata: Resource = load("res://data/mobs/slime.tres")
+		var radius := 2.6 + float(rad_steps) * 0.1
+		var mob_in = MobScene.instantiate()
+		mob_in.setup(1, sdata, 1.0, 1.0, false, 1.0)
+		hold.add_child(mob_in)
+		# Placement discriminates: beyond the stock 2.6,
+		# inside 2.6 + radius_add (steps >= 1 => add >= 0.1).
+		mob_in.global_position = Vector3(radius - 0.05, 0, 0)
+		var mob_out = MobScene.instantiate()
+		mob_out.setup(1, sdata, 1.0, 1.0, false, 1.0)
+		hold.add_child(mob_out)
+		mob_out.global_position = Vector3(radius + 0.4, 0, 0)
+		var FB := load("res://scripts/combat/fireball.gd")
+		var fb = FB.new()
+		fb.setup(Vector3.ZERO, 10.0, 1)
+		dgn.get_node("Projectiles").add_child(fb)
+		fb.global_position = Vector3.ZERO
+		fb.call("_explode")
+		_assert(float(mob_in.get("hp")) < float(mob_in.get("max_hp")),
+			"206: read site — a mob inside 2.6 + radius_add is hit")
+		_assert(float(mob_out.get("hp")) == float(mob_out.get("max_hp")),
+			"206: read site — a mob beyond 2.6 + radius_add is untouched")
+		hold.remove_child(mob_in)
+		mob_in.free()
+		hold.remove_child(mob_out)
+		mob_out.free()
+	# The combined atk_spd rides the snapshot channel.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("bonus_atk_spd + _tree_stat(\"atk_spd\")"),
+		"206: push_snapshot carries bonus + tree atk_spd (no format change)")
+	# 9.9 Looks at construction: grammar budgets + a
+	# variant-governed fireball builds its grammar body
+	# while an ungoverned one builds stock.
+	var TL := load("res://scripts/progression/deep_tree_looks.gd")
+	var budgets_ok := true
+	for core_kind in ["octahedron", "sphere8", "box", "crystal"]:
+		var g := {"core": core_kind,
+			"shells": ["spike_crown", "orbit_ring"],
+			"scale": 1.0}
+		var groot = TL.grammar_root(g,
+			StandardMaterial3D.new(), StandardMaterial3D.new())
+		if TL.primitive_count(groot) > 8 \
+				or TL.vertex_count(groot) > 800:
+			budgets_ok = false
+		groot.free()
+	_assert(budgets_ok,
+		"206: grammar bundles stay within budgets (<= 8 primitives, <= 800 vertices)")
+	var twin_node := -1
+	for ring in [6, 12, 18, 24, 30, 36, 42, 48, 54, 60]:
+		var nd: Dictionary = DT.node_for(seed, "mage", 1, ring, 0)
+		if str(nd.get("kind", "")) == "variant" \
+				and str(nd["params"].get("variant", "")) == "twin_suns":
+			twin_node = DT.pack_id(1, ring, 0)
+			break
+	_assert(twin_node > 0,
+		"206: a twin_suns variant capstone exists (scan to ring 60)")
+	if twin_node > 0:
+		pc.set("tree_owned", [twin_node])
+		pc.call("_recompute_tree_aggregates")
+		var FB2 := load("res://scripts/combat/fireball.gd")
+		var fbg = FB2.new()
+		fbg.setup(Vector3(0, 0, -1), 10.0, 1)
+		dgn.get_node("Projectiles").add_child(fbg)
+		var has_grammar := false
+		var trail_amt := 0
+		for c in fbg.get_children():
+			if str(c.name).begins_with("TreeGrammar"):
+				has_grammar = true
+			if c is GPUParticles3D:
+				trail_amt = int((c as GPUParticles3D).amount)
+		_assert(has_grammar and trail_amt >= 36,
+			"206: variant-governed fireball builds the grammar body + boosted trail")
+		pc.set("tree_owned", [])
+		pc.call("_recompute_tree_aggregates")
+		var fbs = FB2.new()
+		fbs.setup(Vector3(0, 0, -1), 10.0, 1)
+		dgn.get_node("Projectiles").add_child(fbs)
+		var stock_ok := false
+		for c in fbs.get_children():
+			if c is MeshInstance3D:
+				var m := (c as MeshInstance3D).mesh
+				if m is SphereMesh and absf((m as SphereMesh).radius - 0.22) < 0.001:
+					stock_ok = true
+			if c is GPUParticles3D:
+				stock_ok = stock_ok and int((c as GPUParticles3D).amount) == 24
+		_assert(stock_ok,
+			"206: ungoverned fireball construction is stock (sphere r0.22, trail 24)")
+	var hsrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/hud.gd")
+	# Issue #215 (spec 7.3): the 206 inspector pin is
+	# retired in daylight - its successor pins (equal or
+	# greater weight) assert the canvas surface replaced
+	# it: hud preloads + creates the canvas, carries the
+	# open path, and no longer defines the row renderer.
+	_assert(hsrc.contains("deep_tree_canvas")
+			and hsrc.contains("open_deep_tree")
+			and hsrc.contains("Open the Deep Tree")
+			and not hsrc.contains("func _refresh_tree_list"),
+		"215: hud hosts the Deep Tree canvas; the 206 inspector is retired")
+	for node in [p, p_poor, p_locked, srv, p2, p3]:
+		hold.remove_child(node)
+		node.free()
+	current_scene = null
+	hold.free()
+	print("[Playtest] Deep Tree module test done.")
+
+
+func _test_deep_tree_b1_210() -> void:
+	print("[Playtest] Deep Tree B1 mage completion (issue #210)...")
+	var DT = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = DT.TREE_SEED
+
+	# (a) FIXTURE LITERALS, recorded from the module (the
+	# standing discipline): Frost rings 1-3, widths 3/3/1.
+	_assert(DT.width(seed, 2, 1) == 3 and DT.width(seed, 2, 2) == 3
+			and DT.width(seed, 2, 3) == 1,
+		"210: Frost fixture widths are 3/3/1")
+	var fx := [
+		[2, 1, 0, "modifier", "blizzard", {"components": [{"param": "duration_add", "steps": 2}]}, 16, "Hoarfrost Throne"],
+		[2, 1, 1, "modifier", "glacial_prison", {"components": [{"param": "freeze_add", "steps": 2}]}, 16, "Winter Throne"],
+		[2, 1, 2, "modifier", "blizzard", {"components": [{"param": "duration_add", "steps": 1}]}, 16, "Bitter Veil"],
+		[2, 2, 0, "modifier", "glacial_prison", {"components": [{"param": "freeze_add", "steps": 3}]}, 20, "Bitter Garden"],
+		[2, 2, 1, "stat", "", {"channel": "atk_spd", "steps": 1}, 12, "Silent Throne"],
+		[2, 2, 2, "modifier", "blizzard", {"components": [{"param": "dmg_pct", "steps": 4}]}, 20, "Crystal Prison"],
+		[2, 3, 0, "modifier", "frost", {"components": [{"param": "slow_add", "steps": 3}]}, 24, "Crystal Prison"],
+		[3, 1, 0, "modifier", "tempest", {"components": [{"param": "cd_pct", "steps": 5}]}, 16, "Bright Tongue"],
+		[3, 1, 1, "modifier", "tempest", {"components": [{"param": "duration_add", "steps": 2}]}, 16, "Forked Oath"],
+		[3, 1, 2, "modifier", "lightning", {"components": [{"param": "dmg_pct", "steps": 3}]}, 16, "Arc Brand"],
+		[3, 2, 0, "stat", "", {"channel": "damage", "steps": 3}, 12, "Charged Choir"],
+		[3, 3, 0, "modifier", "tempest", {"components": [{"param": "dmg_pct", "steps": 6}]}, 24, "Crackling Crown"],
+	]
+	for row in fx:
+		var nd: Dictionary = DT.node_for(seed, "mage",
+			int(row[0]), int(row[1]), int(row[2]))
+		_assert(str(nd["archetype"]) == str(row[3])
+				and str(nd["target"]) == str(row[4])
+				and nd["params"] == row[5]
+				and int(nd["cost"]) == int(row[6])
+				and str(nd["name"]) == str(row[7]),
+			"210: fixture %d/%d/%d is %s" % [row[0], row[1],
+				row[2], row[7]])
+	_assert(DT.width(seed, 3, 1) == 3 and DT.width(seed, 3, 2) == 1
+			and DT.width(seed, 3, 3) == 1,
+		"210: Storm fixture widths are 3/1/1")
+	# Section 1.3 invariance spot-checks: Fire's recorded
+	# literals stand (the full guard is the #206 section).
+	var fire10: Dictionary = DT.node_for(seed, "mage", 1, 1, 0)
+	_assert(str(fire10["name"]) == "Charred Oath"
+			and int(fire10["cost"]) == 16
+			and fire10["params"] == {"components": [{"param": "radius_add", "steps": 3}]},
+		"210: generation invariance — Fire ring 1 spine unchanged")
+	var fire30: Dictionary = DT.node_for(seed, "mage", 1, 3, 0)
+	_assert(str(fire30["name"]) == "Furnace Conflagration"
+			and int(fire30["cost"]) == 24,
+		"210: generation invariance — Fire ring 3 spine unchanged")
+
+	# (b) Determinism for the new branches, rings 1-12.
+	for b in [2, 3]:
+		var s1 := ""
+		var s2 := ""
+		for ring in range(1, 13):
+			for index in DT.width(seed, b, ring):
+				s1 += str(DT.node_for(seed, "mage", b, ring, index))
+				s2 += str(DT.node_for(seed, "mage", b, ring, index))
+		_assert(s1 == s2 and s1 != "",
+			"210: branch %d generates deterministically (rings 1-12)" % b)
+
+	# Aggregate exactness for the new channels (module level).
+	var agg1: Dictionary = DT.compute_aggregates(seed, "mage",
+		[DT.pack_id(2, 1, 0), DT.pack_id(2, 1, 1),
+		DT.pack_id(2, 2, 2), DT.pack_id(2, 2, 0),
+		DT.pack_id(2, 3, 0)])
+	var sm1: Dictionary = agg1["skill_mods"]
+	_assert(absf(float(sm1["blizzard"].get("duration_add", 0.0)) - 1.0) < 0.001
+			and absf(float(sm1["blizzard"]["dmg_mult"]) - 1.02) < 0.001,
+		"210: blizzard aggregates — duration_add 1.0 s, dmg_mult 1.02")
+	_assert(absf(float(sm1["glacial_prison"].get("freeze_add", 0.0)) - 1.25) < 0.001
+			and absf(float(sm1["frost"].get("slow_add", 0.0)) - 0.75) < 0.001,
+		"210: glacial freeze_add 1.25 s (2 + 3 steps), frost slow_add 0.75 s")
+	var agg2: Dictionary = DT.compute_aggregates(seed, "mage",
+		[DT.pack_id(3, 1, 0), DT.pack_id(3, 1, 1)])
+	_assert(absf(float(agg2["skill_mods"]["tempest"]["cd_mult"]) - 0.975) < 0.001
+			and absf(float(agg2["skill_mods"]["tempest"].get("duration_add", 0.0)) - 2.0) < 0.001,
+		"210: tempest aggregates — cd_mult 0.975, duration_add 2.0 s (1 s steps)")
+	# chains_add: the table's aggregate clamp (+2) binds.
+	var chain_ids: Array = []
+	for ring in range(5, 41):
+		for index in DT.width(seed, 3, ring):
+			var nd2: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			if str(nd2["target"]) == "lightning":
+				for comp in nd2["params"].get("components", []):
+					if str(comp["param"]) == "chains_add":
+						chain_ids.append(int(nd2["id"]))
+	_assert(chain_ids.size() >= 2,
+		"210: chains_add nodes exist from the boughs band up (scan)")
+	var agg3: Dictionary = DT.compute_aggregates(seed, "mage",
+		chain_ids)
+	_assert(int(agg3["skill_mods"]["lightning"].get("chains_add", 0)) == 2,
+		"210: chains_add aggregates clamp at +2")
+	# No chains_add below the boughs band, ever.
+	var low_chains := false
+	for ring in range(1, 5):
+		for index in DT.width(seed, 3, ring):
+			var nd3: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			for comp in nd3["params"].get("components", []):
+				if str(comp["param"]) == "chains_add":
+					low_chains = true
+	_assert(not low_chains,
+		"210: no chains_add generates below ring 5")
+	# Table exclusions stand: no glacial dmg_pct, no
+	# lightning cd_pct, anywhere in rings 1-12.
+	var excluded := false
+	for b2 in [2, 3]:
+		for ring in range(1, 13):
+			for index in DT.width(seed, b2, ring):
+				var nd4: Dictionary = DT.node_for(seed, "mage",
+					b2, ring, index)
+				for comp in nd4["params"].get("components", []):
+					if str(nd4["target"]) == "glacial_prison" \
+							and str(comp["param"]) == "dmg_pct":
+						excluded = true
+					if str(nd4["target"]) == "lightning" \
+							and str(comp["param"]) == "cd_pct":
+						excluded = true
+	_assert(not excluded,
+		"210: exclusions hold — glacial has no dmg_pct, lightning no cd_pct")
+
+	# Scans for the read-site legs.
+	var scan := {"glacial_cd": -1, "bloom": -1, "charged": -1,
+		"forked": -1, "splinter": -1, "shatter": -1, "echo": -1}
+	for ring in range(1, 13):
+		for index in DT.width(seed, 2, ring):
+			var nd5: Dictionary = DT.node_for(seed, "mage", 2,
+				ring, index)
+			if str(nd5["target"]) == "glacial_prison":
+				for comp in nd5["params"].get("components", []):
+					if str(comp["param"]) == "cd_pct" \
+							and scan["glacial_cd"] < 0:
+						scan["glacial_cd"] = int(nd5["id"])
+			if str(nd5["params"].get("behavior", "")) == "shatterglass" \
+					and scan["shatter"] < 0:
+				scan["shatter"] = int(nd5["id"])
+	for ring in [6, 12, 18, 24, 30, 36, 42, 48, 54, 60]:
+		var nd6: Dictionary = DT.node_for(seed, "mage", 2, ring, 0)
+		if str(nd6.get("kind", "")) == "variant" \
+				and str(nd6["params"].get("variant", "")) == "splinter_volley" \
+				and scan["splinter"] < 0:
+			scan["splinter"] = DT.pack_id(2, ring, 0)
+		if str(nd6.get("kind", "")) == "echo" \
+				and scan["echo"] < 0:
+			scan["echo"] = DT.pack_id(2, ring, 0)
+		var nd7: Dictionary = DT.node_for(seed, "mage", 3, ring, 0)
+		if str(nd7.get("kind", "")) == "variant" \
+				and str(nd7["params"].get("variant", "")) == "forked_sky" \
+				and scan["forked"] < 0:
+			scan["forked"] = DT.pack_id(3, ring, 0)
+	for ring in range(1, 61):
+		for index in DT.width(seed, 3, ring):
+			var nd8: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			if str(nd8["params"].get("behavior", "")) == "static_bloom" \
+					and scan["bloom"] < 0:
+				scan["bloom"] = int(nd8["id"])
+			if str(nd8["params"].get("behavior", "")) == "stormcharged" \
+					and scan["charged"] < 0:
+				scan["charged"] = int(nd8["id"])
+	for ring in range(13, 61):
+		for index in DT.width(seed, 2, ring):
+			var nd9: Dictionary = DT.node_for(seed, "mage", 2,
+				ring, index)
+			if str(nd9["params"].get("behavior", "")) == "shatterglass" \
+					and scan["shatter"] < 0:
+				scan["shatter"] = int(nd9["id"])
+	for k in scan:
+		_assert(int(scan[k]) > 0, "210: scan finds a %s node" % k)
+
+	# (c) Purchase legality + server validation for Frost
+	# (the #206 shapes, branch 2).
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold := Node3D.new()
+	root.add_child(hold)
+	current_scene = hold
+	var pf = PlayerScene.instantiate()
+	pf.set("class_id", "mage")
+	hold.add_child(pf)
+	pf.set("family_collection", {"frost": {"signature": true}})
+	pf.set("tree_lifetime", {"frost": 90.0, "blizzard": 60.0})
+	_assert(DT.wallet(pf, 2) == 150,
+		"210: the frost wallet derives from its own skills")
+	_assert(bool(pf.call("try_purchase", DT.pack_id(2, 1, 0))),
+		"210: buy the Frost ring-1 spine succeeds")
+	_assert(DT.wallet(pf, 2) == 134,
+		"210: wallet after the buy (150 - 16)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(2, 1, 0))),
+		"210: re-buying is refused")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(2, 2, 1))),
+		"210: a side node without its spine is refused (prereq)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(4, 1, 0))),
+		"210: a foreign branch node is refused")
+	var srv = PlayerScene.instantiate()
+	srv.set("class_id", "mage")
+	hold.add_child(srv)
+	srv.set("family_collection", {"frost": {"signature": true}})
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 3, 0), 1000, 1)) == "prereq",
+		"210: validator rejects an unmet Frost prereq")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 2, 7), 1000, 1)) == "inert",
+		"210: validator rejects a forged Frost id")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 1, 0), 10, 1)) == "insufficient",
+		"210: validator rejects an insufficient Frost claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 1, 0), 100, 1)) == "",
+		"210: validator accepts a legal Frost claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 1, 0), 100, 1)) == "duplicate",
+		"210: validator rejects a duplicate Frost claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(2, 2, 0), 50, 1)) == "rollback",
+		"210: validator rejects a non-monotone Frost claim")
+
+	# (d) READ SITES LIVE.
+	# Section 1.2: the authority atk_spd fold — a Frost
+	# stat node's 0.5% moves the owner's own mult exactly.
+	var pa = PlayerScene.instantiate()
+	pa.set("class_id", "mage")
+	hold.add_child(pa)
+	pa.set("tree_owned", [DT.pack_id(2, 2, 1)])
+	pa.call("_recompute_tree_aggregates")
+	_assert(absf(float(pa.call("atk_spd_mult")) - 1.005) < 0.0001,
+		"210: section 1.2 — the owner's atk_spd_mult folds the tree (1.005)")
+	# Glacial cooldown: a scanned cd_pct node moves the
+	# activation's cd by exactly its aggregate cd_mult.
+	var pg = PlayerScene.instantiate()
+	pg.set("class_id", "mage")
+	hold.add_child(pg)
+	pg.set("tree_owned", [scan["glacial_cd"]])
+	pg.call("_recompute_tree_aggregates")
+	var gcd_mult := float(DT.compute_aggregates(seed, "mage",
+		[scan["glacial_cd"]])["skill_mods"]["glacial_prison"]["cd_mult"])
+	pg.call("_activate_glacial_prison")
+	_assert(absf(float(pg.get("ability_cds").get("glacial_prison", 0.0))
+			- 60.0 * gcd_mult) < 0.01,
+		"210: glacial cd site reads cd_mult exactly (60 x %.3f)" % gcd_mult)
+
+	# The bare-dungeon fixture (the #206 section 9.8 shape,
+	# with the shadow-Player_1 purge).
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	for c in dgn.get_node("Players").get_children():
+		c.free()
+	var pc = PlayerScene.instantiate()
+	pc.set("class_id", "mage")
+	pc.name = "Player_1"
+	dgn.get_node("Players").add_child(pc)
+	_assert(dgn.call("get_player_node", 1) == pc,
+		"210: fixture integrity — peer 1 resolves to the scripted player")
+	pc.set("damage", 100.0)
+	# Frost shard: slow_add at spawn + governed/stock looks.
+	pc.set("tree_owned", [DT.pack_id(2, 3, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_frost", Vector3(0, 1, 0), Vector3(0, 0, -1),
+		100.0, 1, 42)
+	var shard = dgn.get_node("Projectiles").get_node_or_null("Frost_1_42")
+	_assert(shard != null
+			and absf(float(shard.get("slow_duration")) - 3.25) < 0.001
+			and absf(float(shard.get("damage")) - 70.0) < 0.001,
+		"210: shard spawn reads slow_add exactly (2.5 + 0.75 = 3.25)")
+	pc.set("tree_owned", [scan["splinter"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_frost", Vector3(0, 1, 0), Vector3(0, 0, -1),
+		100.0, 1, 43)
+	var s1 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_43")
+	var s2 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_543")
+	_assert(s1 != null and s2 != null
+			and absf(float(s1.get("damage")) - 45.5) < 0.001
+			and absf(float(s2.get("damage")) - 45.5) < 0.001,
+		"210: Splinter Volley fires two shards at 65%")
+	var gram := false
+	for c in s1.get_children():
+		if str(c.name).begins_with("TreeGrammar"):
+			gram = true
+	_assert(gram,
+		"210: a variant-governed FrostShard builds its grammar body")
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_frost", Vector3(0, 1, 0), Vector3(0, 0, -1),
+		100.0, 1, 44)
+	var s3 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_44")
+	var stock_shard := false
+	for c in s3.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).mesh is BoxMesh:
+			stock_shard = true
+		if str(c.name).begins_with("TreeGrammar"):
+			stock_shard = false
+	_assert(stock_shard,
+		"210: an ungoverned FrostShard builds the stock box core")
+	for pr in dgn.get_node("Projectiles").get_children():
+		pr.free()
+	# Chain lightning legs: count + per-hop amounts through
+	# the REAL _execute_chain_lightning on lined-up mobs.
+	# Earlier sections leak mobs into the group (the chain
+	# would strike those instead) — purge first, the same
+	# discipline as the fixture-player purge above.
+	for stale in get_nodes_in_group("mobs"):
+		if stale is Node:
+			(stale as Node).get_parent().remove_child(stale)
+			(stale as Node).free()
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var sdata: Resource = load("res://data/mobs/slime.tres")
+	var mobs: Array = []
+	var chain_base: Vector3 = pc.global_position
+	for k in 6:
+		var m = MobScene.instantiate()
+		m.setup(1, sdata, 1.0, 1.0, false, 1.0)
+		hold.add_child(m)
+		m.set("hp", 10000.0)
+		m.set("max_hp", 10000.0)
+		m.global_position = chain_base + Vector3(4.0 * (k + 1), 0, 0)
+		mobs.append(m)
+	var losses := func() -> Array:
+		var out: Array = []
+		for m in mobs:
+			out.append(10000.0 - float(m.get("hp")))
+		return out
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	var l0: Array = losses.call()
+	_assert(l0 == [100.0, 75.0, 56.25, 0.0, 0.0, 0.0],
+		"210: stock chain hits exactly 3 targets (100 / 75 / 56.25 decay)")
+	for m in mobs:
+		m.set("hp", 10000.0)
+	pc.set("tree_owned", [chain_ids[0]])
+	pc.call("_recompute_tree_aggregates")
+	var one_chain := int(DT.compute_aggregates(seed, "mage",
+		[chain_ids[0]])["skill_mods"]["lightning"].get("chains_add", 0))
+	pc.call("_execute_chain_lightning", 100.0)
+	var l1: Array = losses.call()
+	var hit1 := 0
+	for v in l1:
+		if float(v) > 0.0:
+			hit1 += 1
+	_assert(hit1 == 3 + one_chain,
+		"210: chains_add moves the chain count by exactly its aggregate")
+	for m in mobs:
+		m.set("hp", 10000.0)
+	pc.set("tree_owned", [scan["forked"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	var l2: Array = losses.call()
+	_assert(absf(float(l2[0]) - 170.0) < 0.001
+			and absf(float(l2[1]) - 75.0) < 0.001,
+		"210: Forked Sky — the first target is struck twice (100 + 70)")
+	for m in mobs:
+		m.set("hp", 10000.0)
+	pc.set("tree_owned", [scan["bloom"]])
+	pc.call("_recompute_tree_aggregates")
+	var bloom_pct := float(DT.compute_aggregates(seed, "mage",
+		[scan["bloom"]])["behaviors"].get("static_bloom", 0.0))
+	pc.call("_execute_chain_lightning", 100.0)
+	var l3: Array = losses.call()
+	_assert(absf(float(l3[0]) - 100.0) < 0.001
+			and absf(float(l3[1]) - 75.0 * (1.0 + bloom_pct / 100.0)) < 0.001,
+		"210: Static Bloom — hops beyond the first gain exactly +pct%")
+	for m in mobs:
+		hold.remove_child(m)
+		m.free()
+	# Shatterglass at the shard hit site: a slowed target
+	# takes exactly +pct%; a clean target does not.
+	pc.set("tree_owned", [scan["shatter"]])
+	pc.call("_recompute_tree_aggregates")
+	var sh_pct := float(DT.compute_aggregates(seed, "mage",
+		[scan["shatter"]])["behaviors"].get("shatterglass", 0.0))
+	var sm1a = MobScene.instantiate()
+	sm1a.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(sm1a)
+	sm1a.set("hp", 10000.0)
+	sm1a.set("max_hp", 10000.0)
+	sm1a.global_position = Vector3(0, 0, -3.0)
+	sm1a.call("apply_slow", 5.0, 0.5)
+	pc.call("cast_frost", Vector3(0, 0, -1.5), Vector3(0, 0, -1),
+		100.0, 1, 45)
+	var sh1 = dgn.get_node("Projectiles").get_node_or_null("Frost_1_45")
+	sh1.call("_physics_process", 0.016)
+	# The slowed mob also carries the base game's Shatter
+	# (+25%, the #173 layer) — the two frost synergies
+	# stack: 70 x (1 + tree pct) x 1.25.
+	_assert(absf(10000.0 - float(sm1a.get("hp"))
+			- 70.0 * (1.0 + sh_pct / 100.0) * 1.25) < 0.01,
+		"210: Shatterglass — a slowed target takes exactly +pct% at the hit (x the base Shatter layer)")
+	hold.remove_child(sm1a)
+	sm1a.free()
+	for pr in dgn.get_node("Projectiles").get_children():
+		pr.free()
+	# Echo wiring at the aggregate + an echo into fire.
+	var echo_node: Dictionary = DT.node_for(seed, "mage", 2,
+		DT.id_ring(scan["echo"]), 0)
+	var echo_fam := str(echo_node["params"].get("echo_family", ""))
+	var echo_steps := int(echo_node["params"].get("steps", 0))
+	var agg_e: Dictionary = DT.compute_aggregates(seed, "mage",
+		[scan["echo"]])
+	var fam_skills: Dictionary = {"fire": "fireball",
+		"storm": "lightning"}
+	var expect_mult := 1.0 + float(echo_steps) * 0.5 / 100.0
+	_assert(absf(float(agg_e["skill_mods"][fam_skills[echo_fam]]["dmg_mult"])
+			- expect_mult) < 0.001,
+		"210: a Frost echo writes its family's dmg steps (x0.5 scale)")
+
+	# --- Amendment 1 (section B): Brittle Ice + Arcing
+	# Brand. Scans for the new channels' nodes.
+	var shatter_ids: Array = []
+	var brand_l_ids: Array = []
+	var brand_b_ids: Array = []
+	for ring in range(1, 25):
+		for index in DT.width(seed, 2, ring):
+			var ndA: Dictionary = DT.node_for(seed, "mage", 2,
+				ring, index)
+			if str(ndA["target"]) == "glacial_prison":
+				for comp in ndA["params"].get("components", []):
+					if str(comp["param"]) == "shatter_pct":
+						shatter_ids.append(int(ndA["id"]))
+		for index in DT.width(seed, 3, ring):
+			var ndB: Dictionary = DT.node_for(seed, "mage", 3,
+				ring, index)
+			for comp in ndB["params"].get("components", []):
+				if str(comp["param"]) == "brand_amp":
+					if str(ndB["target"]) == "lightning":
+						brand_l_ids.append(int(ndB["id"]))
+					elif str(ndB["target"]) == "barrage":
+						brand_b_ids.append(int(ndB["id"]))
+	_assert(not shatter_ids.is_empty()
+			and not brand_l_ids.is_empty()
+			and not brand_b_ids.is_empty(),
+		"210A: shatter_pct / brand_amp nodes generate (scans)")
+	# Section D envelope: the clamps bind under full sets.
+	var agg_sh: Dictionary = DT.compute_aggregates(seed,
+		"mage", shatter_ids)
+	var sh_pct_full := float(agg_sh["skill_mods"]["glacial_prison"].get("shatter_pct", 0.0))
+	_assert(sh_pct_full > 0.0 and sh_pct_full <= 1.00,
+		"210A: shatter_pct clamps at <= 1.00 under a full set (got %.3f)" % sh_pct_full)
+	var agg_bl: Dictionary = DT.compute_aggregates(seed,
+		"mage", brand_l_ids)
+	var bl_full := float(agg_bl["skill_mods"]["lightning"].get("brand_amp", 0.0))
+	var agg_bb: Dictionary = DT.compute_aggregates(seed,
+		"mage", brand_b_ids)
+	var bb_full := float(agg_bb["skill_mods"]["barrage"].get("brand_amp", 0.0))
+	_assert(bl_full > 0.0 and bl_full <= 0.40
+			and bb_full > 0.0 and bb_full <= 0.40,
+		"210A: brand_amp clamps at <= 0.40 per skill under full sets")
+	# Brittle Ice legs. A fresh mob beside the caster.
+	var gm = MobScene.instantiate()
+	gm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(gm)
+	gm.set("hp", 10000.0)
+	gm.set("max_hp", 10000.0)
+	gm.global_position = pc.global_position + Vector3(2, 0, 0)
+	# NEUTRALITY: no frost nodes — the prison stores zero,
+	# a hit lands exactly as today (the base Shatter layer
+	# only), and the freeze runs on unconsumed.
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_glacial_prison", pc.global_position, 1, 97, 0.0)
+	_assert(float(gm.get("prison_shatter")) == 0.0,
+		"210A: neutrality — a zero-owned prison stores no shatter")
+	gm.call("take_damage", 50.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(gm.get("hp")) - 62.5) < 0.01
+			and bool(gm.call("is_slowed")),
+		"210A: neutrality — a prisoned mob takes hits exactly as today (50 x 1.25 base Shatter), freeze unconsumed")
+	# POSITIVE: the full shatter set — the stored value is
+	# caster damage x aggregate; a hit adds it and breaks
+	# the ice (freeze consumed, value cleared).
+	pc.set("tree_owned", shatter_ids)
+	pc.call("_recompute_tree_aggregates")
+	pc.call("cast_glacial_prison", pc.global_position, 1, 98, 0.0)
+	_assert(absf(float(gm.get("prison_shatter"))
+			- 100.0 * sh_pct_full) < 0.01,
+		"210A: the prison stores caster damage x shatter_pct")
+	gm.set("hp", 10000.0)
+	gm.call("take_damage", 50.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(gm.get("hp"))
+			- (50.0 + 100.0 * sh_pct_full) * 1.25) < 0.01
+			and float(gm.get("prison_shatter")) == 0.0
+			and not bool(gm.call("is_slowed")),
+		"210A: a hit on the frozen mob adds the shatter and breaks the ice")
+	gm.set("hp", 10000.0)
+	gm.call("take_damage", 50.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(gm.get("hp")) - 62.5) < 0.01,
+		"210A: one shatter per freeze — the next hit is base-only (the base Shatter window outlives the consumed freeze, as specced)")
+	hold.remove_child(gm)
+	gm.free()
+	# Arcing Brand legs.
+	var bm = MobScene.instantiate()
+	bm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(bm)
+	bm.set("hp", 10000.0)
+	bm.set("max_hp", 10000.0)
+	bm.global_position = pc.global_position + Vector3(4, 0, 0)
+	# NEUTRALITY: no storm nodes — no brand is applied.
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	_assert(float(bm.call("brand_amp_now")) == 0.0,
+		"210A: neutrality — a zero-owned chain applies no brand")
+	# POSITIVE (lightning): the first brand node brands
+	# its target; the next chain hit takes (1 + amp),
+	# unconsumed.
+	var amp_l := float(DT.compute_aggregates(seed, "mage",
+		[brand_l_ids[0]])["skill_mods"]["lightning"].get("brand_amp", 0.0))
+	pc.set("tree_owned", [brand_l_ids[0]])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_execute_chain_lightning", 100.0)
+	_assert(absf(float(bm.call("brand_amp_now")) - amp_l) < 0.001,
+		"210A: a chain hit brands its target at the caster's amp")
+	bm.set("hp", 10000.0)
+	pc.call("_execute_chain_lightning", 100.0)
+	_assert(absf(10000.0 - float(bm.get("hp"))
+			- 100.0 * (1.0 + amp_l)) < 0.01
+			and absf(float(bm.call("brand_amp_now")) - amp_l) < 0.001,
+		"210A: a branded target takes (1 + amp) on the next storm hit; the brand is not consumed")
+	# POSITIVE (barrage): bolts brand through the shared
+	# fireball construction; plain fireballs never do. A
+	# FRESH mob — bm still carries the lightning leg's
+	# live brand window, which would contaminate these
+	# amounts (the maxf reapplication rule).
+	hold.remove_child(bm)
+	bm.free()
+	bm = MobScene.instantiate()
+	bm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(bm)
+	bm.set("hp", 10000.0)
+	bm.set("max_hp", 10000.0)
+	var amp_b := float(DT.compute_aggregates(seed, "mage",
+		[brand_b_ids[0]])["skill_mods"]["barrage"].get("brand_amp", 0.0))
+	pc.set("tree_owned", [brand_b_ids[0]])
+	pc.call("_recompute_tree_aggregates")
+	bm.global_position = Vector3(1, 0, 0)
+	var FBB := load("res://scripts/combat/fireball.gd")
+	var bolt = FBB.new()
+	bolt.setup(Vector3.ZERO, 10.0, 1)
+	bolt.set("skill_tag", "barrage")
+	dgn.get_node("Projectiles").add_child(bolt)
+	bolt.global_position = Vector3.ZERO
+	bolt.call("_explode")
+	_assert(absf(float(bm.call("brand_amp_now")) - amp_b) < 0.001
+			and absf(10000.0 - float(bm.get("hp")) - 10.0) < 0.01,
+		"210A: a barrage bolt brands its target (the branding hit itself is unamplified)")
+	bm.set("hp", 10000.0)
+	var bolt2 = FBB.new()
+	bolt2.setup(Vector3.ZERO, 10.0, 1)
+	bolt2.set("skill_tag", "barrage")
+	dgn.get_node("Projectiles").add_child(bolt2)
+	bolt2.global_position = Vector3.ZERO
+	bolt2.call("_explode")
+	_assert(absf(10000.0 - float(bm.get("hp"))
+			- 10.0 * (1.0 + amp_b)) < 0.01,
+		"210A: a barrage bolt on a branded target takes (1 + amp)")
+	var plain = FBB.new()
+	plain.setup(Vector3.ZERO, 10.0, 1)
+	dgn.get_node("Projectiles").add_child(plain)
+	plain.global_position = Vector3.ZERO
+	bm.set("hp", 10000.0)
+	bm.call("apply_brand", 0.0, 0.0, 0)
+	plain.call("_explode")
+	_assert(float(bm.call("brand_amp_now")) == 0.0,
+		"210A: a plain fireball never brands, brand set or not")
+	for pr in dgn.get_node("Projectiles").get_children():
+		pr.free()
+	hold.remove_child(bm)
+	bm.free()
+
+	# Source pins for the timer-loop sites (blizzard ticks,
+	# tempest channel) and the remaining folds — those
+	# loops run on real timers, so their wiring is pinned
+	# here and their amounts at the aggregate level above.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("return 1.0 + bonus_atk_spd + _tree_stat(\"atk_spd\")"),
+		"210: section 1.2 — the authority branch carries the combined term")
+	_assert(psrc.contains("_tree_frost_mult(\"frost\")")
+			and psrc.contains("_tree_frost_mult(\"blizzard\")")
+			and psrc.contains("_tree_mult(\"lightning\")")
+			and psrc.contains("_tree_mult(\"barrage\")")
+			and psrc.contains("_tree_mult(\"tempest\")"),
+		"210: every B1 cast expression folds its tree multiplier")
+	_assert(psrc.contains("ability_cds[\"glacial_prison\"] = (60.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod(\"glacial_prison\", \"cd_mult\", 1.0)")
+			and psrc.contains("ability_cds[\"tempest\"] = (90.0) * cooldown_mult() / atk_spd_mult() * _tree_skill_mod(\"tempest\", \"cd_mult\", 1.0)"),
+		"210: both signature cd sites fold cd_mult")
+	_assert(psrc.contains("\"whiteout\"") and psrc.contains("\"stasis_burst\"")
+			and psrc.contains("\"eye_of_the_storm\"")
+			and psrc.contains("_tree_storm_until"),
+		"210: Whiteout / Stasis Burst / Eye of the Storm / Stormcharged are wired")
+	var msrc := FileAccess.get_file_as_string(
+		"res://scripts/mobs/mob.gd")
+	_assert(msrc.contains("prison_shatter")
+			and msrc.contains("_slow_mult == 0.0")
+			and msrc.contains("func apply_brand")
+			and msrc.contains("func brand_amp_now"),
+		"210A: the mob carries the shatter trigger (frozen test on the real slow vars) + the brand status")
+	_assert(psrc.contains("m.prison_shatter = damage * _tree_skill_mod(")
+			and psrc.contains("current.apply_brand(3.0, brand_amp, from)"),
+		"210A: the prison stores its shatter at cast; the chain brands on hit")
+	var fsrc := FileAccess.get_file_as_string(
+		"res://scripts/combat/fireball.gd")
+	_assert(fsrc.contains("barrage_brand")
+			and fsrc.contains("mob.apply_brand(3.0, barrage_brand, owner_peer)"),
+		"210A: barrage bolts brand through the shared construction (barrage only)")
+	root.remove_child(dgn)
+	dgn.queue_free()
+	for node in [pf, srv, pa, pg]:
+		hold.remove_child(node)
+		node.free()
+	current_scene = null
+	hold.free()
+	print("[Playtest] Deep Tree B1 test done.")
+
+
+func _test_deep_tree_b2_210() -> void:
+	print("[Playtest] Deep Tree B2 rogue completion (issue #210)...")
+	var DT = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = DT.TREE_SEED
+
+	# (a) FIXTURE LITERALS, recorded from the module:
+	# Shadow rings 1-3 (widths 1/2/1), Precision 1/2/1.
+	_assert(DT.width(seed, 6, 1) == 1 and DT.width(seed, 6, 2) == 2
+			and DT.width(seed, 6, 3) == 1
+			and DT.width(seed, 7, 1) == 1
+			and DT.width(seed, 7, 2) == 2
+			and DT.width(seed, 7, 3) == 1,
+		"210B: Shadow/Precision fixture widths are 1/2/1 each")
+	var fx := [
+		[6, 1, 0, "modifier", "assassinate", {"components": [{"param": "cd_pct", "steps": 4}]}, 16, "Hidden Veil"],
+		[6, 2, 0, "behavior", "smoke_veil", {"behavior": "veilwalker", "steps": 4}, 29, "Hollow Step"],
+		[6, 2, 1, "modifier", "smoke_veil", {"components": [{"param": "cd_pct", "steps": 4}]}, 20, "Silent Whisper"],
+		[6, 3, 0, "modifier", "smoke_veil", {"components": [{"param": "duration_add", "steps": 2}]}, 24, "Umbral Promise"],
+		[7, 1, 0, "modifier", "execution", {"components": [{"param": "cd_pct", "steps": 8}]}, 16, "Steady Fan"],
+		[7, 2, 0, "stat", "", {"channel": "damage", "steps": 4}, 12, "Piercing Point"],
+		[7, 2, 1, "stat", "", {"channel": "damage", "steps": 2}, 12, "Cold Edge"],
+		[7, 3, 0, "stat", "", {"channel": "damage", "steps": 4}, 15, "Keen Eye"],
+	]
+	for row in fx:
+		var nd: Dictionary = DT.node_for(seed, "rogue",
+			int(row[0]), int(row[1]), int(row[2]))
+		_assert(str(nd["archetype"]) == str(row[3])
+				and str(nd["target"]) == str(row[4])
+				and nd["params"] == row[5]
+				and int(nd["cost"]) == int(row[6])
+				and str(nd["name"]) == str(row[7]),
+			"210B: fixture %d/%d/%d is %s" % [row[0], row[1],
+				row[2], row[7]])
+	# Section 1.3 invariance: Fire/Frost/Storm literals stand.
+	var inv1: Dictionary = DT.node_for(seed, "mage", 1, 2, 0)
+	_assert(str(inv1["name"]) == "Charred Throne"
+			and inv1["params"] == {"behavior": "fuel_for_the_flame", "steps": 4},
+		"210B: invariance — Fire ring 2 behavior unchanged")
+	var inv2: Dictionary = DT.node_for(seed, "mage", 2, 2, 0)
+	_assert(str(inv2["name"]) == "Bitter Garden"
+			and inv2["params"] == {"components": [{"param": "freeze_add", "steps": 3}]},
+		"210B: invariance — Frost ring 2/0 unchanged (B1's amended fixture)")
+	var inv3: Dictionary = DT.node_for(seed, "mage", 3, 1, 2)
+	_assert(str(inv3["name"]) == "Arc Brand"
+			and inv3["params"] == {"components": [{"param": "dmg_pct", "steps": 3}]},
+		"210B: invariance — Storm ring 1/2 unchanged")
+
+	# (b) Determinism for the new branches, rings 1-12.
+	for b in [6, 7]:
+		var s1 := ""
+		var s2 := ""
+		for ring in range(1, 13):
+			for index in DT.width(seed, b, ring):
+				s1 += str(DT.node_for(seed, "rogue", b, ring, index))
+				s2 += str(DT.node_for(seed, "rogue", b, ring, index))
+		_assert(s1 == s2 and s1 != "",
+			"210B: branch %d generates deterministically (rings 1-12)" % b)
+
+	# (c) Aggregate exactness + exclusions + envelopes.
+	var aggA: Dictionary = DT.compute_aggregates(seed, "rogue",
+		[DT.pack_id(6, 3, 0), DT.pack_id(6, 1, 0),
+		DT.pack_id(7, 1, 0)])
+	_assert(absf(float(aggA["skill_mods"]["smoke_veil"].get("duration_add", 0.0)) - 2.0) < 0.001,
+		"210B: smoke duration_add 2 steps x 1.0 s (target unit) = 2.0")
+	_assert(absf(float(aggA["skill_mods"]["assassinate"].get("cd_mult", 0.0)) - 0.98) < 0.001
+			and absf(float(aggA["skill_mods"]["execution"].get("cd_mult", 0.0)) - 0.96) < 0.001,
+		"210B: assassinate cd_mult 0.98, execution cd_mult 0.96")
+	# The wave-gate protection: no eagle_eye node ever
+	# carries cd_pct (rings 1-12 scan).
+	var eagle_clean := true
+	for ring in range(1, 13):
+		for index in DT.width(seed, 7, ring):
+			var ndE: Dictionary = DT.node_for(seed, "rogue",
+				7, ring, index)
+			if str(ndE["target"]) == "eagle_eye":
+				for comp in ndE["params"].get("components", []):
+					if str(comp["param"]) == "cd_pct":
+						eagle_clean = false
+	_assert(eagle_clean,
+		"210B: exclusion — eagle_eye generates no cd_pct (wave gate protected)")
+	# Scans for the live legs + envelopes.
+	var scan := {"step": [], "vuln": -1, "thresh": -1,
+		"dark": -1, "deadeye": -1, "surveyor": -1,
+		"coup": -1, "twin": -1, "choking": -1,
+		"headsman": -1, "death_sentence": -1,
+		"shuriken": -1}
+	for ring in range(1, 241):
+		for b in [6, 7]:
+			for index in DT.width(seed, b, ring):
+				var ndS: Dictionary = DT.node_for(seed,
+					"rogue", b, ring, index)
+				if str(ndS["target"]) == "shadow_step":
+					for comp in ndS["params"].get("components", []):
+						if str(comp["param"]) == "step_dmg":
+							scan["step"].append(int(ndS["id"]))
+				if str(ndS["target"]) == "mark" and int(scan["vuln"]) < 0:
+					for comp in ndS["params"].get("components", []):
+						if str(comp["param"]) == "vuln_add":
+							scan["vuln"] = int(ndS["id"])
+				if str(ndS["target"]) == "execution" and int(scan["thresh"]) < 0:
+					for comp in ndS["params"].get("components", []):
+						if str(comp["param"]) == "threshold_add":
+							scan["thresh"] = int(ndS["id"])
+				var beh := str(ndS["params"].get("behavior", ""))
+				if beh == "from_the_dark" and int(scan["dark"]) < 0:
+					scan["dark"] = int(ndS["id"])
+				if beh == "deadeye" and int(scan["deadeye"]) < 0:
+					scan["deadeye"] = int(ndS["id"])
+				if beh == "surveyor" and int(scan["surveyor"]) < 0:
+					scan["surveyor"] = int(ndS["id"])
+				var vr := str(ndS["params"].get("variant", ""))
+				if vr == "coup_de_grace" and int(scan["coup"]) < 0:
+					scan["coup"] = int(ndS["id"])
+				if vr == "twin_step" and int(scan["twin"]) < 0:
+					scan["twin"] = int(ndS["id"])
+				if vr == "choking_veil" and int(scan["choking"]) < 0:
+					scan["choking"] = int(ndS["id"])
+				if vr == "headsman" and int(scan["headsman"]) < 0:
+					scan["headsman"] = int(ndS["id"])
+				if vr == "death_sentence" and int(scan["death_sentence"]) < 0:
+					scan["death_sentence"] = int(ndS["id"])
+				if vr == "shuriken_storm" and int(scan["shuriken"]) < 0:
+					scan["shuriken"] = int(ndS["id"])
+	for k in ["vuln", "thresh", "dark", "deadeye",
+			"surveyor", "coup", "twin", "choking",
+			"headsman", "death_sentence", "shuriken"]:
+		_assert(int(scan[k]) > 0, "210B: scan finds a %s node" % k)
+	_assert(not scan["step"].is_empty(),
+		"210B: scan finds step_dmg nodes")
+	var agg_step: Dictionary = DT.compute_aggregates(seed,
+		"rogue", scan["step"])
+	var step_full := float(agg_step["skill_mods"]["shadow_step"].get("step_dmg", 0.0))
+	_assert(step_full > 0.0 and step_full <= 1.00,
+		"210B: step_dmg clamps at <= 1.00 under a full set (Amendment 1 section D; got %.3f)" % step_full)
+
+	# (d) Purchase legality + server validation (Shadow).
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold := Node3D.new()
+	root.add_child(hold)
+	current_scene = hold
+	var pf = PlayerScene.instantiate()
+	pf.set("class_id", "rogue")
+	hold.add_child(pf)
+	pf.set("family_collection", {"shadow": {"signature": true}})
+	pf.set("tree_lifetime", {"smoke_veil": 90.0,
+		"shadow_step": 60.0})
+	_assert(DT.wallet(pf, 6) == 150,
+		"210B: the shadow wallet derives from its own skills")
+	_assert(bool(pf.call("try_purchase", DT.pack_id(6, 1, 0))),
+		"210B: buy the Shadow ring-1 spine succeeds")
+	_assert(DT.wallet(pf, 6) == 134,
+		"210B: wallet after the buy (150 - 16)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(6, 1, 0))),
+		"210B: re-buying is refused")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(6, 2, 1))),
+		"210B: a side node without its spine is refused (prereq)")
+	_assert(not bool(pf.call("try_purchase", DT.pack_id(7, 1, 0))),
+		"210B: a sibling-branch node is refused before its own unlock")
+	var srv = PlayerScene.instantiate()
+	srv.set("class_id", "rogue")
+	hold.add_child(srv)
+	srv.set("family_collection", {"shadow": {"signature": true}})
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 3, 0), 1000, 1)) == "prereq",
+		"210B: validator rejects an unmet Shadow prereq")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 2, 7), 1000, 1)) == "inert",
+		"210B: validator rejects a forged Shadow id")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 1, 0), 10, 1)) == "insufficient",
+		"210B: validator rejects an insufficient Shadow claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 1, 0), 100, 1)) == "",
+		"210B: validator accepts a legal Shadow claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 1, 0), 100, 1)) == "duplicate",
+		"210B: validator rejects a duplicate Shadow claim")
+	_assert(str(srv.call("_tree_validate_claim",
+			DT.pack_id(6, 2, 0), 50, 1)) == "rollback",
+		"210B: validator rejects a non-monotone Shadow claim")
+
+	# (e) READ SITES LIVE — the bare-dungeon fixture with
+	# the shadow-Player_1 purge and a rogue claimant.
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	for c in dgn.get_node("Players").get_children():
+		c.free()
+	var pc = PlayerScene.instantiate()
+	pc.set("class_id", "rogue")
+	pc.name = "Player_1"
+	dgn.get_node("Players").add_child(pc)
+	_assert(dgn.call("get_player_node", 1) == pc,
+		"210B: fixture integrity — peer 1 resolves to the scripted rogue")
+	pc.set("damage", 100.0)
+	dgn.set("_layout", null)
+	for n in get_nodes_in_group("mobs"):
+		n.get_parent().remove_child(n)
+		n.free()
+	var MobScene: PackedScene = load("res://scenes/mobs/mob.tscn")
+	var sdata: Resource = load("res://data/mobs/slime.tres")
+	var bdata: Resource = load("res://data/mobs/boss_boar.tres")
+	# Aim-driven activations read _camera: force a known
+	# eye (the fixture's own camera, when _ready built
+	# one, is not positioned for these drives).
+	var cam := Camera3D.new()
+	cam.position = Vector3(0, 1.0, 0)
+	pc.add_child(cam)
+	pc.set("_camera", cam)
+
+	# Umbral Strike (Amendment 1 section C.2).
+	var um = MobScene.instantiate()
+	um.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(um)
+	um.set("hp", 10000.0)
+	um.set("max_hp", 10000.0)
+	# NEUTRALITY: a zero-owned step damages nothing and
+	# moves exactly as today (8 m forward).
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	um.global_position = pc.global_position + Vector3(0, 0, -8)
+	pc.call("_activate_shadow_step")
+	_assert(absf(10000.0 - float(um.get("hp"))) < 0.01
+			and absf(pc.global_position.z + 8.0) < 0.5,
+		"210B: neutrality — a zero-owned step damages nothing, moves as today")
+	# POSITIVE: the full step set — arrival damage is
+	# weapon damage x the aggregate.
+	pc.set("tree_owned", scan["step"])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	um.global_position = pc.global_position + Vector3(0, 0, -8)
+	pc.call("_activate_shadow_step")
+	_assert(absf(10000.0 - float(um.get("hp"))
+			- 100.0 * step_full) < 0.01,
+		"210B: Umbral Strike deals weapon damage x step_dmg at arrival")
+	hold.remove_child(um)
+	um.free()
+
+	# Smoke Veil: cd + window read the aggregates.
+	pc.set("tree_owned", [DT.pack_id(6, 3, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_smoke_veil")
+	_assert(absf(float(pc.get("ability_cds").get("smoke_veil", 0.0)) - 30.0) < 0.01
+			and absf(float(pc.get("_stealth_t")) - 8.0) < 0.01,
+		"210B: the veil window reads duration_add exactly (6 + 2 = 8 s); its cd is the unfolded 30 s")
+	# Choking Veil: the activation scan slows its enemies.
+	var cm = MobScene.instantiate()
+	cm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(cm)
+	cm.set("hp", 10000.0)
+	cm.set("max_hp", 10000.0)
+	cm.global_position = pc.global_position + Vector3(3, 0, 0)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_smoke_veil")
+	_assert(not bool(cm.call("is_slowed")),
+		"210B: a plain veil slows nobody (Choking neutrality)")
+	pc.set("tree_owned", [scan["choking"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_smoke_veil")
+	_assert(bool(cm.call("is_slowed"))
+			and absf(float(cm.get("_slow_mult")) - 0.8) < 0.001,
+		"210B: Choking Veil slows the scan's enemies 20% for 3 s")
+	hold.remove_child(cm)
+	cm.free()
+	# Veilwalker: exiting the veil opens the 4 s window.
+	pc.set("tree_owned", [DT.pack_id(6, 2, 0)])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("stealthed", true)
+	pc.set("_stealth_t", 0.05)
+	pc.call("_physics_process", 0.1)
+	_assert(int(pc.get("_tree_veil_until")) > Time.get_ticks_msec()
+			and absf(float(pc.call("_tree_veil_mult")) - 1.2) < 0.001,
+		"210B: Veilwalker — exiting the veil grants +20% damage for 4 s (4 steps)")
+	pc.set("_tree_veil_until", 0)
+
+	# Twin Step: one free re-cast within 2 s.
+	pc.set("tree_owned", [scan["twin"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.global_position = Vector3.ZERO
+	var z0: float = pc.global_position.z
+	pc.call("_activate_shadow_step")
+	var z1: float = pc.global_position.z
+	pc.call("_activate_shadow_step")
+	var z2: float = pc.global_position.z
+	pc.call("_activate_shadow_step")
+	_assert(absf(z1 - z0 + 8.0) < 0.5 and absf(z2 - z1 + 8.0) < 0.5
+			and absf(pc.global_position.z - z2) < 0.01,
+		"210B: Twin Step — the second step is free inside 2 s, the third is gated")
+
+	# Coup de Grâce: the strike's kill attribution.
+	var km = MobScene.instantiate()
+	km.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(km)
+	km.set("hp", 50.0)
+	km.set("max_hp", 10000.0)
+	km.global_position = pc.global_position + Vector3(2, 0, 0)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {"assassinate": 30.0})
+	km.call("assassinate_hit", 100.0, 1, pc.global_position)
+	_assert(absf(float(pc.get("ability_cds").get("assassinate", 0.0)) - 30.0) < 0.01,
+		"210B: a killing strike without Coup de Grâce resets nothing")
+	var km2 = MobScene.instantiate()
+	km2.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(km2)
+	km2.set("hp", 50.0)
+	km2.set("max_hp", 10000.0)
+	km2.global_position = pc.global_position + Vector3(2, 0, 0)
+	pc.set("tree_owned", [scan["coup"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {"assassinate": 30.0})
+	km2.call("assassinate_hit", 100.0, 1, pc.global_position)
+	_assert(absf(float(pc.get("ability_cds").get("assassinate", 0.0))) < 0.01,
+		"210B: Coup de Grâce — a killing Assassinate resets its own cooldown")
+	hold.remove_child(km2)
+	km2.free()
+
+	# The mark's vuln channel: stored at application,
+	# consumed at the read, never re-read.
+	var vuln_agg := float(DT.compute_aggregates(seed, "rogue",
+		[scan["vuln"]])["skill_mods"]["mark"].get("vuln_add", 0.0))
+	pc.set("tree_owned", [scan["vuln"], scan["death_sentence"]])
+	pc.call("_recompute_tree_aggregates")
+	var mm = MobScene.instantiate()
+	mm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(mm)
+	mm.set("hp", 10000.0)
+	mm.set("max_hp", 10000.0)
+	mm.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("ability_cds", {})
+	pc.call("_activate_mark")
+	_assert(absf(float(mm.get("_mark_vuln_add"))
+			- (vuln_agg + 0.25)) < 0.001,
+		"210B: the caster's vuln rides the application and is stored on the mark (Death Sentence deepens +0.25)")
+	mm.call("take_damage", 100.0, 1, pc.global_position)
+	var mark_loss := 100.0 * (1.5 + vuln_agg + 0.25)
+	_assert(absf(10000.0 - float(mm.get("hp")) - mark_loss) < 0.01,
+		"210B: the marked read consumes the stored value (x%.2f)" % (1.5 + vuln_agg + 0.25))
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	mm.set("hp", 10000.0)
+	mm.call("take_damage", 100.0, 1, pc.global_position)
+	_assert(absf(10000.0 - float(mm.get("hp")) - mark_loss) < 0.01,
+		"210B: the stored value is NOT re-read from a changed build")
+	hold.remove_child(mm)
+	mm.free()
+
+	# Deadeye: the fan reads the mob's mark state.
+	var deadeye_pct := float(DT.compute_aggregates(seed,
+		"rogue", [scan["deadeye"]])["behaviors"].get("deadeye", 0.0))
+	pc.set("tree_owned", [scan["deadeye"]])
+	pc.call("_recompute_tree_aggregates")
+	var fm1 = MobScene.instantiate()
+	fm1.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(fm1)
+	fm1.set("hp", 10000.0)
+	fm1.set("max_hp", 10000.0)
+	fm1.global_position = pc.global_position + Vector3(2, 0, 0)
+	var fm2 = MobScene.instantiate()
+	fm2.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(fm2)
+	fm2.set("hp", 10000.0)
+	fm2.set("max_hp", 10000.0)
+	fm2.global_position = pc.global_position + Vector3(-2, 0, 0)
+	fm2.call("apply_mark", 1e9, 1.0, 0.0)
+	pc.set("ability_cds", {})
+	# Affinity gains in the earlier legs recompute the
+	# fixture's damage stat — pin it at the cast.
+	pc.set("damage", 100.0)
+	pc.call("_activate_fan")
+	_assert(absf(10000.0 - float(fm1.get("hp")) - 120.0) < 0.01
+			and absf(10000.0 - float(fm2.get("hp"))
+				- 120.0 * (1.0 + deadeye_pct / 100.0) * 1.5) < 0.01,
+		"210B: Deadeye — the fan hits marked targets harder (mark amp x1.5 included on the marked one)")
+	hold.remove_child(fm1)
+	fm1.free()
+	hold.remove_child(fm2)
+	fm2.free()
+	# Shuriken Storm (the ruled burst form): each target
+	# is struck two additional times at 80%.
+	pc.set("tree_owned", [scan["shuriken"]])
+	pc.call("_recompute_tree_aggregates")
+	var sm9 = MobScene.instantiate()
+	sm9.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(sm9)
+	sm9.set("hp", 10000.0)
+	sm9.set("max_hp", 10000.0)
+	sm9.global_position = pc.global_position + Vector3(2, 0, 0)
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_fan")
+	_assert(absf(10000.0 - float(sm9.get("hp"))
+			- (120.0 + 2.0 * 96.0)) < 0.01,
+		"210B: Shuriken Storm — the fan strikes each target two extra times at 80% (120 + 2x96)")
+	hold.remove_child(sm9)
+	sm9.free()
+
+	# From the Dark: the strike inside 2 s of a step.
+	var dark_pct := float(DT.compute_aggregates(seed, "rogue",
+		[scan["dark"]])["behaviors"].get("from_the_dark", 0.0))
+	pc.set("tree_owned", [scan["dark"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.call("_activate_shadow_step")
+	var am = MobScene.instantiate()
+	am.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(am)
+	am.set("hp", 10000.0)
+	am.set("max_hp", 10000.0)
+	am.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("damage", 100.0)
+	pc.call("_activate_assassinate")
+	_assert(absf(10000.0 - float(am.get("hp"))
+			- 300.0 * (1.0 + dark_pct / 100.0)) < 0.01,
+		"210B: From the Dark — Assassinate inside 2 s of a step deals +X%")
+	hold.remove_child(am)
+	am.free()
+
+	# Execution: threshold_add at the frac read; Headsman.
+	var thr_agg := float(DT.compute_aggregates(seed, "rogue",
+		[scan["thresh"]])["skill_mods"]["execution"].get("threshold_add", 0.0))
+	var xm = MobScene.instantiate()
+	xm.setup(1, sdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(xm)
+	xm.set("max_hp", 10000.0)
+	xm.set("hp", 1550.0)
+	xm.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(absf(1550.0 - float(xm.get("hp")) - 200.0) < 0.01,
+		"210B: at frac 0.155 a stock Execution does not execute (x2 only)")
+	xm.set("hp", 1550.0)
+	xm.set("alive", true)
+	pc.set("tree_owned", [scan["thresh"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(not bool(xm.get("alive")),
+		"210B: threshold_add (%.2f) lifts the threshold past 0.155 — executed" % thr_agg)
+	hold.remove_child(xm)
+	xm.free()
+	var bm3 = MobScene.instantiate()
+	bm3.setup(1, bdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(bm3)
+	bm3.set("max_hp", 12000.0)
+	bm3.set("hp", 600.0)
+	bm3.global_position = pc.global_position + Vector3(0, 0, -4)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(bool(bm3.get("alive"))
+			and absf(600.0 - float(bm3.get("hp")) - 500.0) < 0.01,
+		"210B: a boss at frac 0.05 takes x5 — no threshold without Headsman")
+	bm3.set("hp", 600.0)
+	pc.set("tree_owned", [scan["headsman"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("ability_cds", {})
+	pc.set("damage", 100.0)
+	pc.call("_activate_execution")
+	_assert(not bool(bm3.get("alive")),
+		"210B: Headsman — the boss faces the threshold at half effect (0.075) and is executed")
+	hold.remove_child(bm3)
+	bm3.free()
+
+	# Surveyor: the reveal marks the nearest elite/boss.
+	var em = MobScene.instantiate()
+	em.setup(1, sdata, 1.0, 1.0, true, 1.0)
+	hold.add_child(em)
+	em.set("hp", 10000.0)
+	em.set("max_hp", 10000.0)
+	em.global_position = pc.global_position + Vector3(5, 0, 0)
+	pc.set("tree_owned", [])
+	pc.call("_recompute_tree_aggregates")
+	pc.call("_activate_eagle_eye")
+	_assert(not bool(em.call("is_marked")),
+		"210B: a plain Eagle Eye marks nobody (Surveyor neutrality)")
+	pc.set("tree_owned", [scan["surveyor"]])
+	pc.call("_recompute_tree_aggregates")
+	pc.set("eagle_eye_used_wave", -999)
+	pc.call("_activate_eagle_eye")
+	_assert(bool(em.call("is_marked")),
+		"210B: Surveyor — the reveal marks the nearest elite or boss")
+	hold.remove_child(em)
+	em.free()
+
+	# Source pins for the remaining folds.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("target.assassinate_hit(strike, me, global_position)")
+			and psrc.contains("func notify_coup_kill")
+			and psrc.contains("_tree_dark_stamp = Time.get_ticks_msec()"),
+		"210B: the strike routes through assassinate_hit; Coup + the recency stamp are wired")
+	_assert(psrc.contains("survey_target.apply_mark(Mob.MARK_PERMANENT, 1.0, svuln)")
+			and psrc.contains("deadeye_pct")
+			and psrc.contains("\"headsman\""),
+		"210B: Surveyor / Deadeye / Headsman are wired")
+	var msrc2 := FileAccess.get_file_as_string(
+		"res://scripts/mobs/mob.gd")
+	_assert(msrc2.contains("vuln_add: float = 0.0")
+			and msrc2.contains("amount *= 1.5 + _mark_vuln_add")
+			and msrc2.contains("_notify_coup(attacker)")
+			and msrc2.contains("_notify_coup(_burn_attacker)"),
+		"210B: the vuln channel is stored + read; Coup hooks both kill-decision sites")
+	_assert(msrc2.contains("func rpc_apply_slow")
+			and msrc2.contains("clampf(duration, 0.0, 15.0)")
+			and msrc2.contains("clampf(mult, 0.0, 1.0)"),
+		"210B: rpc_apply_slow carries the claimed-value discipline (server execution, clamped claims)")
+	root.remove_child(dgn)
+	dgn.free()
+	for node in [pf, srv]:
+		hold.remove_child(node)
+		node.free()
+	current_scene = null
+	hold.free()
+	print("[Playtest] Deep Tree B2 test done.")
+
+
+## Issue #210 slice B3 helper: the first modifier node in
+## a branch carrying (target, param); returns [id, steps]
+## of its first matching component (scanning generation
+## directly — fixtures anchor on the recorded literals).
+func _b3_find(dt: GDScript, branch: int, target: String,
+		param: String, single := false) -> Array:
+	for ring in range(1, 61):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"warrior", branch, ring, i)
+			if str(n.get("archetype")) != "modifier" \
+					or str(n.get("target")) != target:
+				continue
+			if single and n["params"]["components"].size() != 1:
+				continue
+			for c in n["params"]["components"]:
+				if str(c["param"]) == param:
+					return [int(n["id"]), int(c["steps"])]
+	return [-1, 0]
+
+
+## Issue #210 slice B3 helper: total steps of (target,
+## param) across an owned set, summed from the
+## generation data itself (multi-component nodes sum
+## every component — expectations must too).
+func _b3_sum(dt: GDScript, owned: Array, target: String,
+		param: String) -> int:
+	var total := 0
+	for id in owned:
+		var n: Dictionary = dt.node_for(dt.TREE_SEED,
+			"warrior", dt.id_branch(int(id)),
+			dt.id_ring(int(id)), dt.id_index(int(id)))
+		if str(n.get("target")) != target:
+			continue
+		for c in n["params"].get("components", []):
+			if str(c["param"]) == param:
+				total += int(c["steps"])
+	return total
+
+
+## Issue #210 slice B3 helper: the first behavior node
+## with the given behavior id in a branch.
+func _b3_find_behavior(dt: GDScript, branch: int,
+		behavior: String) -> Array:
+	for ring in range(1, 61):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"warrior", branch, ring, i)
+			if str(n.get("archetype")) == "behavior" \
+					and str(n["params"].get("behavior",
+						"")) == behavior:
+				return [int(n["id"]), int(n["params"]["steps"])]
+	return [-1, 0]
+
+
+func _test_deep_tree_b3_210() -> void:
+	print("[Playtest] deep tree 210 B3 tests...")
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = dt.TREE_SEED
+	# (a) Warden / Conqueror rings 1-3 literals, recorded
+	# by probe at the governing seed (the fixtures of
+	# section 1.3 — later slices keep these).
+	var fix := [
+		[4, 1, 0, "behavior", "reciprocity", {"behavior": "oathkeeper", "steps": 4}, 24, "Iron Ward"],
+		[4, 2, 0, "stat", "", {"channel": "atk_spd", "steps": 4}, 12, "Oathen Root"],
+		[4, 2, 1, "behavior", "reciprocity", {"behavior": "rooted_ward", "steps": 2}, 29, "Patient Promise"],
+		[4, 3, 2, "modifier", "sanctuary_totem", {"components": [{"param": "duration_add", "steps": 2}]}, 24, "Quiet Bastion"],
+		[5, 1, 0, "modifier", "doom_totem", {"components": [{"param": "vuln_pct", "steps": 5}]}, 16, "Burning Dirge"],
+		[5, 2, 0, "modifier", "bulwark", {"components": [{"param": "guard_pct", "steps": 6}]}, 20, "Relentless Crown"],
+		[5, 2, 1, "modifier", "doom_totem", {"components": [{"param": "cd_pct", "steps": 4}]}, 20, "Feral Banner"],
+		[5, 3, 0, "stat", "", {"channel": "damage", "steps": 2}, 15, "Broken Roar"],
+		[5, 3, 1, "modifier", "doom_totem", {"components": [{"param": "radius_add", "steps": 2}]}, 24, "Burning Roar"],
+	]
+	for row in fix:
+		var n: Dictionary = dt.node_for(seed, "warrior",
+			row[0], row[1], row[2])
+		_assert(str(n.get("archetype")) == str(row[3])
+				and str(n.get("target")) == str(row[4])
+				and str(n.get("params")) == str(row[5])
+				and int(n.get("cost")) == int(row[6])
+				and str(n.get("name")) == str(row[7]),
+			"210B3: fixture %d/%d/%d" % [row[0], row[1], row[2]])
+	# Generation invariance: one spot row per branch
+	# already landed (byte-identical under B3).
+	var iv := [
+		[1, 2, 0, {"behavior": "fuel_for_the_flame", "steps": 4}, "Charred Throne", "mage"],
+		[2, 2, 0, {"components": [{"param": "freeze_add", "steps": 3}]}, "Bitter Garden", "mage"],
+		[3, 1, 0, {"components": [{"param": "cd_pct", "steps": 5}]}, "Bright Tongue", "mage"],
+		[6, 2, 0, {"behavior": "veilwalker", "steps": 4}, "Hollow Step", "rogue"],
+		[7, 1, 0, {"components": [{"param": "cd_pct", "steps": 8}]}, "Steady Fan", "rogue"],
+	]
+	for row in iv:
+		var n2: Dictionary = dt.node_for(seed, str(row[5]),
+			row[0], row[1], row[2])
+		_assert(str(n2.get("params")) == str(row[3])
+				and str(n2.get("name")) == str(row[4]),
+			"210B3: invariance spot %d/%d" % [row[0], row[1]])
+	# (b) Determinism rings 1-12 for both branches.
+	for branch in [4, 5]:
+		var run_a := ""
+		var run_b := ""
+		for rep in 2:
+			var acc := ""
+			for ring in range(1, 13):
+				for i in dt.width(seed, branch, ring):
+					acc += str(dt.node_for(seed, "warrior",
+						branch, ring, i)) + ";"
+			if rep == 0:
+				run_a = acc
+			else:
+				run_b = acc
+		_assert(run_a == run_b and run_a.length() > 100,
+			"210B3: determinism rings 1-12 branch %d" % branch)
+	# (c) Aggregate exactness on literal steps.
+	var agg: Dictionary = dt.compute_aggregates(seed,
+		"warrior", [dt.pack_id(5, 1, 0), dt.pack_id(5, 2, 1),
+			dt.pack_id(5, 3, 1)])
+	var de: Dictionary = agg["skill_mods"].get("doom_totem", {})
+	_assert(absf(float(de.get("vuln_pct", 0.0)) - 0.05) < 0.0001
+			and absf(float(de.get("cd_mult", 1.0)) - 0.98) < 0.0001
+			and absf(float(de.get("radius_add", 0.0)) - 0.2) < 0.0001,
+		"210B3: doom aggregates exact (vuln/cd/radius)")
+	var aggw: Dictionary = dt.compute_aggregates(seed,
+		"warrior", [dt.pack_id(4, 3, 0)])
+	_assert(absf(float(aggw["skill_mods"].get("reciprocity",
+			{}).get("mend_pct", 0.0)) - 0.04) < 0.0001,
+		"210B3: mend_pct aggregates (the renamed channel — it scales the heal, per the SE ruling)")
+	# Purchase legality + validator rejections (warrior).
+	var PlayerScene3: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold3 := Node3D.new()
+	root.add_child(hold3)
+	var wr = PlayerScene3.instantiate()
+	wr.set("class_id", "warrior")
+	hold3.add_child(wr)
+	wr.set("family_collection", {"warden": {"signature": true}})
+	wr.set("tree_lifetime", {"reciprocity": 90.0,
+		"stoneskin": 60.0})
+	_assert(dt.branch_unlocked(wr.family_collection,
+			"warrior", 4),
+		"210B3: the warden branch unlock reads the family signature flag")
+	_assert(dt.wallet(wr, 4) == 150,
+		"210B3: the warden wallet derives from its own skills")
+	_assert(bool(wr.call("try_purchase", dt.pack_id(4, 1, 0)))
+			and dt.wallet(wr, 4) == 126,
+		"210B3: legal warden purchase lands (150 - 24)")
+	var srv3 = PlayerScene3.instantiate()
+	srv3.set("class_id", "warrior")
+	hold3.add_child(srv3)
+	srv3.set("family_collection", {"warden": {"signature": true}})
+	srv3.set("tree_lifetime", {"reciprocity": 90.0,
+		"stoneskin": 60.0})
+	_assert(str(srv3.call("_tree_validate_claim",
+			dt.pack_id(4, 3, 0), 1000, 1)) == "prereq",
+		"210B3: validator rejects a parentless ring-3 claim")
+	_assert(str(srv3.call("_tree_validate_claim",
+			dt.pack_id(1, 1, 0), 1000, 1)) == "inert",
+		"210B3: validator rejects an inert branch claim")
+	_assert(str(srv3.call("_tree_validate_claim",
+			dt.pack_id(4, 1, 0), 10, 1)) == "insufficient",
+		"210B3: validator rejects without the Insight")
+	hold3.free()
+	# Live read-site legs. A bare dungeon fixture; its own
+	# Player_1 IS the warrior caster (the totem resolves
+	# its caster through the dungeon).
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	current_scene = dgn
+	dgn.set("_layout", null)
+	var pc = dgn.get_player_node(1)
+	_assert(pc != null and str(pc.get("class_id")) == "warrior",
+		"210B3: the fixture caster is the dungeon's warrior")
+	var ally = PlayerScene3.instantiate()
+	ally.set("class_id", "warrior")
+	root.add_child(ally)
+	ally.global_position = Vector3(2, 0, 0)
+	var mobres = load("res://data/mobs/goblin.tres")
+	var tot = load("res://scripts/combat/totem.gd")
+	var mobs: Array = []
+	for n in get_nodes_in_group("mobs"):
+		n.set("alive", false)
+	# Neutrality: a tree-less caster's totem is stock.
+	var t0 = tot.new()
+	t0.setup("reciprocity", 1, 1)
+	root.add_child(t0)
+	_assert(absf(t0.call("aura_radius") - 6.0) < 0.001
+			and absf(float(t0.get("_life")) - 20.0) < 0.001
+			and absf(t0.call("_aura_strength") - 1.0) < 0.001,
+		"210B3: neutral totem (radius/life/strength stock)")
+	t0.free()
+	# Stoneskin: armor magnitude + Living Stone heal.
+	var af := _b3_find(dt, 4, "stoneskin", "armor_pct")
+	var rf := _b3_find(dt, 4, "stoneskin", "radius_add", true)
+	var df := _b3_find(dt, 4, "stoneskin", "duration_add", true)
+	_assert(af[0] > 0 and rf[0] > 0 and df[0] > 0,
+		"210B3: stoneskin nodes exist for the legs")
+	var ls_node: Dictionary = {}
+	for ring in range(1, 241):
+		if dt.width(seed, 4, ring) > 0:
+			var cn: Dictionary = dt.node_for(seed,
+				"warrior", 4, ring, 0)
+			if str(cn.get("kind")) == "variant" and str(
+					cn["params"].get("variant", "")) \
+					== "living_stone":
+				ls_node = cn
+				break
+	var stone_owned := [af[0], rf[0], df[0],
+		int(ls_node.get("id", -1))]
+	pc.set("tree_owned", stone_owned)
+	pc._recompute_tree_aggregates()
+	var t1 = tot.new()
+	t1.setup("stoneskin", 1, 1)
+	root.add_child(t1)
+	_assert(absf(t1.call("aura_radius")
+			- (6.0 + float(_b3_sum(dt, stone_owned,
+				"stoneskin", "radius_add")) * 0.1)) < 0.001
+			and absf(float(t1.get("_life"))
+				- (20.0 + float(_b3_sum(dt, stone_owned,
+					"stoneskin", "duration_add")) * 0.5)) < 0.001,
+		"210B3: radius_add + duration_add read at the totem")
+	ally.set("hp", float(ally.get("max_hp")) - 10.0)
+	t1.call("_apply_aura")
+	var armor_frac := float(af[1]) * 0.01
+	_assert(absf(float(ally.get("_stoneskin_strength"))
+			- (1.0 + armor_frac)) < 0.001
+			and absf(float(ally.get("hp"))
+				- (float(ally.get("max_hp")) - 10.0
+					+ 2.0 * (1.0 + armor_frac))) < 0.01,
+		"210B3: armor_pct scales stoneskin; Living Stone heals per tick")
+	t1.free()
+	# Warhorn: aura magnitude + Thunderhead attack speed.
+	var auf := _b3_find(dt, 5, "warhorn", "aura_pct")
+	# (the thunderhead variant rides its own node:)
+	var th_node: Dictionary = {}
+	for ring in range(1, 61):
+		if dt.width(seed, 5, ring) > 0:
+			var cn2: Dictionary = dt.node_for(seed,
+				"warrior", 5, ring, 0)
+			if str(cn2.get("kind")) == "variant" and str(
+					cn2["params"].get("variant", "")) \
+					== "thunderhead_horn":
+				th_node = cn2
+				break
+	pc.set("tree_owned", [auf[0], int(th_node.get("id", -1))])
+	pc._recompute_tree_aggregates()
+	var t2 = tot.new()
+	t2.setup("warhorn", 1, 1)
+	root.add_child(t2)
+	t2.call("_apply_aura")
+	_assert(absf(float(ally.get("_warhorn_strength"))
+			- (1.0 + float(auf[1]) * 0.01)) < 0.001
+			and float(ally.get("_war_drums_t")) > 0.0,
+		"210B3: aura_pct scales warhorn; Thunderhead grants attack speed")
+	t2.free()
+	# Rally: haste magnitude + Forced March damage.
+	var hf := _b3_find(dt, 5, "rally", "haste_pct")
+	var fm_node: Dictionary = {}
+	for ring in range(1, 241):
+		if dt.width(seed, 5, ring) > 0:
+			var cn3: Dictionary = dt.node_for(seed,
+				"warrior", 5, ring, 0)
+			if str(cn3.get("kind")) == "variant" and str(
+					cn3["params"].get("variant", "")) \
+					== "forced_march":
+				fm_node = cn3
+				break
+	var rally_owned := [hf[0], int(fm_node.get("id", -1))]
+	pc.set("tree_owned", rally_owned)
+	pc._recompute_tree_aggregates()
+	var rally_expect := 1.0 + float(_b3_sum(dt,
+		rally_owned, "rally", "haste_pct")) * 0.01
+	var ally3 = PlayerScene3.instantiate()
+	ally3.set("class_id", "warrior")
+	root.add_child(ally3)
+	ally3.global_position = Vector3(2, 0, 0)
+	var t3 = tot.new()
+	t3.setup("rally", 1, 1)
+	root.add_child(t3)
+	t3.call("_apply_aura")
+	_assert(absf(float(ally3.get("_rally_strength"))
+			- rally_expect) < 0.001
+			and absf(float(ally3.get("_warhorn_strength"))
+				- rally_expect) < 0.001,
+		"210B3: haste_pct scales rally; Forced March grants damage at rally strength")
+	t3.free()
+	ally3.free()
+	# Bulwark: guard magnitude deepens the slow.
+	var gf := _b3_find(dt, 5, "bulwark", "guard_pct")
+	pc.set("tree_owned", [gf[0]])
+	pc._recompute_tree_aggregates()
+	var bm = load("res://scenes/mobs/mob.tscn").instantiate()
+	bm.setup(1, mobres)
+	root.add_child(bm)
+	mobs.append(bm)
+	var t4 = tot.new()
+	t4.setup("bulwark", 1, 1)
+	root.add_child(t4)
+	t4.call("_apply_aura")
+	_assert(absf(float(bm.get("_slow_mult"))
+			- 0.6 / (1.0 + float(gf[1]) * 0.01)) < 0.001,
+		"210B3: guard_pct scales bulwark's slow")
+	t4.free()
+	# Doom: the stored magnitude + Herald pulse.
+	pc.set("tree_owned", [dt.pack_id(5, 1, 0)])
+	pc._recompute_tree_aggregates()
+	var dm = load("res://scenes/mobs/mob.tscn").instantiate()
+	dm.setup(1, mobres)
+	root.add_child(dm)
+	mobs.append(dm)
+	var t5 = tot.new()
+	t5.setup("doom_totem", 1, 1)
+	root.add_child(t5)
+	t5.call("_apply_aura")
+	_assert(absf(float(dm.get("doom_vuln")) - 0.315) < 0.001,
+		"210B3: vuln_pct stores doom's magnitude on the mob")
+	var dh_node: Dictionary = {}
+	for ring in range(1, 61):
+		if dt.width(seed, 5, ring) > 0:
+			var cn4: Dictionary = dt.node_for(seed,
+				"warrior", 5, ring, 0)
+			if str(cn4.get("kind")) == "variant" and str(
+					cn4["params"].get("variant", "")) \
+					== "doom_herald":
+				dh_node = cn4
+				break
+	pc.set("tree_owned", [dt.pack_id(5, 1, 0),
+		int(dh_node.get("id", -1))])
+	pc._recompute_tree_aggregates()
+	t5.set("_pulse", 4)
+	var dm_hp := float(dm.get("hp"))
+	t5.call("_apply_aura")
+	_assert(absf((dm_hp - float(dm.get("hp")))
+			- 12.0 * (1.0 + 0.315)) < 0.6,
+		"210B3: Doom Herald pulses on the 5 s cadence (doom-amplified)")
+	t5.free()
+	# Strength in Numbers: 3+ enemies strengthen auras.
+	var sinf := _b3_find_behavior(dt, 5, "strength_in_numbers")
+	pc.set("tree_owned", [auf[0], sinf[0]])
+	pc._recompute_tree_aggregates()
+	for k in 3:
+		var em = load("res://scenes/mobs/mob.tscn").instantiate()
+		em.setup(1, mobres)
+		em.global_position = Vector3(1, 0, 0)
+		root.add_child(em)
+		mobs.append(em)
+	var t6 = tot.new()
+	t6.setup("warhorn", 1, 1)
+	root.add_child(t6)
+	t6.call("_apply_aura")
+	var sin_expect := (1.0 + float(auf[1]) * 0.01) \
+		* (1.0 + float(sinf[1]) * 0.05)
+	_assert(absf(float(ally.get("_warhorn_strength"))
+			- sin_expect) < 0.001,
+		"210B3: Strength in Numbers folds at 3+ enemies")
+	t6.free()
+	# Oathkeeper: the tick interval shortens while downed.
+	pc.set("tree_owned", [dt.pack_id(4, 1, 0)])
+	pc._recompute_tree_aggregates()
+	pc.set("downed", true)
+	var t7 = tot.new()
+	t7.setup("reciprocity", 1, 1)
+	root.add_child(t7)
+	t7.set("_tick", 0.0)
+	t7.call("_physics_process", 0.01)
+	_assert(absf(float(t7.get("_tick")) - 1.0 / 1.2) < 0.01,
+		"210B3: Oathkeeper ticks 20% faster while the owner is downed")
+	pc.set("downed", false)
+	t7.free()
+	# Rooted Ward: damage intake inside your own radius.
+	# A FRESH intake player (the shared caster carries
+	# timed buffs from the earlier aura legs).
+	var ward_hold := Node3D.new()
+	root.add_child(ward_hold)
+	var ward_pc = PlayerScene3.instantiate()
+	ward_pc.set("class_id", "warrior")
+	ward_hold.add_child(ward_pc)
+	ward_pc.set("tree_owned", [dt.pack_id(4, 2, 1)])
+	ward_pc._recompute_tree_aggregates()
+	var t8 = tot.new()
+	t8.setup("reciprocity", 1, 1)
+	root.add_child(t8)
+	ward_pc.global_position = Vector3.ZERO
+	ward_pc.set("hp", 1000.0)
+	ward_pc.take_damage(100.0)
+	_assert(absf(float(ward_pc.get("hp")) - 910.0) < 0.01,
+		"210B3: Rooted Ward reduces intake inside your totem (steps 2 = 10%)")
+	ward_pc.global_position = Vector3(30, 0, 0)
+	ward_pc.take_damage(100.0)
+	_assert(absf(float(ward_pc.get("hp")) - 810.0) < 0.01,
+		"210B3: no ward outside the radius")
+	t8.free()
+	ward_hold.free()
+	# Warlord's Tempo: the placement hook feeds atk spd.
+	var tf := _b3_find_behavior(dt, 5, "warlords_tempo")
+	pc.set("tree_owned", [tf[0]])
+	pc._recompute_tree_aggregates()
+	pc.call("_tree_note_totem_placed")
+	_assert(absf(pc.atk_spd_mult()
+			- (1.0 + float(tf[1]) * 0.05)) < 0.001,
+		"210B3: Warlord's Tempo reads in the atk_spd chain")
+	var tsrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, global_position, int(multiplayer.get_unique_id()), ability_rank())\n\t_tree_note_totem_placed()")
+			and tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, global_position, int(multiplayer.get_unique_id()), 1)\n\t_tree_note_totem_placed()"),
+		"210B3: both placement paths call the tempo hook")
+	# Reciprocity: mend_pct scales the heal; Thorn
+	# Mirror slows enemies on the tick (the SE's adopted
+	# forms for the reciprocity premise flag).
+	var mf := _b3_find(dt, 4, "reciprocity", "mend_pct")
+	var tm_node: Dictionary = {}
+	for ring in range(1, 121):
+		if dt.width(seed, 4, ring) > 0:
+			var cn5: Dictionary = dt.node_for(seed,
+				"warrior", 4, ring, 0)
+			if str(cn5.get("kind")) == "variant" and str(
+					cn5["params"].get("variant", "")) \
+					== "thorn_mirror":
+				tm_node = cn5
+				break
+	pc.set("tree_owned", [mf[0], int(tm_node.get("id", -1))])
+	pc._recompute_tree_aggregates()
+	var mend_expect := 1.0 + float(_b3_sum(dt,
+		[mf[0]], "reciprocity", "mend_pct")) * 0.01
+	ally.set("hp", float(ally.get("max_hp")) - 20.0)
+	var mm = load("res://scenes/mobs/mob.tscn").instantiate()
+	mm.setup(1, mobres)
+	root.add_child(mm)
+	mobs.append(mm)
+	var t9 = tot.new()
+	t9.setup("reciprocity", 1, 1)
+	root.add_child(t9)
+	t9.call("_apply_aura")
+	_assert(absf(float(ally.get("hp"))
+			- (float(ally.get("max_hp")) - 20.0
+				+ 4.0 * mend_expect)) < 0.01
+			and absf(float(mm.get("_slow_mult")) - 0.8) < 0.001
+			and float(mm.get("_slow_t")) > 1.9,
+		"210B3: mend_pct scales reciprocity's heal; Thorn Mirror slows enemies 20% for 2 s")
+	t9.free()
+	mm.free()
+	mobs.erase(mm)
+	# Signature cds: doom folded by its cd_pct; sanctuary
+	# stock at zero-owned (the 184 no-division site).
+	pc.set("tree_owned", [dt.pack_id(5, 2, 1)])
+	pc._recompute_tree_aggregates()
+	pc.set("totem_charges", 1)
+	pc.call("_activate_signature_totem", "doom_totem")
+	_assert(absf(float(pc.ability_cds.get("doom_totem",
+			0.0)) - 90.0 * 0.98) < 0.15,
+		"210B3: doom's cd folds its cd_pct at the signature site")
+	pc.set("tree_owned", [])
+	pc._recompute_tree_aggregates()
+	pc.set("totem_charges", 1)
+	pc.ability_cds.erase("sanctuary_totem")
+	pc.call("_activate_signature_totem", "sanctuary_totem")
+	_assert(absf(float(pc.ability_cds.get("sanctuary_totem",
+			0.0)) - 120.0) < 0.15,
+		"210B3: sanctuary's cd is stock at zero-owned")
+	for m in mobs:
+		m.free()
+	for n in get_nodes_in_group("totems"):
+		n.free()
+	ally.free()
+	dgn.free()
+	print("[Playtest] deep tree 210 B3 tests done.")
+
+
+func _b4_find(dt, branch: int, target: String,
+		param: String) -> Array:
+	for ring in range(1, 121):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"architect", branch, ring, i)
+			if str(n.get("archetype")) != "modifier":
+				continue
+			if str(n.get("target")) != target:
+				continue
+			for c in n["params"].get("components", []):
+				if str(c.get("param")) == param:
+					return [int(n["id"]), int(c["steps"])]
+	return [-1, 0]
+
+
+func _b4_find_behavior(dt, branch: int, bid: String) -> Array:
+	for ring in range(1, 121):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"architect", branch, ring, i)
+			if str(n.get("archetype")) == "behavior" and str(
+					n["params"].get("behavior", "")) == bid:
+				return [int(n["id"]),
+					int(n["params"]["steps"])]
+	return [-1, 0]
+
+
+func _b4_find_variant(dt, branch: int, vid: String) -> int:
+	for ring in range(1, 400):
+		for i in dt.width(dt.TREE_SEED, branch, ring):
+			var n: Dictionary = dt.node_for(dt.TREE_SEED,
+				"architect", branch, ring, i)
+			if str(n.get("kind")) == "variant" and str(
+					n["params"].get("variant", "")) == vid:
+				return int(n["id"])
+	return -1
+
+
+## Issue #210 slice B4: Engineering + Forge populate —
+## fixtures, determinism, the section 1.1 predicate,
+## purchase legality, aggregates, and the structure /
+## forge read sites driven live.
+func _test_deep_tree_b4_210() -> void:
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = dt.TREE_SEED
+	var e10: Dictionary = dt.node_for(seed, "architect", 8, 1, 0)
+	_assert(str(e10["archetype"]) == "modifier"
+		and str(e10["target"]) == "bulwark_wall"
+		and int(e10["params"]["components"][0]["steps"]) == 7
+		and int(e10["cost"]) == 16
+		and str(e10["name"]) == "Cogged Gear",
+		"210B4: engineering 1/0 fixture (wall cd 7, 16)")
+	var e12: Dictionary = dt.node_for(seed, "architect", 8, 1, 2)
+	_assert(str(e12["archetype"]) == "behavior"
+		and str(e12["params"].get("behavior", ""))
+			== "overbuilt"
+		and int(e12["params"]["steps"]) == 2
+		and int(e12["cost"]) == 24
+		and str(e12["name"]) == "Iron Foundation",
+		"210B4: engineering 1/2 fixture (overbuilt 2, 24)")
+	var e20: Dictionary = dt.node_for(seed, "architect", 8, 2, 0)
+	_assert(str(e20["target"]) == "spike_trap"
+		and int(e20["params"]["components"][0]["steps"]) == 7
+		and int(e20["cost"]) == 20
+		and str(e20["name"]) == "Copper Trap",
+		"210B4: engineering 2/0 fixture (trap dmg 7, 20)")
+	var e30: Dictionary = dt.node_for(seed, "architect", 8, 3, 0)
+	_assert(str(e30["target"]) == "sentry_turret"
+		and int(e30["params"]["components"][0]["steps"]) == 6
+		and int(e30["cost"]) == 24
+		and str(e30["name"]) == "Braced Ward",
+		"210B4: engineering 3/0 fixture (turret dmg 6, 24)")
+	var f10: Dictionary = dt.node_for(seed, "architect", 9, 1, 0)
+	_assert(str(f10["target"]) == "demolish"
+		and int(f10["params"]["components"][0]["steps"]) == 3
+		and int(f10["cost"]) == 16
+		and str(f10["name"]) == "Molten Wreck",
+		"210B4: forge 1/0 fixture (demolish radius 3, 16)")
+	var f11: Dictionary = dt.node_for(seed, "architect", 9, 1, 1)
+	_assert(str(f11["target"]) == "hammer_smash"
+		and int(f11["params"]["components"][0]["steps"]) == 5
+		and int(f11["cost"]) == 16
+		and str(f11["name"]) == "Thunder Forge",
+		"210B4: forge 1/1 fixture (smash dmg 5, 16)")
+	var f20: Dictionary = dt.node_for(seed, "architect", 9, 2, 0)
+	_assert(str(f20["archetype"]) == "behavior"
+		and str(f20["params"].get("behavior", ""))
+			== "tempered"
+		and int(f20["params"]["steps"]) == 3
+		and int(f20["cost"]) == 29
+		and str(f20["name"]) == "Howling Bellows",
+		"210B4: forge 2/0 fixture (tempered 3, 29)")
+	var f30: Dictionary = dt.node_for(seed, "architect", 9, 3, 0)
+	_assert(str(f30["target"]) == "hammer_smash"
+		and int(f30["params"]["components"].size()) == 2
+		and int(f30["cost"]) == 24
+		and str(f30["name"]) == "Deep Heavy Shell",
+		"210B4: forge 3/0 fixture (composed smash, 24)")
+	# Generation invariance: one spot row per landed branch.
+	var rows := [[1, "mage", "inferno", 3],
+		[2, "mage", "blizzard", 2], [3, "mage", "tempest", 5],
+		[5, "warrior", "doom_totem", 5],
+		[6, "rogue", "assassinate", 4],
+		[7, "rogue", "execution", 8]]
+	var inv := true
+	for row in rows:
+		var sn: Dictionary = dt.node_for(seed, str(row[1]),
+			int(row[0]), 1, 0)
+		if str(sn.get("target")) != str(row[2]) or int(
+				sn["params"]["components"][0]["steps"]) \
+				!= int(row[3]):
+			inv = false
+	var w40: Dictionary = dt.node_for(seed, "warrior", 4, 1, 0)
+	if str(w40["params"].get("behavior", "")) != "oathkeeper" \
+			or int(w40["params"]["steps"]) != 4:
+		inv = false
+	_assert(inv, "210B4: invariance spot rows hold for all seven landed branches")
+	var det := true
+	for b in [8, 9]:
+		for r in range(1, 13):
+			for i in dt.width(seed, b, r):
+				var a: Dictionary = dt.node_for(seed,
+					"architect", b, r, i)
+				var c: Dictionary = dt.node_for(seed,
+					"architect", b, r, i)
+				if int(a["id"]) != dt.pack_id(b, r, i) \
+						or a["params"] != c["params"] \
+						or int(a["cost"]) != int(c["cost"]):
+					det = false
+	_assert(det, "210B4: determinism rings 1-12 (engineering + forge)")
+	_assert(not dt.branch_unlocked({}, "architect", 8,
+			{"sentry_turret": 99.0})
+		and dt.branch_unlocked({}, "architect", 8,
+			{"sentry_turret": 100.0})
+		and dt.branch_unlocked({}, "architect", 9,
+			{"demolish": 100.0})
+		and not dt.branch_unlocked({}, "architect", 9,
+			{"demolish": 40.0, "keystone": 60.0}),
+		"210B4: section 1.1 unlock predicate (any branch skill at 100)")
+	var agg: Dictionary = dt.compute_aggregates(seed,
+		"architect", [int(e10["id"]), int(f30["id"])])
+	_assert(absf(float(agg["skill_mods"]["bulwark_wall"]
+			["cd_mult"]) - 0.965) < 0.0001
+		and absf(float(agg["skill_mods"]["hammer_smash"]
+			["cd_mult"]) - 0.99) < 0.0001
+		and absf(float(agg["skill_mods"]["hammer_smash"]
+			["dmg_mult"]) - 1.015) < 0.0001,
+		"210B4: aggregates exact (wall cd .965, smash cd .99 / dmg 1.015)")
+	var pulse_f := _b4_find(dt, 8, "bulwark_wall", "pulse_dmg")
+	var aggp: Dictionary = dt.compute_aggregates(seed,
+		"architect", [pulse_f[0]])
+	_assert(pulse_f[0] > 0 and absf(float(aggp["skill_mods"]
+			["bulwark_wall"]["pulse_dmg"])
+			- float(pulse_f[1]) * 0.05) < 0.0001,
+		"210B4: pulse_dmg aggregates at 5% steps (section C.3)")
+	# Purchase legality through the player validator.
+	var dgn = load("res://scenes/dungeon/dungeon.tscn").instantiate()
+	root.add_child(dgn)
+	current_scene = dgn
+	# Structure._caster resolves through the FIRST
+	# dungeon in the group — clear leaked fixtures so
+	# this section's casters resolve to its own player.
+	for n in get_nodes_in_group("dungeon"):
+		if n != dgn:
+			(n as Node).free()
+	for n in get_nodes_in_group("mobs"):
+		(n as Node).free()
+	var pc = load("res://scenes/player/player.tscn").instantiate()
+	pc.set("class_id", "architect")
+	pc.set("claimant_peer", 1)
+	pc.set("tree_lifetime", {"sentry_turret": 150.0})
+	root.add_child(pc)
+	pc.global_position = Vector3(300, 0, 300)
+	_assert(str(pc.call("_tree_validate_claim",
+			int(e10["id"]), 150, 1)) == "",
+		"210B4: the validator accepts under the section 1.1 predicate")
+	var pc2 = load("res://scenes/player/player.tscn").instantiate()
+	pc2.set("class_id", "architect")
+	pc2.set("claimant_peer", 1)
+	pc2.set("tree_lifetime", {"sentry_turret": 150.0})
+	root.add_child(pc2)
+	pc2.global_position = Vector3(310, 0, 310)
+	_assert(pc2.call("try_purchase", int(e10["id"])),
+		"210B4: architect purchase buys under the predicate")
+	pc2.free()
+	var locked_pc = load("res://scenes/player/player.tscn").instantiate()
+	locked_pc.set("class_id", "architect")
+	locked_pc.set("claimant_peer", 1)
+	locked_pc.set("tree_lifetime", {"sentry_turret": 50.0})
+	root.add_child(locked_pc)
+	locked_pc.global_position = Vector3(320, 0, 320)
+	_assert(str(locked_pc.call("_tree_validate_claim",
+			int(e10["id"]), 50, 1)) == "locked",
+		"210B4: below the predicate the validator answers locked")
+	# The dungeon's own player drives the structure legs.
+	var dpc = dgn.get_node("Players").get_children()[0]
+	dpc.set("class_id", "architect")
+	dpc.set("damage", 100.0)
+	var stc = load("res://scripts/combat/structure.gd")
+	var mobres = load("res://data/mobs/goblin.tres")
+	var mobs: Array = []
+	# Placement: cd fold + life_add at the dungeon.
+	var hp_f := _b4_find(dt, 8, "sentry_turret", "hp_pct")
+	var life_f := _b4_find(dt, 8, "bulwark_wall", "life_add")
+	dpc.set("tree_owned", [int(e10["id"]), hp_f[0],
+		life_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.call("_place_structure", "bulwark_wall")
+	_assert(absf(float(dpc.get("ability_cds")[
+			"bulwark_wall"]) - 8.0 * 0.965) < 0.01,
+		"210B4: placement cd folds at the one dict site")
+	var wall = null
+	for n in get_nodes_in_group("structures"):
+		if str((n as Node).get("structure_id")) \
+				== "bulwark_wall":
+			wall = n
+	_assert(wall != null and absf(float(wall.get("_life"))
+			- (20.0 + float(life_f[1]) * 1.0)) < 0.01,
+		"210B4: life_add joins the wall's life at placement")
+	# Turret: dmg_pct + siege + twin + range + keystone aura.
+	dpc.set("tree_owned", [int(e30["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	var tur = stc.new()
+	tur.setup("sentry_turret", 1, 1)
+	root.add_child(tur)
+	tur.global_position = Vector3.ZERO
+	var tm1 = load("res://scenes/mobs/mob.tscn").instantiate()
+	tm1.setup(1, mobres)
+	root.add_child(tm1)
+	mobs.append(tm1)
+	tm1.global_position = Vector3(5, 0, 0)
+	tm1.set("hp", 100000.0)
+	tm1.set("_shield_up", false)
+	var hp0 := float(tm1.get("hp"))
+	tur.call("_tick_turret", 2.0)
+	_assert(absf((hp0 - float(tm1.get("hp"))) - 60.0
+			* 1.03) < 0.5,
+		"210B4: turret shot carries dmg_pct (60 x 1.03)")
+	var siege_f := _b4_find_behavior(dt, 8, "siege_mind")
+	dpc.set("tree_owned", [int(e30["id"]), siege_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	tm1.set("is_elite", true)
+	hp0 = float(tm1.get("hp"))
+	tur.call("_tick_turret", 2.0)
+	_assert(absf((hp0 - float(tm1.get("hp"))) - 60.0
+			* 1.03 * (1.0 + float(siege_f[1]) * 5.0
+			/ 100.0)) < 0.5,
+		"210B4: Siege Mind adds its percent vs elites")
+	var twin_id := _b4_find_variant(dt, 8, "twin_bolts")
+	dpc.set("tree_owned", [twin_id])
+	dpc.call("_recompute_tree_aggregates")
+	tm1.set("is_elite", false)
+	hp0 = float(tm1.get("hp"))
+	tur.call("_tick_turret", 2.0)
+	_assert(absf((hp0 - float(tm1.get("hp"))) - 60.0
+			* 1.6) < 0.5,
+		"210B4: Twin Bolts fires the second bolt at 60%")
+	var rng_f := _b4_find(dt, 8, "sentry_turret", "range_add")
+	tm1.global_position = Vector3(12.0 + float(rng_f[1])
+		* 0.1 - 0.05, 0, 0)
+	dpc.set("tree_owned", [])
+	dpc.call("_recompute_tree_aggregates")
+	var no_pick = tur.call("_pick_target")
+	dpc.set("tree_owned", [rng_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	_assert(no_pick == null and tur.call("_pick_target")
+			== tm1,
+		"210B4: range_add extends the turret's reach")
+	tur.free()
+	var aura_f := _b4_find(dt, 8, "keystone", "aura_pct")
+	var key = stc.new()
+	key.setup("keystone", 1, 1)
+	root.add_child(key)
+	key.global_position = wall.global_position + Vector3(2, 0, 0)
+	var tur2 = stc.new()
+	tur2.setup("sentry_turret", 1, 1)
+	root.add_child(tur2)
+	tur2.global_position = key.global_position + Vector3(1, 0, 0)
+	dpc.set("tree_owned", [aura_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	tm1.global_position = tur2.global_position + Vector3(5, 0, 0)
+	tur2.call("_tick_turret", 2.0)
+	var expect_tick := 1.2 / (1.3 * (1.0 + float(
+		aura_f[1]) * 0.01))
+	_assert(absf(float(tur2.get("_fire_tick"))
+			- expect_tick) < 0.02,
+		"210B4: keystone aura_pct scales the 1.3 fire divisor")
+	tur2.free()
+	var heart_id := _b4_find_variant(dt, 8, "heartstone")
+	dpc.set("tree_owned", [heart_id])
+	dpc.call("_recompute_tree_aggregates")
+	wall.set("hp", 100.0)
+	key.call("_heartstone_tick")
+	_assert(absf(float(wall.get("hp")) - 105.0) < 0.01,
+		"210B4: Heartstone heals nearby structures per tick")
+	key.free()
+	# Trap: dmg fold, AOE fold, Cluster's second blast.
+	var mk_mob := func(x: float) -> Node:
+		var m = load("res://scenes/mobs/mob.tscn").instantiate()
+		m.setup(1, mobres)
+		root.add_child(m)
+		m.global_position = Vector3(x, 0, 0)
+		m.set("hp", 100000.0)
+		m.set("_shield_up", false)
+		mobs.append(m)
+		return m
+	dpc.set("tree_owned", [int(e20["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	var trp = stc.new()
+	trp.setup("spike_trap", 1, 1)
+	root.add_child(trp)
+	trp.global_position = Vector3(30, 0, 0)
+	var trig = mk_mob.call(30.5)
+	var far = mk_mob.call(32.7)
+	var thp := float(trig.get("hp"))
+	var fhp := float(far.get("hp"))
+	trp.call("_tick_trap")
+	_assert(absf((thp - float(trig.get("hp"))) - 150.0
+			* 1.035) < 0.5 and absf(float(far.get("hp"))
+			- fhp) < 0.01,
+		"210B4: trap blast folds dmg_pct; the far mob is outside stock AOE")
+	var rad_f := _b4_find(dt, 8, "spike_trap", "radius_add")
+	var clus_id := _b4_find_variant(dt, 8, "cluster_trap")
+	dpc.set("tree_owned", [int(e20["id"]), rad_f[0],
+		clus_id])
+	dpc.call("_recompute_tree_aggregates")
+	var trp2 = stc.new()
+	trp2.setup("spike_trap", 1, 1)
+	root.add_child(trp2)
+	trp2.global_position = Vector3(40, 0, 0)
+	var trig2 = mk_mob.call(40.5)
+	var far2 = mk_mob.call(40.0 + 2.5 + float(rad_f[1])
+		* 0.1 - 0.05)
+	trp2.call("_tick_trap")
+	var held: bool = not trp2.is_queued_for_deletion() and int(
+		trp2.get("_cluster_at")) > 0
+	var f2hp := float(far2.get("hp"))
+	trp2.set("_cluster_at", 1)
+	trp2.call("_physics_process", 0.01)
+	_assert(held and float(far2.get("hp")) < f2hp
+		and trp2.is_queued_for_deletion(),
+		"210B4: Cluster Trap holds, then detonates again inside the folded AOE")
+	# Thornwall Pulse + neutrality (fresh wall) + Salvage.
+	var pulse_wall = stc.new()
+	pulse_wall.setup("bulwark_wall", 1, 1)
+	root.add_child(pulse_wall)
+	pulse_wall.global_position = Vector3(50, 0, 0)
+	var pm = mk_mob.call(51.5)
+	dpc.set("tree_owned", [pulse_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	var php := float(pm.get("hp"))
+	pulse_wall.call("take_structure_damage", 10.0, 0)
+	var pulsed := absf((php - float(pm.get("hp")))
+		- 100.0 * float(pulse_f[1]) * 0.05) < 0.5
+	php = float(pm.get("hp"))
+	pulse_wall.call("take_structure_damage", 10.0, 0)
+	_assert(pulsed and absf(float(pm.get("hp")) - php)
+			< 0.01,
+		"210B4: Thornwall Pulse fires once per second at owner damage x pulse_dmg")
+	var calm_wall = stc.new()
+	calm_wall.setup("bulwark_wall", 1, 1)
+	root.add_child(calm_wall)
+	calm_wall.global_position = Vector3(60, 0, 0)
+	pm.global_position = Vector3(61.5, 0, 0)
+	dpc.set("tree_owned", [])
+	dpc.call("_recompute_tree_aggregates")
+	php = float(pm.get("hp"))
+	calm_wall.call("take_structure_damage", 10.0, 0)
+	_assert(absf(float(pm.get("hp")) - php) < 0.01,
+		"210B4: neutrality — a zero-owned wall deals no pulse")
+	var salv_f := _b4_find_behavior(dt, 9, "salvage")
+	dpc.set("tree_owned", [salv_f[0]])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.set("ability_cds", {"bulwark_wall": 8.0})
+	pulse_wall.set("hp", 50.0)
+	pulse_wall.call("take_structure_damage", 100.0, 0)
+	_assert(absf(float(dpc.get("ability_cds")[
+			"bulwark_wall"]) - (8.0 - 8.0 * float(
+			salv_f[1]) * 5.0 / 100.0)) < 0.01,
+		"210B4: Salvage refunds its percent of the placement cooldown")
+	# Overbuilt at the dungeon placement.
+	var ob_hp0 := float(wall.get("hp"))
+	dpc.set("tree_owned", [int(e12["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	dgn.call("place_structure", "spike_trap",
+		Vector3(9, 0, 9), 1, 1, "ob1")
+	_assert(absf(float(wall.get("hp")) - minf(float(
+			wall.get("max_hp")), ob_hp0 + float(
+			wall.get("max_hp")) * 0.10)) < 0.01,
+		"210B4: Overbuilt repairs other structures on placement (10%)")
+	# Reinforce shell strength; smash folds + the gate.
+	dpc.call("apply_reinforce", 6.0, 0.75)
+	_assert(absf(float(dpc.get("_reinforce_strength"))
+			- 0.75) < 0.001,
+		"210B4: shell_pct's strength lands at the apply site")
+	var dhp := float(dpc.get("hp"))
+	dpc.call("take_damage", 40.0, "")
+	_assert(absf((dhp - float(dpc.get("hp"))) - 10.0)
+			< 0.5,
+		"210B4: the strengthened shell cuts intake by its strength (40 -> 10)")
+	dpc.set("_reinforce_t", 0.0)
+	var cmap: Dictionary = load(
+		"res://scripts/player/player.gd").get_script_constant_map()
+	dpc.set("equipped_ids", {"WEAPON": str(cmap[
+		"HAMMER_ITEM_ID"])})
+	dpc.set("tree_owned", [int(f11["id"]), int(f20["id"]),
+		int(f30["id"])])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.set("ability_cds", {})
+	dpc.call("_cast_reinforce")
+	dpc.set("ability_cds", {"reinforce": 25.0})
+	var sm = mk_mob.call(0.0)
+	sm.global_position = dpc.global_position + Vector3(1, 0, 0)
+	var shp := float(sm.get("hp"))
+	dpc.call("_cast_hammer_smash")
+	var smash_expect := 100.0 * float(cmap[
+		"SMASH_DAMAGE_MULT"]) * 1.04 * 1.15
+	_assert(absf((shp - float(sm.get("hp")))
+			- smash_expect) < 1.0
+		and absf(float(dpc.get("ability_cds")[
+			"hammer_smash"]) - 10.0 * 0.99) < 0.05
+		and absf(float(dpc.get("_srv_smash_cd"))
+			- 10.0 * 0.99) < 0.05,
+		"210B4: smash folds dmg_pct + Tempered; client cd and server gate both fold cd_mult")
+	var seis_id := _b4_find_variant(dt, 9, "seismic_smash")
+	dpc.set("tree_owned", [seis_id])
+	dpc.call("_recompute_tree_aggregates")
+	dpc.set("ability_cds", {})
+	dpc.set("_srv_smash_cd", 0.0)
+	var ring = mk_mob.call(4.5)
+	var rhp := float(ring.get("hp"))
+	dpc.call("request_hammer_smash", 80.0)
+	_assert(absf((rhp - float(ring.get("hp"))) - 40.0)
+			< 0.5,
+		"210B4: Seismic Smash rings at 50% beyond the area")
+	# Demolish with Wrecking Ball at the dungeon (exact).
+	var wreck_id := _b4_find_variant(dt, 9, "wrecking_ball")
+	dpc.set("tree_owned", [wreck_id])
+	dpc.call("_recompute_tree_aggregates")
+	var standing := 0
+	for n in get_nodes_in_group("structures"):
+		var sn2 := n as Node
+		if int(sn2.get("owner_peer")) == 1 and not \
+				sn2.is_queued_for_deletion():
+			standing += 1
+	var dm = mk_mob.call(0.0)
+	dm.global_position = wall.global_position + Vector3(1.5, 0, 0)
+	var dmhp := float(dm.get("hp"))
+	dgn.call("demolish_structures", 1)
+	_assert(absf((dmhp - float(dm.get("hp"))) - 75.0
+			* (1.0 + 0.10 * float(standing))) < 1.0,
+		"210B4: Wrecking Ball scales demolish per standing structure")
+	pc.free()
+	locked_pc.free()
+	for m in mobs:
+		if is_instance_valid(m):
+			m.free()
+	for n in get_nodes_in_group("structures"):
+		(n as Node).free()
+	dgn.free()
+	print("[Playtest] deep tree 210 B4 section done")
+
+
+func _test_deep_tree_b5_210() -> void:
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var seed: int = dt.TREE_SEED
+	# Wayfaring rings 1-3 fixture literals (mage; recorded
+	# by probe at TREE_SEED — the slice's own fixtures).
+	var u10: Dictionary = dt.node_for(seed, "mage", 0, 1, 0)
+	_assert(str(u10["archetype"]) == "modifier"
+		and str(u10["target"]) == "holy_light"
+		and str(u10["params"]["components"][0]["param"])
+			== "cd_pct"
+		and int(u10["params"]["components"][0]["steps"]) == 5
+		and int(u10["cost"]) == 16
+		and str(u10["name"]) == "Wandering Trail",
+		"210B5: wayfaring 1/0 fixture (holy cd 5, 16)")
+	var u11: Dictionary = dt.node_for(seed, "mage", 0, 1, 1)
+	_assert(str(u11["target"]) == "basic_attack"
+		and int(u11["params"]["components"][0]["steps"]) == 4
+		and int(u11["cost"]) == 16
+		and str(u11["name"]) == "Dusty Pass",
+		"210B5: wayfaring 1/1 fixture (basic dmg 4, 16)")
+	var u20: Dictionary = dt.node_for(seed, "mage", 0, 2, 0)
+	_assert(str(u20["target"]) == "holy_light"
+		and str(u20["params"]["components"][0]["param"])
+			== "dmg_pct"
+		and int(u20["params"]["components"][0]["steps"]) == 6
+		and int(u20["cost"]) == 20
+		and str(u20["name"]) == "Amber Lantern",
+		"210B5: wayfaring 2/0 fixture (holy dmg 6, 20)")
+	var u30: Dictionary = dt.node_for(seed, "mage", 0, 3, 0)
+	_assert(str(u30["archetype"]) == "stat"
+		and str(u30["params"].get("channel", "")) == "aura"
+		and int(u30["params"]["steps"]) == 1
+		and int(u30["cost"]) == 15
+		and str(u30["name"]) == "Wandering Dawn",
+		"210B5: wayfaring 3/0 fixture (aura 1, 15)")
+	var u31: Dictionary = dt.node_for(seed, "mage", 0, 3, 1)
+	_assert(str(u31["target"]) == "holy_light"
+		and int(u31["params"]["components"].size()) == 2
+		and int(u31["cost"]) == 24
+		and str(u31["name"]) == "Patient Open Compass",
+		"210B5: wayfaring 3/1 fixture (composed holy, 24)")
+	var u32: Dictionary = dt.node_for(seed, "mage", 0, 3, 2)
+	_assert(str(u32["archetype"]) == "behavior"
+		and str(u32["params"].get("behavior", ""))
+			== "adrenaline"
+		and int(u32["params"]["steps"]) == 2
+		and int(u32["cost"]) == 35
+		and str(u32["name"]) == "Patient Camp",
+		"210B5: wayfaring 3/2 fixture (adrenaline 2, 35)")
+	# Generation invariance: the Fire rings 1-3 literals
+	# hold AFTER the burn_pct table growth (Amendment 1
+	# section C.1) — recorded by probe, unchanged.
+	var f10: Dictionary = dt.node_for(seed, "mage", 1, 1, 0)
+	var f30: Dictionary = dt.node_for(seed, "mage", 1, 3, 0)
+	_assert(str(f10["target"]) == "inferno"
+		and int(f10["params"]["components"][0]["steps"]) == 3
+		and str(f10["name"]) == "Charred Oath"
+		and str(f30["target"]) == "fireball"
+		and int(f30["params"]["components"][0]["steps"]) == 6
+		and str(f30["name"]) == "Furnace Conflagration",
+		"210B5: Fire fixture unchanged under the burn growth")
+	# Determinism rings 1-12, branch 0, two classes.
+	var det := true
+	for cls in ["mage", "architect"]:
+		for r in range(1, 13):
+			for i in dt.width(seed, 0, r):
+				var a: Dictionary = dt.node_for(seed, cls,
+					0, r, i)
+				var c: Dictionary = dt.node_for(seed, cls,
+					0, r, i)
+				if int(a["id"]) != dt.pack_id(0, r, i) \
+						or a["params"] != c["params"] \
+						or int(a["cost"]) != int(c["cost"]):
+					det = false
+	_assert(det, "210B5: determinism rings 1-12 (wayfaring, mage + architect)")
+	# The architect remap (spec section 3): branch-0 basic
+	# nodes target Hammer Smash for architect characters —
+	# at the modifier arm AND the variant capstone arm.
+	var a11: Dictionary = dt.node_for(seed, "architect", 0,
+		1, 1)
+	var a30: Dictionary = dt.node_for(seed, "architect", 0,
+		30, 0)
+	_assert(str(a11["target"]) == "hammer_smash"
+		and str(a30["params"].get("variant", ""))
+			== "wayfarers_edge"
+		and str(a30["target"]) == "hammer_smash",
+		"210B5: architect remap — basic nodes target hammer_smash")
+	# Universal capstone roll: major / variant only, never
+	# echo (rings 6..60).
+	var no_echo := true
+	for r in range(6, 61, 6):
+		var cn: Dictionary = dt.node_for(seed, "mage", 0,
+			r, 0)
+		if str(cn.get("kind", "")) not in ["major",
+				"variant"]:
+			no_echo = false
+	_assert(no_echo,
+		"210B5: universal capstones roll major/variant only (no echo)")
+	# Section 6 item 1: no inert branches remain — every
+	# registry branch of every class generates real nodes.
+	var pop := true
+	for cls in ["mage", "warrior", "rogue", "architect"]:
+		for b in dt.branches_for(cls):
+			var bid := int(b["id"])
+			if not dt.branch_populated(bid):
+				pop = false
+			var n: Dictionary = dt.node_for(seed, cls, bid,
+				1, 0)
+			if n.is_empty() or bool(n.get("inert", false)):
+				pop = false
+	_assert(pop, "210B5: section 6.1 — all ten branches populated for their classes")
+	# Section 6 item 5: all three unlock predicate kinds.
+	_assert(not dt.branch_unlocked({}, "mage", 0, {}, 19)
+		and dt.branch_unlocked({}, "mage", 0, {}, 20),
+		"210B5: section 6.5 — universal unlocks at level 20 exactly")
+	# Section 6 item 8: the description census — sweeping
+	# generation per class (rings 1-120), no behavior or
+	# variant node ships a desc equal to its raw id; every
+	# behavior id in the tables is reached.
+	var raw := 0
+	var bfound := {}
+	for cls in ["mage", "warrior", "rogue", "architect"]:
+		for b in range(0, 10):
+			for r in range(1, 121):
+				for i in dt.width(seed, b, r):
+					var n: Dictionary = dt.node_for(seed,
+						cls, b, r, i)
+					if n.is_empty():
+						continue
+					var arch := str(n.get("archetype",
+						""))
+					if arch == "behavior":
+						var bid := str(n["params"]
+							["behavior"])
+						bfound[bid] = true
+						if str(n["desc"]) == bid:
+							raw += 1
+					elif arch == "capstone" and str(
+							n.get("kind", "")) \
+							== "variant":
+						var vid := str(n["params"]
+							["variant"])
+						if str(n["desc"]) == vid:
+							raw += 1
+	_assert(raw == 0 and bfound.size() == 20,
+		"210B5: section 6.8 — no raw-id descs; all 20 behaviors authored")
+	var vtab := true
+	for vid in dt.VARIANTS:
+		var d := str(dt.VARIANTS[vid].get("desc", ""))
+		if d == "" or d == str(vid):
+			vtab = false
+	_assert(vtab,
+		"210B5: section 6.8 — every VARIANTS entry carries authored text")
+	# Section 6 item 3: the honest envelope — a forced
+	# all-nodes owned set (rings 1-30, mage branches)
+	# exceeds NO clamp on any channel, Amendment 1's
+	# aggregates included.
+	var owned_all: Array = []
+	for b in range(0, 4):
+		for r in range(1, 31):
+			for i in dt.width(seed, b, r):
+				owned_all.append(dt.pack_id(b, r, i))
+	var env: Dictionary = dt.compute_aggregates(seed,
+		"mage", owned_all)
+	var env_ok := true
+	for s in env["skill_mods"]:
+		var e: Dictionary = env["skill_mods"][s]
+		if float(e["dmg_mult"]) > 1.60 \
+				or float(e["cd_mult"]) < 0.65 \
+				or float(e["radius_add"]) > 1.5:
+			env_ok = false
+		if float(e.get("burn_pct", 0.0)) > 0.50 \
+				or float(e.get("shatter_pct", 0.0)) > 1.00 \
+				or float(e.get("brand_amp", 0.0)) > 0.40 \
+				or float(e.get("step_dmg", 0.0)) > 1.00 \
+				or float(e.get("pulse_dmg", 0.0)) > 0.50 \
+				or int(e.get("chains_add", 0)) > 2:
+			env_ok = false
+	var sa: Dictionary = env["stat_adds"]
+	if float(sa["damage"]) > 40.0 \
+			or float(sa["health"]) > 480.0 \
+			or float(sa["speed"]) > 1.50 \
+			or float(sa["atk_spd"]) > 0.60:
+		env_ok = false
+	_assert(env_ok,
+		"210B5: section 6.3 — the all-owned envelope holds every clamp")
+	# Section 6 item 4: cross-branch accounting — fire +
+	# storm-echo-fire + universal on shared channels fold
+	# into the same per-skill clamps, exactly additive.
+	var mix: Dictionary = dt.compute_aggregates(seed,
+		"mage", [dt.pack_id(1, 3, 0)])
+	_assert(absf(float(mix["skill_mods"]["fireball"]
+			["dmg_mult"]) - 1.03) < 0.0001,
+		"210B5: section 6.4 — fire node alone: fireball 1.03")
+	var mix2: Dictionary = dt.compute_aggregates(seed,
+		"mage", [dt.pack_id(1, 3, 0), 3298534884480,
+			dt.pack_id(0, 1, 1)])
+	_assert(absf(float(mix2["skill_mods"]["fireball"]
+			["dmg_mult"]) - 1.045) < 0.0001
+		and absf(float(mix2["skill_mods"]["basic_attack"]
+			["dmg_mult"]) - 1.02) < 0.0001,
+		"210B5: section 6.4 — echo + universal stack additively inside the clamps")
+	# Purchase legality for the universal wallet: Sigma
+	# lifetime across ALL skills funds branch 0; the level
+	# predicate gates both entry points.
+	var PS: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var hold := Node3D.new()
+	root.add_child(hold)
+	current_scene = hold
+	var pm = PS.instantiate()
+	hold.add_child(pm)
+	pm.set("class_id", "mage")
+	pm.set("level", 20)
+	pm.set("tree_lifetime", {"fireball": 500.0,
+		"meteor": 25.0})
+	_assert(dt.wallet_of(seed, "mage",
+			pm.get("tree_lifetime"), [], 0) == 525,
+		"210B5: universal wallet = Sigma lifetime across all skills")
+	_assert(bool(pm.call("try_purchase",
+			dt.pack_id(0, 1, 0))),
+		"210B5: level-20 purchase of a wayfaring node succeeds")
+	_assert(dt.wallet_of(seed, "mage",
+			pm.get("tree_lifetime"),
+			pm.get("tree_owned"), 0) == 525 - 16,
+		"210B5: universal wallet debits the node's cost")
+	var vis20: Array = dt.visible_nodes(pm)
+	var vis20_u := 0
+	for e in vis20:
+		if int(e["branch"]) == 0:
+			vis20_u += 1
+	_assert(vis20_u > 0,
+		"210B5: level 20 exposes wayfaring nodes")
+	pm.set("level", 19)
+	_assert(not bool(pm.call("try_purchase",
+			dt.pack_id(0, 1, 1))),
+		"210B5: level 19 rejects a wayfaring purchase")
+	var vis19: Array = dt.visible_nodes(pm)
+	var vis19_u := 0
+	for e in vis19:
+		if int(e["branch"]) == 0:
+			vis19_u += 1
+	_assert(vis19_u == 0,
+		"210B5: level 19 exposes no wayfaring nodes")
+	hold.remove_child(pm)
+	pm.free()
+	# Aggregates of the universal channels.
+	var agg_u: Dictionary = dt.compute_aggregates(seed,
+		"mage", [dt.pack_id(0, 1, 0), dt.pack_id(0, 2, 0),
+			82, 112])
+	_assert(absf(float(agg_u["skill_mods"]["holy_light"]
+			["cd_mult"]) - 0.975) < 0.0001
+		and absf(float(agg_u["skill_mods"]["holy_light"]
+			["dmg_mult"]) - 1.03) < 0.0001
+		and absf(float(agg_u["skill_mods"]["holy_light"]
+			["heal_pct"]) - 0.02) < 0.0001
+		and absf(float(agg_u["skill_mods"]["xp"]
+			["xp_pct"]) - 0.03) < 0.0001,
+		"210B5: holy cd/dmg/heal + xp aggregates exact")
+	var agg_b: Dictionary = dt.compute_aggregates(seed,
+		"mage", [1099511627842])
+	_assert(absf(float(agg_b["skill_mods"]["fireball"]
+			.get("burn_pct", 0.0)) - 0.02) < 0.0001,
+		"210B5: Ignition aggregate — fireball burn_pct 0.02")
+	# Looks (section 4): universal nodes govern no
+	# constructed projectile — a wayfaring-only owned set
+	# leaves the fireball look stock; the thrown dagger is
+	# a model projectile, not a constructed body, so it is
+	# not grammar-eligible under section 4 either.
+	var look_stock: Dictionary = dt.look_for(seed, "mage",
+		"fireball", [])
+	var look_uni: Dictionary = dt.look_for(seed, "mage",
+		"fireball", [dt.pack_id(0, 1, 1), 480])
+	_assert(look_uni == look_stock
+		and bool(look_stock.get("stock", false)),
+		"210B5: section 4 — wayfaring ownership leaves projectile looks stock")
+	print("[Playtest] section marker: fixtures done (210 B5)")
+	_b5_read_sites(dt, seed, PS, hold)
+	hold.free()
+	current_scene = null
+	print("[Playtest] deep tree 210 B5 section done")
+
+
+func _canon_217(v: Variant) -> String:
+	if v is Dictionary:
+		var keys := (v as Dictionary).keys()
+		keys.sort()
+		var parts: Array = []
+		for k in keys:
+			parts.append(str(k) + "=" + _canon_217(
+				(v as Dictionary)[k]))
+		return "{" + ",".join(PackedStringArray(parts)) \
+			+ "}"
+	if v is Array:
+		var parts2: Array = []
+		for e in v:
+			parts2.append(_canon_217(e))
+		return "[" + ",".join(PackedStringArray(parts2)) \
+			+ "]"
+	if v is float:
+		return "%.4f" % v
+	return str(v)
+
+
+## Issue #217 Part 1: the save-roundtrip proof for
+## specialization + the Deep Tree, through the REAL
+## SaveManager slot path (an actual slot file, the
+## load_run funnel, and apply_state on a fresh player -
+## the game's own continue path). The expected values
+## are read from the fixture's own state before the
+## save; identity after load is the assertion.
+func _test_deep_tree_save_217() -> void:
+	print("[Playtest] Deep Tree save roundtrip (issue #217)...")
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var SaveScript := load(
+		"res://scripts/autoload/save_manager.gd")
+	var mgr = SaveScript.new()
+	var hold := Node.new()
+	root.add_child(hold)
+	current_scene = hold
+	# Build the character through the real funnels:
+	# specialize -> gain lifetime -> respec -> specialize
+	# the other branch -> buy two nodes.
+	var p1 = load("res://scenes/player/player.tscn"
+		).instantiate()
+	p1.class_id = "mage"
+	hold.add_child(p1)
+	p1.set("level", 30)
+	p1.set("family_collection",
+		{"fire": {"traits": [], "signature": true},
+			"frost": {"traits": [],
+				"signature": true}})
+	p1.specialize("frost")
+	p1.gain_affinity("frost", 4000.0, -1)
+	p1.respec()
+	p1.specialize("fireball")
+	p1.gain_affinity("fireball", 4000.0, -1)
+	_assert(str(p1.get("specialization")) == "fireball",
+		"217: fixture specialized in fireball through the real funnel")
+	_assert(float(p1.get("tree_lifetime").get(
+		"frost", 0.0)) > 0.0 and float(p1.get(
+			"tree_lifetime").get("fireball", 0.0)) > 0.0,
+		"217: lifetime earned in two branches through gain_affinity")
+	var n1: int = dt.pack_id(1, 1, 0)
+	var n2: int = dt.pack_id(1, 2, 0)
+	var w0: int = dt.wallet(p1, 1)
+	_assert(bool(p1.call("try_purchase", n1))
+		and bool(p1.call("try_purchase", n2)),
+		"217: two nodes purchased through try_purchase")
+	var w1: int = dt.wallet(p1, 1)
+	_assert(w1 < w0 and w1 > 0,
+		"217: the fire wallet is partially spent (not drained, not untouched)")
+	# Expectations, read pre-save.
+	var state0: Dictionary = p1.get_state()
+	var wallets0 := {}
+	for b in dt.branches_for("mage"):
+		wallets0[int(b["id"])] = dt.wallet(p1,
+			int(b["id"]))
+	var agg0 := _canon_217(p1.get("tree_aggregates"))
+	var owned0: Array = (state0["tree_owned"] as
+		Array).duplicate()
+	owned0.sort()
+	# The identity battery, applied to a state dict and
+	# to a fresh player that applied it.
+	var check_state = func(st: Dictionary, tag: String) -> void:
+		_assert(str(st.get("specialization", "")) == \
+			"fireball",
+			"217: %s specialization survives" % tag)
+		var ow: Array = (st.get("tree_owned", []) as
+			Array).duplicate()
+		ow.sort()
+		_assert(_canon_217(ow) == _canon_217(owned0),
+			"217: %s tree_owned set identical" % tag)
+		_assert(_canon_217(st.get("tree_lifetime", {}))
+			== _canon_217(state0["tree_lifetime"]),
+			"217: %s tree_lifetime totals identical" % tag)
+	var check_player = func(pl: Variant, tag: String) -> void:
+		check_state.call(pl.get_state(), tag)
+		for bid in wallets0:
+			_assert(dt.wallet(pl, bid) == int(
+				wallets0[bid]),
+				"217: %s derived wallet for branch %d identical (lifetime - spent)" % [tag, bid])
+		_assert(_canon_217(pl.get("tree_aggregates")) \
+			== agg0,
+			"217: %s recomputed aggregates identical" % tag)
+	# SOLO leg: real slot file roundtrip.
+	var run := {"class_id": "mage",
+		"theme_id": "dungeon", "level_number": 3,
+		"cycle": 1, "seed": 777,
+		"player_state": state0}
+	_assert(mgr.save_run(run, "solo", 9),
+		"217: solo run with tree state saves to a real slot")
+	var loaded: Dictionary = mgr.load_run("solo", 9)
+	_assert(not loaded.is_empty(),
+		"217: solo slot loads back")
+	check_state.call(loaded.get("player_state", {}),
+		"solo slot")
+	var p2 = load("res://scenes/player/player.tscn"
+		).instantiate()
+	p2.class_id = "mage"
+	hold.add_child(p2)
+	p2.apply_state(loaded.get("player_state", {}))
+	check_player.call(p2, "solo continue")
+	# MP leg: the same state through a roster record.
+	var mp_run := {"theme_id": "dungeon",
+		"level_number": 3, "seed": 777,
+		"roster": [
+			{"steam_id": 111, "player_name": "Host",
+				"class_id": "mage",
+				"player_state": state0,
+				"rts_faction": 0, "is_host": true},
+			{"steam_id": 222, "player_name": "Guest",
+				"class_id": "warrior",
+				"player_state": {"level": 3},
+				"rts_faction": 1, "is_host": false}]}
+	_assert(mgr.save_run(mp_run, "mp", 9),
+		"217: MP run with a tree-state roster saves")
+	var mp_loaded: Dictionary = mgr.load_run("mp", 9)
+	var roster: Array = mp_loaded.get("roster", [])
+	_assert(roster.size() == 2,
+		"217: MP roster survives the slot roundtrip")
+	if roster.size() == 2:
+		var host_state: Dictionary = (roster[0] as
+			Dictionary).get("player_state", {})
+		check_state.call(host_state, "MP roster")
+		var p3 = load("res://scenes/player/player.tscn"
+			).instantiate()
+		p3.class_id = "mage"
+		hold.add_child(p3)
+		p3.apply_state(host_state)
+		check_player.call(p3, "MP continue")
+		p3.queue_free()
+	# Part 2: the tip label rides the spec tab (source
+	# pin; the label itself is scene-built at runtime).
+	var hsrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/hud.gd")
+	_assert(hsrc.contains(
+		"Tip: press N to open the Deep Tree."),
+		"217: the spec tab carries the exact Deep Tree tip")
+	mgr.clear_run("solo", 9)
+	mgr.clear_run("mp", 9)
+	mgr.free()
+	current_scene = null
+	hold.queue_free()
+	print("[Playtest] Deep Tree save roundtrip done.")
+
+
+func _dt_ui_fixture(owned: Array, lifetime: Dictionary,
+		fcol: Dictionary, level: int,
+		class_id: String = "mage") -> Dictionary:
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	return {"class_id": class_id,
+		"tree_seed": dt.TREE_SEED, "tree_owned": owned,
+		"tree_lifetime": lifetime,
+		"family_collection": fcol, "level": level}
+
+
+func _test_deep_tree_ui_215() -> void:
+	print("[Playtest] Deep Tree node UI test (issue #215)...")
+	var dt = load("res://scripts/progression/deep_tree.gd")
+	var cv = load("res://scripts/ui/deep_tree_canvas.gd")
+	var seed: int = dt.TREE_SEED
+	var abils: Array = [
+		{"id": "fireball", "name": "Fireball",
+			"desc": "Fiery bolt, small blast"},
+		{"id": "meteor", "name": "Meteor",
+			"desc": "Delayed fiery impact"},
+		{"id": "frost", "name": "Frost Shard",
+			"desc": "Fast shard, slows enemies"},
+		{"id": "blizzard", "name": "Blizzard",
+			"desc": "Freezing storm, DoT + slow"},
+		{"id": "inferno", "name": "Inferno",
+			"desc": "Channeled firestorm"},
+		{"id": "glacial_prison", "name": "Glacial Prison",
+			"desc": "Freeze all enemies in place"},
+	]
+	var sig_fire := {"fire": {"signature": true}}
+	# --- 1. Layout determinism: two computations and
+	# two canvas instances produce identical maps.
+	var fix_mid = _dt_ui_fixture(
+		[dt.pack_id(1, 1, 0), dt.pack_id(1, 2, 0)],
+		{"fireball": 500.0}, sig_fire, 30)
+	var built_a: Dictionary = cv.build_entries(fix_mid)
+	var built_b: Dictionary = cv.build_entries(fix_mid)
+	_assert(str(built_a["nodes"]) == str(built_b["nodes"])
+		and str(built_a["edges"]) == str(built_b["edges"]),
+		"215-1: layout map is deterministic across computations")
+	var hold := Node.new()
+	root.add_child(hold)
+	current_scene = hold
+	var inst_a = cv.new()
+	var inst_b = cv.new()
+	hold.add_child(inst_a)
+	hold.add_child(inst_b)
+	inst_a.open_for(fix_mid, abils)
+	inst_b.open_for(fix_mid, abils)
+	_assert(str(inst_a.get("_built")["nodes"]) == str(
+		inst_b.get("_built")["nodes"]),
+		"215-1: two canvas instances build identical entry maps")
+	inst_a.queue_free()
+	inst_b.queue_free()
+	# --- 2. Layout form: formula literals from section
+	# 2.1's constants (CORE_R 90, RING_GAP 120, STEP 22).
+	# Fire sector is 180 deg: ring r spine sits at
+	# (-(90 + 120 r), 0).
+	for r in [1, 2, 3]:
+		var w_r: int = dt.width(seed, 1, r)
+		for i in w_r:
+			var p: Vector2 = cv.layout_pos("mage", seed,
+				1, r, i)
+			var ang := deg_to_rad(180.0 + (float(i)
+				- float(w_r - 1) / 2.0) * 22.0)
+			var exp_p: Vector2 = Vector2(cos(ang), sin(ang)) \
+				* (90.0 + 120.0 * r)
+			_assert(p.distance_to(exp_p) < 0.01,
+				"215-2: fire ring %d index %d matches the section 2.1 formula literal" % [r, i])
+	# Width-3 symmetry: siblings mirror about the spine.
+	var w3_ring := -1
+	for r in range(1, 30):
+		if dt.width(seed, 1, r) == 3:
+			w3_ring = r
+			break
+	_assert(w3_ring > 0,
+		"215-2: a width-3 fire ring exists in generation")
+	if w3_ring > 0:
+		var pa: Vector2 = cv.layout_pos("mage", seed, 1,
+			w3_ring, 0)
+		var pb: Vector2 = cv.layout_pos("mage", seed, 1,
+			w3_ring, 1)
+		var pc: Vector2 = cv.layout_pos("mage", seed, 1,
+			w3_ring, 2)
+		_assert(is_equal_approx(pb.y, 0.0)
+			and is_equal_approx(pa.y, -pc.y)
+			and is_equal_approx(pa.x, pc.x),
+			"215-2: width-3 siblings are symmetric about the sector line")
+	# --- 3. Drawn-set fidelity.
+	var vis: Array = dt.visible_nodes(fix_mid)
+	var same: bool = built_a["nodes"].size() == vis.size()
+	if same:
+		for k in vis.size():
+			var ve: Dictionary = vis[k]
+			var ce: Dictionary = built_a["nodes"][k]
+			if int(ve["id"]) != int(ce["id"]) \
+					or str(ve["state"]) != str(
+						ce["state"]):
+				same = false
+	_assert(same,
+		"215-3: canvas entries == visible_nodes (ids and states)")
+	var fix_fresh = _dt_ui_fixture([], {}, {}, 1)
+	var built_fresh: Dictionary = cv.build_entries(
+		fix_fresh)
+	_assert(built_fresh["nodes"].is_empty()
+		and built_fresh["gates"].size() == 4,
+		"215-3: a fresh mage draws gates for all four locked branches and zero nodes")
+	var chain40: Array = []
+	for r in range(1, 41):
+		chain40.append(dt.pack_id(1, r, 0))
+	var fix_deep = _dt_ui_fixture(chain40,
+		{"fireball": 5000.0}, sig_fire, 30)
+	var vis_deep: Array = dt.visible_nodes(fix_deep)
+	var built_deep: Dictionary = cv.build_entries(
+		fix_deep)
+	_assert(built_deep["nodes"].size() == vis_deep.size()
+		and dt.deepest_owned(chain40, 1) == 40,
+		"215-3: a ring-40 fabricated chain draws the full visible band")
+	# --- 4. Detail content.
+	var d_pur: Dictionary = cv.detail_for(fix_mid,
+		dt.pack_id(1, 3, 0), abils)
+	_assert(str(d_pur["state"]) == "purchasable"
+		and int(d_pur["wallet_after"]) == int(
+			d_pur["wallet"]) - int(d_pur["cost"])
+		and str(d_pur["afford_line"]) == "Affordable",
+		"215-4: purchasable detail carries cost, wallet-after, affordability")
+	var fix_lock = _dt_ui_fixture([], {"fireball": 500.0},
+		sig_fire, 30)
+	var d_lock: Dictionary = cv.detail_for(fix_lock,
+		dt.pack_id(1, 2, 0), abils)
+	var lock_marks := true
+	for p in d_lock["parents"]:
+		if bool(p["owned"]):
+			lock_marks = false
+	_assert(str(d_lock["state"]) == "locked"
+		and str(d_lock["parents_heading"]) == "Requires any one of:"
+		and str(d_lock["reason_line"]) != ""
+		and lock_marks,
+		"215-4: a locked node explains itself (OR heading, unmet parents, reason)")
+	var d_own: Dictionary = cv.detail_for(fix_mid,
+		dt.pack_id(1, 1, 0), abils)
+	_assert(str(d_own["state"]) == "owned",
+		"215-4: an owned node's detail states owned")
+	# Behavior whole-text: scan the deep band for one.
+	var beh_id := -1
+	for e in vis_deep:
+		if str(e["archetype"]) == "behavior":
+			beh_id = int(e["id"])
+			break
+	_assert(beh_id > 0,
+		"215-4: the deep band contains a behavior node")
+	if beh_id > 0:
+		var d_beh: Dictionary = cv.detail_for(fix_deep,
+			beh_id, abils)
+		var bn: Dictionary = dt.node_for(seed, "mage",
+			dt.id_branch(beh_id), dt.id_ring(beh_id),
+			dt.id_index(beh_id))
+		_assert(str(d_beh["effect_lines"][0]) == str(
+			bn["desc"]),
+			"215-4: a behavior node shows its authored text whole")
+	# Composed: components listed individually.
+	var comp_id := -1
+	for e in vis_deep:
+		var pp: Dictionary = e.get("params", {})
+		if pp.has("components") and (pp["components"]
+				as Array).size() > 1:
+			comp_id = int(e["id"])
+			break
+	_assert(comp_id > 0,
+		"215-4: the deep band contains a composed modifier")
+	if comp_id > 0:
+		var d_comp: Dictionary = cv.detail_for(
+			fix_deep, comp_id, abils)
+		var cn: Dictionary = dt.node_for(seed, "mage",
+			dt.id_branch(comp_id), dt.id_ring(comp_id),
+			dt.id_index(comp_id))
+		_assert(d_comp["effect_lines"].size() == 1
+			+ (cn["params"]["components"] as
+				Array).size(),
+			"215-4: a composed modifier lists its components individually")
+	# Clamped before/after: grow an owned set of fire
+	# dmg_pct nodes until one crosses the 1.60 clamp.
+	var grow_owned: Array = []
+	var cross_node := -1
+	var dmg_nodes: Array = []
+	for r in range(1, 201):
+		for i in dt.width(seed, 1, r):
+			var nn: Dictionary = dt.node_for(seed, "mage", 1, r, i)
+			if str(nn["target"]) != "fireball":
+				continue
+			var has_d := false
+			for comp in (nn["params"] as Dictionary
+					).get("components", []):
+				if str(comp.get("param", "")) == \
+						"dmg_pct":
+					has_d = true
+			if has_d:
+				dmg_nodes.append(int(nn["id"]))
+	dmg_nodes.sort()
+	for nid in dmg_nodes:
+		var agg_b2: Dictionary = dt.compute_aggregates(seed,
+			"mage", grow_owned)
+		var with_n: Array = grow_owned.duplicate()
+		with_n.append(nid)
+		var agg_a2: Dictionary = dt.compute_aggregates(seed,
+			"mage", with_n)
+		var mb2 := float((agg_b2["skill_mods"] as
+			Dictionary).get("fireball", {}).get(
+				"dmg_mult", 1.0))
+		var ma2 := float((agg_a2["skill_mods"] as
+			Dictionary).get("fireball", {}).get(
+				"dmg_mult", 1.0))
+		if mb2 < 1.60 and is_equal_approx(ma2, 1.60):
+			cross_node = nid
+			break
+		grow_owned.append(nid)
+	_assert(cross_node > 0,
+		"215-4: a clamp-crossing fire node exists in generation")
+	if cross_node > 0:
+		var fix_sat = _dt_ui_fixture(grow_owned,
+			{"fireball": 9000.0}, sig_fire, 30)
+		var d_sat: Dictionary = cv.detail_for(fix_sat,
+			cross_node, abils)
+		var joined := " ".join(d_sat["diff_lines"])
+		_assert(joined.contains("x1.60"),
+			"215-4: a saturating node's after value is the clamp (x1.60)")
+	# --- 5. Branch + core detail.
+	var d_br: Dictionary = cv.branch_detail_for(
+		fix_lock, 2)
+	_assert(not bool(d_br["unlocked"])
+		and str(d_br["requirement"]).contains(
+			"signature")
+		and int(d_br["wallet"]) == dt.wallet(fix_lock,
+			2),
+		"215-5: locked frost detail states the signature requirement + real wallet")
+	var fix_arch = _dt_ui_fixture([],
+		{"hammer_smash": 40.0}, {}, 12, "architect")
+	var d_arch: Dictionary = cv.branch_detail_for(
+		fix_arch, 8)
+	_assert(str(d_arch["requirement"]).contains(
+		"40 / 100"),
+		"215-5: architect detail shows best lifetime progress (40 / 100)")
+	var d_uni: Dictionary = cv.branch_detail_for(
+		_dt_ui_fixture([], {}, {}, 7), 0)
+	_assert(str(d_uni["requirement"]).contains(
+		"currently 7"),
+		"215-5: universal detail shows the level progress")
+	var d_core: Dictionary = cv.core_detail_for(fix_mid)
+	_assert(int(d_core["total_owned"]) == 2
+		and (d_core["branches"] as Array).size() == 4,
+		"215-5: core overview totals owned + lists every branch")
+	# --- 7. Search + path (group 6 is below, needs
+	# live fixtures).
+	var built_search: Dictionary = cv.build_entries(
+		fix_deep)
+	var first_node: Dictionary = built_search[
+		"nodes"][0]
+	var word := str(first_node["name"]).split(" ")[0]
+	var hits: Array = cv.search_matches(built_search,
+		abils, word)
+	_assert(hits.has(int(first_node["id"])),
+		"215-7: search finds a drawn node by name")
+	var hits_ab: Array = cv.search_matches(
+		built_search, abils, "Fireball")
+	var ab_ok := not hits_ab.is_empty()
+	for h in hits_ab:
+		if int(h) <= 0:
+			ab_ok = false
+			continue
+		var hn: Dictionary = dt.node_for(seed, "mage",
+			dt.id_branch(int(h)), dt.id_ring(int(h)),
+			dt.id_index(int(h)))
+		if str(hn["target"]) != "fireball" and str(
+				hn["name"]).to_lower().find(
+					"fireball") < 0 and str(
+					hn["desc"]).to_lower().find(
+						"fireball") < 0:
+			ab_ok = false
+	_assert(ab_ok,
+		"215-7: ability search returns only matching drawn nodes")
+	# Path with an OR choice + the bridge case: fire
+	# spine owned to 7, frost to 5; target frost 8/0.
+	var own_path: Array = []
+	for r in range(1, 8):
+		own_path.append(dt.pack_id(1, r, 0))
+	for r in range(1, 7):
+		own_path.append(dt.pack_id(2, r, 0))
+	var fix_path = _dt_ui_fixture(own_path,
+		{"fireball": 9000.0, "frost": 9000.0},
+		{"fire": {"signature": true},
+			"frost": {"signature": true}}, 30)
+	var built_path: Dictionary = cv.build_entries(
+		fix_path)
+	var drawn_ids: Array = []
+	for e in built_path["nodes"]:
+		drawn_ids.append(int(e["id"]))
+	var target: int = dt.pack_id(2, 8, 0)
+	var path: Dictionary = cv.path_to(fix_path, target,
+		drawn_ids)
+	var cost_spine := int(dt.node_for(seed, "mage", 2,
+		7, 0)["cost"])
+	var cost_bridge := int(dt.node_for(seed, "mage", 1,
+		8, 0)["cost"])
+	var expected_min := mini(cost_spine, cost_bridge) \
+		+ int(dt.node_for(seed, "mage", 2, 8,
+			0)["cost"])
+	_assert(int(path.get("cost", -1)) == expected_min,
+		"215-7: path returns the minimum-cost route (OR parents)")
+	if cost_bridge < cost_spine:
+		_assert(path.has("chain") and (path["chain"]
+			as Array).has(dt.pack_id(1, 8, 0)),
+			"215-7: the bridge parent is the cheaper route and the chain uses it")
+	# --- 8. Pad chooser.
+	var focusables: Array = []
+	var pmap := {}
+	for e in built_path["nodes"]:
+		focusables.append({"id": int(e["id"]),
+			"pos": e["pos"], "branch": int(e["branch"]),
+			"ring": int(e["ring"])})
+		var ps: Array = []
+		for pp in dt.parent_of(seed, "mage",
+				int(e["id"])):
+			ps.append(int(pp))
+		pmap[int(e["id"])] = ps
+	focusables.append({"id": 0, "pos": Vector2.ZERO})
+	var f_r1: int = dt.pack_id(1, 1, 0)
+	var to_core: int = cv.choose_neighbor(focusables, pmap,
+		f_r1, Vector2.RIGHT)
+	_assert(to_core == 0,
+		"215-8: chooser walks from fire ring 1 toward the core (parent)")
+	var core_down: int = cv.choose_neighbor(focusables,
+		pmap, 0, Vector2.DOWN)
+	var exp_down := -1
+	var exp_dot := 0.35
+	for f in focusables:
+		var fv: Vector2 = f["pos"]
+		if fv.length() < 1.0:
+			continue
+		var dd := Vector2.DOWN.dot(fv.normalized())
+		if dd > exp_dot:
+			exp_dot = dd
+			exp_down = int(f["id"])
+	_assert(core_down == exp_down and core_down > 0
+		and dt.id_branch(core_down) == 0,
+		"215-8: chooser from the core picks the best-aligned candidate (the wayfaring spine)")
+	# --- 9. InputMap values (the #196 rule).
+	var evs := InputMap.action_get_events(
+		"deep_tree_open")
+	var key_ok := evs.size() == 1 \
+		and evs[0] is InputEventKey \
+		and int((evs[0] as InputEventKey
+			).physical_keycode) == 78
+	_assert(key_ok,
+		"215-9: deep_tree_open is bound to exactly KEY_N (physical 78)")
+	# --- 6. Purchase + denial (live fixtures).
+	var pl = load("res://scenes/player/player.tscn"
+		).instantiate()
+	pl.class_id = "mage"
+	hold.add_child(pl)
+	pl.set("family_collection", sig_fire)
+	pl.set("tree_lifetime", {"fireball": 500.0})
+	pl.set("tree_owned", [])
+	pl.set("level", 30)
+	var buy_id: int = dt.pack_id(1, 1, 0)
+	var cost_buy := int(dt.node_for(seed, "mage", 1, 1,
+		0)["cost"])
+	var wallet_before: int = dt.wallet(pl, 1)
+	var canvas6 = cv.new()
+	hold.add_child(canvas6)
+	canvas6.open_for(pl, abils)
+	canvas6.call("_select", buy_id)
+	_assert(canvas6.get("_buy_btn") != null
+		and not bool(canvas6.get("_buy_btn").get(
+			"disabled")),
+		"215-6: the panel offers an enabled Buy for a purchasable node")
+	canvas6.call("_on_buy_pressed")
+	_assert((pl.get("tree_owned") as Array).has(buy_id)
+		and dt.wallet(pl, 1) == wallet_before - cost_buy,
+		"215-6: panel Buy drives try_purchase; the wallet drops by the cost")
+	var ent6: Dictionary = (canvas6.get("_built")[
+		"by_id"] as Dictionary).get(buy_id, {})
+	_assert(str(ent6.get("state", "")) == "owned",
+		"215-6: after the refresh the entry shows owned")
+	# Denial: drive the factored hud receiver directly
+	# (the #135 discipline) + the forwarding source pin.
+	var hud6 = load("res://scenes/ui/hud.tscn"
+		).instantiate()
+	hold.add_child(hud6)
+	hud6.set("_tree_surface", canvas6)
+	hud6.tree_denial_received(buy_id, "insufficient")
+	_assert(str(canvas6.get("_denial")) == "insufficient",
+		"215-6: the hud receiver forwards the denial to the surface verbatim")
+	var denial_shown := false
+	var stack: Array = [canvas6.get("_panel_box")]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		if n is Label and str((n as Label).text) == \
+				"insufficient":
+			denial_shown = true
+		for c in n.get_children():
+			stack.append(c)
+	_assert(denial_shown,
+		"215-6: the panel renders the denial line")
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	var dh := psrc.find("func tree_purchase_denied")
+	_assert(dh >= 0 and psrc.substr(dh, 1200).contains(
+		"tree_denial_received"),
+		"215-6: the denial handler forwards to the hud receiver (source pin)")
+	canvas6.queue_free()
+	hud6.queue_free()
+	pl.queue_free()
+	# --- 11. Fog discipline.
+	var fog: Array = cv.fog_entries(fix_deep)
+	var fog_fire := 0
+	var fog_keys_ok := true
+	for f in fog:
+		if int(f["branch"]) == 1:
+			fog_fire += 1
+		for k in f.keys():
+			if not ["pos", "branch", "ring"].has(k):
+				fog_keys_ok = false
+	_assert(fog_fire == dt.width(seed, 1, 43) + dt.width(
+		seed, 1, 44),
+		"215-11: fire fog covers exactly rings deepest+3/+4")
+	_assert(fog_keys_ok,
+		"215-11: fog entries carry no id, name, cost, state, or archetype")
+	var fog_frost := 0
+	for f in fog:
+		if int(f["branch"]) == 2:
+			fog_frost += 1
+	_assert(fog_frost == 0,
+		"215-11: locked branches draw no fog")
+	current_scene = null
+	hold.queue_free()
+	print("[Playtest] Deep Tree UI test done.")
+
+
+func _b5_goblin(hold: Node, pos: Vector3) -> Node:
+	var MobScene: PackedScene = load(
+		"res://scenes/mobs/mob.tscn")
+	var gdata: Resource = load("res://data/mobs/goblin.tres")
+	var m = MobScene.instantiate()
+	m.setup(99, gdata, 1.0, 1.0, false, 1.0)
+	hold.add_child(m)
+	m.global_position = pos
+	m.set("hp", 100000.0)
+	m.set("max_hp", 100000.0)
+	m.set("_shield_up", false)
+	return m
+
+
+func _b5_read_sites(dt, seed: int, PS: PackedScene,
+		hold: Node3D) -> void:
+	for n in get_nodes_in_group("mobs"):
+		(n as Node).free()
+	# --- xp read site: _recalc_stats folds base x item x
+	# tree.
+	var px = PS.instantiate()
+	hold.add_child(px)
+	px.set("class_id", "mage")
+	px.set("tree_owned", [112])
+	px.call("_recompute_tree_aggregates")
+	px.call("_recalc_stats")
+	_assert(absf(float(px.get("xp_mult")) - 1.03) < 0.001,
+		"210B5: read site — xp_pct folds into xp_mult (1.03)")
+	hold.remove_child(px)
+	px.free()
+	# --- Holy Light read sites, driven through the real
+	# server tick.
+	var hc = PS.instantiate()
+	hold.add_child(hc)
+	hc.set("class_id", "mage")
+	hc.set("damage", 100.0)
+	hc.set("max_hp", 200.0)
+	hc.set("hp", 100.0)
+	hc.set("tree_owned", [dt.pack_id(0, 2, 0)])
+	hc.call("_recompute_tree_aggregates")
+	var g1 = _b5_goblin(hold, Vector3(1, 0, 0))
+	hc.set("_hl_beams", {1: [{"aim": Vector3.ZERO,
+		"tick_t": 0.49, "lingering": false, "seq": 1,
+		"linger_t": 0.0}]})
+	hc.call("server_tick_holy_light", 0.1)
+	_assert(absf(float(g1.get("hp")) - 99897.0) < 0.01,
+		"210B5: read site — holy beam damage x dmg_mult (103)")
+	hold.remove_child(g1)
+	g1.free()
+	# Heal fold: a second caster owning the heal node.
+	var hc2 = PS.instantiate()
+	hold.add_child(hc2)
+	hc2.set("class_id", "mage")
+	hc2.set("max_hp", 200.0)
+	hc2.set("hp", 200.0)
+	hc2.set("tree_owned", [82])
+	hc2.call("_recompute_tree_aggregates")
+	var ally = PS.instantiate()
+	hold.add_child(ally)
+	ally.set("class_id", "warrior")
+	ally.set("max_hp", 200.0)
+	ally.set("hp", 100.0)
+	ally.global_position = Vector3(2, 0, 0)
+	hc2.set("_hl_beams", {1: [{"aim": Vector3.ZERO,
+		"tick_t": 0.49, "lingering": false, "seq": 1,
+		"linger_t": 0.0}]})
+	hc2.call("server_tick_holy_light", 0.1)
+	_assert(absf(float(ally.get("hp")) - 130.6) < 0.01,
+		"210B5: read site — holy heal x (1 + heal_pct) (30.6)")
+	# Dawnbringer: a dawn lingering zone ticks damage AND
+	# heal at half rate; a plain lingering zone is silent.
+	var g2 = _b5_goblin(hold, Vector3(1, 0, 0))
+	hc.set("tree_owned", [])
+	hc.call("_recompute_tree_aggregates")
+	hc.set("hp", 100.0)
+	hc.set("_hl_beams", {1: [{"aim": Vector3.ZERO,
+		"tick_t": 0.49, "lingering": true, "dawn": true,
+		"seq": 1, "linger_t": 0.0}]})
+	hc.call("server_tick_holy_light", 0.1)
+	_assert(absf(float(g2.get("hp")) - 99950.0) < 0.01
+		and absf(float(hc.get("hp")) - 115.0) < 0.01,
+		"210B5: Dawnbringer — lingering zone ticks at half rate (50 dmg, 15 heal)")
+	var g3 = _b5_goblin(hold, Vector3(1, 0, 0))
+	hc.set("_hl_beams", {1: [{"aim": Vector3.ZERO,
+		"tick_t": 0.49, "lingering": true, "seq": 1,
+		"linger_t": 0.0}]})
+	hc.call("server_tick_holy_light", 0.1)
+	_assert(float(g3.get("hp")) == 100000.0,
+		"210B5: neutrality — a plain lingering zone deals no damage")
+	hold.remove_child(g2)
+	g2.free()
+	hold.remove_child(g3)
+	g3.free()
+	# The dawn flag itself is set at the linger transition.
+	var hc4 = PS.instantiate()
+	hold.add_child(hc4)
+	hc4.set("class_id", "mage")
+	hc4.set("tree_owned", [288])
+	hc4.call("_recompute_tree_aggregates")
+	hc4.set("_hl_beams", {1: [{"seq": 7,
+		"lingering": false}]})
+	hc4.set("_hl_active_seq", 7)
+	hc4.call("_hl_start_linger")
+	var beam4: Dictionary = hc4.call("_hl_active_beam")
+	_assert(bool(beam4.get("lingering", false))
+		and bool(beam4.get("dawn", false)),
+		"210B5: Dawnbringer flag set at the linger transition")
+	for p in [hc, hc2, hc4, ally]:
+		hold.remove_child(p)
+		p.free()
+	# --- Basic-attack folds: the warrior swing.
+	var pw = PS.instantiate()
+	hold.add_child(pw)
+	pw.set("class_id", "warrior")
+	pw.set("damage", 100.0)
+	pw.set("tree_owned", [dt.pack_id(0, 1, 1)])
+	pw.call("_recompute_tree_aggregates")
+	var gw = _b5_goblin(hold, pw.global_position
+		+ Vector3(0, 0, -1.5))
+	pw.call("_do_attack")
+	_assert(absf(float(gw.get("hp")) - 99898.0) < 0.01,
+		"210B5: read site — swing damage x basic_mult (102)")
+	pw.set("tree_owned", [480])
+	pw.call("_recompute_tree_aggregates")
+	var ge = _b5_goblin(hold, pw.global_position
+		+ Vector3(0, 0, -1.5))
+	pw.call("_do_attack")
+	_assert(absf(float(ge.get("hp")) - 99850.0) < 0.01,
+		"210B5: Wayfarer's Edge — +50% vs a full-health target (150)")
+	var gh = _b5_goblin(hold, pw.global_position
+		+ Vector3(0, 0, -1.5))
+	gh.set("hp", 50000.0)
+	pw.call("_do_attack")
+	_assert(absf(float(gh.get("hp")) - 49900.0) < 0.01,
+		"210B5: Wayfarer's Edge — no bonus vs a hurt target (100)")
+	for m in [gw, ge, gh]:
+		hold.remove_child(m)
+		m.free()
+	hold.remove_child(pw)
+	pw.free()
+	# --- Adrenaline: the direct notify + the atk_spd chain.
+	var pr = PS.instantiate()
+	hold.add_child(pr)
+	pr.set("class_id", "rogue")
+	pr.set("tree_owned", [dt.pack_id(0, 3, 2)])
+	pr.call("_recompute_tree_aggregates")
+	var base_atk := float(pr.call("atk_spd_mult"))
+	pr.call("notify_tree_kill")
+	_assert(absf(float(pr.call("atk_spd_mult"))
+			- (base_atk + 0.10)) < 0.001,
+		"210B5: Adrenaline — +10% attack speed for 3 s on a credited kill")
+	hold.remove_child(pr)
+	pr.free()
+	# --- Second Wind: source pin (the fold lives inside
+	# the physics velocity block) + the behavior aggregate.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.find("if hp < max_hp * 0.25:") >= 0
+		and psrc.find("_tree_behavior_pct(\n\t\t\t\t\t\"second_wind\")") >= 0,
+		"210B5: Second Wind folds at the move_speed consumption site")
+	var sw_id := -1
+	var sw_steps := 0
+	for r in range(1, 13):
+		for i in dt.width(seed, 0, r):
+			var n: Dictionary = dt.node_for(seed, "mage",
+				0, r, i)
+			if str(n.get("archetype", "")) == "behavior" \
+					and str(n["params"].get("behavior",
+						"")) == "second_wind":
+				sw_id = int(n["id"])
+				sw_steps = int(n["params"]["steps"])
+	_assert(sw_id > 0, "210B5: a second_wind node exists in rings 1-12 (scan)")
+	if sw_id > 0:
+		var agg_sw: Dictionary = dt.compute_aggregates(
+			seed, "mage", [sw_id])
+		_assert(int(agg_sw["behaviors"].get(
+				"second_wind", 0)) == sw_steps * 5,
+			"210B5: Second Wind aggregate = steps x 5 pct")
+	# --- Save round-trip (section 6 item 6): the three
+	# keys move; aggregates after apply == before.
+	var pa = PS.instantiate()
+	hold.add_child(pa)
+	pa.set("class_id", "mage")
+	pa.set("tree_owned", [dt.pack_id(1, 3, 0),
+		dt.pack_id(0, 1, 1), 112])
+	pa.set("tree_lifetime", {"fireball": 300.0})
+	pa.call("_recompute_tree_aggregates")
+	var agg_a: Dictionary = pa.get("tree_aggregates")
+	var pb = PS.instantiate()
+	hold.add_child(pb)
+	pb.set("class_id", "mage")
+	pb.set("tree_seed", pa.get("tree_seed"))
+	pb.set("tree_owned", pa.get("tree_owned"))
+	pb.set("tree_lifetime", pa.get("tree_lifetime"))
+	pb.call("_recompute_tree_aggregates")
+	_assert(pb.get("tree_aggregates") == agg_a,
+		"210B5: section 6.6 — aggregates identical after the three-key round-trip")
+	hold.remove_child(pa)
+	pa.free()
+	hold.remove_child(pb)
+	pb.free()
+	_b5_projectile_sites(dt, seed, hold)
+
+
+func _b5_projectile_sites(dt, seed: int, hold: Node3D) -> void:
+	# Dungeon fixture: its own Player_1 is the caster for
+	# the projectile + mob-notify legs. Purge foreign
+	# dungeons first (the B4 lesson).
+	for n in get_nodes_in_group("dungeon"):
+		(n as Node).free()
+	var DS: PackedScene = load(
+		"res://scenes/dungeon/dungeon.tscn")
+	var dgn = DS.instantiate()
+	root.add_child(dgn)
+	var p1 = dgn.call("get_player_node", 1)
+	p1.set("class_id", "mage")
+	# Ignition (fireball): the caster owns the recorded
+	# burn node — the hit applies burn at hit x 0.02.
+	p1.set("tree_owned", [1099511627842])
+	p1.call("_recompute_tree_aggregates")
+	var gf = _b5_goblin(hold, Vector3(1, 0, 0))
+	var FB := load("res://scripts/combat/fireball.gd")
+	var fb = FB.new()
+	fb.setup(Vector3.ZERO, 100.0, 1)
+	dgn.get_node("Projectiles").add_child(fb)
+	fb.global_position = Vector3.ZERO
+	fb.call("_explode")
+	_assert(absf(float(gf.get("_burn_dps")) - 2.0) < 0.01,
+		"210B5: Ignition — fireball hit applies burn (100 x 0.02 dps)")
+	hold.remove_child(gf)
+	gf.free()
+	fb.free()
+	# Ignition neutrality: no burn node, no apply_burn.
+	p1.set("tree_owned", [])
+	p1.call("_recompute_tree_aggregates")
+	var gn = _b5_goblin(hold, Vector3(1, 0, 0))
+	var fb2 = FB.new()
+	fb2.setup(Vector3.ZERO, 100.0, 1)
+	dgn.get_node("Projectiles").add_child(fb2)
+	fb2.global_position = Vector3.ZERO
+	fb2.call("_explode")
+	_assert(float(gn.get("_burn_dps")) == 0.0,
+		"210B5: Ignition neutrality — zero burn makes no call")
+	hold.remove_child(gn)
+	gn.free()
+	fb2.free()
+	# Ignition (meteor): a scanned meteor burn node at the
+	# impact site.
+	var mt_id := -1
+	var mt_steps := 0
+	for r in range(1, 21):
+		for i in dt.width(seed, 1, r):
+			var n: Dictionary = dt.node_for(seed, "mage",
+				1, r, i)
+			if str(n.get("target", "")) == "meteor":
+				for c in n["params"].get("components",
+						[]):
+					if str(c["param"]) == "burn_pct":
+						mt_id = int(n["id"])
+						mt_steps = int(c["steps"])
+	_assert(mt_id > 0, "210B5: a meteor burn node exists in rings 1-20 (scan)")
+	if mt_id > 0:
+		p1.set("tree_owned", [mt_id])
+		p1.call("_recompute_tree_aggregates")
+		var gm = _b5_goblin(hold, Vector3(1, 0, 0))
+		var MT := load("res://scripts/combat/meteor.gd")
+		var mt = MT.new()
+		mt.setup(Vector3.ZERO, 100.0, 1)
+		dgn.get_node("Projectiles").add_child(mt)
+		mt.global_position = Vector3.ZERO
+		mt.call("_impact")
+		_assert(absf(float(gm.get("_burn_dps"))
+				- 100.0 * mt_steps * 0.01) < 0.01,
+			"210B5: Ignition — meteor impact applies burn")
+		hold.remove_child(gm)
+		gm.free()
+		mt.free()
+	# Adrenaline routing: a lethal hit credited to
+	# Player_1 arms its window through the mob death site.
+	p1.set("class_id", "rogue")
+	p1.set("tree_owned", [dt.pack_id(0, 3, 2)])
+	p1.call("_recompute_tree_aggregates")
+	var gk = _b5_goblin(hold, Vector3(3, 0, 0))
+	gk.set("hp", 10.0)
+	gk.call("take_damage", 9999.0, 1, Vector3.ZERO)
+	_assert(int(p1.get("_tree_adrenaline_until")) > 0
+		and absf(float(p1.get("_tree_adrenaline_pct"))
+			- 10.0) < 0.001,
+		"210B5: Adrenaline — the mob death site credits the killer")
+	hold.remove_child(gk)
+	gk.free()
+	dgn.free()

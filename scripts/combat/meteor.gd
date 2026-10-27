@@ -38,46 +38,88 @@ func setup(p_target: Vector3, p_damage: float, p_owner: int) -> void:
 	_start = target + Vector3(6.0, 18.0, 3.0)
 
 
+## Issue #206 (spec section 6): the caster's Deep Tree
+## look for meteor, or {} when ungoverned (stock build).
+func _caster_look() -> Dictionary:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon == null or not dungeon.has_method("get_player_node"):
+		return {}
+	var caster = dungeon.get_player_node(owner_peer)
+	if caster == null:
+		return {}
+	var owned: Array = caster.get("tree_owned")
+	if owned.is_empty():
+		return {}
+	return DeepTree.look_for(int(caster.get("tree_seed")),
+		str(caster.get("class_id")), "meteor", owned)
+
+
 func _ready() -> void:
 	global_position = _start
-	# Rocky core: dark basalt sphere.
-	var rock := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.55
-	sphere.height = 1.1
-	sphere.radial_segments = 9
-	sphere.rings = 6
-	var rock_mat := StandardMaterial3D.new()
-	rock_mat.albedo_color = Color(0.25, 0.2, 0.18)
-	rock_mat.roughness = 0.95
-	sphere.material = rock_mat
-	rock.mesh = sphere
-	add_child(rock)
-	# Glowing lava cracks: smaller emissive inner sphere peeking through.
-	var lava := MeshInstance3D.new()
-	var lava_sphere := SphereMesh.new()
-	lava_sphere.radius = 0.42
-	lava_sphere.height = 0.84
-	var lava_mat := StandardMaterial3D.new()
-	lava_mat.albedo_color = Color(1.0, 0.35, 0.05)
-	lava_mat.emission_enabled = true
-	lava_mat.emission = Color(1.0, 0.3, 0.05)
-	lava_mat.emission_energy_multiplier = 4.0
-	lava_sphere.material = lava_mat
-	lava.mesh = lava_sphere
-	lava.scale = Vector3(1.02, 0.9, 1.02)
-	add_child(lava)
-	# Fire light.
+	var look := _caster_look()
+	var governed := not look.is_empty() \
+		and not bool(look.get("stock", true))
+	var shift := float(look.get("hue_shift", 0.0)) \
+		if governed else 0.0
+	if governed and bool(look.get("variant", false)):
+		# Variant-governed: the seeded grammar body
+		# replaces the stock rock + lava pair.
+		var tmpl := DeepTreeLooks.bundle_template(owner_peer,
+			"meteor", look, Color(1.0, 0.35, 0.05),
+			Color(1.0, 0.3, 0.05))
+		var body := tmpl.duplicate()
+		body.scale *= 2.2 # meteor scale vs the fireball core
+		add_child(body)
+	else:
+		# Rocky core: dark basalt sphere.
+		var rock := MeshInstance3D.new()
+		var sphere := SphereMesh.new()
+		sphere.radius = 0.55
+		sphere.height = 1.1
+		sphere.radial_segments = 9
+		sphere.rings = 6
+		var rock_mat := StandardMaterial3D.new()
+		rock_mat.albedo_color = Color(0.25, 0.2, 0.18)
+		rock_mat.roughness = 0.95
+		sphere.material = rock_mat
+		rock.mesh = sphere
+		add_child(rock)
+		# Glowing lava cracks: smaller emissive inner sphere peeking through.
+		var lava := MeshInstance3D.new()
+		var lava_sphere := SphereMesh.new()
+		lava_sphere.radius = 0.42
+		lava_sphere.height = 0.84
+		var lava_mat := StandardMaterial3D.new()
+		lava_mat.albedo_color = DeepTreeLooks.shifted(
+			Color(1.0, 0.35, 0.05), shift)
+		lava_mat.emission_enabled = true
+		lava_mat.emission = DeepTreeLooks.shifted(
+			Color(1.0, 0.3, 0.05), shift)
+		lava_mat.emission_energy_multiplier = float(
+			look.get("emission_energy", 4.0)) if governed \
+			else 4.0
+		lava_sphere.material = lava_mat
+		lava.mesh = lava_sphere
+		lava.scale = Vector3(1.02, 0.9, 1.02)
+		add_child(lava)
+	# Fire light (never added by a look; stock envelope).
 	var light := OmniLight3D.new()
-	light.light_color = Color(1.0, 0.45, 0.1)
-	light.light_energy = 3.0
+	light.light_color = DeepTreeLooks.shifted(
+		Color(1.0, 0.45, 0.1), shift)
+	light.light_energy = float(look.get("light_energy",
+		3.0)) if governed else 3.0
 	light.omni_range = 10.0
 	add_child(light)
-	# Flame trail.
-	var trail := Effects.make_flame()
-	trail.amount = 40
-	trail.local_coords = false
-	add_child(trail)
+	# Trail.
+	if governed:
+		add_child(DeepTreeLooks.make_trail(look,
+			DeepTreeLooks.shifted(Color(1.0, 0.35, 0.05),
+				shift)))
+	else:
+		var trail := Effects.make_flame()
+		trail.amount = 40
+		trail.local_coords = false
+		add_child(trail)
 	# Orient along the fall direction.
 	var dir: Vector3 = (target - _start).normalized()
 	rotation.x = atan2(dir.y, Vector2(dir.x, dir.z).length()) + PI / 2.0
@@ -120,6 +162,10 @@ func _impact() -> void:
 		var radius := BLAST_RADIUS
 		if caster != null and caster.has_trait("conflagration"):
 			radius *= 1.25
+		# Issue #206 (spec section 5): the caster's tree
+		# radius_add for meteor, beside Conflagration.
+		if caster != null:
+			radius += caster.tree_radius_add("meteor")
 		# Combo Finishers (issue #8): world-state detection before damage.
 		var mobs := get_tree().get_nodes_in_group("mobs")
 		var totems := get_tree().get_nodes_in_group("totems")
@@ -144,6 +190,14 @@ func _impact() -> void:
 				# Wildfire: fire hits apply burn (3s DoT).
 				if caster != null and caster.has_trait("wildfire"):
 					m.apply_burn(3.0, dmg * 0.3, owner_peer)
+				# Amendment 1 section C.1 (Ignition):
+				# tree burn at the impact site; zero
+				# makes no call (neutrality).
+				if caster != null:
+					var mburn: float = caster.tree_burn_pct("meteor")
+					if mburn > 0.0:
+						m.apply_burn(3.0, dmg * mburn,
+							owner_peer)
 				hit_any = true
 				hit.append(m)
 				if Combo.note_kill(m, was_alive):

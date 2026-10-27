@@ -5,6 +5,15 @@ extends CanvasLayer
 ## global class cache is stale on a fresh clone (issue #7 red-fix lesson).
 const BountySys := preload("res://scripts/systems/bounty.gd")
 const BountyUI := preload("res://scripts/ui/bounty_ui.gd")
+const DeepTreeCanvas := preload(
+	"res://scripts/ui/deep_tree_canvas.gd")
+
+## Issue #215: the Deep Tree canvas surface (null until
+## first opened) + whether it was opened from the pause
+## menu (closing returns there) or directly from
+## gameplay (closing resumes).
+var _tree_surface: Control = null
+var _tree_from_pause := false
 
 var is_paused := false
 
@@ -1275,6 +1284,14 @@ func _pad_back() -> bool:
 
 
 func _input(event: InputEvent) -> void:
+	if event.is_action_pressed("deep_tree_open") \
+			and _player != null \
+			and not cipher_popup_open \
+			and (_tree_surface == null
+				or not _tree_surface.visible):
+		open_deep_tree(is_paused)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventJoypadButton and event.is_action_pressed("ui_cancel"):
 		if _pad_back():
 			get_viewport().set_input_as_handled()
@@ -1919,9 +1936,86 @@ func _refresh_spec_list() -> void:
 				btn.tooltip_text = "Unlocks at level %d" % Player.SPECIALIZATION_UNLOCK_LEVEL
 		row.add_child(btn)
 		%SpecList.add_child(row)
+	# Issue #215: the tree lives on its own canvas
+	# surface now (the #206 rows are retired, section
+	# 7.3 of the node-UI spec); the tab carries the
+	# open button.
+	var trow := HBoxContainer.new()
+	trow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var tbtn := Button.new()
+	tbtn.text = "Open the Deep Tree"
+	tbtn.pressed.connect(_on_open_tree_pressed)
+	trow.add_child(tbtn)
+	%SpecList.add_child(trow)
+	# Issue #217 (Jesse's order): the direct-key tip,
+	# styled like the unlock hint above.
+	var tip := Label.new()
+	tip.text = "Tip: press N to open the Deep Tree."
+	tip.add_theme_color_override("font_color",
+		Color(0.7, 0.7, 0.75))
+	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	%SpecList.add_child(tip)
 	# Issue #152: spec rows are dynamic — re-chain while paused.
 	if is_paused:
 		FocusChain.apply(_pause_surface(), _pause_primary())
+
+
+## Issue #215: the Deep Tree canvas surface - hosted
+## here, above the pause surface (node-UI spec 7.1).
+## Opened from the Specialization tab's button or the
+## deep_tree_open action; pausing is the pause menu's
+## own (is_paused; multiplayer semantics unchanged).
+func _on_open_tree_pressed() -> void:
+	open_deep_tree(true)
+
+
+func open_deep_tree(from_pause: bool) -> void:
+	if _player == null:
+		return
+	if _tree_surface != null and _tree_surface.visible:
+		return
+	_tree_from_pause = from_pause or is_paused
+	if not is_paused:
+		show_pause()
+	if _tree_surface == null:
+		_tree_surface = DeepTreeCanvas.new()
+		_tree_surface.surface_closed.connect(
+			_on_tree_surface_closed)
+		_tree_surface.panel_focus_entered.connect(
+			_on_tree_panel_focus)
+		add_child(_tree_surface)
+	_tree_surface.open_for(_player,
+		Player.class_abilities(str(_player.get(
+			"class_id"))))
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	AudioManager.sfx("ui_click")
+
+
+func _on_tree_surface_closed() -> void:
+	if not _tree_from_pause:
+		hide_pause()
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		FocusChain.apply(_pause_surface(),
+			_pause_primary())
+	_tree_from_pause = false
+
+
+func _on_tree_panel_focus() -> void:
+	if _tree_surface != null:
+		FocusChain.apply(_tree_surface.panel_root(),
+			_tree_surface.panel_primary())
+
+
+## Issue #215 (spec 5.3): the player's purchase-denial
+## forward lands here; the surface shows the reason
+## verbatim. Factored as a plain receiver so the suite
+## can drive it directly (the #135 discipline).
+func tree_denial_received(node_id: int,
+		reason: String) -> void:
+	AudioManager.sfx("ui_error")
+	if _tree_surface != null and _tree_surface.visible:
+		_tree_surface.show_denial(node_id, reason)
 
 
 func _on_specialize_pressed(skill_id: String) -> void:
