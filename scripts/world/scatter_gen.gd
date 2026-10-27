@@ -26,10 +26,10 @@ extends RefCounted
 ##   N5 SLOPE AVOIDANCE — trees and rocks sample the height
 ##     field's slope and refuse steep ground; grass follows
 ##     the sampler anywhere.
-##   N6 COLLISION FROM THE START — large trees and rocks are
-##     collidable (the streamer gives them shapes on the
-##     building-piece collision path); grass, mushrooms and
-##     fences are visual-only.
+##   N6 COLLISION — REMOVED by Jesse's ruling 2026-10-26:
+##     nature scatter is visual-only, no collision shapes
+##     (the original from-the-start rule for large trees and
+##     rocks is superseded). Placement data is unchanged.
 ##
 ## Nothing lands on a ROAD, BUILDING or PLAZA lot, and nothing
 ## lands inside a building footprint (own chunk's buildings
