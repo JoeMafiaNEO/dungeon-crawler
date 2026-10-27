@@ -33,9 +33,9 @@ extends Node3D
 ## unload ring is DERIVED (load + 2), never a second
 ## control. The vars carry the default so an untreed
 ## streamer behaves as the default too.
-const MIN_LOAD_RADIUS := 2
+const MIN_LOAD_RADIUS := 1 ## Jesse's ruling 2026-10-26: radius 1 is the floor AND the default (his PC feel test at 1 beat the #219 default of 2).
 const MAX_LOAD_RADIUS := 8
-const DEFAULT_LOAD_RADIUS := 2
+const DEFAULT_LOAD_RADIUS := 1
 var load_radius: int = DEFAULT_LOAD_RADIUS
 var unload_radius: int = DEFAULT_LOAD_RADIUS + 2
 const BUILD_PER_FRAME := 1 ## Staged building (Jesse's order 2026-10-26): was 2. One terrain build carries a whole data generation (~tens of ms); two in one step stacks two spikes. The 197(7) pin's "at most 2 per step" still holds.
@@ -417,9 +417,9 @@ func _detail_job(rec: Dictionary) -> Dictionary:
 				"solid_buildings": 0},
 			"s": {"s_done": false, "started": false,
 				"gen": null, "gen_done": false,
-				"scatter": null, "snode": null, "sbody": null,
+				"scatter": null, "snode": null,
 				"type_idx": 0, "item_idx": 0, "mm": null,
-				"shapes": 0, "total": 0}}
+				"total": 0}}
 		rec["detail_job"] = dj
 		var data: RefCounted = rec["data"]
 		if not (data.buildings as Array).is_empty():
@@ -780,8 +780,7 @@ func build_standalone_building(plan: Dictionary,
 
 
 ## One collision box on a building body, from a piece transform
-## (the building-piece collision path — scatter's collidables
-## use the same helper).
+## (the building-piece collision path).
 func _add_box_shape(body: StaticBody3D, xf: Transform3D) -> void:
 	var cs := CollisionShape3D.new()
 	var box := BoxShape3D.new()
@@ -792,10 +791,10 @@ func _add_box_shape(body: StaticBody3D, xf: Transform3D) -> void:
 
 
 ## Issue #204 (P4): the chunk's nature scatter — MultiMesh per
-## asset type from ScatterGen's pure output, plus collision
-## for the collidable kinds (N6: large trees + big rocks on
-## the building-piece path; grass / mushrooms / fences /
-## small rocks are visual-only). Spill rects come from the
+## asset type from ScatterGen's pure output. ALL nature is
+## visual-only (Jesse's ruling 2026-10-26 removed the N6
+## collision shapes: no bodies for trees or rocks). Spill
+## rects come from the
 ## west / north neighbors' buildings (their +x/+z spans can
 ## cross into this chunk) when those chunks are loaded.
 func _make_scatter(rec: Dictionary) -> Node:
@@ -814,9 +813,8 @@ func _make_scatter(rec: Dictionary) -> Node:
 ## step runs the pure generation (spill rects +
 ## ScatterGen) and creates the Scatter node; later steps
 ## fill one scatter type's MultiMesh in slices of
-## SCATTER_ITEMS_PER_STEP instances (collision shapes ride
-## the same slice), adding the type's MultiMeshInstance3D
-## when the type completes. Returns true when every type
+## SCATTER_ITEMS_PER_STEP instances, adding the type's
+## MultiMeshInstance3D when the type completes. Returns true when every type
 ## is done (counts written, rec["scatter"] assigned).
 func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
 	if bool(job["s_done"]):
@@ -850,12 +848,6 @@ func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
 		snode.name = "Scatter"
 		(rec["node"] as Node).add_child(snode)
 		job["snode"] = snode
-		var sbody := StaticBody3D.new()
-		sbody.name = "ScatterCollision"
-		sbody.collision_layer = 1
-		sbody.collision_mask = 0
-		snode.add_child(sbody)
-		job["sbody"] = sbody
 		job["started"] = true
 		return false
 	# Generation stage: the pure candidate walk, sliced
@@ -876,8 +868,6 @@ func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
 	var types: Array = ScatterGen.TYPES
 	if int(job["type_idx"]) >= types.size():
 		rec["scatter_count"] = int(job["total"])
-		rec["collision_shapes"] = int(rec.get("collision_shapes", 0)) \
-			+ int(job["shapes"])
 		rec["scatter"] = job["snode"]
 		job["s_done"] = true
 		return true
@@ -899,10 +889,8 @@ func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
 		mm.instance_count = items.size()
 		job["mm"] = mm
 	var node: Node3D = job["snode"]
-	var body: StaticBody3D = job["sbody"]
 	var chunk_origin := Vector3(float(cx) * WorldGen.CHUNK_SIZE,
 		0, float(cz) * WorldGen.CHUNK_SIZE)
-	var shapes := int(job["shapes"])
 	var end := mini(int(job["item_idx"]) + SCATTER_ITEMS_PER_STEP,
 		items.size())
 	var i := int(job["item_idx"])
@@ -913,23 +901,7 @@ func _scatter_job_step(rec: Dictionary, job: Dictionary) -> bool:
 			.scaled(Vector3.ONE * float(it["s"]))
 		mm.set_instance_transform(i, Transform3D(basis,
 			local))
-		if t == "oak" or t == "detailed" or t == "pine":
-			var cs := CollisionShape3D.new()
-			var cyl := CylinderShape3D.new()
-			cyl.radius = 0.35
-			cyl.height = 2.2
-			cs.shape = cyl
-			cs.position = local + Vector3(0, 1.1, 0)
-			body.add_child(cs)
-			shapes += 1
-		elif t == "rock_big":
-			_add_box_shape(body, Transform3D(
-				Basis.from_scale(Vector3(1.6, 1.2, 1.6)
-					* float(it["s"])),
-				local + Vector3(0, 0.5, 0)))
-			shapes += 1
 		i += 1
-	job["shapes"] = shapes
 	job["item_idx"] = i
 	if i >= items.size():
 		var mmi := MultiMeshInstance3D.new()

@@ -7207,8 +7207,8 @@ func _test_world_204() -> void:
 			ScatterRes.scatter_for_chunk(seed, asm.x, asm.y, asm_data,
 				[])),
 		"204: assembled scatter == the pure function's output")
-	_assert(int(astate["collision_shapes"]) >= pre_scatter_shapes,
-		"204: scatter adds its collidables (N6)")
+	_assert(int(astate["collision_shapes"]) == pre_scatter_shapes,
+		"204: scatter adds NO collision shapes (nature visual-only - Jesse's 2026-10-26 ruling, superseding N6)")
 	st.queue_free()
 
 	# 10. Per-peer streamers: two targets, two foci, no bleed.
@@ -27896,8 +27896,8 @@ func _test_chunk_radius_219() -> void:
 		"load_radius")
 	SM.call("save_settings")
 	_assert(int(SM.call("get_setting", "world",
-		"load_radius", 2)) == 2,
-		"219: absent setting reads as the default 2 (Jesse's amended default)")
+		"load_radius", 1)) == 1,
+		"219: absent setting reads as the default 1 (Jesse's radius-1 ruling 2026-10-26)")
 	var build_set = func(r: int) -> int:
 		SM.call("set_setting", "world",
 			"load_radius", r)
@@ -27920,16 +27920,16 @@ func _test_chunk_radius_219() -> void:
 		_assert(ur == r + 2,
 			"219: unload ring derives as load + 2 at radius %d" % r)
 		return n
-	# Default (absent) streamer: Jesse's amended default
-	# 2 -> 25 chunks, unload 4.
+	# Default (absent) streamer: Jesse's radius-1 default
+	# -> 9 chunks, unload 3.
 	var st0 = Streamer.new()
 	holder.add_child(st0)
-	_assert(int(st0.get("load_radius")) == 2
-		and int(st0.get("unload_radius")) == 4,
-		"219: an absent-setting streamer inits at 2 / unload 4")
+	_assert(int(st0.get("load_radius")) == 1
+		and int(st0.get("unload_radius")) == 3,
+		"219: an absent-setting streamer inits at 1 / unload 3")
 	st0.queue_free()
-	_assert(build_set.call(2) == 25,
-		"219: default/min radius builds the 25-chunk set")
+	_assert(build_set.call(1) == 9,
+		"219: default/min radius builds the 9-chunk set")
 	_assert(build_set.call(4) == 81,
 		"219: mid radius builds the 81-chunk set")
 	_assert(build_set.call(8) == 289,
@@ -27953,8 +27953,8 @@ func _test_chunk_radius_219() -> void:
 	SM.call("set_setting", "world", "load_radius", 0)
 	var stc2 = Streamer.new()
 	holder.add_child(stc2)
-	_assert(int(stc2.get("load_radius")) == 2,
-		"219: an under-range setting clamps to 2")
+	_assert(int(stc2.get("load_radius")) == 1,
+		"219: an under-range setting clamps to 1")
 	stc2.queue_free()
 	# The slider + readout ride the settings panel
 	# (source pins; the panel is menu-scene state).

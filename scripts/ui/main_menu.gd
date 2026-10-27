@@ -2192,11 +2192,11 @@ func _build_settings_panel() -> void:
 	crow.add_child(clab)
 	var cslider := HSlider.new()
 	cslider.custom_minimum_size = Vector2(220, 0)
-	cslider.min_value = 2
+	cslider.min_value = 1
 	cslider.max_value = 8
 	cslider.step = 1
 	cslider.value = clampf(float(SaveManager.get_setting(
-		"world", "load_radius", 2)), 2, 8)
+		"world", "load_radius", 1)), 1, 8)
 	cslider.value_changed.connect(
 		_on_chunk_radius_changed)
 	crow.add_child(cslider)
