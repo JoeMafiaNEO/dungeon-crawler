@@ -126,6 +126,17 @@ func _linear_mode() -> bool:
 		and _current_theme() != "warlord"
 
 
+## The hubs whose bank middle pair is a real walk-in cab:
+## the linear Act 1 hubs (the button departs) and Warlord's
+## Domain itself (Jesse 2026-10-28: the cab stands there too,
+## but its button does nothing — the way out of Warlord's is
+## the clear and the exit into the proc-gen world, never a
+## ride).
+func _cab_hub() -> bool:
+	return _linear_mode() or (_current_theme() == "warlord" \
+		and Dungeon.act1_step == 5)
+
+
 ## The hall strip's dressing test (issue #201 section 4, widened
 ## by Jesse 2026-10-27): every Act 1 hub — Warlord's Domain
 ## included — stands an elevator bank where the tracks were.
@@ -1103,13 +1114,13 @@ func _build_elevator_bank() -> void:
 		# Frame + indicator lamp for every pair.
 		_box(bank, Vector3(2.7, 2.95, 0.14), Vector3(dx, 1.475, -5.32), dark)
 		_box(bank, Vector3(0.18, 0.18, 0.06), Vector3(dx, 3.12, -5.28), lamp_glow)
-		# Closed slabs — except the middle pair in a linear hub,
+		# Closed slabs — except the middle pair in a cab hub,
 		# whose doors are the walk-in cab's real sliding doors.
-		if _linear_mode() and dx == -1.5:
+		if _cab_hub() and dx == -1.5:
 			continue
 		_box(bank, Vector3(1.16, 2.75, 0.10), Vector3(dx - 0.60, 1.375, -5.26), steel)
 		_box(bank, Vector3(1.16, 2.75, 0.10), Vector3(dx + 0.60, 1.375, -5.26), steel)
-	if _linear_mode():
+	if _cab_hub():
 		_build_cab(bank)
 
 
@@ -1129,10 +1140,12 @@ func _cab_solid(body: StaticBody3D, size: Vector3, pos: Vector3, mat: Material, 
 ## The walk-in cab behind the bank's middle pair (Jesse
 ## 2026-10-27): a plain car whose sliding doors stand open,
 ## panel collision so the fake pairs stay solid, and the
-## button that departs. Linear hubs only — legacy banks stay
-## visual exactly as built above. No text anywhere (the
-## bank's no-signage rule stands; the button's prompt is
-## dynamic, at the moment of use).
+## button that departs. Cab hubs only (see _cab_hub) —
+## legacy banks stay visual exactly as built above. At
+## Warlord's the button is unarmed furniture (Jesse
+## 2026-10-28). No text anywhere (the bank's no-signage
+## rule stands; the button's prompt is dynamic, at the
+## moment of use).
 func _build_cab(bank: Node3D) -> void:
 	var cab := Node3D.new()
 	cab.name = "ElevatorCab"
@@ -1183,7 +1196,11 @@ func _build_cab(bank: Node3D) -> void:
 		_cab_door_panels.append(door)
 		_cab_door_shapes.append(shape)
 	# The button on the right interior wall, by the door.
+	# Armed only where the button departs (linear hubs); at
+	# Warlord's it is furniture — set before add_child so the
+	# button's _ready keeps it out of the interact scan.
 	var button = CabButtonScript.new()
+	button.set("depart_armed", _linear_mode())
 	button.position = Vector3(-0.32, 1.25, -5.95)
 	cab.add_child(button)
 	# NOTE (Phase 1 naming gotcha): .name AFTER add_child.

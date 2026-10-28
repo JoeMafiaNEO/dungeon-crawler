@@ -928,6 +928,10 @@ func continue_run(mode: String, slot: int) -> bool:
 		push_warning("[Save] Refused legacy MP save in slot %d: predates roster saves" % slot)
 		connection_failed.emit(SaveManager.LEGACY_MP_SAVE_MESSAGE)
 		return false
+	# Jesse 2026-10-28: legacy Act 1 saves route to the top
+	# floor (see Dungeon.routed_run). Applied here so the
+	# multiplayer dispatch below inherits the routed run.
+	run = Dungeon.routed_run(run)
 	active_run_mode = mode
 	active_run_slot = slot
 	if bool(run.get("is_multiplayer", false)):
