@@ -63,8 +63,11 @@ const LOBBY_PANEL_T := 0.12
 var doors_open := false
 ## Issue #201 (spec section 4): in an Act 1 hub the lobby is a PLAIN
 ## waiting room (neutral walls, no car dressing, neutral door cues).
-## Cached at build from the run statics — the Warlord hub and every
-## legacy hub keep the car dressing and the train door cues.
+## Cached at build from the run statics — legacy hubs (axis closed)
+## keep the car dressing and the train door cues. Jesse 2026-10-27:
+## Warlord's Domain is an Act 1 hub too — its annex still carried
+## the old train interior; no Act 1 annex dresses as a train car
+## now (the no-clues rule covers the sixth floor as well).
 var _plain_hub := false
 var _door_panels: Array = []
 var _door_blocker: StaticBody3D = null
@@ -245,10 +248,10 @@ func _visual(size: Vector3, pos: Vector3, mat: Material, node_name: String = "")
 
 
 func _build() -> void:
-	# Issue #201 (spec section 4): plain-hub test mirrors the station's
-	# linear rule (axis open, current level not Warlord's).
-	_plain_hub = Dungeon.act1_step >= 0 and Dungeon.next_theme_id != "" \
-		and Dungeon.next_theme_id != "warlord"
+	# Issue #201 (spec section 4): the plain-hub test is the axis
+	# alone (open = an Act 1 hub, Warlord's included — Jesse
+	# 2026-10-27 removed the Warlord carve-out).
+	_plain_hub = Dungeon.act1_step >= 0 and Dungeon.next_theme_id != ""
 	var h := arena_half
 	var ax := attach_x
 	var stone := _mat(Color(0.42, 0.40, 0.44))
