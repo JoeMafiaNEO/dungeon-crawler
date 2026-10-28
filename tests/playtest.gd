@@ -11267,7 +11267,8 @@ func _test_pause_keybinds_voice_tabs() -> void:
 		names.append((b as Button).text)
 	_assert(names == ["Stats", "Specialization", "Collection", "Keybinds", "Voice"],
 		"Tab order is Stats/Specialization/Collection/Keybinds/Voice")
-	var vbox := hud.get_node_or_null("PausePanel/PauseScroll/PauseVBox")
+	# _build_pause_tabs reparents the scroll under PauseMain.
+	var vbox := hud.get_node_or_null("PausePanel/PauseMain/PauseScroll/PauseVBox")
 	_assert(vbox != null and vbox.get_node_or_null("KeybindsPanel") != null,
 		"KeybindsPanel lives in the pause vbox")
 	_assert(vbox != null and vbox.get_node_or_null("VoicePanel") != null,
