@@ -5853,6 +5853,28 @@ func _test_act1_axis_201() -> void:
 		"act1_step": 3, "vault_return_theme": ""}
 	_assert(int(DungeonScript.act1_step_for_run(new_save)) == 3,
 		"201 fixture: a stored key wins over drift (level 8, step 3)")
+	# Jesse 2026-10-28: a legacy save inside the Act 1 sequence
+	# routes to the top floor — the elevator takes it straight
+	# to Warlord's Domain; the character carries over.
+	var routed: Dictionary = DungeonScript.routed_run(old_save)
+	_assert(str(routed["theme_id"]) == "warlord" and int(routed["level_number"]) == 6
+		and int(routed["act1_step"]) == 5,
+		"legacy route: a legacy Act 1 save routes to Warlord's floor")
+	_assert(int(routed["seed"]) == int(DungeonScript.fresh_seed_for("warlord", 6, 777)),
+		"legacy route: the route carries the baked Warlord seed")
+	_assert(int(DungeonScript.act1_step_for_run(routed)) == 5,
+		"legacy route: the routed save continues on the axis at the top floor")
+	var at_top := {"theme_id": "warlord", "level_number": 6, "seed": 42, "wave": 2}
+	var routed_top: Dictionary = DungeonScript.routed_run(at_top)
+	_assert(int(routed_top["seed"]) == 42 and int(routed_top["wave"]) == 2,
+		"legacy route: a legacy save already at Warlord's passes through untouched")
+	var looped := {"theme_id": "village", "level_number": 7, "seed": 9}
+	_assert(not DungeonScript.routed_run(looped).has("act1_step"),
+		"legacy route: a legacy save outside the sequence keeps the legacy flow")
+	var routed_new: Dictionary = DungeonScript.routed_run(new_save)
+	_assert(int(routed_new.get("act1_step", -1)) == 3
+		and str(routed_new["theme_id"]) == "supermarket",
+		"legacy route: a stored-step save is never routed")
 
 	# --- The census, as source pins: ONE formula copy ---------------
 	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
@@ -6354,7 +6376,22 @@ func _test_elevator_cab_201() -> void:
 	_assert(st3.get_node_or_null("ElevatorBank") != null
 		and st3.get_node_or_null("Sleepers") == null,
 		"201s2: elevator bank stands in the Warlord hall, no tracks (Jesse 2026-10-27)")
-	holder_s3.queue_free()
+	# Jesse 2026-10-28: Warlord's stands a cab too — with an
+	# unarmed button: no prompt, no departure. The way out is
+	# the clear and the exit into the proc-gen world.
+	var cab3 = st3.get_node_or_null("ElevatorBank/ElevatorCab")
+	_assert(cab3 != null, "legacy route: the walk-in cab stands at Warlord's")
+	var button3 = st3.get_node_or_null("ElevatorBank/ElevatorCab/CabButton")
+	_assert(button3 != null and not bool(button3.get("depart_armed"))
+		and str(button3.call("prompt_text")) == ""
+		and not button3.is_in_group("cab_button"),
+		"legacy route: the Warlord cab button is inert furniture")
+	_assert(not bool(st3.record_cab_depart(10, [10], [])["ok"]),
+		"legacy route: no cab departure from Warlord's")
+	# Immediate free, not queue_free (the holder_s rule above):
+	# the Warlord cab makes this origin-standing fixture
+	# collision-bearing too.
+	holder_s3.free()
 	holder3.queue_free()
 	DungeonScript.set("act1_step", -1)
 	DungeonScript.set("next_theme_id", "village")

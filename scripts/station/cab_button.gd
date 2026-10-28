@@ -7,8 +7,15 @@ extends Node3D
 ## only fires once every living player is inside the cab.
 
 
+## Set by the station before add_child: false at Warlord's,
+## where the button does nothing (Jesse 2026-10-28) — it
+## stays out of the interact scan and shows no prompt.
+var depart_armed := true
+
+
 func _ready() -> void:
-	add_to_group("cab_button")
+	if depart_armed:
+		add_to_group("cab_button")
 	_build()
 
 
@@ -26,6 +33,8 @@ func _station() -> Node:
 
 
 func prompt_text() -> String:
+	if not depart_armed:
+		return ""
 	# Issue #201 (fork 2) carries over from the lever this
 	# button replaces in Act 1 hubs: the destination is named
 	# only here, at the moment of use.

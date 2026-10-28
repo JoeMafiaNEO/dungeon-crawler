@@ -1653,6 +1653,9 @@ func _on_host_create_pressed() -> void:
 				NetworkManager.active_run_mode = SaveManager.MODE_MP
 				NetworkManager.active_run_slot = lan_slot
 				NetworkManager.is_host = true
+				# Jesse 2026-10-28: legacy Act 1 saves route to
+				# the top floor (see Dungeon.routed_run).
+				run = Dungeon.routed_run(run)
 				# Find the host's roster entry for their saved state.
 				var host_state := {}
 				var host_class := "warrior"

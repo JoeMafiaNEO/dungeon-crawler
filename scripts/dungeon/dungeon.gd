@@ -487,6 +487,35 @@ static func act1_step_for_run(run: Dictionary) -> int:
 		int(run.get("level_number", 1)))
 
 
+## Jesse 2026-10-28: a legacy save (no stored act1_step key)
+## that still sits inside the Act 1 sequence is routed to the
+## top floor — the elevator takes it straight to Warlord's
+## Domain instead of reconstructing its old place in the
+## climb. The run's character and player state carry over;
+## only the destination changes (the baked Warlord seed, a
+## fresh wave, no pending Vault detour). A legacy save
+## already at Warlord's (derived step 5) and one the
+## sequence cannot place (later cycles) pass through
+## untouched. Applied by every continue path.
+static func routed_run(run: Dictionary) -> Dictionary:
+	if run.has("act1_step"):
+		return run
+	var step := derive_act1_step(str(run.get("theme_id", "")),
+		int(run.get("level_number", 1)))
+	if step < 0 or step >= 5:
+		return run
+	var out := run.duplicate()
+	out["theme_id"] = "warlord"
+	out["level_number"] = 6
+	out["act1_step"] = 5
+	if run.has("seed"):
+		out["seed"] = fresh_seed_for("warlord", 6,
+			int(run.get("seed", 0)))
+	out["wave"] = 0
+	out["vault_return_theme"] = ""
+	return out
+
+
 ## Treated-site helpers (amended spec section 1 census): the
 ## supermarket cash goal and mob cap, the solo Warlord AI count,
 ## and the cycle-grown puzzle-key count, each reading the shared
