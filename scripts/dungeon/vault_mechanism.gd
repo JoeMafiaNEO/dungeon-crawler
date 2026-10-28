@@ -194,6 +194,18 @@ func _build_visuals() -> void:
 				_label = _mk_label(str(def.get("lintel", "")), 3.6)
 			else:
 				_label = _mk_label("", 3.6)
+			# Jesse 2026-10-27: door labels are STATIC — flat on
+			# the lintel's chamber-side face, never billboarded.
+			# (Billboarded, the label pivoted inside the lintel
+			# box and read through the wall from both rooms.)
+			# The lintel (built by VaultLayout) spans z ±0.4
+			# around the partition line; every door's puzzle is
+			# worked from the -Z chamber, so the label sits just
+			# proud of that face, turned PI to read from there.
+			# From the next room the wall hides it outright.
+			_label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+			_label.rotation.y = PI
+			_label.position = Vector3(0, 3.6, -0.46)
 		"tablet":
 			_mk_box(Vector3(0.9, 0.9, 0.9), Vector3(0, 0.45, 0), dark)
 			_mk_box(Vector3(0.62, 0.5, 0.14), Vector3(0, 1.12, 0), stone)

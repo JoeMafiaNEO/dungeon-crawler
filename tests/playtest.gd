@@ -4379,6 +4379,28 @@ func _test_mason_vault_level_185() -> void:
 			"plate1", "plate8", "door6", "door7a", "door7b", "door7c",
 			"stone_b", "lsock_b", "door8", "warden_a", "warden_b", "treasure_door"]:
 		_assert(defs.has(k), "185: mechanism registered: %s" % k)
+	# --- Door labels (Jesse 2026-10-27): STATIC, flat on the
+	# lintel's chamber-side face — never billboarded — so a
+	# door's word reads only from the room that works its
+	# puzzle. (Other mechanism labels keep their billboards;
+	# the ruling covers door labels only.)
+	var door_labels := 0
+	for node in dun.get_node("Vault").get_children():
+		if str(node.get("kind")) not in ["door", "door_try"]:
+			continue
+		var mk := str(node.get("mech_key"))
+		var lab = node.get("_label") as Label3D
+		_assert(lab != null, "185(doors): %s carries a lintel label" % mk)
+		if lab == null:
+			continue
+		door_labels += 1
+		_assert(lab.billboard == BaseMaterial3D.BILLBOARD_DISABLED,
+			"185(doors): %s label is static (billboard off)" % mk)
+		_assert(absf(absf(lab.rotation.y) - PI) < 0.01,
+			"185(doors): %s label faces its chamber (-Z)" % mk)
+		_assert(lab.position.z < -0.4,
+			"185(doors): %s label sits proud of the lintel's chamber face" % mk)
+	_assert(door_labels == 11, "185(doors): all eleven door labels present")
 	var mobs_node = dun.get_node("Mobs")
 	_assert(mobs_node.get_child_count() == 2,
 		"185: chamber 2's patrol sentries are live at build (2 mobs, no statues)")
