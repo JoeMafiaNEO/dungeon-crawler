@@ -6280,6 +6280,37 @@ func _test_elevator_cab_201() -> void:
 	_assert(st2._boarding_sign != null, "201s2: legacy hall keeps its sign")
 	holder_s2.queue_free()
 
+	# --- Jesse 2026-10-27: Warlord's Domain is an Act 1 hub —
+	# its annex drops the old train interior too (the dressing
+	# tests no longer carve the sixth floor out). Departure
+	# flow is untouched: the axis still closes on Warlord's
+	# departure and its boarding still takes the train.
+	DungeonScript.set("act1_step", 5)
+	DungeonScript.set("next_theme_id", "warlord")
+	var layout3: Variant = ProcGenScript.generate(theme_v, 777)
+	var plan3: Dictionary = AnnexScript.plan(777, layout3)
+	var holder3 := Node3D.new()
+	root.add_child(holder3)
+	var annex_w: Variant = AnnexScript.build(holder3, plan3, layout3)
+	_assert(annex_w._plain_hub, "201s2: annex is plain in the Warlord hub (Jesse 2026-10-27)")
+	_assert(annex_w.find_children("LobbyRack*", "", true, false).is_empty()
+		and annex_w.find_children("LobbyWindow*", "", true, false).is_empty()
+		and annex_w.find_children("LobbyStrap*", "", true, false).is_empty(),
+		"201s2: no train-car dressing in the Warlord waiting room")
+	var holder_s3 := Node3D.new()
+	root.add_child(holder_s3)
+	var st3 = StationScript.new()
+	st3.annex = annex_w
+	st3.current_theme_id = "warlord"
+	holder_s3.add_child(st3)
+	_assert(st3.get_node_or_null("ElevatorBank") != null
+		and st3.get_node_or_null("Sleepers") == null,
+		"201s2: elevator bank stands in the Warlord hall, no tracks (Jesse 2026-10-27)")
+	holder_s3.queue_free()
+	holder3.queue_free()
+	DungeonScript.set("act1_step", -1)
+	DungeonScript.set("next_theme_id", "village")
+
 	# --- Section 7 census: every player-facing text in the built
 	# Act 1 hub is free of the forbidden tokens — and the cab
 	# carries no text at all. ---

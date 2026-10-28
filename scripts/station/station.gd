@@ -114,6 +114,15 @@ func _linear_mode() -> bool:
 		and _current_theme() != "warlord"
 
 
+## The hall strip's dressing test (issue #201 section 4, widened
+## by Jesse 2026-10-27): every Act 1 hub — Warlord's Domain
+## included — stands an elevator bank where the tracks were.
+## Wider than _linear_mode on purpose: the linear rule also
+## drives departure flow, and Warlord's keeps its legacy path.
+func _elevator_dressed() -> bool:
+	return Dungeon.act1_step >= 0 and _current_theme() != ""
+
+
 func _current_theme() -> String:
 	if current_theme_id != "":
 		return current_theme_id
@@ -843,7 +852,7 @@ func _build_station_embedded() -> void:
 	# North strip. Legacy: two steel rails + wooden sleepers.
 	# Issue #201 (spec section 4): in an Act 1 hub a plain elevator
 	# bank stands in an unadorned wall where the tracks were.
-	if _linear_mode():
+	if _elevator_dressed():
 		_build_elevator_bank()
 	else:
 		_box(self, Vector3(19, 0.14, 0.14), Vector3(-1.5, 0.10, -5.3), steel)
