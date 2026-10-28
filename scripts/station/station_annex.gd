@@ -444,6 +444,12 @@ func _build_lobby() -> void:
 ## Depart lever prop (issue #93 Phase 3): brass E-interact lever inside the
 ## lobby. The station's request_depart validates server-side.
 func _build_depart_lever() -> void:
+	# Jesse 2026-10-27: in a linear Act 1 hub the walk-in
+	# elevator cab replaces this lever (its button departs).
+	# The test mirrors the station's linear rule.
+	if Dungeon.act1_step >= 0 and Dungeon.next_theme_id != "" \
+			and Dungeon.next_theme_id != "warlord":
+		return
 	var lever = DepartLeverScript.new()
 	lever.position = _hl(LOBBY_LEVER_POS.x, LOBBY_LEVER_POS.y, LOBBY_LEVER_POS.z)
 	add_child(lever)

@@ -11,6 +11,7 @@ extends Node3D
 
 const DepartureBoardScript := preload("res://scripts/station/departure_board.gd")
 const VaultDoorScript := preload("res://scripts/station/vault_door.gd")
+const CabButtonScript := preload("res://scripts/station/cab_button.gd")
 const VendorStallScript := preload("res://scripts/station/vendor_stall.gd")
 const BountyBoardScript := preload("res://scripts/station/bounty_board.gd")
 const RelicVaultScript := preload("res://scripts/station/relic_vault.gd")
@@ -103,6 +104,17 @@ var _dressing: Node3D
 ## Built only in linear mode; visible only while the vault gate
 ## is open — closed, there is no door, no sign, no trace.
 var _vault_door: Node3D = null
+## Walk-in elevator cab (Jesse 2026-10-27, linear hubs only):
+## door state, panels, shapes, and the cab volume (station-local).
+var _cab_doors_open := true
+var _cab_door_panels: Array = []
+var _cab_door_shapes: Array = []
+var _cab_tween: Tween = null
+const CAB_DOOR_TRAVEL := 1.12
+const CAB_X_MIN := -3.0
+const CAB_X_MAX := 0.0
+const CAB_Z_MIN := -7.75
+const CAB_Z_MAX := -5.3
 
 
 ## Issue #201 (P1 Slice 1): the Act 1 linear flow. The axis is
@@ -618,6 +630,48 @@ func record_depart(peer_id: int, living_override: Array = []) -> Dictionary:
 	return {"ok": true}
 
 
+## Is a station-local point inside the cab volume?
+func _point_in_cab(local: Vector3) -> bool:
+	return local.x >= CAB_X_MIN and local.x <= CAB_X_MAX \
+		and local.z >= CAB_Z_MIN and local.z <= CAB_Z_MAX \
+		and local.y >= -0.5 and local.y <= 3.1
+
+
+## Living players (peer ids) currently outside the cab.
+func _living_outside_cab(living: Array) -> Array:
+	var out := []
+	for n in get_tree().get_nodes_in_group("players"):
+		var p := n as Node3D
+		if p == null or not bool(p.get("alive")):
+			continue
+		var pid := int(p.get_multiplayer_authority())
+		if not pid in living:
+			continue
+		if not _point_in_cab(to_local(p.global_position)):
+			out.append(pid)
+	return out
+
+
+## Record a cab-button press from a peer. Pure logic (no RPC):
+## the lever's validations plus Jesse's cab rule (2026-10-27)
+## — every living player must be inside the cab.
+## outside_override lets tests drive the rule without a scene
+## tree of players. Returns {"ok": bool, ...}.
+func record_cab_depart(peer_id: int, living_override: Array = [], outside_override: Variant = null) -> Dictionary:
+	if not _linear_mode():
+		return {"ok": false, "reason": "not_linear"}
+	if not _departing or _depart_requested:
+		return {"ok": false, "reason": "not_ready"}
+	var living := living_override if not living_override.is_empty() else _living_peer_ids()
+	if not peer_id in living:
+		return {"ok": false, "reason": "not_living"}
+	var outside: Array = outside_override if outside_override != null else _living_outside_cab(living)
+	if not outside.is_empty():
+		return {"ok": false, "reason": "not_all_inside", "outside": outside}
+	_depart_requested = true
+	return {"ok": true}
+
+
 ## Record a Vault-door use from a peer. Pure logic (no RPC): the
 ## request_vault_entry RPC wrapper handles networking. Linear
 ## mode only, gate open only, one departure in flight at most.
@@ -676,6 +730,49 @@ func request_depart() -> void:
 	if _board_label != null and not _linear_mode():
 		_board_label.text = "DEPARTING"
 	_begin_departure_close()
+
+
+## Cab button pressed (Jesse 2026-10-27). Server validates;
+## on success the cab doors close and the departure resolves
+## through the same chain the lever uses. A press with
+## someone still outside tells the presser — never a
+## silent no-op.
+@rpc("any_peer", "call_local")
+func request_cab_depart() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	var res: Dictionary = record_cab_depart(sender)
+	if not bool(res.get("ok", false)):
+		if str(res.get("reason", "")) == "not_all_inside":
+			rpc_id(sender, "cab_wait_notice")
+		return
+	AudioManager.sfx("board_chime")
+	_begin_cab_departure_close()
+
+
+## Presser feedback for a blocked cab press (server -> presser).
+@rpc("any_peer", "call_local")
+func cab_wait_notice() -> void:
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("announce"):
+		hud.announce("Everyone in the elevator")
+
+
+## Button accepted: close the cab doors, wait out the 2s
+## door-close window, then complete the departure.
+func _begin_cab_departure_close() -> void:
+	_apply_cab_close()
+	await get_tree().create_timer(DEPART_CLOSE_TIME).timeout
+	_complete_departure()
+
+
+## Cab door-close half of the departure (split out so tests
+## can drive the door state without the 2s timer).
+func _apply_cab_close() -> void:
+	set_cab_doors(false)
 
 
 ## Lever accepted: close the lobby doors, wait out the 2s door-close
@@ -990,6 +1087,8 @@ func _build_station_embedded() -> void:
 ## of closed doors in an unadorned wall panel, where the tracks were.
 ## No signage, no text, no theme tint: three identical door pairs with
 ## a small indicator lamp each. Visual only, like the tracks were.
+## Jesse 2026-10-27: in a linear hub the middle pair is a real
+## walk-in cab whose button departs (see _build_cab).
 func _build_elevator_bank() -> void:
 	var bank := Node3D.new()
 	bank.name = "ElevatorBank"
@@ -1001,12 +1100,127 @@ func _build_elevator_bank() -> void:
 	# The unadorned wall panel spanning the strip.
 	_box(bank, Vector3(15.0, 3.4, 0.4), Vector3(-1.5, 1.7, -5.55), panel_mat)
 	for dx in [-6.5, -1.5, 3.5]:
-		# Frame + two closed slabs with a center seam.
+		# Frame + indicator lamp for every pair.
 		_box(bank, Vector3(2.7, 2.95, 0.14), Vector3(dx, 1.475, -5.32), dark)
+		_box(bank, Vector3(0.18, 0.18, 0.06), Vector3(dx, 3.12, -5.28), lamp_glow)
+		# Closed slabs — except the middle pair in a linear hub,
+		# whose doors are the walk-in cab's real sliding doors.
+		if _linear_mode() and dx == -1.5:
+			continue
 		_box(bank, Vector3(1.16, 2.75, 0.10), Vector3(dx - 0.60, 1.375, -5.26), steel)
 		_box(bank, Vector3(1.16, 2.75, 0.10), Vector3(dx + 0.60, 1.375, -5.26), steel)
-		# Indicator lamp above the pair (a plain glowing block, no text).
-		_box(bank, Vector3(0.18, 0.18, 0.06), Vector3(dx, 3.12, -5.28), lamp_glow)
+	if _linear_mode():
+		_build_cab(bank)
+
+
+## One cab solid: a collision shape on the given body plus an
+## optional visual box (null material = collision only).
+func _cab_solid(body: StaticBody3D, size: Vector3, pos: Vector3, mat: Material, visual_parent: Node) -> void:
+	var shape := CollisionShape3D.new()
+	var bs := BoxShape3D.new()
+	bs.size = size
+	shape.shape = bs
+	shape.position = pos
+	body.add_child(shape)
+	if mat != null:
+		_box(visual_parent, size, pos, mat)
+
+
+## The walk-in cab behind the bank's middle pair (Jesse
+## 2026-10-27): a plain car whose sliding doors stand open,
+## panel collision so the fake pairs stay solid, and the
+## button that departs. Linear hubs only — legacy banks stay
+## visual exactly as built above. No text anywhere (the
+## bank's no-signage rule stands; the button's prompt is
+## dynamic, at the moment of use).
+func _build_cab(bank: Node3D) -> void:
+	var cab := Node3D.new()
+	cab.name = "ElevatorCab"
+	bank.add_child(cab)
+	var wall_mat := _mat(Color(0.50, 0.48, 0.52))
+	var trim := _mat(Color(0.58, 0.59, 0.62))
+	var glow := _mat(Color(1.0, 0.85, 0.55), Color(1.0, 0.78, 0.45), 1.4)
+	var body := StaticBody3D.new()
+	body.name = "CabBody"
+	cab.add_child(body)
+	# Car walls: interior x [CAB_X_MIN, CAB_X_MAX], back wall
+	# at CAB_Z_MIN (station-local).
+	_cab_solid(body, Vector3(0.15, 2.95, 2.55), Vector3(CAB_X_MIN + 0.075, 1.475, -6.56), wall_mat, cab)
+	_cab_solid(body, Vector3(0.15, 2.95, 2.55), Vector3(CAB_X_MAX - 0.075, 1.475, -6.56), wall_mat, cab)
+	_cab_solid(body, Vector3(3.15, 2.95, 0.15), Vector3(-1.5, 1.475, CAB_Z_MIN - 0.075), wall_mat, cab)
+	# Ceiling + light strip (visual only).
+	_box(cab, Vector3(3.15, 0.15, 2.7), Vector3(-1.5, 3.02, -6.56), wall_mat)
+	_box(cab, Vector3(1.6, 0.06, 0.3), Vector3(-1.5, 2.93, -6.56), glow)
+	# Bank panel collision either side of the doorway (the
+	# panel run is x [-9, 6]; the doorway is [-2.85, -0.15]).
+	_cab_solid(body, Vector3(6.15, 3.4, 0.4), Vector3(-5.925, 1.7, -5.55), null, cab)
+	_cab_solid(body, Vector3(6.15, 3.4, 0.4), Vector3(2.925, 1.7, -5.55), null, cab)
+	# Sliding doors: two steel panels that stand open.
+	_cab_doors_open = true
+	for side in [-1.0, 1.0]:
+		var door := Node3D.new()
+		door.name = "CabDoorL" if side < 0.0 else "CabDoorR"
+		door.position = Vector3(-1.5 + side * (0.60 + CAB_DOOR_TRAVEL), 0, 0)
+		door.set_meta("closed_x", -1.5 + side * 0.60)
+		door.set_meta("open_x", -1.5 + side * (0.60 + CAB_DOOR_TRAVEL))
+		cab.add_child(door)
+		var panel := MeshInstance3D.new()
+		var pm := BoxMesh.new()
+		pm.size = Vector3(1.16, 2.75, 0.10)
+		pm.material = trim
+		panel.mesh = pm
+		panel.position = Vector3(0, 1.375, -5.26)
+		door.add_child(panel)
+		var dbody := StaticBody3D.new()
+		door.add_child(dbody)
+		var shape := CollisionShape3D.new()
+		var bs := BoxShape3D.new()
+		bs.size = Vector3(1.16, 2.75, 0.3)
+		shape.shape = bs
+		shape.position = Vector3(0, 1.375, -5.26)
+		shape.disabled = true  # doors stand open
+		dbody.add_child(shape)
+		_cab_door_panels.append(door)
+		_cab_door_shapes.append(shape)
+	# The button on the right interior wall, by the door.
+	var button = CabButtonScript.new()
+	button.position = Vector3(-0.32, 1.25, -5.95)
+	cab.add_child(button)
+	# NOTE (Phase 1 naming gotcha): .name AFTER add_child.
+	button.name = "CabButton"
+
+
+## Cab door state (mirrors the lobby doors' trio): the server
+## sets state through set_cab_doors -> _rpc_cab_doors (all
+## peers) -> _apply_cab_doors (tween locally, snap off-tree).
+func set_cab_doors(open: bool) -> void:
+	rpc("_rpc_cab_doors", open)
+
+
+@rpc("any_peer", "call_local")
+func _rpc_cab_doors(open: bool) -> void:
+	_apply_cab_doors(open)
+
+
+func _apply_cab_doors(open: bool) -> void:
+	if _cab_doors_open == open:
+		return
+	_cab_doors_open = open
+	AudioManager.sfx("door_open" if open else "door_close")
+	if _cab_tween != null and _cab_tween.is_valid():
+		_cab_tween.kill()
+	_cab_tween = null
+	for i in _cab_door_panels.size():
+		var door := _cab_door_panels[i] as Node3D
+		var shape := _cab_door_shapes[i] as CollisionShape3D
+		var tx: float = float(door.get_meta("open_x" if open else "closed_x"))
+		if is_inside_tree():
+			if _cab_tween == null:
+				_cab_tween = create_tween().set_parallel()
+			_cab_tween.tween_property(door, "position:x", tx, 1.2)
+		else:
+			door.position.x = tx
+		shape.set_deferred("disabled", open)
 
 
 ## Dress the station for a destination theme: tint the lamps, show that

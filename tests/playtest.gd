@@ -5896,9 +5896,28 @@ func _test_act1_axis_201() -> void:
 		"201 linear: the lever is armed with the successor from the start")
 	_assert(str(st.depart_prompt_text()) == "Depart for Misty Docks",
 		"201 linear (fork 2): the lever prompt names the successor, at the moment of use")
-	var lever = annex.get_node_or_null("DepartLever")
-	_assert(lever != null and str(lever.call("prompt_text")) == "Depart for Misty Docks",
-		"201 linear (fork 2): the physical lever carries the same prompt")
+	# Jesse 2026-10-27 (#227): the physical lever is retired
+	# in a linear hub — the walk-in cab's button carries the
+	# fork-2 prompt instead, and the cab doors stand open.
+	_assert(annex.get_node_or_null("DepartLever") == null,
+		"227: no depart lever is built in a linear hub")
+	var cab_button = st.get_node_or_null("ElevatorBank/ElevatorCab/CabButton")
+	_assert(cab_button != null and str(cab_button.call("prompt_text")) == "Depart for Misty Docks",
+		"227 (fork 2): the cab button carries the destination prompt")
+	_assert(bool(st.get("_cab_doors_open")), "227: the cab doors stand open")
+	st._apply_cab_doors(false)
+	_assert(not bool(st.get("_cab_doors_open")), "227: the cab doors close when applied")
+	st._apply_cab_doors(true)
+	_assert(bool(st.call("_point_in_cab", Vector3(-1.5, 1.0, -6.5))),
+		"227: the cab volume contains the car's center")
+	_assert(not bool(st.call("_point_in_cab", Vector3(-1.5, 1.0, 0.0))),
+		"227: the cab volume excludes the hall floor")
+	var cab_blocked: Dictionary = st.record_cab_depart(10, [10, 11], [11])
+	_assert(not bool(cab_blocked["ok"]) and str(cab_blocked["reason"]) == "not_all_inside",
+		"227: the button refuses while a living player is outside the cab")
+	_assert(bool(st.record_cab_depart(10, [10, 11], [])["ok"]),
+		"227: the button departs when every living player is inside")
+	st.set("_depart_requested", false)  # the cab pin latched it; the lever-core pin below drives the same latch
 	_assert(not bool(st.record_vote(10, "dungeon", [10, 11])["ok"]),
 		"201 linear: votes are refused (bypassed, not deleted)")
 	_assert((st.get("votes") as Dictionary).is_empty() and not bool(st.get("_timer_running")),
@@ -6287,7 +6306,13 @@ func _test_elevator_cab_201() -> void:
 	var census_texts: Array = []
 	_collect_label_texts(st, census_texts)
 	_collect_label_texts(annex_p, census_texts)
-	holder_s.queue_free()
+	# Immediate free, not queue_free: since #227 the cab makes
+	# this origin-standing fixture collision-bearing, and a
+	# queue_free'd copy lingering into a later section blocked
+	# the 210B step ray at the world origin. Its asserts and
+	# the census collection are complete above; nothing below
+	# references this station.
+	holder_s.free()
 	holder1.queue_free()
 	DungeonScript.set("act1_step", -1)
 	var holder_s2 := Node3D.new()
@@ -6346,16 +6371,19 @@ func _test_elevator_cab_201() -> void:
 	_assert(cab_texts.is_empty(), "201s2 census: the cab carries no text at all")
 	cab2.free()
 	_assert(not census_texts.is_empty(), "201s2 census: hub texts collected")
-	# Gate amendment: the Act 1 hub carries EXACTLY the four ruled
+	# Gate amendment: the Act 1 hub carries EXACTLY the ruled
 	# texts — the BOARD HERE doorway label is not built in linear
 	# mode, and "board" joins the forbidden tokens below.
+	# Jesse 2026-10-27 (#227): the DEPART sign retired with the
+	# lever — the cab button carries no standing text, so the
+	# set is three now.
 	var uniq_texts: Array = []
 	for t0 in census_texts:
 		if not uniq_texts.has(t0):
 			uniq_texts.append(t0)
 	uniq_texts.sort()
-	_assert(uniq_texts == ["DEPART", "RELIC VAULT", "REST", "VENDOR"],
-		"201s2 census: the Act 1 hub carries exactly the four ruled texts")
+	_assert(uniq_texts == ["RELIC VAULT", "REST", "VENDOR"],
+		"201s2 census: the Act 1 hub carries exactly the three ruled texts")
 	const FORBIDDEN := ["train", "station", "platform", "aboard",
 		"boarding", "board", "floor", "building", "upstairs", "downstairs"]
 	for t in census_texts:

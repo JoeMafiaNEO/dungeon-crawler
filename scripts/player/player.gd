@@ -5666,7 +5666,7 @@ func _update_pickup_prompt() -> void:
 func _nearest_interact_node() -> Node3D:
 	var best: Node3D = null
 	var best_d := 2.5
-	for group in ["cipher_plaques", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "vault_door", "rooftop_door", "farm_plots", "dock_merchant", "vault_mechanisms", "transfer_trigger", "floor_transfer"]:
+	for group in ["cipher_plaques", "departure_board", "vendor_stall", "skip_lever", "bounty_board", "vault_locker", "depart_lever", "cab_button", "vault_door", "rooftop_door", "farm_plots", "dock_merchant", "vault_mechanisms", "transfer_trigger", "floor_transfer"]:
 		for n in get_tree().get_nodes_in_group(group):
 			var node := n as Node3D
 			if node == null or not node.visible:
