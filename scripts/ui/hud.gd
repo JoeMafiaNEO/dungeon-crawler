@@ -69,9 +69,22 @@ func _on_health_changed(hp: float, max_hp: float) -> void:
 var _hp_frac := 1.0
 var _vignette_t := 0.0
 
-## Pause menu tabs: 0=Stats, 1=Specialization, 2=Collection.
+## Pause menu tabs: 0=Stats, 1=Specialization, 2=Collection,
+## 3=Keybinds, 4=Voice (Keybinds + Voice added 2026-10-28 on
+## Jesse's order — the Keybinds tab shows every binding, the
+## Voice tab carries the voice-chat settings in-game).
 var _pause_tab := 0
 var _pause_tab_btns: Array[Button] = []
+## Voice tab controls (built with the pause tabs; they wire the
+## same VoiceManager settings as the main-menu Settings panel).
+var _pause_voice_transmit_tog: CheckButton
+var _pause_voice_mode_opt: OptionButton
+var _pause_voice_thresh_slider: HSlider
+var _pause_voice_thresh_val: Label
+var _pause_voice_mute_tog: CheckButton
+var _pause_voice_vol_slider: HSlider
+var _pause_voice_vol_val: Label
+var _pause_voice_status_label: Label
 ## Node names (under PauseVBox) belonging to each tab.
 var _pause_tab_members: Array = []
 ## Action buttons moved outside the scroll area (stored refs avoid % lookup issues).
@@ -90,6 +103,48 @@ var _pickup_shown := false
 var _pause_hint_label: Label = null
 
 const PAUSE_HINT_TEMPLATE := "{move} move · {attack} attack · {dash} dash · {cycle_ability} ability · {ping} ping · {start_wave} start wave"
+
+## Keybinds tab rows: every non-ui InputMap action, in play order,
+## with its display name. The BINDINGS are never stored here — they
+## are read live from InputMap.action_get_events() when the rows
+## are generated (keybind_rows), so the tab always shows the keys
+## the game actually ships. The ui_* menu actions are summarized
+## by the trailing "Menu Navigation" row instead of listed singly.
+const KEYBIND_ACTIONS := [
+	["move_forward", "Move Forward"],
+	["move_back", "Move Back"],
+	["move_left", "Move Left"],
+	["move_right", "Move Right"],
+	["jump", "Jump"],
+	["dash", "Dash"],
+	["attack", "Attack"],
+	["alt_attack", "Alt Attack"],
+	["interact", "Interact"],
+	["ability", "Use Ability"],
+	["cycle_ability", "Cycle Ability"],
+	["ability_1", "Ability 1"],
+	["ability_2", "Ability 2"],
+	["ability_3", "Ability 3"],
+	["ability_4", "Ability 4"],
+	["ability_5", "Ability 5"],
+	["ability_6", "Ability 6"],
+	["ability_7", "Ability 7"],
+	["signature_ability", "Signature Ability"],
+	["start_wave", "Start Wave"],
+	["potion", "Drink Potion"],
+	["inventory", "Inventory"],
+	["deep_tree_open", "Deep Tree"],
+	["ping", "Ping"],
+	["toggle_rod", "Fishing Rod"],
+	["build_menu", "Build Menu"],
+	["look_left", "Look Left"],
+	["look_right", "Look Right"],
+	["look_up", "Look Up"],
+	["look_down", "Look Down"],
+	["voice_ptt", "Voice Push-to-Talk"],
+	["voice_mute", "Voice Mute Mic"],
+	["pause", "Pause"],
+]
 const CLOSE_HINT_TEMPLATE := "{close_keys} — close"
 const DEST_HINT_TEMPLATE := "{choose} a destination to vote. Unanimous vote departs the train.  ({close_keys_tight} closes)"
 
@@ -494,7 +549,8 @@ func drink_potion() -> void:
 	refresh_potion_slot()
 
 
-## Rework the pause panel into three tabs (Stats / Specialization / Collection).
+## Rework the pause panel into five tabs (Stats / Specialization /
+## Collection / Keybinds / Voice).
 ## Action buttons are moved outside the ScrollContainer, fixed at the bottom.
 func _build_pause_tabs() -> void:
 	# Bare-script harnesses (no tscn) have no pause panel; skip cleanly.
@@ -522,7 +578,7 @@ func _build_pause_tabs() -> void:
 	tab_bar.alignment = BoxContainer.ALIGNMENT_CENTER
 	tab_bar.add_theme_constant_override("separation", 4)
 	main.add_child(tab_bar)
-	var tab_names := ["Stats", "Specialization", "Collection"]
+	var tab_names := ["Stats", "Specialization", "Collection", "Keybinds", "Voice"]
 	for i in tab_names.size():
 		var btn := Button.new()
 		btn.text = tab_names[i]
@@ -535,12 +591,18 @@ func _build_pause_tabs() -> void:
 	# scrolling (Jesse's hard rule). Stat rows become two columns; hint
 	# text shrinks; spacing tightens.
 	_compact_stats_tab(vbox)
+	# Keybinds + Voice panels are built in code and join the vbox;
+	# each is the sole member of its tab.
+	_build_keybinds_panel(vbox)
+	_build_voice_panel(vbox)
 	# Define tab membership.
 	_pause_tab_members = [
 		["HintLabel", "VolLabel", "MasterRow", "MusicRow", "SFXRow",
 			"StatPointsLabel", "StatPair1", "StatPair2", "StatPair3"],
 		["SpecLabel", "SpecList"],
 		["FamilyLabel", "FamilyPanel", "CollectionLabel", "CollectionLog"],
+		["KeybindsPanel"],
+		["VoicePanel"],
 	]
 	# Move the scroll into main (expanding).
 	scroll.reparent(main)
@@ -560,6 +622,294 @@ func _build_pause_tabs() -> void:
 				_save_quit_btn = b
 	# Remove the now-empty old VBox (scroll was moved, vbox is orphaned).
 	# Note: vbox is still a child of scroll; scroll was reparented with it.
+
+
+## Keybind rows for the Keybinds tab: one row per KEYBIND_ACTIONS
+## entry — {"action", "display", "bindings"} — with the bindings
+## rendered from the LIVE InputMap, plus three summary rows for
+## controls that are not InputMap actions (mouse look, the RTS
+## command-view toggle, menu navigation). Pure data: the suite
+## pins coverage and binding truth against this, the panel below
+## only renders it.
+func keybind_rows() -> Array:
+	var rows: Array = []
+	for spec in KEYBIND_ACTIONS:
+		var action := str(spec[0])
+		rows.append({
+			"action": action,
+			"display": str(spec[1]),
+			"bindings": _keybind_binding_text(action),
+		})
+	rows.insert(4, {"action": "", "display": "Look", "bindings": "Mouse"})
+	rows.append({"action": "", "display": "Command View (RTS)", "bindings": "Tab"})
+	rows.append({"action": "", "display": "Menu Navigation",
+		"bindings": "Arrow Keys, Enter / Space, Esc"})
+	return rows
+
+
+## All bindings of one action as one line ("W, Up, Left Stick"),
+## duplicates collapsed (the four move actions each bind two
+## left-stick axes, which read once).
+func _keybind_binding_text(action: String) -> String:
+	var parts: Array = []
+	for ev in InputMap.action_get_events(action):
+		var t := _keybind_event_text(ev)
+		if t != "" and not parts.has(t):
+			parts.append(t)
+	var out := ""
+	for i in parts.size():
+		out += (", " if i > 0 else "") + str(parts[i])
+	return out
+
+
+## One bound event in player words. Keys name by their physical
+## position (the layout the prompts use); pad controls carry a
+## "Pad" prefix so the two families never blur on one line.
+static func _keybind_event_text(ev: InputEvent) -> String:
+	if ev is InputEventKey:
+		var k := ev as InputEventKey
+		var code := k.physical_keycode if k.physical_keycode != 0 else k.keycode
+		return OS.get_keycode_string(code)
+	if ev is InputEventMouseButton:
+		match (ev as InputEventMouseButton).button_index:
+			MOUSE_BUTTON_LEFT:
+				return "Left Click"
+			MOUSE_BUTTON_RIGHT:
+				return "Right Click"
+			MOUSE_BUTTON_MIDDLE:
+				return "Middle Click"
+			MOUSE_BUTTON_XBUTTON1:
+				return "Mouse X1"
+			MOUSE_BUTTON_XBUTTON2:
+				return "Mouse X2"
+			MOUSE_BUTTON_WHEEL_UP:
+				return "Wheel Up"
+			MOUSE_BUTTON_WHEEL_DOWN:
+				return "Wheel Down"
+		return "Mouse Button"
+	if ev is InputEventJoypadButton:
+		var pad_names := ["Pad A", "Pad B", "Pad X", "Pad Y", "Pad View",
+			"Pad Guide", "Pad Menu", "Pad LS Click", "Pad RS Click",
+			"Pad LB", "Pad RB", "Pad D-Pad Up", "Pad D-Pad Down",
+			"Pad D-Pad Left", "Pad D-Pad Right"]
+		var bi := (ev as InputEventJoypadButton).button_index
+		if bi >= 0 and bi < pad_names.size():
+			return pad_names[bi]
+		return "Pad Button %d" % bi
+	if ev is InputEventJoypadMotion:
+		match (ev as InputEventJoypadMotion).axis:
+			JOY_AXIS_LEFT_X, JOY_AXIS_LEFT_Y:
+				return "Left Stick"
+			JOY_AXIS_RIGHT_X, JOY_AXIS_RIGHT_Y:
+				return "Right Stick"
+			JOY_AXIS_TRIGGER_LEFT:
+				return "Pad LT"
+			JOY_AXIS_TRIGGER_RIGHT:
+				return "Pad RT"
+		return "Pad Stick"
+	return ""
+
+
+## Build the Keybinds tab: two columns of one-line rows, small
+## type, so ALL the bindings fit the pause panel with zero
+## scrolling (Jesse's fit-to-screen rule — no scroll approval
+## was given for this tab).
+func _build_keybinds_panel(vbox: VBoxContainer) -> void:
+	var panel := HBoxContainer.new()
+	panel.name = "KeybindsPanel"
+	panel.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.add_theme_constant_override("separation", 24)
+	var rows := keybind_rows()
+	var half := (rows.size() + 1) / 2
+	for side in 2:
+		var col := VBoxContainer.new()
+		col.add_theme_constant_override("separation", 1)
+		for i in range(side * half, mini((side + 1) * half, rows.size())):
+			var lab := Label.new()
+			lab.text = "%s: %s" % [str(rows[i]["display"]), str(rows[i]["bindings"])]
+			lab.add_theme_font_size_override("font_size", 11)
+			col.add_child(lab)
+		panel.add_child(col)
+	vbox.add_child(panel)
+
+
+## Build the Voice tab: the voice-chat settings, mirroring the
+## main-menu Settings panel's voice block (transmit / mode / mic
+## threshold / status / device note) plus a mic-mute toggle and
+## the voice playback volume, so they are reachable in-game.
+## Everything wires the same VoiceManager / AudioManager
+## settings the menu panel does — one source of truth, two
+## surfaces.
+func _build_voice_panel(vbox: VBoxContainer) -> void:
+	var panel := VBoxContainer.new()
+	panel.name = "VoicePanel"
+	panel.add_theme_constant_override("separation", 6)
+	var title := Label.new()
+	title.text = "Voice Chat"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	panel.add_child(title)
+	# Transmit toggle.
+	var trow := HBoxContainer.new()
+	trow.add_theme_constant_override("separation", 12)
+	trow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var tlab := Label.new()
+	tlab.text = "Transmit"
+	tlab.custom_minimum_size = Vector2(120, 0)
+	trow.add_child(tlab)
+	_pause_voice_transmit_tog = CheckButton.new()
+	_pause_voice_transmit_tog.toggled.connect(_on_pause_voice_transmit_toggled)
+	trow.add_child(_pause_voice_transmit_tog)
+	panel.add_child(trow)
+	# Mode picker.
+	var mrow := HBoxContainer.new()
+	mrow.add_theme_constant_override("separation", 12)
+	mrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var mlab := Label.new()
+	mlab.text = "Mode"
+	mlab.custom_minimum_size = Vector2(120, 0)
+	mrow.add_child(mlab)
+	_pause_voice_mode_opt = OptionButton.new()
+	_pause_voice_mode_opt.add_item("Auto", 0)
+	_pause_voice_mode_opt.add_item("Push-to-talk", 1)
+	_pause_voice_mode_opt.add_item("Voice activation", 2)
+	_pause_voice_mode_opt.item_selected.connect(_on_pause_voice_mode_selected)
+	mrow.add_child(_pause_voice_mode_opt)
+	panel.add_child(mrow)
+	# Mic threshold slider.
+	var hrow := HBoxContainer.new()
+	hrow.add_theme_constant_override("separation", 12)
+	hrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var hlab := Label.new()
+	hlab.text = "Mic threshold"
+	hlab.custom_minimum_size = Vector2(120, 0)
+	hrow.add_child(hlab)
+	_pause_voice_thresh_slider = HSlider.new()
+	_pause_voice_thresh_slider.custom_minimum_size = Vector2(160, 0)
+	_pause_voice_thresh_slider.min_value = -60
+	_pause_voice_thresh_slider.max_value = -10
+	_pause_voice_thresh_slider.step = 1
+	_pause_voice_thresh_slider.value_changed.connect(_on_pause_voice_thresh_changed)
+	hrow.add_child(_pause_voice_thresh_slider)
+	_pause_voice_thresh_val = Label.new()
+	_pause_voice_thresh_val.custom_minimum_size = Vector2(40, 0)
+	hrow.add_child(_pause_voice_thresh_val)
+	panel.add_child(hrow)
+	# Mic muted toggle (the M key's state, shown and settable).
+	var urow := HBoxContainer.new()
+	urow.add_theme_constant_override("separation", 12)
+	urow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var ulab := Label.new()
+	ulab.text = "Mic muted"
+	ulab.custom_minimum_size = Vector2(120, 0)
+	urow.add_child(ulab)
+	_pause_voice_mute_tog = CheckButton.new()
+	_pause_voice_mute_tog.toggled.connect(_on_pause_voice_mute_toggled)
+	urow.add_child(_pause_voice_mute_tog)
+	panel.add_child(urow)
+	# Voice playback volume.
+	var vrow := HBoxContainer.new()
+	vrow.add_theme_constant_override("separation", 12)
+	vrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	var vlab := Label.new()
+	vlab.text = "Voice volume"
+	vlab.custom_minimum_size = Vector2(120, 0)
+	vrow.add_child(vlab)
+	_pause_voice_vol_slider = HSlider.new()
+	_pause_voice_vol_slider.custom_minimum_size = Vector2(160, 0)
+	_pause_voice_vol_slider.min_value = 0
+	_pause_voice_vol_slider.max_value = 100
+	_pause_voice_vol_slider.step = 1
+	_pause_voice_vol_slider.value_changed.connect(_on_pause_voice_vol_changed)
+	vrow.add_child(_pause_voice_vol_slider)
+	_pause_voice_vol_val = Label.new()
+	_pause_voice_vol_val.custom_minimum_size = Vector2(40, 0)
+	vrow.add_child(_pause_voice_vol_val)
+	panel.add_child(vrow)
+	# Mic status + the PTT/mute keys (read from the live InputMap).
+	_pause_voice_status_label = Label.new()
+	_pause_voice_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	panel.add_child(_pause_voice_status_label)
+	var keys := Label.new()
+	keys.text = "Push-to-talk: %s · Mute mic: %s" % [
+		_keybind_binding_text("voice_ptt"), _keybind_binding_text("voice_mute")]
+	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	keys.add_theme_font_size_override("font_size", 12)
+	panel.add_child(keys)
+	var note := Label.new()
+	note.text = "Microphone device: set in Steam / system settings."
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_font_size_override("font_size", 12)
+	panel.add_child(note)
+	vbox.add_child(panel)
+	_refresh_pause_voice_rows()
+
+
+## Voice tab wiring — thin handlers onto the VoiceManager
+## autoload, mirroring the main-menu Settings panel's voice rows.
+func _voice_manager() -> Node:
+	return get_node_or_null("/root/VoiceManager")
+
+
+func _refresh_pause_voice_rows() -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		if _pause_voice_transmit_tog != null:
+			_pause_voice_transmit_tog.set_pressed_no_signal(bool(vm.get("transmit_enabled")))
+		if _pause_voice_mode_opt != null:
+			var modes := ["auto", "ptt", "va"]
+			_pause_voice_mode_opt.select(maxi(modes.find(str(vm.get("mode"))), 0))
+		if _pause_voice_thresh_slider != null:
+			_pause_voice_thresh_slider.set_value_no_signal(float(vm.get("va_threshold_db")))
+			if _pause_voice_thresh_val != null:
+				_pause_voice_thresh_val.text = "%d" % int(float(vm.get("va_threshold_db")))
+		if _pause_voice_mute_tog != null:
+			_pause_voice_mute_tog.set_pressed_no_signal(bool(vm.get("mic_muted")))
+		if _pause_voice_status_label != null:
+			_pause_voice_status_label.text = str(vm.call("mic_status_text"))
+	var am := get_node_or_null("/root/AudioManager")
+	if am != null and _pause_voice_vol_slider != null:
+		_pause_voice_vol_slider.set_value_no_signal(float(am.get("voice_vol")) * 100.0)
+		if _pause_voice_vol_val != null:
+			_pause_voice_vol_val.text = "%d" % int(float(am.get("voice_vol")) * 100.0)
+
+
+func _on_pause_voice_transmit_toggled(on: bool) -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		vm.call("set_transmit_enabled", on)
+	_refresh_pause_voice_rows()
+
+
+func _on_pause_voice_mode_selected(idx: int) -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		vm.call("set_mode", ["auto", "ptt", "va"][idx])
+	_refresh_pause_voice_rows()
+
+
+func _on_pause_voice_thresh_changed(value: float) -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		vm.call("set_va_threshold_db", value)
+	if _pause_voice_thresh_val != null:
+		_pause_voice_thresh_val.text = "%d" % int(value)
+
+
+func _on_pause_voice_mute_toggled(on: bool) -> void:
+	var vm := _voice_manager()
+	if vm != null:
+		vm.call("set_mic_muted", on)
+	_refresh_pause_voice_rows()
+
+
+func _on_pause_voice_vol_changed(value: float) -> void:
+	var am := get_node_or_null("/root/AudioManager")
+	if am != null:
+		am.call("set_voice_vol", value / 100.0)
+	if _pause_voice_vol_val != null:
+		_pause_voice_vol_val.text = "%d" % int(value)
 
 
 ## Compact the Stats tab so its content fits the pause panel with zero
@@ -604,15 +954,18 @@ func _style_tab_button(btn: Button, selected: bool) -> void:
 	sb.border_color = Color(0.8, 0.65, 0.25, 1.0)
 	sb.set_border_width_all(2 if selected else 1)
 	sb.set_corner_radius_all(4)
-	sb.content_margin_left = 12
-	sb.content_margin_right = 12
+	# Five tabs share the 480px panel (2026-10-28): padding and
+	# font slimmed from the three-tab era so the bar still fits
+	# on one row with no scrolling.
+	sb.content_margin_left = 8
+	sb.content_margin_right = 8
 	sb.content_margin_top = 6
 	sb.content_margin_bottom = 6
 	btn.add_theme_stylebox_override("normal", sb)
 	btn.add_theme_stylebox_override("hover", sb)
 	btn.add_theme_stylebox_override("pressed", sb)
 	btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if selected else Color(0.7, 0.7, 0.75))
-	btn.add_theme_font_size_override("font_size", 14)
+	btn.add_theme_font_size_override("font_size", 13)
 
 
 func _on_pause_tab_pressed(idx: int) -> void:
@@ -625,7 +978,11 @@ func _on_pause_tab_pressed(idx: int) -> void:
 	# redundant headers hide when there's full progress content.
 	if idx == 2:
 		_refresh_collection_log()
-	# Stats and Collection tabs are designed to fit; scrolling hard-disabled
+	# Voice tab: reflect the live VoiceManager state on every visit
+	# (the M-key mute and the menu panel can change it meanwhile).
+	if idx == 4:
+		_refresh_pause_voice_rows()
+	# Stats, Collection, Keybinds and Voice tabs are designed to fit; scrolling hard-disabled
 	# (layouts that cannot scroll, not promises). Specialization keeps
 	# auto-scroll as a safety valve.
 	var scroll := %PausePanel.get_node("PauseMain/PauseScroll") as ScrollContainer
@@ -654,7 +1011,7 @@ func _apply_pause_tab_visibility() -> void:
 
 ## Programmatic tab selection (used by tools and external callers).
 func select_pause_tab(idx: int) -> void:
-	if idx >= 0 and idx < 3:
+	if idx >= 0 and idx < 5:
 		_on_pause_tab_pressed(idx)
 
 
@@ -1610,7 +1967,7 @@ func show_pause() -> void:
 	refresh_stats()
 	%PausePanel.visible = true
 	# Default to the Stats tab when the menu opens.
-	if _pause_tab_btns.size() == 3:
+	if _pause_tab_btns.size() == 5:
 		_on_pause_tab_pressed(0)
 	# Hide the top-right wave cluster so it doesn't peek out behind the panel.
 	%TopRight.visible = false

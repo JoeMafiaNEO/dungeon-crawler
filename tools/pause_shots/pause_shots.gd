@@ -39,6 +39,16 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_audit(hud, "collection")
 	await _snap("pause_collection.png")
+	hud.select_pause_tab(3)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_audit(hud, "keybinds")
+	await _snap("pause_keybinds.png")
+	hud.select_pause_tab(4)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_audit(hud, "voice")
+	await _snap("pause_voice.png")
 	_cleanup_saves()
 	print("[PauseShots] done")
 	get_tree().quit()

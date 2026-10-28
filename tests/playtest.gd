@@ -59,6 +59,7 @@ func _run() -> void:
 	_test_affinity_save_roundtrip()
 	_test_specialization_level_gate()
 	_test_pause_tabs()
+	_test_pause_keybinds_voice_tabs()
 	_test_pause_stats_zero_scroll()
 	_test_ability_bar_selected_highlight()
 	_test_mouse_legend()
@@ -11240,6 +11241,103 @@ func _test_pause_tabs() -> void:
 	# affinity_shots uses tab selection.
 	var tsrc := FileAccess.get_file_as_string("res://tools/affinity_shots/affinity_shots.gd")
 	_assert(tsrc.contains("select_pause_tab"), "Tool uses tab selection")
+
+
+## Jesse 2026-10-28: pause menu gains a fourth tab showing ALL the
+## keybinds and a fifth tab carrying the voice settings. Keybind rows
+## are generated from the LIVE InputMap (the actual bound events),
+## so the tab can never drift from the shipped bindings; the voice
+## tab wires the same VoiceManager settings as the main-menu panel.
+func _test_pause_keybinds_voice_tabs() -> void:
+	print("[Playtest] Pause keybinds + voice tabs...")
+	var hsrc := FileAccess.get_file_as_string("res://scripts/ui/hud.gd")
+	_assert(hsrc.contains('"Stats", "Specialization", "Collection", "Keybinds", "Voice"'),
+		"Five pause tabs defined in order")
+	_assert(hsrc.contains("func _build_keybinds_panel"), "Keybinds panel builder exists")
+	_assert(hsrc.contains("func _build_voice_panel"), "Voice panel builder exists")
+	_assert(hsrc.contains("func keybind_rows"), "Keybind rows are generated, not hardcoded text")
+	_assert(hsrc.contains("InputMap.action_get_events"), "Keybind rows read the live InputMap")
+	var HudScene: PackedScene = load("res://scenes/ui/hud.tscn")
+	var hud = HudScene.instantiate()
+	root.add_child(hud)
+	var btns: Array = hud.get("_pause_tab_btns")
+	_assert(btns.size() == 5, "Pause tab bar carries five buttons")
+	var names: Array = []
+	for b in btns:
+		names.append((b as Button).text)
+	_assert(names == ["Stats", "Specialization", "Collection", "Keybinds", "Voice"],
+		"Tab order is Stats/Specialization/Collection/Keybinds/Voice")
+	var vbox := hud.get_node_or_null("PausePanel/PauseScroll/PauseVBox")
+	_assert(vbox != null and vbox.get_node_or_null("KeybindsPanel") != null,
+		"KeybindsPanel lives in the pause vbox")
+	_assert(vbox != null and vbox.get_node_or_null("VoicePanel") != null,
+		"VoicePanel lives in the pause vbox")
+	# Coverage: every non-ui InputMap action appears as a row.
+	var rows: Array = hud.call("keybind_rows")
+	_assert(not rows.is_empty(), "keybind_rows returns rows")
+	var row_actions: Array = []
+	var row_text := {}
+	for r in rows:
+		row_actions.append(str(r["action"]))
+		row_text[str(r["action"])] = str(r["display"]) + ": " + str(r["bindings"])
+	var missing: Array = []
+	for a in InputMap.get_actions():
+		var an := str(a)
+		if an.begins_with("ui_"):
+			continue
+		if not row_actions.has(an):
+			missing.append(an)
+	_assert(missing.is_empty(), "Every non-ui InputMap action has a keybind row (missing: %s)" % [missing])
+	# Binding truth comes from the actual bound events.
+	_assert(str(row_text.get("move_forward", "")).contains("W"), "Move Forward row shows W")
+	_assert(str(row_text.get("attack", "")).contains("Left Click"), "Attack row shows Left Click")
+	_assert(str(row_text.get("interact", "")).contains("E"), "Interact row shows E")
+	_assert(str(row_text.get("voice_ptt", "")).contains("Mouse X1")
+		and str(row_text.get("voice_ptt", "")).contains("C"), "Voice PTT row shows Mouse X1 and C")
+	_assert(str(row_text.get("voice_mute", "")).contains("M"), "Voice Mute row shows M")
+	_assert(str(row_text.get("signature_ability", "")).contains("8"), "Signature row shows 8")
+	# Tab switching shows only the chosen panel.
+	hud.select_pause_tab(3)
+	_assert(vbox.get_node("KeybindsPanel").visible, "Keybinds tab shows its panel")
+	_assert(not vbox.get_node("VoicePanel").visible, "Voice panel hidden on Keybinds tab")
+	_assert(not (vbox.get_node("SpecList") as Control).visible, "Spec content hidden on Keybinds tab")
+	hud.select_pause_tab(4)
+	_assert(vbox.get_node("VoicePanel").visible, "Voice tab shows its panel")
+	_assert(not vbox.get_node("KeybindsPanel").visible, "Keybinds panel hidden on Voice tab")
+	# Voice controls exist and wire through to VoiceManager + profile.
+	_assert(hud.get("_pause_voice_transmit_tog") != null, "Voice tab has a Transmit toggle")
+	_assert(hud.get("_pause_voice_mode_opt") != null
+		and (hud.get("_pause_voice_mode_opt") as OptionButton).get_item_count() == 3,
+		"Voice tab Mode option has Auto/PTT/VA")
+	_assert(hud.get("_pause_voice_thresh_slider") != null, "Voice tab has a Mic threshold slider")
+	_assert(hud.get("_pause_voice_mute_tog") != null, "Voice tab has a Mic Muted toggle")
+	_assert(hud.get("_pause_voice_vol_slider") != null, "Voice tab has a Voice volume slider")
+	_assert(hud.get("_pause_voice_status_label") != null, "Voice tab has a mic status line")
+	var vm = root.get_node_or_null("VoiceManager")
+	var am = root.get_node_or_null("AudioManager")
+	if vm != null and am != null:
+		var o_tx := bool(vm.get("transmit_enabled"))
+		var o_mode := str(vm.get("mode"))
+		var o_thr := float(vm.get("va_threshold_db"))
+		var o_mute := bool(vm.get("mic_muted"))
+		var o_vol := float(am.get("voice_vol"))
+		hud.call("_on_pause_voice_transmit_toggled", not o_tx)
+		_assert(bool(vm.get("transmit_enabled")) == (not o_tx), "Voice tab Transmit toggle drives VoiceManager")
+		hud.call("_on_pause_voice_mode_selected", 2)
+		_assert(str(vm.get("mode")) == "va", "Voice tab Mode drives VoiceManager mode")
+		hud.call("_on_pause_voice_thresh_changed", -30.0)
+		_assert(is_equal_approx(float(vm.get("va_threshold_db")), -30.0), "Voice tab threshold drives VoiceManager")
+		hud.call("_on_pause_voice_mute_toggled", not o_mute)
+		_assert(bool(vm.get("mic_muted")) == (not o_mute), "Voice tab Mic Muted toggle drives VoiceManager")
+		hud.call("_on_pause_voice_vol_changed", 40.0)
+		_assert(is_equal_approx(float(am.get("voice_vol")), 0.4), "Voice tab volume drives AudioManager voice_vol")
+		# Restore the live settings exactly as found.
+		vm.call("set_transmit_enabled", o_tx)
+		vm.call("set_mode", o_mode)
+		vm.call("set_va_threshold_db", o_thr)
+		vm.call("set_mic_muted", o_mute)
+		am.call("set_voice_vol", o_vol)
+	hud.free()
 
 
 ## Issue #16: Pause -> Stats tab must fit with zero scrolling (Jesse's hard rule).
