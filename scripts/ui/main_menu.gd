@@ -2104,9 +2104,14 @@ func _build_confirm_modal() -> void:
 	_style_buttons()
 
 
-## Issue #17 Phase 1: compact settings panel (modal). Fixed layout,
-## zero-scroll by construction. Sliders wire live to AudioManager;
-## toggles persist to the profile (CRT/shake/fullscreen applied in Phase 2).
+## Issue #17 Phase 1: compact settings panel (modal). Sliders wire
+## live to AudioManager; toggles persist to the profile (CRT/shake/
+## fullscreen applied in Phase 2). Jesse 2026-10-27: the panel
+## outgrew fit-to-screen (chunk slider + voice rows pushed Close
+## off the bottom at 720p) — he ruled "the settings menu needs a
+## scroll bar or tabs"; the scroll bar was chosen. Title + Close
+## stay fixed; the rows ride a ScrollContainer (an approved scroll
+## surface on his say-so, dressed like the Issue #145 save list).
 func _build_settings_panel() -> void:
 	_settings_overlay = Control.new()
 	_settings_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -2130,15 +2135,54 @@ func _build_settings_panel() -> void:
 	sb.content_margin_bottom = 20
 	panel.add_theme_stylebox_override("panel", sb)
 	center.add_child(panel)
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 10)
-	panel.add_child(vb)
+	var ovb := VBoxContainer.new()
+	ovb.add_theme_constant_override("separation", 10)
+	panel.add_child(ovb)
 	var title := Label.new()
 	title.text = "Settings"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 22)
 	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-	vb.add_child(title)
+	ovb.add_child(title)
+	var scroll := ScrollContainer.new()
+	scroll.name = "SettingsScroll"
+	# Issue #191 (section B) pattern: follow focus below the fold.
+	scroll.follow_focus = true
+	# Height is capped so title + Close + panel chrome stay on
+	# screen: ~150px of the viewport height is chrome at 720p.
+	var view_h := int(get_viewport_rect().size.y)
+	scroll.custom_minimum_size = Vector2(512, clampi(view_h - 150, 260, 860))
+	# Issue #145 dressing: the scrollbar is ALWAYS present and
+	# dressed in the menu's own palette (dark inset track +
+	# accent gold), so "more settings below the fold" reads at
+	# a glance.
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
+	var vbar := scroll.get_v_scroll_bar()
+	vbar.custom_minimum_size.x = 14
+	var gold := Color(0.85, 0.70, 0.30)
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(0.08, 0.07, 0.10, 0.98)
+	track.border_color = Color(gold, 0.55)
+	track.set_border_width_all(1)
+	track.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("scroll", track)
+	var grab := StyleBoxFlat.new()
+	grab.bg_color = gold
+	grab.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("grabber", grab)
+	var grab_hi := StyleBoxFlat.new()
+	grab_hi.bg_color = gold.lightened(0.25)
+	grab_hi.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("grabber_highlight", grab_hi)
+	var grab_press := StyleBoxFlat.new()
+	grab_press.bg_color = gold.lightened(0.45)
+	grab_press.set_corner_radius_all(3)
+	vbar.add_theme_stylebox_override("grabber_pressed", grab_press)
+	ovb.add_child(scroll)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vb)
 	for spec in [["Master", "master_vol"], ["Music", "music_vol"], ["SFX", "sfx_vol"], ["Voice", "voice_vol"]]:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
@@ -2317,7 +2361,7 @@ func _build_settings_panel() -> void:
 	var close := Button.new()
 	close.text = "Close"
 	close.pressed.connect(_close_settings)
-	vb.add_child(close)
+	ovb.add_child(close)
 	add_child(_settings_overlay)
 	_style_buttons()
 

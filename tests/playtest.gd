@@ -34,6 +34,7 @@ func _run() -> void:
 	_test_mp_slots()
 	_test_saves_ui()
 	_test_save_scroll_affordance_145()
+	_test_settings_scroll()
 	_test_theme_lighting_readability()
 	_test_continued_reselect()
 	_test_glimmerfin_buff()
@@ -2436,6 +2437,50 @@ func _test_save_scroll_affordance_145() -> void:
 		"145: the track is the menu's dark inset with a 1px frame border")
 	mm.free()
 	print("[Playtest] Save-scroll affordance (issue #145) done")
+
+
+## Jesse 2026-10-27: the settings panel outgrew fit-to-screen —
+## the rows ride a ScrollContainer (his ruling: "the settings menu
+## needs a scroll bar or tabs"); title + Close stay fixed outside
+## the scroller, the bar wears the Issue #145 dressing.
+func _test_settings_scroll() -> void:
+	print("[Playtest] Settings scroll (Jesse 2026-10-27)...")
+	var mm = load("res://scenes/ui/main_menu.tscn").instantiate()
+	root.add_child(mm)
+	var overlay := mm.get("_settings_overlay") as Control
+	_assert(overlay != null, "settings-scroll: overlay built")
+	var scroll := overlay.find_child("SettingsScroll", true, false) as ScrollContainer
+	_assert(scroll != null, "settings-scroll: rows ride a ScrollContainer")
+	_assert(scroll.follow_focus, "settings-scroll: follow_focus on (focus below the fold)")
+	_assert(scroll.vertical_scroll_mode == ScrollContainer.SCROLL_MODE_SHOW_ALWAYS,
+		"settings-scroll: vertical bar SHOW_ALWAYS (Issue #145 affordance)")
+	var vbar := scroll.get_v_scroll_bar()
+	_assert(absf(vbar.custom_minimum_size.x - 14.0) < 0.01,
+		"settings-scroll: the bar is 14px wide")
+	var grab := vbar.get_theme_stylebox("grabber") as StyleBoxFlat
+	_assert(grab != null and grab.bg_color == Color(0.85, 0.70, 0.30),
+		"settings-scroll: the grabber wears the menu's accent gold")
+	# The rows VBox is the scroller's content; every settings row
+	# (incl. the voice block and the mic note) rides inside it.
+	var rows: VBoxContainer = null
+	for c in scroll.get_children():
+		if c is VBoxContainer:
+			rows = c
+	_assert(rows != null and rows.get_child_count() >= 18,
+		"settings-scroll: all setting rows inside the scroller")
+	# Title + Close stay fixed: the scroller's siblings in the
+	# panel's outer VBox, Close after the scroller.
+	var outer := scroll.get_parent() as VBoxContainer
+	_assert(outer != null and outer.get_child_count() == 3,
+		"settings-scroll: panel chrome is title + scroller + Close")
+	var title_lab := outer.get_child(0) as Label
+	_assert(title_lab != null and title_lab.text == "Settings",
+		"settings-scroll: title fixed above the scroller")
+	var close_btn := outer.get_child(2) as Button
+	_assert(close_btn != null and close_btn.text == "Close",
+		"settings-scroll: Close fixed below the scroller, always reachable")
+	mm.free()
+	print("[Playtest] Settings scroll (Jesse 2026-10-27) done")
 
 
 ## Lighting readability (Jesse's walkthrough ruling): the
@@ -13314,7 +13359,7 @@ func _test_settings_phase1() -> void:
 
 	var panel_src := msrc.substr(msrc.find("func _build_settings_panel"))
 	panel_src = panel_src.substr(0, panel_src.find("\nfunc ", 1))
-	_assert(not panel_src.contains("ScrollContainer"), "settings panel: no ScrollContainer")
+	_assert(panel_src.contains("ScrollContainer"), "settings panel: rows ride a ScrollContainer (Jesse 2026-10-27)")
 
 
 func _test_settings_phase2() -> void:
