@@ -276,6 +276,7 @@ func _run() -> void:
 	_test_session_lost_133()
 	_test_held_prop_yaw_141()
 
+	_test_world_save_238()
 	_print_results()
 	quit()
 
@@ -23659,6 +23660,348 @@ func _test_placement_aim_232() -> void:
 	if whud_mine:
 		whud.free()
 	print("[Playtest] Placement aim test done.")
+
+
+func _test_world_save_238() -> void:
+	print("[Playtest] World save (238) test...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var mgr = root.get_node("SaveManager")
+	var nm = root.get_node("NetworkManager")
+	var steam = root.get_node("SteamManager")
+	var scratch := "/tmp/p238_" + str(Time.get_ticks_msec())
+	DirAccess.make_dir_recursive_absolute(scratch)
+	mgr.set("_test_runs_dir", scratch)
+	var prev_mode := str(nm.get("active_run_mode"))
+	var prev_slot := int(nm.get("active_run_slot"))
+	var prev_transport = nm.get("transport")
+	var prev_sid := int(steam.get("steam_id"))
+	# A fixture Steam ID: headless Steam is uninitialized (id 0),
+	# and the #237 funnel cannot key the local player under 0.
+	steam.set("steam_id", 76561198000000001)
+	var my_sid := 76561198000000001
+	# The roster's host key is the Steam ID when Steam is
+	# initialized, else the unique peer id — the dungeon saver's
+	# own expression. (Positions key off the steam_id var via
+	# the funnel's fallback; that is my_sid either way.)
+	var host_sid := my_sid if bool(steam.get("initialized")) else 1
+	# The purge rule (issue #238 design section 6): earlier
+	# sections leak station/dungeon group nodes, and leaked nodes
+	# poison every scene-composition drive. Purge them (deepest
+	# first), NAME the count, then compose scenes.
+	var purge := func() -> int:
+		var victims: Array = []
+		for gname in ["station", "dungeon"]:
+			for node in get_nodes_in_group(gname):
+				victims.append(node)
+		victims.sort_custom(func(a, b):
+			return str((a as Node).get_path()).count("/") \
+				> str((b as Node).get_path()).count("/"))
+		var n := 0
+		for v in victims:
+			if is_instance_valid(v):
+				(v as Node).free()
+				n += 1
+		print("[238] purged ", n,
+			" leaked station/dungeon group nodes")
+		return n
+	purge.call()
+	# A coherent continued world run in the act2 statics.
+	DungeonScript.set("act2_context", "world")
+	DungeonScript.set("act2_cleared", false)
+	DungeonScript.set("act2_buildings", {})
+	DungeonScript.set("act2_anchor", {})
+	DungeonScript.set("act2_last_transition", {})
+	DungeonScript.set("act2_floor_key", "")
+	DungeonScript.set("act2_positions", {})
+	# Bare composition: the gate still returns {} (group 1b).
+	var holder := Node3D.new()
+	holder.name = "WorldSave238Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var hud_fix = load("res://scenes/ui/hud.tscn").instantiate()
+	holder.add_child(hud_fix)
+	var snap_bare: Dictionary = hud_fix.call(
+		"_capture_pause_save_snapshot")
+	_assert(snap_bare.is_empty(),
+		"238(1): purged bare scene snapshot still {}")
+	# Seed the MP slot with distinctive bookkeeping (group 1).
+	mgr.call("save_run", {
+		"theme_id": "apex", "level_number": 7, "seed": 424242,
+		"wave": 3, "is_multiplayer": true, "roster": [],
+	}, "mp", 96)
+	nm.set("active_run_mode", "mp")
+	nm.set("active_run_slot", 96)
+	# The REAL world scene, current_scene pointed at it.
+	var wroot = load("res://scenes/world/world.tscn").instantiate()
+	root.add_child(wroot)
+	current_scene = wroot
+	var hud = wroot.get("_local_hud")
+	var lp = wroot.get("_local_player")
+	var snap: Dictionary = hud.call("_capture_pause_save_snapshot")
+	_assert(not snap.is_empty(),
+		"238(1): in-world snapshot is non-empty")
+	_assert(bool(snap.get("in_world", false)),
+		"238(1): snapshot carries the in_world marker")
+	_assert(str(snap.get("theme_id", "")) == "apex"
+		and int(snap.get("level_number", 0)) == 7
+		and int(snap.get("seed", 0)) == 424242
+		and int(snap.get("wave", 0)) == 3,
+		"238(1): snapshot CARRIES theme/level/seed/wave verbatim (a fabricating snapshot fails here)")
+	_assert(not bool(snap.get("at_station", true)),
+		"238(1): in-world snapshot is not at_station")
+	# --- Group 3: the world saver's peerless full save + the
+	# M-3 discipline it calls. Host entry = live state.
+	nm.set("peer_steam_ids", {})
+	lp.global_position = Vector3(64, lp.global_position.y, -32)
+	lp.set("xp", 5555)
+	wroot.call("save_multiplayer_run", "apex", 7, 424242)
+	var mpw: Dictionary = mgr.call("load_run", "mp", 96)
+	var roster: Array = mpw.get("roster", [])
+	_assert(roster.size() == 1,
+		"238(3): peerless world save writes the host entry alone")
+	var he: Dictionary = roster[0] if roster.size() == 1 else {}
+	_assert(int(he.get("steam_id", 0)) == host_sid
+		and int((he.get("player_state", {}) as Dictionary
+			).get("xp", 0)) == 5555
+		and int(he.get("rts_faction", 0)) == -1
+		and bool(he.get("is_host", false)),
+		"238(3): host entry carries the host's LIVE get_state()")
+	_assert(str(mpw.get("theme_id", "")) == "apex"
+		and int(mpw.get("level_number", 0)) == 7
+		and int(mpw.get("seed", 0)) == 424242
+		and int(mpw.get("wave", 0)) == 3
+		and bool(mpw.get("is_multiplayer", false))
+		and not bool(mpw.get("at_station", true))
+		and int((mpw.get("lobby", {}) as Dictionary
+			).get("max_players", 0)) == int(nm.get("MAX_PLAYERS")),
+		"238(3): stamp block — carried values, is_multiplayer, at_station false, wave unchanged, lobby block")
+	var mpos: Dictionary = (mpw.get("act2", {}) as Dictionary
+		).get("positions", {})
+	var mp2: Array = mpos.get(str(my_sid), [])
+	_assert(mp2.size() == 2 and abs(float(mp2[0]) - 64.0) < 0.01
+		and abs(float(mp2[1]) + 32.0) < 0.01,
+		"238(3): the act2 stamp rode the SAME write, sampled live")
+	var forged := {"steam_id": 999999, "class_id": "mage",
+		"player_state": {"xp": 1}}
+	var bound: Dictionary = DungeonScript.bind_submitted_state(
+		forged, 77, {77: 222222})
+	_assert(int(bound.get("steam_id", 0)) == 222222,
+		"238(3): M-3 — a submission binds to the sender's mapped Steam ID (the static the world endpoint calls)")
+	_assert(DungeonScript.bind_submitted_state(
+		forged, 42, {77: 222222}).is_empty(),
+		"238(3): M-3 — an unmapped sender is rejected")
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	_assert(wsrc.contains("bind_submitted_state"),
+		"238(3): the world submit endpoint binds via the shared static on the server's mapping")
+	_assert(wsrc.contains("func rpc_request_save_state")
+		and wsrc.contains("func rpc_submit_save_state")
+		and wsrc.contains("func save_multiplayer_run(theme_id: String, level_number: int,"),
+		"238(3): WorldRoot hosts the saver + both collection endpoints")
+	# --- Group 4 (C-1) + group 5 (M-4): the missed-window write
+	# path, driven with prepared collection state.
+	var prev_peer := {"steam_id": 222222, "player_name": "Peer",
+		"class_id": "rogue", "player_state": {"xp": 777, "hp": 66.0},
+		"rts_faction": -1, "is_host": false}
+	var prev_absent := {"steam_id": 333333, "player_name": "Absent",
+		"class_id": "mage", "player_state": {"xp": 999},
+		"rts_faction": -1, "is_host": false, "keepsake_key": "keepme"}
+	mgr.call("save_run", {
+		"theme_id": "apex", "level_number": 7, "seed": 424242,
+		"wave": 3, "is_multiplayer": true,
+		"roster": [prev_peer, prev_absent],
+	}, "mp", 96)
+	var junk = load("res://scenes/player/player.tscn").instantiate()
+	junk.set("class_id", "mage")
+	holder.add_child(junk)
+	junk.set("hp", 1.0)
+	junk.set("xp", 31337)
+	var presence: Dictionary = wroot.get("_presence")
+	presence[77] = junk
+	wroot.set("_presence", presence)
+	nm.set("peer_steam_ids", {77: 222222})
+	wroot.set("_save_slot", 96)
+	wroot.set("_save_base", {"theme_id": "apex", "level_number": 7,
+		"seed": 424242, "is_multiplayer": true, "at_station": false})
+	wroot.set("_save_roster", [{
+		"steam_id": host_sid, "player_name": "Host",
+		"class_id": "warrior", "player_state": {"xp": 5555},
+		"rts_faction": -1, "is_host": true}])
+	wroot.set("_save_pending", {77: true})
+	wroot.call("_carry_missing_world_saves")
+	var croster: Array = wroot.get("_save_roster")
+	var carried: Dictionary = {}
+	for e in croster:
+		if int((e as Dictionary).get("steam_id", 0)) == 222222:
+			carried = e
+	_assert(carried == prev_peer,
+		"238(4) C-1: missed window -> the written entry is the PREVIOUS save's entry, dictionary-equal")
+	var junk_written := false
+	for e in croster:
+		var ps: Dictionary = (e as Dictionary).get(
+			"player_state", {})
+		if int(ps.get("xp", 0)) == 31337:
+			junk_written = true
+	_assert(not junk_written,
+		"238(4) C-1: the presence replica's junk state appears NOWHERE in the collection")
+	wroot.call("_write_world_save")
+	var cwritten: Dictionary = mgr.call("load_run", "mp", 96)
+	var cw: Dictionary = {}
+	var aw: Dictionary = {}
+	for e in cwritten.get("roster", []):
+		if int((e as Dictionary).get("steam_id", 0)) == 222222:
+			cw = e
+		if int((e as Dictionary).get("steam_id", 0)) == 333333:
+			aw = e
+	_assert(cw == prev_peer,
+		"238(4) C-1: after the write, the peer's entry is STILL the previous entry verbatim")
+	_assert(aw == prev_absent,
+		"238(5) M-4: the absent member survives the world save verbatim, unknown key and all")
+	# Group 4, second face: no previous entry -> empty state,
+	# real class (from the presence hello, never state).
+	mgr.call("save_run", {
+		"theme_id": "apex", "level_number": 7, "seed": 424242,
+		"wave": 3, "is_multiplayer": true, "roster": [],
+	}, "mp", 96)
+	var junk2 = load("res://scenes/player/player.tscn").instantiate()
+	junk2.set("class_id", "rogue")
+	holder.add_child(junk2)
+	junk2.set("xp", 22222)
+	presence = wroot.get("_presence")
+	presence[88] = junk2
+	wroot.set("_presence", presence)
+	nm.set("peer_steam_ids", {88: 444444})
+	wroot.set("_save_roster", [{
+		"steam_id": host_sid, "player_name": "Host",
+		"class_id": "warrior", "player_state": {"xp": 5555},
+		"rts_faction": -1, "is_host": true}])
+	wroot.set("_save_pending", {88: true})
+	wroot.call("_carry_missing_world_saves")
+	var nroster: Array = wroot.get("_save_roster")
+	var nentry: Dictionary = {}
+	for e in nroster:
+		if int((e as Dictionary).get("steam_id", 0)) == 444444:
+			nentry = e
+	_assert((nentry.get("player_state", {"x": 1}) as Dictionary
+		).is_empty()
+		and str(nentry.get("class_id", "")) == "rogue",
+		"238(4): no previous entry -> EMPTY player_state, real class from the hello (not the replica's state)")
+	# --- Group 6: continue from the world save (state level),
+	# cold cache. Clear whatever earlier sections streamed and
+	# SAY the count; the drive then runs cache-empty.
+	var cache_dir := "user://world_cache"
+	var before := 0
+	if DirAccess.dir_exists_absolute(cache_dir):
+		before = DirAccess.get_files_at(cache_dir).size()
+		for f in DirAccess.get_files_at(cache_dir):
+			DirAccess.remove_absolute(cache_dir + "/" + f)
+	var after := 0
+	if DirAccess.dir_exists_absolute(cache_dir):
+		after = DirAccess.get_files_at(cache_dir).size()
+	print("[238] cold-cache leg: world_cache files before clear = ",
+		before, ", at drive = ", after)
+	_assert(after == 0,
+		"238(6): the continue leg runs with an EMPTY world cache")
+	DungeonScript.set("act2_positions",
+		{str(my_sid): [64.0, -32.0]})
+	DungeonScript.set("act2_spawn_at", "")
+	var arrival: Vector3 = wroot.call("_arrival_point")
+	_assert(abs(arrival.x - 64.0) < 0.01
+		and abs(arrival.z + 32.0) < 0.01,
+		"238(6): continue from the world save — arrival returns the stored position (cold cache)")
+	# --- Group 7: source pins — the client branch is unchanged
+	# code between the (now passable) gate and any write.
+	var hsrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/hud.gd")
+	var ci := hsrc.find("Only the host's save will persist")
+	var hi := hsrc.find("save_multiplayer_run(theme_id")
+	_assert(ci > 0 and hi > ci,
+		"238(7): the MP-client disconnect-confirm branch precedes the host save call (reachable in-world now the gate passes, writes nothing itself)")
+	_assert(hsrc.contains("snap.get(\"in_world\"")
+		and hsrc.contains("\"world_root\""),
+		"238(7): HUD routing — the in_world snapshot word resolves the world_root saver")
+	# --- Group 2: solo save-quit in-world, driven through the
+	# real HUD press. LAST use of this world instance: the press
+	# ends in a quit (its deferred scene change consumes the
+	# composition, exactly as in the real game).
+	mgr.call("save_run", {
+		"theme_id": "village", "level_number": 4, "seed": 777,
+		"wave": 1, "class_id": "warrior",
+		"player_state": {"xp": 1},
+		"act2": {"context": "world",
+			"positions": {str(my_sid): [1.0, 1.0]}},
+	}, "solo", 96)
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 96)
+	lp.set("xp", 4321)
+	hud.call("_on_save_quit_pressed")
+	var sac := Node3D.new()
+	sac.name = "WorldSave238Sac"
+	root.add_child(sac)
+	current_scene = sac
+	var written: Dictionary = mgr.call("load_run", "solo", 96)
+	_assert(int((written.get("player_state", {}) as Dictionary
+		).get("xp", 0)) == 4321,
+		"238(2): solo in-world save wrote the LIVE player_state")
+	var wpos: Dictionary = (written.get("act2", {}) as Dictionary
+		).get("positions", {})
+	var wp: Array = wpos.get(str(my_sid), [])
+	_assert(wp.size() == 2 and abs(float(wp[0]) - 64.0) < 0.01
+		and abs(float(wp[1]) + 32.0) < 0.01,
+		"238(2): act2.positions holds the LIVE spot, not the seeded stale one (the stamp ran at save time)")
+	_assert(str(written.get("theme_id", "")) == "village"
+		and int(written.get("level_number", 0)) == 4
+		and int(written.get("seed", 0)) == 777
+		and int(written.get("wave", 0)) == 1,
+		"238(2): carried bookkeeping survived the solo world save")
+	# --- Group 8: LAN truth. Labels on a fresh fixture HUD (the
+	# label logic is role/transport/mode only), then the press
+	# in a fresh world composition writes nothing.
+	var hud2 = load("res://scenes/ui/hud.tscn").instantiate()
+	holder.add_child(hud2)
+	var pl2 = load("res://scenes/player/player.tscn").instantiate()
+	pl2.set("class_id", "warrior")
+	holder.add_child(pl2)
+	hud2.call("setup", pl2)
+	nm.set("active_run_mode", "mp")
+	nm.set("active_run_slot", 96)
+	nm.set("transport", nm.Transport.LAN)
+	hud2.call("show_pause")
+	var btn = hud2.get("_save_quit_btn")
+	_assert(btn != null and str(btn.get("text")) == "Quit to Menu",
+		"238(8): LAN host label claims no save — 'Quit to Menu'")
+	hud2.call("hide_pause")
+	nm.set("transport", nm.Transport.STEAM)
+	hud2.call("show_pause")
+	_assert(btn != null
+		and str(btn.get("text")) == "Save & Quit to Menu",
+		"238(8): control — the same seat on Steam transport keeps the save label")
+	hud2.call("hide_pause")
+	mgr.call("save_run", {
+		"theme_id": "apex", "level_number": 7, "seed": 424242,
+		"wave": 3, "is_multiplayer": true, "marker238": "lan",
+		"roster": [],
+	}, "mp", 96)
+	var lan_before: Dictionary = mgr.call("load_run", "mp", 96)
+	var wroot2 = load(
+		"res://scenes/world/world.tscn").instantiate()
+	root.add_child(wroot2)
+	current_scene = wroot2
+	var hud3 = wroot2.get("_local_hud")
+	nm.set("transport", nm.Transport.LAN)
+	hud3.call("_on_save_quit_pressed")
+	current_scene = sac
+	var lan_after: Dictionary = mgr.call("load_run", "mp", 96)
+	_assert(lan_after == lan_before,
+		"238(8): the LAN host press in-world writes NOTHING")
+	# Restore session state.
+	nm.set("transport", prev_transport)
+	nm.set("active_run_mode", prev_mode)
+	nm.set("active_run_slot", prev_slot)
+	nm.set("peer_steam_ids", {})
+	steam.set("steam_id", prev_sid)
+	mgr.set("_test_runs_dir", "")
+	print("[Playtest] World save (238) test done.")
 
 
 func _test_world_gen_197() -> void:

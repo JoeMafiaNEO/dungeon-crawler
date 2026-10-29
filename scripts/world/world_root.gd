@@ -50,6 +50,13 @@ var _presence := {} # peer_id -> Player (remote world peers)
 var _clock_t := 0.0
 var _sync_t := 0.0
 var _save_t := 0.0
+# Issue #238: the world scene's MP save collection state — the
+# mirror of the dungeon saver's (the protocol is mirrored, the
+# loss-prevention discipline is CALLED from Dungeon statics).
+var _save_roster: Array = []
+var _save_pending: Dictionary = {}
+var _save_base: Dictionary = {}
+var _save_slot := -1
 var _respawn_in := -1.0
 var _started := false
 
@@ -271,6 +278,208 @@ func sync_world_time(t: float) -> void:
 	# The clock is monotone: a late packet never rewinds it.
 	if t > Dungeon.world_time:
 		Dungeon.world_time = t
+
+
+# --- MP run saving (issue #238) ---
+#
+# The world scene's resident saver: the exact call the HUD's
+# save-and-quit already makes on the station/dungeon savers. The
+# collection protocol mirrors Dungeon.save_multiplayer_run; every
+# piece of the loss-prevention discipline is a CALL to the shared
+# Dungeon statics (bind_submitted_state / find_roster_entry /
+# carry_forward_roster), never a copy that can diverge (#112).
+#
+# C-1 fence: a presence replica's get_state() is NEVER read for a
+# save — replica state is a near-fresh character and writing it
+# would permanently destroy that player's earned progression.
+# Client states arrive only through the collection protocol
+# below (each client's WorldRoot answers from its own local
+# player); a peer that misses the window is carried forward from
+# the previous save or written with an empty state.
+
+func save_multiplayer_run(theme_id: String, level_number: int,
+		level_seed: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if NetworkManager.transport == NetworkManager.Transport.LAN:
+		return  # Issue #70: LAN sessions have no saves.
+	_save_slot = NetworkManager.active_run_slot
+	# Loaded-dict-first (issue #111 PF2), then stamp — the dungeon
+	# saver's composition with the world's values (design §3.2).
+	# theme/level/seed are the snapshot's CARRIED values (the HUD
+	# passes them in); wave is carried by the loaded dict itself
+	# and written back unchanged — the street has no wave to step
+	# back.
+	_save_base = SaveManager.load_run(SaveManager.MODE_MP, _save_slot)
+	if _save_base == null:
+		_save_base = {}
+	_save_base["theme_id"] = theme_id
+	_save_base["level_number"] = level_number
+	_save_base["seed"] = level_seed
+	_save_base["is_multiplayer"] = true
+	_save_base["at_station"] = false
+	_save_base["act1_step"] = Dungeon.act1_step
+	_save_base["vault_return_theme"] = Dungeon.vault_return_theme
+	_save_base["revealed"] = Dungeon.revealed
+	_save_base["buildings_cleared"] = Dungeon.buildings_cleared
+	_save_base["home_anchor"] = Dungeon.home_anchor
+	# The act2 stamp rides the SAME write as the roster (design
+	# §4): act2_record() samples every player's street position
+	# live, here in the world scene (issue #237).
+	if Dungeon.act2_context != "":
+		_save_base["act2"] = Dungeon.act2_record()
+		_save_base["world_time"] = Dungeon.world_time
+	_save_base["host_difficulty"] = NetworkManager.host_difficulty
+	_save_base["host_loot_mult"] = NetworkManager.host_loot_mult
+	var lobby_name := ("%s's Dungeon" % SteamManager.persona_name) \
+		if SteamManager.initialized else "Dungeon"
+	_save_base["lobby"] = {
+		"max_players": NetworkManager.MAX_PLAYERS,
+		"lobby_name": lobby_name,
+		"visibility": NetworkManager.lobby_visibility,
+	}
+	_save_roster.clear()
+	if _local_player != null:
+		# The host's OWN player node — real state (never a replica).
+		var my_sid := SteamManager.steam_id \
+			if SteamManager.initialized \
+			else multiplayer.get_unique_id()
+		_save_roster.append({
+			"steam_id": my_sid,
+			"player_name": NetworkManager.member_name(my_sid),
+			"class_id": str(_local_player.get("class_id")),
+			"player_state": _local_player.get_state(),
+			"rts_faction": -1,
+			"is_host": true,
+		})
+	_save_pending.clear()
+	for pid in multiplayer.get_peers():
+		_save_pending[pid] = true
+	if not _save_pending.is_empty():
+		rpc("rpc_request_save_state", _save_slot)
+		await get_tree().create_timer(
+			Dungeon.SAVE_STATE_TIMEOUT).timeout
+		_carry_missing_world_saves()
+	_write_world_save()
+
+
+## Peers that never answered the collection window: carry each
+## one's previous roster entry forward verbatim (#105 C-1 — the
+## entry is NEVER filled from the server-side presence replica;
+## that state is a near-fresh character). A peer with no previous
+## entry is written with an empty player_state and its real class
+## (the class rides the presence hello — an identity fact, not
+## state).
+func _carry_missing_world_saves() -> void:
+	if _save_pending.is_empty():
+		return
+	var previous := SaveManager.load_run(
+		SaveManager.MODE_MP, _save_slot)
+	var prev_roster: Array = previous.get("roster", [])
+	for pid in _save_pending.keys():
+		var sid := int(NetworkManager.peer_steam_ids.get(pid, pid))
+		var prev := Dungeon.find_roster_entry(prev_roster, sid)
+		if not prev.is_empty():
+			_save_roster.append(prev)
+		else:
+			var cls := "warrior"
+			var rep = _presence.get(pid)
+			if rep != null:
+				cls = str(rep.get("class_id"))
+			_save_roster.append({
+				"steam_id": sid,
+				"player_name": NetworkManager.member_name(sid),
+				"class_id": cls,
+				"player_state": {},
+				"rts_faction": -1,
+				"is_host": false,
+			})
+	_save_pending.clear()
+
+
+func _write_world_save() -> void:
+	# Issue #109 (M-4): merge the previous roster in before
+	# writing — a member absent from this session entirely must
+	# survive the save untouched.
+	var previous := SaveManager.load_run(
+		SaveManager.MODE_MP, _save_slot)
+	var prev_roster: Array = previous.get("roster", [])
+	_save_roster = Dungeon.carry_forward_roster(
+		_save_roster, prev_roster)
+	# Issue #111 (PF2): an entry this build doesn't know about
+	# keeps its unknown keys — merge previous-under-current per
+	# Steam ID, as the dungeon saver's write does.
+	var prev_by_sid := {}
+	for e in prev_roster:
+		if e is Dictionary:
+			prev_by_sid[int(e.get("steam_id", 0))] = e
+	for i in _save_roster.size():
+		var entry: Dictionary = _save_roster[i]
+		var prev: Dictionary = prev_by_sid.get(
+			int(entry.get("steam_id", 0)), {})
+		if not prev.is_empty():
+			var merged := prev.duplicate()
+			for k in entry.keys():
+				merged[k] = entry[k]
+			_save_roster[i] = merged
+	_save_base["roster"] = _save_roster
+	if not _save_roster.is_empty():
+		_save_base["class_id"] = str(
+			_save_roster[0].get("class_id", ""))
+		_save_base["player_state"] = (
+			_save_roster[0].get("player_state", {}) as Dictionary
+			).duplicate(true)
+	SaveManager.save_run(_save_base, SaveManager.MODE_MP, _save_slot)
+
+
+@rpc("any_peer", "call_local")
+func rpc_request_save_state(slot_index: int) -> void:
+	if multiplayer.is_server():
+		return
+	if _local_player == null:
+		return
+	var state := {
+		# The real Steam64 ID, not the peer ID (peer IDs are
+		# session-scoped; Steam IDs persist across sessions).
+		"steam_id": SteamManager.steam_id \
+			if SteamManager.initialized \
+			else multiplayer.get_unique_id(),
+		"player_name": SteamManager.persona_name \
+			if SteamManager.initialized else "Player",
+		"class_id": str(_local_player.get("class_id")),
+		"player_state": _local_player.get_state(),
+		"rts_faction": -1,
+		"is_host": false,
+	}
+	rpc_id(NetworkManager.server_peer_id,
+		"rpc_submit_save_state", state, slot_index)
+
+
+@rpc("any_peer")
+func rpc_submit_save_state(state: Dictionary, slot_index: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if slot_index != _save_slot:
+		return  # stale response from an earlier save; ignore
+	var sender := multiplayer.get_remote_sender_id()
+	if not _save_pending.has(sender):
+		return
+	# Issue #108 (M-3): the claimed steam_id is never trusted —
+	# bind the submission to the sender's Steam64 from the
+	# server's own register-time mapping, and reject senders with
+	# no server-assigned identity.
+	var bound := Dungeon.bind_submitted_state(
+		state, sender, NetworkManager.peer_steam_ids)
+	if bound.is_empty():
+		return
+	_save_pending.erase(sender)
+	var sid := int(bound["steam_id"])
+	# One sender = one roster entry: a resubmission replaces only
+	# the sender's own entry, never another player's.
+	for i in range(_save_roster.size() - 1, -1, -1):
+		if int(_save_roster[i].get("steam_id", 0)) == sid:
+			_save_roster.remove_at(i)
+	_save_roster.append(bound)
 
 
 func _on_local_died() -> void:

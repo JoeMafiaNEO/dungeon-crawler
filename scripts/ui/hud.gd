@@ -2003,7 +2003,16 @@ func show_pause() -> void:
 		_class_btn.visible = multiplayer.get_peers().size() == 0
 	# Save & Quit label depends on host/client role.
 	if _save_quit_btn != null:
-		if multiplayer.get_peers().size() == 0:
+		if NetworkManager.transport == NetworkManager.Transport.LAN \
+				and multiplayer.is_server() \
+				and NetworkManager.active_run_mode \
+					== SaveManager.MODE_MP:
+			# Issue #238 / #70: LAN runs are never saved, in any
+			# scene — the button must not claim a save it will not
+			# make. (Solo keeps its label below: the solo branch
+			# writes regardless of transport.)
+			_save_quit_btn.text = "Quit to Menu"
+		elif multiplayer.get_peers().size() == 0:
 			_save_quit_btn.text = "Save & Quit to Menu"
 		elif multiplayer.is_server():
 			_save_quit_btn.text = "Save & Quit (saves run)"
@@ -2128,6 +2137,31 @@ func _capture_pause_save_snapshot() -> Dictionary:
 		if str(dungeon.get("wave_state")) == "1":  # WaveState.ACTIVE
 			w = maxi(0, w - 1)
 		snap["wave"] = w
+	elif scene_path.contains("world"):
+		# Issue #238: the world scene. The street has no theme, level,
+		# seed or wave of its own, and both save branches WRITE the
+		# snapshot's values into the run dict — so the branch CARRIES
+		# the active run's bookkeeping verbatim from the slot (the
+		# addressing save_act2_clock uses) instead of returning the
+		# defaults above, which would corrupt the run on every street
+		# save. Keyed on the scene path like the station branch: a
+		# lingering world_root group node must never trigger this in
+		# another scene. The in_world marker is the flow's one
+		# decision — the handler below branches on it, never on a
+		# second group inference. An empty loaded dict (no full save
+		# yet) keeps the defaults, as a fresh slot behaves today.
+		var run := SaveManager.load_run(
+			NetworkManager.active_run_mode,
+			NetworkManager.active_run_slot)
+		if not run.is_empty():
+			snap["theme_id"] = str(run.get("theme_id",
+				snap["theme_id"]))
+			snap["level_number"] = int(run.get("level_number",
+				snap["level_number"]))
+			snap["seed"] = int(run.get("seed", snap["seed"]))
+			snap["wave"] = int(run.get("wave", snap["wave"]))
+		snap["at_station"] = false
+		snap["in_world"] = true
 	else:
 		return {}
 	return snap
@@ -2197,6 +2231,13 @@ func _on_save_quit_pressed() -> void:
 			var station := get_tree().get_first_node_in_group("station")
 			var dungeon := get_tree().get_first_node_in_group("dungeon")
 			var saver = station if at_station and station != null else dungeon
+			# Issue #238: in the world scene the saver is WorldRoot.
+			# The snapshot decided the scene once (its in_world
+			# marker); branch on that word, not on a second group
+			# inference.
+			if bool(snap.get("in_world", false)):
+				saver = get_tree().get_first_node_in_group(
+					"world_root")
 			saver.save_multiplayer_run(theme_id, level_number, level_seed)
 			# save_multiplayer_run waits 3s for clients; quit after.
 			await get_tree().create_timer(3.5).timeout
