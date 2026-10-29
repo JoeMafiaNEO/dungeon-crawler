@@ -7647,6 +7647,210 @@ func _test_world_204() -> void:
 			and dsrc2.contains("WORLD_SCENE"),
 		"204: the rooftop door performs the world entry")
 
+	# 15. Issue #237: street positions in the record —
+	# capture in the funnel, the arrival precedence, the
+	# fallbacks, producer freshness, the presence payload.
+	var stm = root.get_node("SteamManager")
+	var saved_steam: int = int(stm.get("steam_id"))
+	var saved_peers: Dictionary = (nm.get("peer_steam_ids")
+		as Dictionary).duplicate()
+	# The capture enumerates the GLOBAL players group by
+	# design, so this fixture must BE the whole group:
+	# anything standing in it now is a leaked fixture
+	# from an earlier section (the #230 precedent).
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	var wmark := Node3D.new()
+	root.add_child(wmark)
+	wmark.add_to_group("world_root")
+	stm.set("steam_id", 111111)
+	nm.set("peer_steam_ids", {77: 222222})
+	var PlayerScene237: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var mk237 := func(auth: int, pos: Vector3):
+		var pl = PlayerScene237.instantiate()
+		pl.set("class_id", "warrior")
+		pl.set_multiplayer_authority(auth)
+		root.add_child(pl)
+		pl.global_position = pos
+		return pl
+	var p237a = mk237.call(1, Vector3(300.5, 0, -45.25))
+	var p237b = mk237.call(77, Vector3(-512.75, 0, 900.5))
+	var p237c = mk237.call(88, Vector3(1, 0, 1))
+	var base237 := {"context": "world",
+		"anchor_doorstep": [64.0, 0.0, 64.0],
+		"last_transition": {"building": "1,1",
+			"point": [100.0, 0.0, 100.0]}}
+	DungeonScript.restore_act2_state({"act2": base237,
+		"world_time": 0.0})
+	var rec237: Dictionary = DungeonScript.act2_record()
+	var pos237: Dictionary = rec237.get("positions", {})
+	_assert(pos237.size() == 2
+		and absf(float((pos237.get("111111", [0, 0]) as Array)[0]) - 300.5) < 0.001
+		and absf(float((pos237.get("111111", [0, 0]) as Array)[1]) + 45.25) < 0.001
+		and absf(float((pos237.get("222222", [0, 0]) as Array)[0]) + 512.75) < 0.001
+		and absf(float((pos237.get("222222", [0, 0]) as Array)[1]) - 900.5) < 0.001,
+		"237(1): the record carries each player's exact XZ under their Steam-ID key (the unresolvable peer gets no entry)")
+	p237a.global_position = Vector3(301.5, 0, -44.25)
+	rec237 = DungeonScript.act2_record()
+	pos237 = rec237.get("positions", {})
+	_assert(absf(float((pos237.get("111111", [0, 0]) as Array)[0]) - 301.5) < 0.001,
+		"237(1): capture is LIVE at build time — a moved player moves the stored spot")
+	var bld237 := base237.duplicate()
+	bld237["context"] = "building"
+	DungeonScript.restore_act2_state({"act2": bld237,
+		"world_time": 0.0})
+	_assert(not DungeonScript.act2_record().has("positions"),
+		"237(1): in the building context the positions key is absent")
+	var non237 := base237.duplicate()
+	non237["context"] = ""
+	DungeonScript.restore_act2_state({"act2": non237,
+		"world_time": 0.0})
+	_assert(not DungeonScript.act2_record().has("positions"),
+		"237(1): outside Act 2 the positions key is absent")
+	DungeonScript.restore_act2_state({"act2": base237,
+		"world_time": 0.0})
+	# (6) Producer freshness at the write: seed a STALE
+	# positions record, then the clock save must write
+	# the CURRENT spot.
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 99)
+	sm.call("save_run", {"theme_id": "village",
+		"act2": {"context": "world",
+			"positions": {"111111": [0.0, 0.0]}}}, "solo", 99)
+	DungeonScript.save_act2_clock()
+	var clk237: Dictionary = (sm.call("load_run", "solo", 99)
+		as Dictionary).get("act2", {})
+	var clkpos: Dictionary = clk237.get("positions", {})
+	_assert(absf(float((clkpos.get("111111", [0, 0]) as Array)[0]) - 301.5) < 0.001
+		and absf(float((clkpos.get("111111", [0, 0]) as Array)[1]) + 44.25) < 0.001,
+		"237(6): save_act2_clock writes the live-sampled spot, never the seeded stale one")
+	sm.call("clear_run", "solo", 99)
+	nm.set("active_run_mode", saved_mode)
+	nm.set("active_run_slot", saved_slot)
+	var hudsrc237: String = FileAccess.get_file_as_string(
+		"res://scripts/ui/hud.gd")
+	_assert(hudsrc237.contains(
+		"solo_base[\"act2\"] = Dungeon.act2_record()"),
+		"237(6): the HUD solo pause-save stamps a fresh act2 record (the departure pattern)")
+	# (2)-(5) Arrival: precedence + fallbacks, driven on
+	# a tree-less world-root instance (the function is a
+	# pure read of the act2 statics + the terrain fn).
+	var wr237 = load("res://scripts/world/world_root.gd").new()
+	var withpos := base237.duplicate(true)
+	withpos["positions"] = {"111111": [300.5, -45.25]}
+	DungeonScript.restore_act2_state({"act2": withpos,
+		"world_time": 0.0})
+	var arr237: Vector3 = wr237.call("_arrival_point")
+	var cs237: int = WorldGenRes.CHUNK_SIZE
+	_assert(absf(arr237.x - 300.5) < 0.001
+		and absf(arr237.z + 45.25) < 0.001
+		and absf(arr237.y - (WorldGenRes.height_at(seed,
+			300.5, -45.25) + 0.4)) < 0.001
+		and Vector2i(int(floor(arr237.x / cs237)),
+			int(floor(arr237.z / cs237))) == Vector2i(2, -1),
+		"237(2): a stored continue lands on the stored XZ (Y re-sampled), in the stored chunk — and beats last_transition")
+	var far237 := base237.duplicate(true)
+	far237["positions"] = {"111111": [5000.0, 4200.0]}
+	DungeonScript.restore_act2_state({"act2": far237,
+		"world_time": 0.0})
+	arr237 = wr237.call("_arrival_point")
+	_assert(absf(arr237.x - 5000.0) < 0.001
+		and Vector2i(int(floor(arr237.x / cs237)),
+			int(floor(arr237.z / cs237))) == Vector2i(39, 32),
+		"237(2): the far-from-any-door fixture lands in ITS chunk (39, 32)")
+	var two237 := base237.duplicate(true)
+	two237["positions"] = {"111111": [300.5, -45.25],
+		"222222": [5000.0, 4200.0]}
+	DungeonScript.restore_act2_state({"act2": two237,
+		"world_time": 0.0})
+	var arr_a: Vector3 = wr237.call("_arrival_point")
+	stm.set("steam_id", 222222)
+	var arr_b: Vector3 = wr237.call("_arrival_point")
+	stm.set("steam_id", 111111)
+	_assert(absf(arr_a.x - 300.5) < 0.001
+		and absf(arr_b.x - 5000.0) < 0.001,
+		"237(3): per-player separation — each identity resolves its OWN entry")
+	DungeonScript.set("act2_spawn_at", "doorstep")
+	arr237 = wr237.call("_arrival_point")
+	_assert(absf(arr237.x - 64.0) < 0.001
+		and absf(arr237.z - 64.0) < 0.001
+		and str(DungeonScript.get("act2_spawn_at")) == "",
+		"237(4): the doorstep transition marker beats a stored position (and is consumed)")
+	DungeonScript.restore_act2_state({"act2": base237,
+		"world_time": 0.0})
+	arr237 = wr237.call("_arrival_point")
+	_assert(absf(arr237.x - 100.0) < 0.001
+		and absf(arr237.z - 100.0) < 0.001,
+		"237(4/5): no positions key — last_transition carries the arrival, as today")
+	var nolt := base237.duplicate(true)
+	nolt.erase("last_transition")
+	DungeonScript.restore_act2_state({"act2": nolt,
+		"world_time": 0.0})
+	arr237 = wr237.call("_arrival_point")
+	_assert(absf(arr237.x - 64.0) < 0.001,
+		"237(5): no positions, no transition — the anchor doorstep, as today")
+	var other237 := base237.duplicate(true)
+	other237["positions"] = {"222222": [5000.0, 4200.0]}
+	DungeonScript.restore_act2_state({"act2": other237,
+		"world_time": 0.0})
+	arr237 = wr237.call("_arrival_point")
+	_assert(absf(arr237.x - 100.0) < 0.001,
+		"237(5): an entry for another player only — my arrival runs the legacy chain")
+	var bad237 := base237.duplicate(true)
+	bad237["positions"] = {"111111": [NAN, 0.0],
+		"222222": [5000.0, 4200.0]}
+	DungeonScript.restore_act2_state({"act2": bad237,
+		"world_time": 0.0})
+	stm.set("steam_id", 222222)
+	var arr_ok: Vector3 = wr237.call("_arrival_point")
+	stm.set("steam_id", 111111)
+	arr237 = wr237.call("_arrival_point")
+	_assert(absf(arr_ok.x - 5000.0) < 0.001
+		and absf(arr237.x - 100.0) < 0.001,
+		"237(5): a corrupt (NaN) entry is ignored — the legacy chain runs — and the valid neighbour is unaffected")
+	var bad2 := base237.duplicate(true)
+	bad2["positions"] = {"111111": [2000000.0, 0.0]}
+	DungeonScript.restore_act2_state({"act2": bad2,
+		"world_time": 0.0})
+	var bad3 := base237.duplicate(true)
+	bad3["positions"] = {"111111": ["x", 2.0]}
+	DungeonScript.restore_act2_state({"act2": bad3,
+		"world_time": 0.0})
+	_assert((DungeonScript.get("act2_positions")
+			as Dictionary).is_empty()
+		and absf((wr237.call("_arrival_point")
+			as Vector3).x - 100.0) < 0.001,
+		"237(5): out-of-bound and wrong-shape entries are dropped at restore")
+	wr237.free()
+	# (8) Presence: the payload rides the hellos; the
+	# spawn consumes it; absent keeps today's offset.
+	var wsrc237: String = FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	_assert(wsrc237.contains("_my_presence_pos()")
+		and wsrc237.contains(
+			"func _spawn_remote(pid: int, class_id: String, pos: Array = [])"),
+		"237(8): world_hello / world_present carry the sender's position (source pin)")
+	var wr2 = load("res://scripts/world/world_root.gd").new()
+	wr2.set("_started", true)
+	root.add_child(wr2)
+	wr2.set("_spawn_point", Vector3(100, 5, 100))
+	wr2.call("_spawn_remote", 55, "mage", [7.0, 8.0, 9.0])
+	wr2.call("_spawn_remote", 56, "warrior", [])
+	wr2.call("_spawn_remote", 57, "rogue", [1.0, 2.0])
+	var pres237: Dictionary = wr2.get("_presence")
+	_assert((pres237[55] as Node3D).global_position == Vector3(7, 8, 9)
+		and (pres237[56] as Node3D).global_position == Vector3(101.5, 5, 101.5)
+		and (pres237[57] as Node3D).global_position == Vector3(101.5, 5, 101.5),
+		"237(8): _spawn_remote places the replica at the carried position; absent or malformed keeps the arrival offset")
+	wr2.free()
+	p237a.free()
+	p237b.free()
+	p237c.free()
+	wmark.free()
+	stm.set("steam_id", saved_steam)
+	nm.set("peer_steam_ids", saved_peers)
+
 	DungeonScript.set("revealed", saved_revealed)
 	DungeonScript.set("buildings_cleared", saved_cleared_n)
 	DungeonScript.set("home_anchor", saved_anchor)
@@ -8065,6 +8269,33 @@ func _test_floors_205() -> void:
 		"func board_train_interior"), 800)
 	_assert(funnel.contains("if floor_active():"),
 		"205: the annex departure funnel is gated inside buildings")
+
+	# 18. Issue #237 (regression only): a run saved
+	# mid-floor continues onto the SAME (floor_key,
+	# floor_index) — the building case was verified
+	# working; these legs lock it. The solo leg runs at
+	# the state level; the MP leg pins the broadcast's
+	# payload (the two-peer live leg stays hardware-held
+	# under the testing prohibition).
+	DungeonScript.restore_act2_state({"act2": {
+		"context": "building", "floor_key": "12,9",
+		"floor_index": 2,
+		"anchor_doorstep": [1.0, 0.0, 1.0]}, "world_time": 0.0})
+	_assert(DungeonScript.floor_active()
+		and str(DungeonScript.get("floor_key")) == "12,9"
+		and int(DungeonScript.get("floor_index")) == 2,
+		"237(7): a building restore re-arms the saved (floor_key, floor_index)")
+	_assert(dsrc.contains(
+		"next_seed = Act2FloorGen.seed_for(floor_key, floor_index)")
+		and dsrc.contains("Act2FloorGen.theme_for(frec")
+		and FloorGenRes.seed_for("12,9", 2)
+			!= FloorGenRes.seed_for("12,9", 3),
+		"237(7): the dungeon synthesizes theme + seed from exactly that pair (FloorGen, pure per peer)")
+	_assert(nmsrc.contains(
+		"rpc(\"load_floor\", str(a2.get(\"floor_key\", \"\"))")
+		and nmsrc.contains(
+			"int(a2.get(\"floor_index\", 0)), false)"),
+		"237(7): the MP continue broadcasts load_floor with the SAVED pair")
 
 	DungeonScript.set("revealed", saved_revealed)
 	DungeonScript.set("buildings_cleared", saved_cleared_n)

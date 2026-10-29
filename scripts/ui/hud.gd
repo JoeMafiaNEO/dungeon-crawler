@@ -2215,6 +2215,15 @@ func _on_save_quit_pressed() -> void:
 		solo_base["wave"] = wave_number
 		solo_base["class_id"] = _player.class_id
 		solo_base["player_state"] = _player.get_state()
+		# Issue #237: stamp a fresh Act 2 record before
+		# writing (the departure pattern, dungeon.gd) —
+		# a pause-save must never carry the last clock
+		# tick's record; in the world this is what makes
+		# the stored street position the spot at save
+		# time, not up to 30 s stale.
+		if Dungeon.act2_context != "":
+			solo_base["act2"] = Dungeon.act2_record()
+			solo_base["world_time"] = Dungeon.world_time
 		SaveManager.save_run(solo_base, SaveManager.MODE_SOLO,
 			NetworkManager.active_run_slot)
 	_on_quit_pressed()

@@ -55,6 +55,10 @@ var _started := false
 
 
 func _ready() -> void:
+	# Issue #237: the record funnel samples street
+	# positions only while a world scene is live on the
+	# peer building the record — this group is its gate.
+	add_to_group("world_root")
 	_build_environment()
 	_streamer = get_node_or_null("WorldStreamer")
 	_build_fade()
@@ -120,21 +124,32 @@ func _begin() -> void:
 
 
 ## Arrival: the anchor's doorstep after a door transition;
-## the record's last transition point on a continue — never
-## mid-street. Y is re-sampled from the terrain function at
+## on a continue, the player's own stored street position
+## (issue #237 — Jesse's amendment of the #204 rule);
+## else the record's last transition point; else the
+## doorstep. Y is re-sampled from the terrain function at
 ## the point itself (the record's y is the ground at the
-## building's center).
+## building's center). Death respawns never come here —
+## they use the anchor doorstep directly.
 func _arrival_point() -> Vector3:
 	var p := Vector3.ZERO
+	var from_stored := false
 	if Dungeon.act2_spawn_at == "doorstep":
 		Dungeon.act2_spawn_at = ""
 		p = Dungeon.act2_anchor_doorstep
+	elif not Dungeon.act2_my_position().is_empty():
+		# Issue #237: my stored position — exact XZ; a
+		# stored (0, 0) is a real spot, so this branch
+		# tracks itself instead of the ZERO sentinel.
+		var mine := Dungeon.act2_my_position()
+		p = Vector3(float(mine[0]), 0.0, float(mine[1]))
+		from_stored = true
 	elif not Dungeon.act2_last_transition.is_empty():
 		var pt: Array = Dungeon.act2_last_transition.get(
 			"point", [])
 		if pt.size() == 3:
 			p = Vector3(float(pt[0]), float(pt[1]), float(pt[2]))
-	if p == Vector3.ZERO:
+	if p == Vector3.ZERO and not from_stored:
 		p = Dungeon.act2_anchor_doorstep
 	p.y = WorldGen.height_at(WorldGen.WORLD_SEED, p.x, p.z) + 0.4
 	return p
@@ -197,32 +212,56 @@ func _make_player(pid: int, class_id: String, pos: Vector3) -> Player:
 ## peer's class; full cross-scene state replication is later
 ## work. Presence is presentation — the world itself never
 ## depends on it.
+## Issue #237: my own street position for the presence
+## payload ([x, y, z], or [] when there is no local player
+## to read) — a fact about the sender, announced by the
+## sender; no peer derives or validates anyone's world.
+func _my_presence_pos() -> Array:
+	if _local_player == null:
+		return []
+	var gp := _local_player.global_position
+	return [gp.x, gp.y, gp.z]
+
+
 func _announce_presence() -> void:
 	if multiplayer.multiplayer_peer == null:
 		return
 	rpc("world_hello", multiplayer.get_unique_id(),
-		_local_player.class_id if _local_player != null else "")
+		_local_player.class_id if _local_player != null else "",
+		_my_presence_pos())
 
 
 @rpc("any_peer")
-func world_hello(pid: int, class_id: String) -> void:
-	_spawn_remote(pid, class_id)
+func world_hello(pid: int, class_id: String, pos: Array = []) -> void:
+	_spawn_remote(pid, class_id, pos)
 	rpc_id(pid, "world_present", multiplayer.get_unique_id(),
-		_local_player.class_id if _local_player != null else "")
+		_local_player.class_id if _local_player != null else "",
+		_my_presence_pos())
 
 
 @rpc("any_peer")
-func world_present(pid: int, class_id: String) -> void:
-	_spawn_remote(pid, class_id)
+func world_present(pid: int, class_id: String, pos: Array = []) -> void:
+	_spawn_remote(pid, class_id, pos)
 
 
-func _spawn_remote(pid: int, class_id: String) -> void:
+func _spawn_remote(pid: int, class_id: String, pos: Array = []) -> void:
 	if pid == multiplayer.get_unique_id() or _presence.has(pid) \
 			or not _started:
 		return
-	var pos := _spawn_point + Vector3(1.5, 0, 1.5)
+	# Issue #237: a hello carrying the sender's position
+	# places the replica where that player actually
+	# stands; without a usable one, the arrival offset
+	# stands, exactly as before.
+	var at := _spawn_point + Vector3(1.5, 0, 1.5)
+	if pos.size() == 3 and (pos[0] is int or pos[0] is float) \
+			and (pos[1] is int or pos[1] is float) \
+			and (pos[2] is int or pos[2] is float) \
+			and is_finite(float(pos[0])) \
+			and is_finite(float(pos[1])) \
+			and is_finite(float(pos[2])):
+		at = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
 	_presence[pid] = _make_player(pid,
-		class_id if class_id != "" else "warrior", pos)
+		class_id if class_id != "" else "warrior", at)
 
 
 @rpc("any_peer")

@@ -234,6 +234,12 @@ static var act2_last_transition := {}
 ## a rooftop-door transition (arrive at the anchor's doorstep);
 ## "" on a continue (arrive at the last transition point).
 static var act2_spawn_at := ""
+## Issue #237: per-player street positions restored from
+## the record's "positions" key (Steam ID string -> [x, z],
+## validated per entry at restore). A continue mechanism
+## only — respawns never read it. Capture never reads it
+## either: records sample live (see act2_record).
+static var act2_positions := {}
 ## The local peer's class, stashed at the rooftop door (the
 ## world root spawns the local player with it — the train's
 ## passenger-class pattern).
@@ -383,7 +389,7 @@ static func home_building() -> Dictionary:
 
 
 static func act2_record() -> Dictionary:
-	return {"context": act2_context,
+	var rec := {"context": act2_context,
 		"cleared": act2_cleared.duplicate(),
 		"anchor_building": act2_anchor_building,
 		"anchor_doorstep": [act2_anchor_doorstep.x,
@@ -393,6 +399,62 @@ static func act2_record() -> Dictionary:
 		"floor_index": floor_index,
 		"floor_masks": floor_masks.duplicate(true),
 		"floor_counted": floor_counted.duplicate()}
+	# Issue #237: in the world context the record ALSO
+	# carries each player's street position, sampled live
+	# at build time on this peer (see _sample_act2_positions
+	# for the invariant). Outside the world context the key
+	# is absent — never stale-carried.
+	if act2_context == "world":
+		rec["positions"] = _sample_act2_positions()
+	return rec
+
+
+## Issue #237: live-sample the street positions of every
+## player this peer can see, keyed by Steam ID (the
+## roster's own match key). THE INVARIANT: a record's
+## positions exist only when sampled live, at build time,
+## on the peer building the record, in the world scene —
+## the "world_root" group gate is what makes that
+## structural (rpc_act2_transition flips the context to
+## "world" while still in the dungeon scene; its stamp
+## must not write dungeon positions as world positions).
+## A node whose Steam ID cannot be resolved gets NO
+## entry (never a guessed key): remote peers resolve
+## through NetworkManager.peer_steam_ids (the register
+## handshake's map), the local player through
+## SteamManager. Y is not sampled — arrival re-samples
+## it from the terrain, as it always has.
+static func _sample_act2_positions() -> Dictionary:
+	var out := {}
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null \
+			or tree.get_first_node_in_group("world_root") == null:
+		return out
+	for n in tree.get_nodes_in_group("players"):
+		var node := n as Node3D
+		if node == null:
+			continue
+		var sid := int(NetworkManager.peer_steam_ids.get(
+			node.get_multiplayer_authority(), 0))
+		if sid == 0 and node.is_multiplayer_authority() \
+				and SteamManager.steam_id != 0:
+			sid = SteamManager.steam_id
+		if sid == 0:
+			continue
+		out[str(sid)] = [node.global_position.x,
+			node.global_position.z]
+	return out
+
+
+## Issue #237: the local player's own restored street
+## position ([x, z]), or [] when there is none — the
+## arrival read in the world root. Identity is the same
+## key capture writes: the peer's own Steam ID.
+static func act2_my_position() -> Array:
+	if SteamManager.steam_id == 0:
+		return []
+	var e = act2_positions.get(str(SteamManager.steam_id), [])
+	return e if e is Array else []
 
 
 static func restore_act2_state(run: Dictionary) -> void:
@@ -405,6 +467,30 @@ static func restore_act2_state(run: Dictionary) -> void:
 		float(ds[2])) if ds.size() == 3 else Vector3.ZERO
 	act2_last_transition = (a.get("last_transition", {})
 		as Dictionary).duplicate(true)
+	# Issue #237: street positions, validated per entry —
+	# a 2-number array, finite, inside a generous sanity
+	# bound. A corrupt entry is dropped here and can
+	# never reach the spawn; valid neighbours are
+	# unaffected. Absent key = legacy save = empty.
+	act2_positions = {}
+	var raw_pos = a.get("positions", {})
+	if raw_pos is Dictionary:
+		for k in (raw_pos as Dictionary).keys():
+			var e = (raw_pos as Dictionary)[k]
+			if not (e is Array) or (e as Array).size() != 2:
+				continue
+			var ex = (e as Array)[0]
+			var ez = (e as Array)[1]
+			if not ((ex is int or ex is float)
+					and (ez is int or ez is float)):
+				continue
+			var fx := float(ex)
+			var fz := float(ez)
+			if not (is_finite(fx) and is_finite(fz)):
+				continue
+			if absf(fx) > 1000000.0 or absf(fz) > 1000000.0:
+				continue
+			act2_positions[str(k)] = [fx, fz]
 	floor_key = str(a.get("floor_key", ""))
 	floor_index = int(a.get("floor_index", 0))
 	floor_masks = (a.get("floor_masks", {})
@@ -422,6 +508,7 @@ static func reset_act2_state() -> void:
 	act2_anchor_doorstep = Vector3.ZERO
 	act2_last_transition = {}
 	act2_spawn_at = ""
+	act2_positions = {}
 	floor_key = ""
 	floor_index = 0
 	floor_masks = {}
