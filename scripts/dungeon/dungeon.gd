@@ -357,8 +357,23 @@ static func home_building() -> Dictionary:
 		wlx, wlz, REVEAL_FLOORS, 1, span, span, 0)
 	var cx := rx + rw * 0.5
 	var cz := rz + rd * 0.5
+	# Issue #236: ground the building at its DOORSTEP, not
+	# its center. The footprint spans the whole arena rect
+	# (a dozen lots - over 10 m of terrain relief at the
+	# shipped seed), so a center sample left the door
+	# floating meters above street level on its wall (or
+	# buried it): no visible door, and the transfer
+	# trigger hung out of reach. The door's XZ does not
+	# depend on the origin's Y, so: derive the doorstep
+	# from a provisional origin, sample the terrain THERE,
+	# and ground the building on it - the gap base and
+	# the doorstep meet the street exactly. FloorGen's
+	# home record mirrors this derivation step for step.
+	var door0 := Act2BuildingGen.door_world(plan,
+		Vector3(cx, 0.0, cz))
+	var step0: Vector3 = door0["doorstep"]
 	var ground := RevealWorldGen.height_at(
-		RevealWorldGen.WORLD_SEED, cx, cz)
+		RevealWorldGen.WORLD_SEED, step0.x, step0.z)
 	var origin := Vector3(cx, ground, cz)
 	var door := Act2BuildingGen.door_world(plan, origin)
 	return {"key": "%d,%d" % [wlx, wlz], "wlx": wlx, "wlz": wlz,

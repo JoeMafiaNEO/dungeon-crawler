@@ -58,8 +58,14 @@ static func record_for(key: String,
 				+ float(home_anchor["rect_w"]) * 0.5, 0.0,
 			float(home_anchor["rect_z"])
 				+ float(home_anchor["rect_d"]) * 0.5)
-		horigin.y = WorldGen.height_at(seed, horigin.x,
-			horigin.z)
+		# Issue #236: grounded at the DOORSTEP, exactly as
+		# Dungeon.home_building() - the two derivations
+		# must never diverge (see the note there).
+		var hdw0: Dictionary = BuildingGen.door_world(
+			hplan, horigin)
+		var hstep0: Vector3 = hdw0["doorstep"]
+		horigin.y = WorldGen.height_at(seed, hstep0.x,
+			hstep0.z)
 		var hdw: Dictionary = BuildingGen.door_world(hplan,
 			horigin)
 		return {"key": key, "wlx": wlx, "wlz": wlz,

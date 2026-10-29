@@ -155,6 +155,7 @@ func _run() -> void:
 	_test_deep_tree_save_217()
 	_test_chunk_radius_219()
 	_test_chunk_edge_force_231()
+	_test_home_door_236()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -22860,6 +22861,75 @@ func _test_chunk_edge_force_231() -> void:
 	current_scene = null
 	holder.queue_free()
 	print("[Playtest] Chunk edge force test done.")
+
+
+func _test_home_door_236() -> void:
+	print("[Playtest] Home building ground-level door (issue #236)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var FloorGenRes := load("res://scripts/world/floor_gen.gd")
+	var StreamerRes := load("res://scripts/world/world_streamer.gd")
+	var wseed: int = WorldGenRes.WORLD_SEED
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate()
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	var home: Dictionary = DungeonScript.home_building()
+	var step: Vector3 = home["doorstep"]
+	var gap: Vector3 = home["gap_center"]
+	var origin: Vector3 = home["origin"]
+	# THE pin: the doorstep stands ON the terrain at the
+	# doorstep itself (before the fix it hung ~4.8 m above
+	# the street at the shipped seed - the building's
+	# center sample used as the whole footprint's grade).
+	_assert(absf(step.y - WorldGenRes.height_at(wseed,
+		step.x, step.z)) < 0.01,
+		"236: the home doorstep is grounded on the terrain at the doorstep")
+	# The gap base meets street level on the wall line.
+	_assert(is_equal_approx(gap.y, step.y)
+		and absf(gap.y - WorldGenRes.height_at(wseed,
+			gap.x, gap.z)) < 1.0,
+		"236: the door gap's base meets street level")
+	# Non-vacuity: this seed's home plot really is sloped
+	# - center grade and doorstep grade differ by meters,
+	# so the pins above cannot pass on the old derivation.
+	_assert(absf(WorldGenRes.height_at(wseed, origin.x,
+		origin.z) - step.y) > 1.0,
+		"236: the shipped seed's home plot is sloped (the grounding pins bite)")
+	# The floor record mirrors the derivation exactly.
+	var rec: Dictionary = FloorGenRes.record_for(
+		str(home["key"]), DungeonScript.get("home_anchor"))
+	_assert(not rec.is_empty()
+		and (rec["doorstep"] as Vector3) == step
+		and (rec["origin"] as Vector3) == origin,
+		"236: the floor record's home doorstep + origin equal the world's")
+	# The built standalone: its transfer trigger stands
+	# at street level on the doorstep.
+	var holder := Node3D.new()
+	holder.name = "HomeDoor236Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var st = StreamerRes.new()
+	holder.add_child(st)
+	var bnode: Node3D = st.call(
+		"build_standalone_building", home["plan"],
+		home["origin"], true, str(home["key"]))
+	holder.add_child(bnode)
+	var trig: Node3D = bnode.get_node_or_null(
+		"TransferTrigger") as Node3D
+	_assert(trig != null,
+		"236: the home building carries its transfer trigger")
+	if trig != null:
+		_assert(absf(trig.position.y
+			- WorldGenRes.height_at(wseed,
+				trig.position.x, trig.position.z)) < 0.01,
+			"236: the transfer trigger stands at street level at the doorstep")
+		_assert((trig.get("doorstep") as Vector3) == step,
+			"236: the trigger's doorstep is the grounded doorstep")
+	DungeonScript.set("home_anchor", saved_anchor)
+	current_scene = null
+	holder.queue_free()
+	print("[Playtest] Home door test done.")
 
 
 func _test_world_gen_197() -> void:
