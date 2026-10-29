@@ -157,6 +157,7 @@ func _run() -> void:
 	_test_chunk_edge_force_231()
 	_test_home_door_236()
 	_test_dagger_hold_235()
+	_test_ability_bar_233()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -23007,6 +23008,106 @@ func _test_dagger_hold_235() -> void:
 	current_scene = null
 	holder.free()
 	print("[Playtest] Dagger hold test done.")
+
+
+func _test_ability_bar_233() -> void:
+	print("[Playtest] AbilityBar numbering + hint (issue #233)...")
+	var IS = root.get_node("InputSource")
+	IS.call("set_source", 0)
+	var hud = load("res://scenes/ui/hud.tscn").instantiate()
+	root.add_child(hud)
+	var bar = hud.get_node("%AbilityBar")
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var mk := func(cid: String, roster: Array):
+		var pl = PlayerScene.instantiate()
+		pl.set("class_id", cid)
+		root.add_child(pl)
+		pl.set("unlocked_abilities", roster)
+		pl.set("selected_ability", 1)
+		return pl
+	var caps_of := func() -> Array:
+		var out: Array = []
+		for slot in bar.get_children():
+			if slot.is_queued_for_deletion():
+				continue
+			if slot.get_child_count() > 0 \
+					and slot.get_child(0).get_child_count() > 0:
+				var kl = slot.get_child(0).get_child(0)
+				if kl is Label:
+					out.append((kl as Label).text)
+		return out
+	var F3: Array = [
+		{"id": "eagle_eye", "name": "Eagle Eye", "unlock": 1, "key": "F", "desc": "x"},
+		{"id": "mark", "name": "Mark Target", "unlock": 7, "key": "F", "desc": "y"},
+		{"id": "fan", "name": "Fan of Knives", "unlock": 30, "key": "F", "desc": "z"}]
+	var T3: Array = [
+		{"id": "reciprocity", "name": "Reciprocity", "unlock": 1, "key": "T", "desc": "x"},
+		{"id": "bulwark", "name": "Bulwark", "unlock": 4, "key": "T", "desc": "y"},
+		{"id": "warhorn", "name": "War Horn", "unlock": 7, "key": "T", "desc": "z"}]
+	var A3: Array = [
+		{"id": "sentry_turret", "name": "Sentry Turret", "unlock": 1, "key": "1", "desc": "x"},
+		{"id": "bulwark_wall", "name": "Bulwark Wall", "unlock": 4, "key": "2", "desc": "y"},
+		{"id": "spike_trap", "name": "Spike Trap", "unlock": 8, "key": "3", "desc": "z"}]
+	var hint = hud.get("_ability_hint")
+	# Rogue: the F caps become slot numbers; Jesse's
+	# own line appears under the bar.
+	var rogue = mk.call("rogue", F3)
+	hud.call("refresh_abilities", rogue)
+	_assert(caps_of.call() == ["[1]", "[2]", "[3]"],
+		"233: rogue slots are NUMBERED at the top (not [F] repeated)")
+	_assert(str(hint.text) == "Press F to activate"
+		and bool(hint.visible),
+		"233: the rogue hint reads 'Press F to activate' under the bar")
+	# Warrior: same shape, its own control.
+	var warrior = mk.call("warrior", T3)
+	hud.call("refresh_abilities", warrior)
+	_assert(caps_of.call() == ["[1]", "[2]", "[3]"],
+		"233: warrior slots are NUMBERED at the top (not [T] repeated)")
+	_assert(str(hint.text) == "Press T to activate",
+		"233: the warrior hint names T")
+	# Architect: numbers were already positional; the
+	# hint names the click.
+	var arch = mk.call("architect", A3)
+	hud.call("refresh_abilities", arch)
+	_assert(caps_of.call() == ["[1]", "[2]", "[3]"],
+		"233: architect slots stay numbered by position")
+	_assert(str(hint.text) == "Left click to activate",
+		"233: the architect hint names the left click")
+	# Mage is out of the order's scope: key caps as
+	# today, no hint line.
+	var mage = mk.call("mage", [
+		{"id": "fireball", "name": "Fireball", "unlock": 1, "key": "1", "desc": "x"},
+		{"id": "frost", "name": "Frost Shard", "unlock": 3, "key": "2", "desc": "y"}])
+	hud.call("refresh_abilities", mage)
+	_assert(caps_of.call() == ["[1]", "[2]"]
+		and str(hint.text) == "" and not bool(hint.visible),
+		"233: mage keeps its key caps and gets no hint (out of scope)")
+	# The hint's strip: hard under the bar, bottom band.
+	_assert(float(hint.get("offset_top")) == -15.0
+		and float(hint.get("offset_bottom")) == -1.0
+		and float(hint.get("anchor_top")) == 1.0,
+		"233: the hint occupies the strip directly under the bar")
+	# Pad: numbers follow the #190 discipline (removed),
+	# and the hint names the pad controls instead.
+	hud.call("refresh_abilities", rogue)
+	IS.call("set_source", 1)
+	_assert(caps_of.call() == ["", "", ""]
+		and str(hint.text) == "Press Y to activate",
+		"233: on pad the numbers follow #190 (removed) and the hint names Y")
+	hud.call("refresh_abilities", arch)
+	_assert(str(hint.text) == "RT to activate",
+		"233: on pad the architect hint names RT")
+	IS.call("set_source", 0)
+	hud.call("refresh_abilities", null)
+	_assert(str(hint.text) == "" and not bool(hint.visible),
+		"233: no player, no hint")
+	rogue.free()
+	warrior.free()
+	arch.free()
+	mage.free()
+	hud.free()
+	print("[Playtest] Ability bar test done.")
 
 
 func _test_world_gen_197() -> void:

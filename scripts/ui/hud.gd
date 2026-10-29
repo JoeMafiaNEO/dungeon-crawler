@@ -282,6 +282,32 @@ func _ready() -> void:
 			_ability_flank_left = flank
 		else:
 			_ability_flank_right = flank
+	# Issue #233: the activate hint — one small line
+	# centered under the ability bar (the bar's band is
+	# -76..-16; the hint takes the -15..-1 strip), in the
+	# bar's quiet type (font 12, warm gray). Its text is
+	# set by refresh_abilities; it is NOT a bar child
+	# (the bar's children are rebuilt per refresh and
+	# counted in its width).
+	_ability_hint = Label.new()
+	_ability_hint.name = "AbilityHint"
+	_ability_hint.anchor_left = 0.5
+	_ability_hint.anchor_top = 1.0
+	_ability_hint.anchor_right = 0.5
+	_ability_hint.anchor_bottom = 1.0
+	_ability_hint.offset_left = -220.0
+	_ability_hint.offset_top = -15.0
+	_ability_hint.offset_right = 220.0
+	_ability_hint.offset_bottom = -1.0
+	_ability_hint.add_theme_font_size_override(
+		"font_size", 12)
+	_ability_hint.add_theme_color_override(
+		"font_color", Color(0.65, 0.62, 0.55))
+	_ability_hint.horizontal_alignment = \
+		HORIZONTAL_ALIGNMENT_CENTER
+	_ability_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ability_hint.visible = false
+	add_child(_ability_hint)
 	# Issue #133: a guest whose host vanished gets the session-lost
 	# notice (NetworkManager detects; the HUD presents).
 	NetworkManager.session_lost.connect(_on_session_lost)
@@ -2983,6 +3009,8 @@ var _hotbar_content_w := 0.0
 ## Issue #194: the scale step the last build chose.
 var _hotbar_scale := 1.0
 var _ability_flank_left: HBoxContainer = null
+## Issue #233: the activate hint line under the bar.
+var _ability_hint: Label = null
 var _ability_flank_right: HBoxContainer = null
 
 
@@ -3038,6 +3066,7 @@ func refresh_abilities(p) -> void:
 			c.queue_free()
 		_hotbar_content_w = 0.0
 		_render_ability_flanks()
+		_update_ability_hint(null)
 		return
 	# Issue #194: hotbar scaling. The bar grows slot by slot
 	# with nothing capping its width; at high counts its right
@@ -3056,6 +3085,7 @@ func refresh_abilities(p) -> void:
 		if _hotbar_content_w <= cap:
 			break
 	_render_ability_flanks()
+	_update_ability_hint(p)
 
 
 ## Issue #194: the width the hotbar may occupy — from its
@@ -3133,7 +3163,21 @@ func _build_ability_slots(p, s: float, pad_px: int) -> float:
 		# Issue #190 (amendment): the direct-select number
 		# caps render on keyboard only — on pad there is no
 		# direct select, so the numbers vanish.
-		key_l.text = "" if pad_source else "[%s]" % String(a["key"])
+		# Issue #233 (Jesse's order): for the Q-cycle
+		# classes the top cap is the slot's NUMBER, not
+		# the key field — a rogue's abilities all carry
+		# key "F" and a warrior's all "T" (the activate
+		# letter, repeated on every slot), so the bar
+		# read as unnumbered. The activate control moves
+		# to the hint line under the bar (below). The
+		# architect's keys already are its position
+		# numbers; numbering by position keeps all three
+		# classes one shape. Mage keeps its key caps —
+		# its direct select maps BY key (#89).
+		if p.class_id in ["rogue", "warrior", "architect"]:
+			key_l.text = "" if pad_source else "[%d]" % (built.size() + 1)
+		else:
+			key_l.text = "" if pad_source else "[%s]" % String(a["key"])
 		key_l.add_theme_font_size_override("font_size", _sf(11, s))
 		key_l.add_theme_color_override("font_color", Color(0.8, 0.7, 0.4))
 		key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -3793,11 +3837,46 @@ func _item_summary(item: ItemData) -> String:
 	return "(" + ", ".join(parts) + ")"
 
 
+## Issue #233: the activate hint's text — per class,
+## naming the control that fires the SELECTED ability
+## (the Q-cycle classes; mage direct-selects by number
+## and gets no line). Source-conditional through the
+## PromptText label table, like every other hint: on
+## pad the same lines name the pad controls. The
+## rogue's keyboard line is Jesse's own wording — F
+## (the ability action carries both T and F; the label
+## table's canonical is T, so the rogue line is the
+## literal).
+func _ability_hint_text(p) -> String:
+	if p == null:
+		return ""
+	match String(p.get("class_id")):
+		"rogue":
+			if InputSource.is_pad():
+				return "Press %s to activate" % PromptText.label("ability")
+			return "Press F to activate"
+		"warrior":
+			return "Press %s to activate" % PromptText.label("ability")
+		"architect":
+			return "%s to activate" % PromptText.label("attack_phrase")
+	return ""
+
+
+func _update_ability_hint(p) -> void:
+	if _ability_hint == null:
+		return
+	var t := _ability_hint_text(p)
+	_ability_hint.text = t
+	_ability_hint.visible = t != "" and %AbilityBar.visible
+
+
 ## Toggle FPS-specific HUD elements for RTS command view.
 ## Hides crosshair and ability bar; keeps health/XP/status.
 func set_command_view(on: bool) -> void:
 	%Crosshair.visible = not on
 	%AbilityBar.visible = not on
+	if _ability_hint != null:
+		_ability_hint.visible = not on and _ability_hint.text != ""
 
 
 
