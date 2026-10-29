@@ -16,6 +16,14 @@ var _hit := false
 ## Phase 2: return leg state.
 var _returning := false
 var _return_speed := 32.0
+## Issue #235: while the owner holds LMB the return runs
+## hot - 32 -> 48 m/s. A feel number; Jesse's staging
+## test judges it.
+const RETURN_HOLD_BOOST := 1.5
+## The owner's hold state, delivered from the owner's
+## player (the live dagger copy is the server's; the
+## owner polls its own input and the state crosses over).
+var _owner_holding := false
 const CATCH_DIST := 1.2
 ## Issue #81: per-leg hit set — each mob takes damage once per leg.
 ## Cleared when the return leg starts.
@@ -111,10 +119,25 @@ func _update_return(delta: float, owner: Node) -> void:
 		return
 	# Home toward the rogue (tracks blinks/dodges).
 	var dir := to_target / dist
-	position += dir * _return_speed * delta
+	var speed := _return_speed * (
+		RETURN_HOLD_BOOST if _owner_holding else 1.0)
+	position += dir * speed * delta
 	# Server owns hit detection (return leg hits too).
 	if multiplayer.is_server():
 		_check_mob_hits()
+
+
+## Issue #235: the owner's hold state, applied on the
+## live copy. A hold during the out leg starts the
+## return NOW (early recall, through the ordinary
+## _start_return, so the hit set clears and the owner
+## notification fires exactly as for a range/wall
+## return); a hold during the return just boosts it
+## (read in _update_return); a release un-boosts.
+func apply_owner_hold(held: bool) -> void:
+	_owner_holding = held
+	if held and not _returning and not _hit:
+		_start_return()
 
 
 ## Start the return leg.

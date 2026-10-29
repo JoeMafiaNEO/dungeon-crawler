@@ -156,6 +156,7 @@ func _run() -> void:
 	_test_chunk_radius_219()
 	_test_chunk_edge_force_231()
 	_test_home_door_236()
+	_test_dagger_hold_235()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -22930,6 +22931,82 @@ func _test_home_door_236() -> void:
 	current_scene = null
 	holder.queue_free()
 	print("[Playtest] Home door test done.")
+
+
+func _test_dagger_hold_235() -> void:
+	print("[Playtest] Dagger hold recall/boost (issue #235)...")
+	var holder := Node3D.new()
+	holder.name = "DaggerHold235Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var pl = load("res://scenes/player/player.tscn"
+		).instantiate()
+	pl.set("class_id", "rogue")
+	holder.add_child(pl)
+	pl.set("global_position", Vector3(30, 0, 0))
+	var DaggerScript := load(
+		"res://scripts/combat/thrown_dagger.gd")
+	var cmap: Dictionary = (DaggerScript as GDScript
+		).get_script_constant_map()
+	_assert(is_equal_approx(float(cmap.get(
+		"RETURN_HOLD_BOOST", 0.0)), 1.5),
+		"235: the return boost is 1.5x while held (a named feel number)")
+	# A live dagger, outbound, owned by the fixture rogue.
+	var dg = DaggerScript.new()
+	holder.add_child(dg)
+	dg.call("setup", Vector3(24, 0, 0), 6.0, 1, 16.0)
+	dg.set("global_position", Vector3(10, 1.4, 0))
+	# The wire endpoint on the player applies the hold
+	# to the sibling dagger: recall from the out leg.
+	_assert(not bool(dg.get("_returning")),
+		"235: the dagger starts outbound")
+	pl.call("_receive_dagger_hold", true)
+	_assert(bool(dg.get("_returning"))
+		and bool(dg.get("_owner_holding")),
+		"235: an owner's hold during the out leg recalls the dagger NOW")
+	# Return speed: base 32 unheld, 48 while held,
+	# measured as real displacement toward the owner.
+	dg.set("global_position", Vector3(10, 1.4, 0))
+	pl.call("_receive_dagger_hold", false)
+	var p0: Vector3 = dg.global_position
+	dg.call("_update_return", 0.1, pl)
+	var base_step: float = (dg.global_position - p0).length()
+	_assert(absf(base_step - 3.2) < 0.05,
+		"235: unheld return flies at the base 32 m/s")
+	pl.call("_receive_dagger_hold", true)
+	var p1: Vector3 = dg.global_position
+	dg.call("_update_return", 0.1, pl)
+	var boost_step: float = (dg.global_position - p1).length()
+	_assert(absf(boost_step - 4.8) < 0.05,
+		"235: held return flies at the boosted 48 m/s")
+	pl.call("_receive_dagger_hold", false)
+	_assert(not bool(dg.get("_owner_holding")),
+		"235: releasing the hold un-boosts the return")
+	# The throw-click exclusion, behavioral half: with
+	# the button UP (the suite's state) a tick arms the
+	# poll and sends nothing.
+	pl.set("_dagger_out", true)
+	pl.set("_dagger_hold_armed", false)
+	pl.set("_dagger_hold_sent", false)
+	pl.call("_tick_dagger_hold", 0.016)
+	_assert(bool(pl.get("_dagger_hold_armed"))
+		and not bool(pl.get("_dagger_hold_sent")),
+		"235: the poll arms on an observed release and sends nothing spurious")
+	# The poll's shape, source-pinned: owner-side input
+	# read, capture gate, edge-only sends.
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	var tick_i := psrc.find("func _tick_dagger_hold")
+	_assert(tick_i > 0
+		and psrc.find("MOUSE_MODE_CAPTURED", tick_i) > tick_i
+		and psrc.find("is_mouse_button_pressed", tick_i) > tick_i
+		and psrc.find("_dagger_hold_armed", tick_i) > tick_i,
+		"235: the hold poll is capture-gated, button-polled, arm-gated")
+	pl.set("_dagger_out", false)
+	dg.free()
+	current_scene = null
+	holder.free()
+	print("[Playtest] Dagger hold test done.")
 
 
 func _test_world_gen_197() -> void:

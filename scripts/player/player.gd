@@ -340,6 +340,11 @@ const DAGGER_DMG_MAX := 1.4
 ## returning), melee is disabled and Fan of Knives requires dagger in hand.
 ## 1.2s cooldown after catch before the next throw.
 var _dagger_out := false
+## Issue #235: hold-LMB recall/boost - the poll arms
+## only after a release is seen (the throw click never
+## counts) and mirrors the owner's button to the server.
+var _dagger_hold_armed := false
+var _dagger_hold_sent := false
 var _dagger_catch_cd := 0.0
 const DAGGER_CATCH_COOLDOWN := 1.2
 ## Dash: Shift for a quick burst. _dash_t > 0 while dashing (i-frames),
@@ -3832,6 +3837,7 @@ func _physics_process(delta: float) -> void:
 		_tick_revive_channel(delta)
 		_tick_repair_channel(delta)
 		_tick_plant_hold(delta)
+		_tick_dagger_hold(delta)
 		# Issue #193: while a menu surface is up — pause,
 		# inventory, cipher, destination board, the census
 		# the event handlers already use — polled movement
@@ -4133,6 +4139,8 @@ func _throw_dagger() -> void:
 	if hud != null and hud.has_method("set_charge_meter"):
 		hud.set_charge_meter(0.0, false)
 	_dagger_out = true
+	_dagger_hold_armed = false
+	_dagger_hold_sent = false
 	_cooldown = 0.5  # Brief recovery after throw.
 	_attack_anim()
 	var from := int(multiplayer.get_unique_id())
@@ -4166,6 +4174,66 @@ func _request_dagger_spawn(pos: Vector3, vel: Vector3, dmg: float, owner: int, r
 	dagger.global_position = pos
 
 
+## Issue #235 (Jesse's order): while the dagger is out,
+## holding LMB recalls it (if still outbound) and speeds
+## its return for as long as the hold lasts. The owner
+## polls its own button; the state crosses to the server
+## - the dagger's live copy is the server's - through
+## the same rpc pattern as the dagger spawn. The throw
+## click itself never counts: the poll arms only after
+## a release is observed, so recall always takes a
+## FRESH press after the throw.
+func _tick_dagger_hold(_delta: float) -> void:
+	if not _dagger_out:
+		return
+	var pressed := Input.is_mouse_button_pressed(
+		MOUSE_BUTTON_LEFT)
+	# Arming is observation only (it sends nothing), so
+	# it is not capture-gated: a release seen anywhere -
+	# even in a menu - counts. Only SENDS are gated, so
+	# menu clicks can never recall or boost the dagger.
+	if not _dagger_hold_armed:
+		if not pressed:
+			_dagger_hold_armed = true
+		return
+	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		if _dagger_hold_sent:
+			_send_dagger_hold(false)
+		return
+	if pressed != _dagger_hold_sent:
+		_send_dagger_hold(pressed)
+
+
+func _send_dagger_hold(held: bool) -> void:
+	_dagger_hold_sent = held
+	if multiplayer.is_server():
+		_receive_dagger_hold(held)
+	else:
+		rpc_id(NetworkManager.server_peer_id,
+			"_receive_dagger_hold", held)
+
+
+## Server side of #235: apply the owner's hold state
+## to the owner's live dagger (a sibling - the spawn
+## added it to the players' parent). The sender must
+## be this player's own peer; the local path passes 0.
+@rpc("any_peer", "call_local")
+func _receive_dagger_hold(held: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != get_multiplayer_authority():
+		return
+	if get_parent() == null:
+		return
+	for sib in get_parent().get_children():
+		var d = sib as ThrownDagger
+		if d != null and int(d.get("owner_peer")) \
+				== get_multiplayer_authority():
+			d.call("apply_owner_hold", held)
+			return
+
+
 ## Issue #69 Phase 2: Dagger started returning (for HUD/Fan lockout feedback).
 func _on_dagger_returning() -> void:
 	pass  # _dagger_out already true; HUD could show "returning" here.
@@ -4175,6 +4243,8 @@ func _on_dagger_returning() -> void:
 @rpc("any_peer", "call_local")
 func _on_dagger_caught() -> void:
 	_dagger_out = false
+	_dagger_hold_armed = false
+	_dagger_hold_sent = false
 	_dagger_catch_cd = DAGGER_CATCH_COOLDOWN / atk_spd_mult()
 	AudioManager.sfx("dagger_catch")
 
