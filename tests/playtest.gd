@@ -154,6 +154,7 @@ func _run() -> void:
 	_test_deep_tree_ui_215()
 	_test_deep_tree_save_217()
 	_test_chunk_radius_219()
+	_test_chunk_edge_force_231()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -22760,6 +22761,105 @@ func _test_reveal_rts_retire_230() -> void:
 	current_scene = null
 	holder.queue_free()
 	print("[Playtest] Reveal RTS retire test done.")
+
+
+func _test_chunk_edge_force_231() -> void:
+	print("[Playtest] Chunk edge force-build (issue #231)...")
+	var Streamer = load("res://scripts/world/"
+		+ "world_streamer.gd")
+	var cmap: Dictionary = (Streamer as GDScript
+		).get_script_constant_map()
+	_assert(is_equal_approx(float(cmap.get(
+		"EDGE_FORCE_DIST", 0.0)), 16.0),
+		"231: the edge-force trigger distance is 16 m")
+	_assert(int(cmap.get("EDGE_FORCE_PER_STEP", 0)) == 1,
+		"231: the force is bounded to one chunk per step")
+	var holder := Node3D.new()
+	holder.name = "ChunkEdgeForce231Holder"
+	root.add_child(holder)
+	current_scene = holder
+	# The sync build itself: data + terrain assembly land
+	# in-frame; detail does NOT ride along (it stays on
+	# the budgeted staged pass).
+	var st0 = Streamer.new()
+	holder.add_child(st0)
+	st0.call("_force_build_chunk", 5, 5)
+	_assert(bool(st0.call("debug_chunk_state", 5, 5
+		)["built"]),
+		"231: a forced chunk is built synchronously")
+	var rec0: Dictionary = (st0.get("_active") as Dictionary
+		)[st0.call("_key", 5, 5)]
+	_assert(not bool(rec0.get("detail_done", true))
+		and rec0.get("buildings") == null,
+		"231: the forced build carries NO detail - buildings/scatter stay staged")
+	st0.queue_free()
+	# Near the edge (8 m): the ungenerated neighbor across
+	# the border is built THIS step, while chunks the
+	# normal pipeline has not reached stay unbuilt.
+	var st1 = Streamer.new()
+	holder.add_child(st1)
+	st1.call("set_target_position", Vector3(120, 0, 64))
+	st1.call("update_streaming", 1000)
+	_assert(bool(st1.call("debug_chunk_state", 1, 0
+		)["built"]),
+		"231: 8 m from the border, the next chunk generates in-frame")
+	_assert(not bool(st1.call("debug_chunk_state", 0, 1
+		)["built"]) and not bool(st1.call(
+			"debug_chunk_state", -1, -1)["built"]),
+		"231: the force is selective - unforced chunks still wait for the pipeline")
+	st1.queue_free()
+	# At the threshold exactly (16.0 m) it still fires.
+	var st2 = Streamer.new()
+	holder.add_child(st2)
+	st2.call("set_target_position", Vector3(112, 0, 64))
+	st2.call("update_streaming", 1000)
+	_assert(bool(st2.call("debug_chunk_state", 1, 0
+		)["built"]),
+		"231: at exactly 16 m from the border the force fires")
+	st2.queue_free()
+	# One meter beyond (17 m) it does not.
+	var st3 = Streamer.new()
+	holder.add_child(st3)
+	st3.call("set_target_position", Vector3(111, 0, 64))
+	st3.call("update_streaming", 1000)
+	_assert(not bool(st3.call("debug_chunk_state", 1, 0
+		)["built"]),
+		"231: at 17 m the neighbor still waits for the pipeline")
+	st3.queue_free()
+	# Mid-chunk: no force at all.
+	var st4 = Streamer.new()
+	holder.add_child(st4)
+	st4.call("set_target_position", Vector3(64, 0, 64))
+	st4.call("update_streaming", 1000)
+	_assert(not bool(st4.call("debug_chunk_state", 1, 0
+		)["built"]) and not bool(st4.call(
+			"debug_chunk_state", 0, -1)["built"]),
+		"231: mid-chunk, nothing is force-built")
+	st4.queue_free()
+	# The bound at a corner: three chunks qualify (two
+	# edges + the diagonal) - one step may add the forced
+	# one plus the pipeline's own single assembly, never
+	# a sync-built pile-up.
+	var st5 = Streamer.new()
+	holder.add_child(st5)
+	st5.call("_build_chunk", 0, 0)
+	var before5: int = (st5.call("active_chunks"
+		) as Array).size()
+	st5.call("set_target_position", Vector3(120, 0, 120))
+	st5.call("update_streaming", 1000)
+	var after5: Array = st5.call("active_chunks")
+	_assert(after5.size() - before5 <= 2,
+		"231: one step adds at most the forced chunk + one pipeline assembly")
+	_assert(bool(st5.call("debug_chunk_state", 1, 0
+		)["built"]) or bool(st5.call(
+			"debug_chunk_state", 0, 1)["built"])
+		or bool(st5.call("debug_chunk_state", 1, 1
+			)["built"]),
+		"231: at a corner, one of the qualifying chunks is force-built")
+	st5.queue_free()
+	current_scene = null
+	holder.queue_free()
+	print("[Playtest] Chunk edge force test done.")
 
 
 func _test_world_gen_197() -> void:

@@ -54,6 +54,8 @@ const SCATTER_ITEMS_PER_STEP := 200
 const SCATTER_CANDIDATES_PER_STEP := 64 ## Anti-hitch package: was 256 (~19 ms VM per slice — too coarse for the time budget to bind); 64 is ~5 ms VM / ~1 ms on Jesse's PC.
 const BUILDING_RADIUS := 3
 const BUILDING_DESPAWN_MSEC := 5000 ## tuning placeholder (#198)
+const EDGE_FORCE_DIST := 16.0 ## Issue #231 (Jesse's ruling): a player this close to the border of an unbuilt neighbor chunk should not wait on the async pipeline - the chunk generates IN FRAME (data + terrain assembly; detail stays staged). A feel number - Jesse's staging test judges it.
+const EDGE_FORCE_PER_STEP := 1 ## The #231 bound: at most one forced in-frame generation per streaming step (worst case one ~50-70 ms sync build); a corner's remaining neighbors force on the following steps.
 const CONE_COS := 0.4226 ## cos(65 deg): the view-cone priority band
 
 const WorldGen := preload("res://scripts/world/world_gen.gd")
@@ -319,6 +321,94 @@ func _exit_tree() -> void:
 	_pending.clear()
 
 
+## Issue #231: the desired-but-unbuilt chunks sharing a
+## border (or, at a corner, a corner point) with the
+## target's chunk whose shared edge lies within
+## EDGE_FORCE_DIST of the target - nearest first.
+func _edge_force_candidates(tcx: int, tcz: int) -> Array:
+	var cs := WorldGen.CHUNK_SIZE
+	var lx := _target_pos.x - float(tcx) * cs
+	var lz := _target_pos.z - float(tcz) * cs
+	var scored: Array = []
+	var axes: Array = []
+	if lx <= EDGE_FORCE_DIST:
+		axes.append(Vector3(-1, 0, lx))
+	if cs - lx <= EDGE_FORCE_DIST:
+		axes.append(Vector3(1, 0, cs - lx))
+	if lz <= EDGE_FORCE_DIST:
+		axes.append(Vector3(0, -1, lz))
+	if cs - lz <= EDGE_FORCE_DIST:
+		axes.append(Vector3(0, 1, cs - lz))
+	var has_x := false
+	var has_z := false
+	for a in axes:
+		if int(a.x) != 0:
+			has_x = true
+		if int(a.y) != 0:
+			has_z = true
+	for a in axes:
+		var cx := tcx + int(a.x)
+		var cz := tcz + int(a.y)
+		if _active.has(_key(cx, cz)):
+			continue
+		if maxi(absi(cx - tcx), absi(cz - tcz)) > load_radius:
+			continue
+		scored.append([a.z, Vector2i(cx, cz)])
+	if has_x and has_z:
+		for a in axes:
+			if int(a.x) == 0:
+				continue
+			for b in axes:
+				if int(b.y) == 0:
+					continue
+				var dx := tcx + int(a.x)
+				var dz := tcz + int(b.y)
+				if _active.has(_key(dx, dz)):
+					continue
+				if maxi(absi(dx - tcx),
+						absi(dz - tcz)) > load_radius:
+					continue
+				var dcorner := Vector2(
+					lx if a.x < 0 else cs - lx,
+					lz if b.y < 0 else cs - lz).length()
+				scored.append([dcorner, Vector2i(dx, dz)])
+	scored.sort_custom(func(p: Array, q: Array) -> bool:
+		return float(p[0]) < float(q[0]))
+	var out: Array = []
+	for e in scored:
+		out.append(e[1])
+	return out
+
+
+## Issue #231: build one chunk NOW, on this thread - a
+## pending pool task is landed (never duplicated), ready
+## data is assembled, anything else generates through
+## the synchronous cache-or-generate path. Terrain +
+## collision only: buildings and scatter still arrive
+## through the budgeted detail pass (detail_done stays
+## false on the fresh record).
+func _force_build_chunk(cx: int, cz: int) -> void:
+	var k := _key(cx, cz)
+	if _active.has(k):
+		return
+	if _pending.has(k):
+		var slot: Dictionary = _pending[k]
+		WorkerThreadPool.wait_for_task_completion(
+			int(slot["task"]))
+		_pending.erase(k)
+		var pdata: RefCounted = slot["data"]
+		if pdata != null:
+			WorldCache.write_data(pdata)
+			_assemble_chunk(cx, cz, pdata)
+		return
+	if _ready_data.has(k):
+		var rdata: RefCounted = _ready_data[k]
+		_ready_data.erase(k)
+		_assemble_chunk(cx, cz, rdata)
+		return
+	_build_chunk(cx, cz)
+
+
 func update_streaming(now_msec: int = -1) -> void:
 	if not _has_target:
 		return
@@ -349,6 +439,16 @@ func update_streaming(now_msec: int = -1) -> void:
 	for k in desired.keys():
 		if not _active.has(k) and not _scouts.has(k):
 			_make_scout(desired[k].x, desired[k].y)
+	# Issue #231 (Jesse's ruling): proximity overrides the
+	# pipeline - force the nearest qualifying neighbor
+	# chunks in-frame before the queue ordering runs, so
+	# the queue below simply never sees them as missing.
+	var edge_forced := 0
+	for c in _edge_force_candidates(tcx, tcz):
+		if edge_forced >= EDGE_FORCE_PER_STEP:
+			break
+		_force_build_chunk(c.x, c.y)
+		edge_forced += 1
 	# Build queue by priority (unchanged ordering).
 	var missing: Array = []
 	for k in desired.keys():
