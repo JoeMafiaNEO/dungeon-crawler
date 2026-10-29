@@ -109,6 +109,7 @@ func _run() -> void:
 	_test_elevator_cab_201()
 	_test_sky_dome_202()
 	_test_reveal_203()
+	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
 	_test_facades_208()
@@ -22681,6 +22682,84 @@ func _test_world_streamer_198() -> void:
 		).erase_section_key("world", "load_radius")
 	sm198.call("save_settings")
 	print("[Playtest] World streamer winding test done.")
+
+
+func _test_reveal_rts_retire_230() -> void:
+	print("[Playtest] Reveal retires the RTS layer (issue #230)...")
+	for d in get_nodes_in_group("dungeon"):
+		(d as Node).queue_free()
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var dgn = load("res://scenes/dungeon/dungeon.tscn"
+		).instantiate()
+	holder.add_child(dgn)
+	# Earlier sections leak players into the group, and
+	# the camera's local-player lookup takes the FIRST
+	# authority match - purge everyone who is not this
+	# fixture's own so the retire acts on the right one.
+	for p in get_nodes_in_group("players"):
+		if not dgn.is_ancestor_of(p):
+			(p as Node).free()
+	var pl: Node = null
+	for p in get_nodes_in_group("players"):
+		if dgn.is_ancestor_of(p):
+			pl = p
+	_assert(pl != null,
+		"230: the fixture dungeon has its local player")
+	# Fabricate the RTS stack the way the warlord setup
+	# builds it (camera in its group + the HUD by name).
+	var cam = load("res://scripts/rts/rts_camera.gd"
+		).new()
+	cam.name = "RTSCamera"
+	cam.add_to_group("rts_camera")
+	dgn.add_child(cam)
+	var rhud = load("res://scripts/rts/rts_hud.gd"
+		).new()
+	rhud.name = "RTSHUD"
+	dgn.add_child(rhud)
+	rhud.visible = true
+	# Put the local player IN command view - the state a
+	# manual Tab-enter leaves behind.
+	cam.set("active", true)
+	cam.current = true
+	var fps_cam = pl.get("_camera") as Camera3D
+	if fps_cam != null:
+		fps_cam.current = false
+	var vm = pl.get("_viewmodel")
+	if vm != null and vm is Node3D:
+		(vm as Node3D).visible = false
+	dgn.call("_retire_rts_for_reveal")
+	_assert(not bool(cam.get("active")),
+		"230(a): command view is exited at the reveal")
+	_assert(cam.is_queued_for_deletion(),
+		"230(a): the RTS camera is retired for the run (Tab falls back to inventory)")
+	_assert(rhud.is_queued_for_deletion(),
+		"230(b): the RTS HUD is retired for the run")
+	if fps_cam != null:
+		_assert(fps_cam.current,
+			"230(a): the FPS camera is current again")
+	if vm != null and vm is Node3D:
+		_assert((vm as Node3D).visible,
+			"230(a): the viewmodel is visible again")
+	# Idempotent: a second retire finds nothing, errors
+	# on nothing.
+	dgn.call("_retire_rts_for_reveal")
+	_assert(true, "230: the retire is idempotent")
+	# Wiring: the reveal retires FIRST, before the vista.
+	var dsrc := FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	var play_i := dsrc.find("func _play_reveal()")
+	var retire_i := dsrc.find(
+		"_retire_rts_for_reveal()", play_i)
+	var vista_i := dsrc.find("_build_reveal_vista()",
+		play_i)
+	_assert(play_i >= 0 and retire_i > play_i
+		and vista_i > retire_i,
+		"230: _play_reveal retires the RTS layer before building the vista")
+	current_scene = null
+	holder.queue_free()
+	print("[Playtest] Reveal RTS retire test done.")
 
 
 func _test_world_gen_197() -> void:

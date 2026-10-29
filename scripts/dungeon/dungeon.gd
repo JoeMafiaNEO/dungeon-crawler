@@ -3933,7 +3933,31 @@ func begin_reveal(anchor: Dictionary) -> void:
 ## the P2 interface, and the rooftop door appears in the annex
 ## hall. The shaft is built with the vista, under the slab,
 ## before anything can be seen over an edge.
+## Issue #230 (Jesse's ruling): the RTS layer retires at
+## the reveal. A player sitting in command view is forced
+## back to FPS through the camera's own toggle (the same
+## exit a manual Tab runs - mouse recaptured, FPS camera
+## current, viewmodel back), then the camera and the RTS
+## HUD are retired for the run: no hint bar, no guide
+## card, no RTS panels in the proc-gen world. With no
+## node left in the "rts_camera" group, the player's Tab
+## gate falls back to inventory, like every non-Warlord
+## context. Local to each peer - every client retires
+## its own stack when the reveal plays.
+func _retire_rts_for_reveal() -> void:
+	var cam := get_tree().get_first_node_in_group(
+		"rts_camera")
+	if cam != null:
+		if bool(cam.get("active")):
+			cam.call("toggle")
+		cam.queue_free()
+	var rhud := get_node_or_null("RTSHUD")
+	if rhud != null:
+		rhud.queue_free()
+
+
 func _play_reveal() -> void:
+	_retire_rts_for_reveal()
 	announce(REVEAL_TOAST)
 	_build_reveal_vista()
 	_fade_reveal_clutter()
