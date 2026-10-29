@@ -666,12 +666,21 @@ func _refresh_lobby_start() -> void:
 
 func _refresh_title_stats() -> void:
 	var ach := SaveManager.get_unlocked_achievements()
-	%StatsLabel.text = "Runs: %d · Kills: %d · Deepest cycle: %d · Achievements: %d" % [
-		SaveManager.get_total_runs(),
-		SaveManager.get_total_kills(),
-		SaveManager.get_deepest_cycle(),
-		ach.size(),
+	# Issue #234 (Jesse's order): the "Deepest cycle"
+	# tracker comes OFF the menu (the profile stat
+	# itself stays — the achievement checks read it).
+	# In its place, ONLY once a save has proc-gen
+	# unlocked, the buildings-cleared segment appears
+	# (SaveManager's highest across revealed saves).
+	var parts: Array[String] = [
+		"Runs: %d" % SaveManager.get_total_runs(),
+		"Kills: %d" % SaveManager.get_total_kills(),
 	]
+	var cleared := SaveManager.max_buildings_cleared()
+	if cleared >= 0:
+		parts.append("Buildings cleared: %d" % cleared)
+	parts.append("Achievements: %d" % ach.size())
+	%StatsLabel.text = " · ".join(parts)
 
 
 func _on_start_game_pressed() -> void:

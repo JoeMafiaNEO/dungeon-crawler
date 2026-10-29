@@ -493,6 +493,24 @@ func set_deepest_cycle(cycle: int) -> void:
 		save_game()
 
 
+## Issue #234: the main menu's "Buildings cleared"
+## figure — the highest buildings_cleared across all
+## REVEALED run saves (both modes: a save with
+## proc-gen unlocked is the gate), or -1 when no save
+## has revealed yet (the menu then shows no segment
+## at all). Display-only: the deepest-cycle profile
+## stat above stays — achievements read it.
+func max_buildings_cleared() -> int:
+	var best := -1
+	for mode in [MODE_SOLO, MODE_MP]:
+		for entry in list_runs(mode):
+			var run: Dictionary = entry["run"]
+			if bool(run.get("revealed", false)):
+				best = maxi(best, int(run.get(
+					"buildings_cleared", 0)))
+	return best
+
+
 func get_deepest_cycle() -> int:
 	return int(_profile.get_value("meta", "deepest_cycle", 0))
 

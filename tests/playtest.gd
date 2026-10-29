@@ -158,6 +158,7 @@ func _run() -> void:
 	_test_home_door_236()
 	_test_dagger_hold_235()
 	_test_ability_bar_233()
+	_test_main_menu_stats_234()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -23108,6 +23109,60 @@ func _test_ability_bar_233() -> void:
 	mage.free()
 	hud.free()
 	print("[Playtest] Ability bar test done.")
+
+
+func _test_main_menu_stats_234() -> void:
+	print("[Playtest] Main-menu stats (issue #234)...")
+	var sm = root.get_node("SaveManager")
+	var scratch := "user://runs_234_scratch"
+	DirAccess.make_dir_recursive_absolute(scratch)
+	sm.set("_test_runs_dir", scratch)
+	# State 1: no saves at all - no buildings segment,
+	# and no deepest-cycle segment either.
+	_assert(int(sm.call("max_buildings_cleared")) == -1,
+		"234: no saves -> max_buildings_cleared is -1 (segment hidden)")
+	var menu = load("res://scenes/ui/main_menu.tscn"
+		).instantiate()
+	root.add_child(menu)
+	var label = menu.get_node("%StatsLabel")
+	_assert(not str(label.text).contains("Buildings cleared")
+		and not str(label.text).contains("Deepest cycle"),
+		"234: the title line shows neither segment without a revealed save")
+	# Seed: a revealed solo save at 3, a revealed mp
+	# save at 7, an UNREVEALED save at 99 (must not
+	# count), and a keyless save at 50 (must not count).
+	sm.call("save_run", {"level": 6, "revealed": true,
+		"buildings_cleared": 3}, "solo", 1)
+	sm.call("save_run", {"level": 6, "revealed": true,
+		"buildings_cleared": 7}, "mp", 2)
+	sm.call("save_run", {"level": 6, "revealed": false,
+		"buildings_cleared": 99}, "solo", 3)
+	sm.call("save_run", {"level": 6,
+		"buildings_cleared": 50}, "solo", 4)
+	_assert(int(sm.call("max_buildings_cleared")) == 7,
+		"234: the figure is the HIGHEST across revealed saves (both modes); unrevealed saves never count")
+	menu.call("_refresh_title_stats")
+	var txt := str(label.text)
+	_assert(txt.contains("Buildings cleared: 7"),
+		"234: the revealed state shows 'Buildings cleared: 7'")
+	_assert(not txt.contains("Deepest cycle"),
+		"234: the deepest-cycle tracker is OFF the menu")
+	_assert(txt.begins_with("Runs: ")
+		and txt.find("Buildings cleared: 7")
+			< txt.find("Achievements:"),
+		"234: the segment takes the old tracker's place in the line (Runs - Kills - Buildings - Achievements)")
+	# The scope fence: the profile stat and its
+	# achievement consumers are untouched.
+	_assert(int(sm.call("get_deepest_cycle")) >= 0,
+		"234: get_deepest_cycle still serves the profile stat")
+	var smsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/save_manager.gd")
+	_assert(smsrc.contains("func get_deepest_cycle()")
+		and smsrc.contains("func set_deepest_cycle("),
+		"234: the deepest-cycle accessors stay (display-only change)")
+	menu.free()
+	sm.set("_test_runs_dir", "")
+	print("[Playtest] Main-menu stats test done.")
 
 
 func _test_world_gen_197() -> void:
