@@ -26,6 +26,15 @@ const REGISTRY := {
 	"hl_charging": {
 		"mage": {"left": "", "right": "Disarm (cancel)", "middle": "Ping"},
 	},
+	# Issue #232: the placement-armed rows. The left
+	# label is dynamic — hud.refresh_mouse_legend
+	# fills it with "Place <ability>" for the armed
+	# ability (the registry holds static text only).
+	"placement_aim": {
+		"warrior": {"left": "", "right": "Cancel", "middle": "Ping"},
+		"mage": {"left": "", "right": "Cancel", "middle": "Ping"},
+		"architect": {"left": "", "right": "Cancel", "middle": "Ping"},
+	},
 	# Issue #126 Phase 3: rod-out contexts (player.legend_state picks
 	# the state from the session mirrors + an aim probe). The left
 	# slot carries Cast / the aim guidance / the hook call; the right

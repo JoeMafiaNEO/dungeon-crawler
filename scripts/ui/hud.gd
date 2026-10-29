@@ -4021,6 +4021,12 @@ func refresh_mouse_legend(p) -> void:
 	if p != null and p is Object and (p as Object).has_method("legend_state"):
 		state = str(p.legend_state())
 	var row: Dictionary = MouseLegend.actions_for(cid, state)
+	# Issue #232: the placement-armed row names the
+	# armed ability ("Place <ability>").
+	if state == "placement_aim" and p != null \
+			and (p as Object).has_method("aim_display_name"):
+		row = row.duplicate()
+		row["left"] = "Place %s" % str(p.aim_display_name())
 	# Issue #152 (2A-2): slots are action slots — captions render
 	# the slot action's glyph for the current source and the verb
 	# labels resolve their tokens, all through PromptText.

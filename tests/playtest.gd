@@ -159,6 +159,7 @@ func _run() -> void:
 	_test_dagger_hold_235()
 	_test_ability_bar_233()
 	_test_main_menu_stats_234()
+	_test_placement_aim_232()
 	_test_hotbar_scaling_194()
 	_test_ability_matrix_162()
 	_test_holy_light_stacking_171()
@@ -23165,6 +23166,270 @@ func _test_main_menu_stats_234() -> void:
 	print("[Playtest] Main-menu stats test done.")
 
 
+func _test_placement_aim_232() -> void:
+	print("[Playtest] Placement aim phase (issue #232)...")
+	var holder := Node3D.new()
+	holder.name = "Aim232Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var DungeonScript: GDScript = load(
+		"res://scripts/dungeon/dungeon.gd")
+	var dgn = DungeonScript.new()
+	dgn.name = "Dungeon232"
+	holder.add_child(dgn)
+	dgn.add_to_group("dungeon")
+	var PlayerScene: PackedScene = load(
+		"res://scenes/player/player.tscn")
+	var mk := func(cid: String, roster: Array, pos: Vector3):
+		var pl = PlayerScene.instantiate()
+		pl.set("class_id", cid)
+		holder.add_child(pl)
+		pl.set("unlocked_abilities", roster)
+		pl.set("selected_ability", 0)
+		pl.global_position = pos
+		return pl
+	# -- Warrior: arm mutates nothing; gates refuse. --
+	var war = mk.call("warrior", [
+		{"id": "reciprocity", "name": "Reciprocity", "unlock": 1, "key": "T", "desc": "x"},
+		{"id": "stoneskin", "name": "Stoneskin", "unlock": 15, "key": "T", "desc": "y"},
+		{"id": "doom_totem", "name": "Doom Totem", "unlock": 1, "key": "T", "desc": "z"}],
+		Vector3.ZERO)
+	war.set("totem_charges", 2)
+	var totems0: int = get_nodes_in_group("totems").size()
+	war.call("_aim_begin", "reciprocity")
+	_assert(str(war.get("_aim_ability")) == "reciprocity"
+		and int(war.get("totem_charges")) == 2
+		and (war.get("ability_cds") as Dictionary).is_empty()
+		and get_nodes_in_group("totems").size() == totems0,
+		"232(1): arming spends nothing (charges, cds, placed set unchanged)")
+	# Preview extents while armed: the totem's real
+	# aura radius; the range ring at Jesse's 8 m.
+	var pv = war.get("_aim_preview")
+	var rr = war.get("_aim_range_ring")
+	_assert(pv != null and (pv.mesh as TorusMesh).outer_radius == 6.0
+		and rr != null and (rr.mesh as TorusMesh).outer_radius == 8.0,
+		"232(6): totem preview = Totem.RADIUS (6.0); range ring = 8 m (Jesse's ruling)")
+	war.call("_aim_disarm")
+	_assert(str(war.get("_aim_ability")) == ""
+		and int(war.get("totem_charges")) == 2,
+		"232(1): cancel after arm is free")
+	war.set("totem_charges", 0)
+	war.call("_aim_begin", "reciprocity")
+	_assert(str(war.get("_aim_ability")) == "",
+		"232(1): zero charges refuses the arm (today's gate)")
+	war.set("totem_charges", 2)
+	war.set("ability_cds", {"doom_totem": 50.0})
+	war.call("_aim_begin", "doom_totem")
+	_assert(str(war.get("_aim_ability")) == "",
+		"232(1): a signature on cooldown refuses the arm")
+	war.set("ability_cds", {})
+	# The real trigger path arms too.
+	war.call("_use_class_ability")
+	_assert(str(war.get("_aim_ability")) == "reciprocity",
+		"232: the warrior ability trigger arms the selected totem")
+	# -- Confirm: spends exactly once, at the point. --
+	war.set("_aim_point", Vector3(3, 0, 2))
+	war.call("_aim_confirm")
+	var placed := get_nodes_in_group("totems")
+	_assert(str(war.get("_aim_ability")) == ""
+		and int(war.get("totem_charges")) == 1
+		and placed.size() == totems0 + 1
+		and absf((placed[placed.size() - 1] as Node3D).global_position.x - 3.0) < 0.01
+		and absf((placed[placed.size() - 1] as Node3D).global_position.z - 2.0) < 0.01,
+		"232(2): confirm places the totem AT THE AIM POINT (the place_totem rpc's position), one charge spent")
+	war.call("_aim_begin", "doom_totem")
+	war.set("_aim_point", Vector3(-3, 0, 2))
+	war.call("_aim_confirm")
+	_assert(int(war.get("totem_charges")) == 0
+		and absf(float((war.get("ability_cds") as Dictionary).get("doom_totem", 0.0)) - 90.0) < 0.5,
+		"232(2): signature confirm spends the charge and sets the 90 s signature cd")
+	war.set("totem_charges", 2)
+	# -- Disarm paths (family 3). --
+	var ev_alt := InputEventAction.new()
+	ev_alt.action = "alt_attack"
+	ev_alt.pressed = true
+	war.call("_aim_begin", "reciprocity")
+	war._input(ev_alt)
+	_assert(str(war.get("_aim_ability")) == ""
+		and int(war.get("totem_charges")) == 2,
+		"232(3): alt-attack disarms, free")
+	var whud = war.get("hud")
+	var whud_mine := false
+	if whud == null:
+		whud = load("res://scenes/ui/hud.tscn").instantiate()
+		root.add_child(whud)
+		war.set("hud", whud)
+		whud_mine = true
+	var ev_pause := InputEventAction.new()
+	ev_pause.action = "pause"
+	ev_pause.pressed = true
+	war.call("_aim_begin", "reciprocity")
+	war._input(ev_pause)
+	_assert(str(war.get("_aim_ability")) == ""
+		and not bool(whud.get("is_paused")),
+		"232(3): pause disarms and the pause menu does NOT open")
+	war.call("_aim_begin", "reciprocity")
+	war.call("_enter_downed")
+	_assert(str(war.get("_aim_ability")) == "",
+		"232(3): going down disarms")
+	war.set("downed", false)
+	war.set("alive", true)
+	war.call("_aim_begin", "reciprocity")
+	war.call("_select_ability", 1)
+	_assert(str(war.get("_aim_ability")) == "",
+		"232(3): a selection change disarms")
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("func die() -> void:\n\t# Issue #232: death disarms the placement aim.\n\t_aim_disarm()"),
+		"232(3): die() opens with the aim disarm (its run-over cascade is not fixture-driven)")
+	# -- Re-arm rules (family 5). --
+	war.call("_aim_begin", "stoneskin")
+	war.call("_aim_begin", "stoneskin")
+	_assert(str(war.get("_aim_ability")) == "",
+		"232(5): same-trigger re-press disarms (toggle)")
+	war.call("_aim_begin", "reciprocity")
+	war.call("_aim_begin", "stoneskin")
+	_assert(str(war.get("_aim_ability")) == "stoneskin",
+		"232(5): a different placement trigger re-arms to that ability")
+	war.call("_aim_disarm")
+	# -- Mage: dispatch arms; confirm pays once. --
+	var mage = mk.call("mage", [
+		{"id": "fireball", "name": "Fireball", "unlock": 1, "key": "1", "desc": "x"},
+		{"id": "blizzard", "name": "Blizzard", "unlock": 7, "key": "2", "desc": "y"},
+		{"id": "meteor", "name": "Meteor", "unlock": 10, "key": "3", "desc": "z"}],
+		Vector3(30, 0, 0))
+	mage.set("selected_ability", 1)
+	var seq0 := int(mage.get("_cast_seq"))
+	mage.call("_cast_spell")
+	_assert(str(mage.get("_aim_ability")) == "blizzard"
+		and int(mage.get("_cast_seq")) == seq0,
+		"232(1): the mage's blizzard trigger arms (no seq change at arm)")
+	var bpv = mage.get("_aim_preview")
+	_assert(bpv != null and absf((bpv.mesh as TorusMesh).outer_radius - 4.0) < 0.01,
+		"232(6): blizzard preview = its stock 4.0 radius")
+	mage.set("tree_aggregates", {"variants": {"blizzard": "whiteout"}})
+	mage.call("_aim_disarm")
+	mage.call("_aim_begin", "blizzard")
+	var wpv = mage.get("_aim_preview")
+	_assert(wpv != null and absf((wpv.mesh as TorusMesh).outer_radius - 6.0) < 0.01,
+		"232(6): under a Whiteout fixture the preview shows the true 6.0")
+	mage.set("tree_aggregates", {})
+	var cd_tick: float = mage.get("_cooldown")
+	mage.set("_aim_point", Vector3(33, 0, 2))
+	mage.call("_aim_confirm")
+	_assert(int(mage.get("_cast_seq")) == seq0 + 1
+		and float(mage.get("_cooldown")) == cd_tick,
+		"232(2): blizzard confirm casts exactly once; the cadence was paid at the arm click, not again at confirm")
+	# Clamp math (family 4): one leg per range class.
+	var cam = mage.get("_camera")
+	cam.rotation.x = 0.0
+	var flat_of := func(pt: Vector3) -> float:
+		var f := Vector2(pt.x - 30.0, pt.z)
+		return f.length()
+	_assert(absf(flat_of.call(mage.call("_aim_ground_point", 8.0)) - 8.0) < 0.05
+		and absf(flat_of.call(mage.call("_aim_ground_point", 20.0)) - 20.0) < 0.05
+		and absf(flat_of.call(mage.call("_aim_ground_point", 25.0)) - 25.0) < 0.05,
+		"232(4): a ray point beyond range clamps to exactly max_range from the player (8 / 20 / 25)")
+	cam.rotation.x = -1.05
+	var down_pt: Vector3 = mage.call("_aim_ground_point", 20.0)
+	var ddir: Vector3 = -cam.global_transform.basis.z
+	# The fixture dungeon has a floor: the steep ray
+	# HITS it close in. Within range the function
+	# returns the ray's own point, unclamped — the
+	# point lies on the ray, lands near (not at the
+	# 10 m no-hit endpoint), and respects the y floor.
+	var along: float = (down_pt - cam.global_position).cross(ddir).length()
+	_assert(flat_of.call(down_pt) < 4.0 and along < 0.05
+		and down_pt.y >= 0.1,
+		"232(4): within range the ray point returns unchanged (the close floor hit, on-ray, y >= 0.1)")
+	cam.rotation.x = 0.0
+	# Meteor: re-arm across selection + payload leg.
+	mage.set("selected_ability", 2)
+	mage.call("_cast_spell")
+	_assert(str(mage.get("_aim_ability")) == "meteor",
+		"232(5): selecting meteor and clicking re-arms to meteor")
+	var mpv = mage.get("_aim_preview")
+	var mrr = mage.get("_aim_range_ring")
+	_assert(mpv != null and absf((mpv.mesh as TorusMesh).outer_radius - 4.5) < 0.01
+		and absf((mrr.mesh as TorusMesh).outer_radius - 25.0) < 0.01,
+		"232(6): meteor preview = Meteor.BLAST_RADIUS (4.5), range ring 25")
+	mage.set("_aim_point", Vector3(27, 0, -2))
+	mage.call("_aim_confirm")
+	var meteor_found := false
+	for c in holder.get_children():
+		if c.name.begins_with("Meteor_"):
+			meteor_found = true
+	_assert(meteor_found and int(mage.get("_cast_seq")) == seq0 + 2,
+		"232(8): meteor confirm fires the cast rpc with the point (a live Meteor spawns), seq +1")
+	mage.set("selected_ability", 0)
+	# -- Architect: gates, confirm, the wall box. --
+	var arch = mk.call("architect", [
+		{"id": "sentry_turret", "name": "Sentry Turret", "unlock": 1, "key": "1", "desc": "x"},
+		{"id": "bulwark_wall", "name": "Bulwark Wall", "unlock": 4, "key": "2", "desc": "y"},
+		{"id": "spike_trap", "name": "Spike Trap", "unlock": 8, "key": "3", "desc": "z"}],
+		Vector3(60, 0, 0))
+	arch.set("ability_cds", {"sentry_turret": 5.0})
+	arch.call("_cast_architect_ability")
+	_assert(str(arch.get("_aim_ability")) == "",
+		"232(1): a structure on cooldown refuses the arm")
+	arch.set("ability_cds", {})
+	arch.call("_cast_architect_ability")
+	_assert(str(arch.get("_aim_ability")) == "sentry_turret",
+		"232: the architect's click arms the selected structure")
+	var structs0: int = get_nodes_in_group("structures").size()
+	arch.set("_aim_point", Vector3(62, 0, 2))
+	arch.call("_aim_confirm")
+	_assert(absf(float((arch.get("ability_cds") as Dictionary).get("sentry_turret", 0.0)) - 12.0) < 0.01
+		and get_nodes_in_group("structures").size() == structs0 + 1
+		and int(arch.get("_structure_seq")) == 1,
+		"232(2): structure confirm pays its cd once and places at the aim point")
+	arch.set("selected_ability", 1)
+	arch.call("_aim_begin", "bulwark_wall")
+	var wprev = arch.get("_aim_preview")
+	_assert(wprev != null and wprev.mesh is BoxMesh
+		and absf((wprev.mesh as BoxMesh).size.x - 3.0) < 0.01
+		and absf((wprev.mesh as BoxMesh).size.z - 0.6) < 0.01,
+		"232(6): the bulwark wall preview is the placed footprint box, 3.0 x 0.6")
+	arch.call("_aim_disarm")
+	# Cap gate: three real traps down, the arm refuses.
+	var me := int(arch.call("get_multiplayer_authority"))
+	for k in 3:
+		dgn.rpc("place_structure", "spike_trap",
+			Vector3(55 + k * 2, 0, -4), me, 1, "cap_%d" % k)
+	arch.call("_aim_begin", "spike_trap")
+	_assert(str(arch.get("_aim_ability")) == "",
+		"232(1): at the trap cap the arm refuses (the gate reads the live structures)")
+	# -- Legend (family 7). --
+	war.call("_aim_begin", "reciprocity")
+	whud.call("refresh_mouse_legend", war)
+	_assert(str(whud.get("_legend_left").text) == "Place Reciprocity"
+		and str(whud.get("_legend_right").text) == "Cancel",
+		"232(7): while armed the legend reads Place <ability> / Cancel")
+	war.call("_aim_disarm")
+	whud.call("refresh_mouse_legend", war)
+	_assert(str(whud.get("_legend_left").text) == "Attack",
+		"232(7): disarmed, the legend returns to the stock rows")
+	var mech_lo := psrc.find("# --- Issue #232")
+	var mech_hi := psrc.find("func _totem_gate")
+	_assert(psrc.contains("return \"placement_aim\"")
+		and psrc.substr(mech_lo, mech_hi - mech_lo).count("click_state_changed.emit()") == 3,
+		"232(7): arm / disarm / confirm each emit click_state_changed (source pin)")
+	_assert(psrc.contains("var target := from + dir * HL_AIM_RANGE"),
+		"232(8): Holy Light's own aim machine is untouched (not refactored)")
+	for n in get_nodes_in_group("totems"):
+		n.free()
+	for n in get_nodes_in_group("structures"):
+		n.free()
+	war.free()
+	mage.free()
+	arch.free()
+	dgn.free()
+	holder.free()
+	if whud_mine:
+		whud.free()
+	print("[Playtest] Placement aim test done.")
+
+
 func _test_world_gen_197() -> void:
 	print("[Playtest] Procedural world gen (issue #197)...")
 	var holder := Node3D.new()
@@ -28141,8 +28406,8 @@ func _test_deep_tree_b3_210() -> void:
 		"210B3: Warlord's Tempo reads in the atk_spd chain")
 	var tsrc := FileAccess.get_file_as_string(
 		"res://scripts/player/player.gd")
-	_assert(tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, global_position, int(multiplayer.get_unique_id()), ability_rank())\n\t_tree_note_totem_placed()")
-			and tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, global_position, int(multiplayer.get_unique_id()), 1)\n\t_tree_note_totem_placed()"),
+	_assert(tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, point, int(multiplayer.get_unique_id()), ability_rank())\n\t_tree_note_totem_placed()")
+			and tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, point, int(multiplayer.get_unique_id()), 1)\n\t_tree_note_totem_placed()"),
 		"210B3: both placement paths call the tempo hook")
 	# Reciprocity: mend_pct scales the heal; Thorn
 	# Mirror slows enemies on the tick (the SE's adopted

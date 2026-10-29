@@ -1742,6 +1742,10 @@ func _input(event: InputEvent) -> void:
 			if _hl_state == HLState.ARMED:
 				_hl_start_charge()
 				return
+			# Issue #232: attack while placement-armed confirms the placement.
+			if _aim_ability != "":
+				_aim_confirm()
+				return
 			# Issue #69 Phase 1: attack while charging throws the dagger.
 			if _charging and class_id == "rogue":
 				_throw_dagger()
@@ -1767,6 +1771,10 @@ func _input(event: InputEvent) -> void:
 		if alt_pressed and (_hl_state == HLState.ARMED or _hl_state == HLState.CHARGING):
 			_hl_disarm()
 			return
+		# Issue #232: alt disarms the placement aim (free).
+		if alt_pressed and _aim_ability != "":
+			_aim_disarm()
+			return
 		# Issue #69 Phase 1: alt hold charges the thrown dagger (rogue only).
 		if class_id == "rogue" and alive and focused:
 			if alt_pressed:
@@ -1787,6 +1795,12 @@ func _input(event: InputEvent) -> void:
 		# Issue #91 Phase 1: pause disarms Holy Light / cancels charge (free).
 		if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:
 			_hl_disarm()
+			get_viewport().set_input_as_handled()
+			return
+		# Issue #232: pause disarms the placement aim
+		# (free) and is handled — the menu does NOT open.
+		if _aim_ability != "":
+			_aim_disarm()
 			get_viewport().set_input_as_handled()
 			return
 		# Inventory open: pause swaps to the pause UI (no stacking).
@@ -2561,6 +2575,9 @@ func _cycle_ability() -> void:
 	if unlocked_abilities.size() < 2:
 		return
 	selected_ability = (selected_ability + 1) % unlocked_abilities.size()
+	# Issue #232: a selection change disarms the aim.
+	if _aim_ability != "" and _selected_ability_id() != _aim_ability:
+		_aim_disarm()
 	AudioManager.sfx("ui_click")
 	if hud != null:
 		hud.refresh_abilities(self)
@@ -2569,6 +2586,9 @@ func _cycle_ability() -> void:
 func _select_ability(idx: int) -> void:
 	if idx < unlocked_abilities.size() and idx != selected_ability:
 		selected_ability = idx
+		# Issue #232: a selection change disarms the aim.
+		if _aim_ability != "" and _selected_ability_id() != _aim_ability:
+			_aim_disarm()
 		AudioManager.sfx("ui_click")
 		if hud != null:
 			hud.refresh_abilities(self)
@@ -2594,39 +2614,317 @@ func _selected_ability_id() -> String:
 ## T/F: use the selected class ability (warrior totem / rogue trick).
 ## Mage casts via left-click instead.
 func _use_class_ability() -> void:
-	# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
-	_notify_echo_ability(_selected_ability_id())
 	# Jesse 2026-10-11: Command ability toggles RTS command mode in warlord domain.
 	if _selected_ability_id() == "command":
+		# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
+		_notify_echo_ability(_selected_ability_id())
 		_toggle_command_mode()
 		return
 	if class_id == "warrior":
-		_place_totem()
+		# Issue #232: a totem trigger ARMS the aim phase;
+		# the echo + the spend happen at confirm (arming
+		# mutates nothing, echo included). A warrior
+		# ability outside the aim table keeps the legacy
+		# instant placement.
+		var tid := _selected_ability_id()
+		if PLACEMENT_AIM.has(tid):
+			_aim_begin(tid)
+		else:
+			_notify_echo_ability(tid)
+			_place_totem()
 	elif class_id == "rogue":
+		_notify_echo_ability(_selected_ability_id())
 		_activate_rogue_ability()
 
 
-## Warrior totem placement (implemented in the totem task).
-func _place_totem() -> void:
-	var totem_id := _selected_ability_id()
-	if totem_id == "":
-		totem_id = "reciprocity"
-	# Signature totems have their own activation.
-	if totem_id in ["sanctuary_totem", "doom_totem"]:
-		_activate_signature_totem(totem_id)
+# --- Issue #232: the shared placement aim phase ---
+## Jesse's ruling: every ability that requires
+## placement (warrior totems, blizzard, meteor,
+## architect structures) gets an aim-and-click phase
+## like Holy Light's. ONE mechanism: an ability that
+## places is a row in PLACEMENT_AIM. Arming runs the
+## ability's refusal gates READ-ONLY and mutates
+## nothing (no charge, cooldown, cap, sequence, or
+## echo change; the arm click itself pays the
+## ordinary attack-cadence tick through _do_attack,
+## as Holy Light's arm does). Every cost is paid
+## inside the cast path at confirm. The aim and the
+## preview are LOCAL ONLY — no RPC fires while
+## aiming; only the confirmed cast crosses the wire,
+## through the casts' existing RPCs.
+## Jesse's section-6 ruling: totems place at most
+## 8 m out — one number, regular and signature alike.
+const AIM_TOTEM_RANGE := 8.0
+var PLACEMENT_AIM := {
+	"reciprocity": {"max_range": AIM_TOTEM_RANGE, "tint": Color(1.0, 0.85, 0.3)},
+	"bulwark": {"max_range": AIM_TOTEM_RANGE, "tint": Color(1.0, 0.85, 0.3)},
+	"warhorn": {"max_range": AIM_TOTEM_RANGE, "tint": Color(1.0, 0.85, 0.3)},
+	"stoneskin": {"max_range": AIM_TOTEM_RANGE, "tint": Color(1.0, 0.85, 0.3)},
+	"rally": {"max_range": AIM_TOTEM_RANGE, "tint": Color(1.0, 0.85, 0.3)},
+	"sanctuary_totem": {"max_range": AIM_TOTEM_RANGE, "tint": Color(1.0, 0.85, 0.3)},
+	"doom_totem": {"max_range": AIM_TOTEM_RANGE, "tint": Color(1.0, 0.85, 0.3)},
+	"blizzard": {"max_range": 20.0, "tint": Color(0.6, 0.85, 1.0)},
+	"meteor": {"max_range": 25.0, "tint": Color(1.0, 0.4, 0.1)},
+	"sentry_turret": {"max_range": 20.0, "tint": Color(0.95, 0.9, 0.75)},
+	"bulwark_wall": {"max_range": 20.0, "tint": Color(0.95, 0.9, 0.75)},
+	"spike_trap": {"max_range": 20.0, "tint": Color(0.95, 0.9, 0.75)},
+	"keystone": {"max_range": 20.0, "tint": Color(0.95, 0.9, 0.75)},
+}
+var _aim_ability := ""
+var _aim_point := Vector3.ZERO
+var _aim_preview: MeshInstance3D = null
+var _aim_range_ring: MeshInstance3D = null
+var _aim_anchor := Vector3.ZERO
+
+
+func _aim_max_range() -> float:
+	return float(PLACEMENT_AIM.get(_aim_ability, {}).get("max_range", 0.0))
+
+
+## The armed ability's display name (legend + toast).
+func aim_display_name() -> String:
+	for a in unlocked_abilities:
+		if String(a.get("id", "")) == _aim_ability:
+			return String(a.get("name", _aim_ability))
+	return _aim_ability
+
+
+## Holy Light's aim discipline, generalized: camera
+## ray, hit-or-endpoint, y >= 0.1, flat-clamped to
+## max_range FROM THE PLAYER. (_hl_ground_aim is this
+## at HL_AIM_RANGE; Holy Light's own machine is not
+## refactored — spec section 7.)
+func _aim_ground_point(max_range: float) -> Vector3:
+	if _camera == null:
+		return global_position
+	var from: Vector3 = _camera.global_position
+	var dir := -_camera.global_transform.basis.z
+	var target := from + dir * max_range
+	var params := PhysicsRayQueryParameters3D.create(from, target)
+	var space := get_world_3d().direct_space_state
+	var hit := space.intersect_ray(params)
+	var point: Vector3 = hit["position"] if not hit.is_empty() else target
+	point.y = maxf(point.y, 0.1)
+	var flat := Vector2(point.x - global_position.x, point.z - global_position.z)
+	if flat.length() > max_range:
+		flat = flat.normalized() * max_range
+		point.x = global_position.x + flat.x
+		point.z = global_position.z + flat.y
+	return point
+
+
+## The preview extent for an armed ability, read from
+## the same constants / computation the cast itself
+## uses — so the preview never lies about the effect.
+func _aim_extent(ability_id: String) -> Dictionary:
+	match ability_id:
+		"reciprocity", "bulwark", "warhorn", "stoneskin", \
+				"rally", "sanctuary_totem", "doom_totem":
+			return {"kind": "ring", "radius": Totem.RADIUS}
+		"blizzard":
+			# The cast's own radius computation.
+			var radius := 4.0 + _tree_skill_mod(
+				"blizzard", "radius_add", 0.0)
+			if _tree_variant("blizzard") == "whiteout":
+				radius *= 1.5
+			return {"kind": "ring", "radius": radius}
+		"meteor":
+			return {"kind": "ring", "radius": Meteor.BLAST_RADIUS}
+		"bulwark_wall":
+			# structure.gd's collision footprint.
+			return {"kind": "box", "size": Vector2(3.0, 0.6)}
+	return {"kind": "ring", "radius": 1.0}
+
+
+## Arm the aim phase for an ability. A same-trigger
+## re-press disarms (toggle); a different ability's
+## trigger re-arms. Refusal = today's feedback, no arm.
+func _aim_begin(ability_id: String) -> void:
+	if not PLACEMENT_AIM.has(ability_id):
 		return
+	if _aim_ability == ability_id:
+		_aim_disarm()
+		return
+	if class_id == "warrior":
+		if not _totem_gate(ability_id):
+			return
+	elif class_id == "architect":
+		if not _structure_gate(ability_id):
+			return
+	_aim_ability = ability_id
+	_aim_point = _aim_ground_point(_aim_max_range())
+	_aim_anchor = global_position
+	_aim_build_preview()
+	AudioManager.sfx("ui_click")
+	if hud != null:
+		hud.toast("%s armed — {attack} to place" % aim_display_name())
+	click_state_changed.emit()
+
+
+## Disarm. Always free: frees the preview, clears the
+## state, spends nothing.
+func _aim_disarm() -> void:
+	if _aim_ability == "":
+		return
+	_aim_ability = ""
+	_aim_free_preview()
+	AudioManager.sfx("ui_hover")
+	click_state_changed.emit()
+
+
+## Confirm: the click that spends. The state clears
+## first; the cast path re-runs its own gates and pays
+## every cost, exactly as a direct cast does today.
+func _aim_confirm() -> void:
+	if _aim_ability == "":
+		return
+	var ability_id := _aim_ability
+	var point := _aim_point
+	_aim_ability = ""
+	_aim_free_preview()
+	click_state_changed.emit()
+	_notify_echo_ability(ability_id)
+	match class_id:
+		"warrior":
+			_place_totem_at(ability_id, point)
+		"mage":
+			if ability_id == "blizzard":
+				AudioManager.sfx("blizzard_cast")
+				_cast_blizzard_at(point)
+			elif ability_id == "meteor":
+				AudioManager.sfx("meteor_cast")
+				_cast_meteor_at(point)
+		"architect":
+			_place_structure_at(ability_id, point)
+
+
+## Per-physics-frame while armed (the Holy Light tick
+## pattern): the aim tracks the cursor; the preview
+## follows; a discontinuous jump (scene / dungeon
+## transition, teleport) voids the aim.
+func _aim_process(_delta: float) -> void:
+	if _aim_ability == "":
+		return
+	if global_position.distance_to(_aim_anchor) > 6.0:
+		_aim_disarm()
+		return
+	_aim_anchor = global_position
+	_aim_point = _aim_ground_point(_aim_max_range())
+	if _aim_preview != null and is_instance_valid(_aim_preview):
+		_aim_preview.global_position = _aim_point + Vector3(0, 0.15, 0)
+	if _aim_range_ring != null and is_instance_valid(_aim_range_ring):
+		_aim_range_ring.global_position = global_position + Vector3(0, 0.12, 0)
+
+
+func _aim_material(tint: Color, alpha: float) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var c := tint
+	c.a = alpha
+	mat.albedo_color = c
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	return mat
+
+
+## The preview rig: the effect's true extent at the
+## aim point + a faint ring at max_range on the
+## player (the clamp boundary). Local only.
+func _aim_build_preview() -> void:
+	_aim_free_preview()
+	var parent := get_parent()
+	if parent == null:
+		return
+	var cfg: Dictionary = PLACEMENT_AIM[_aim_ability]
+	var tint: Color = cfg["tint"]
+	var extent := _aim_extent(_aim_ability)
+	_aim_preview = MeshInstance3D.new()
+	_aim_preview.name = "PlacementAimPreview"
+	if String(extent["kind"]) == "box":
+		var size: Vector2 = extent["size"]
+		var box := BoxMesh.new()
+		box.size = Vector3(size.x, 0.08, size.y)
+		_aim_preview.mesh = box
+		# No rotation: the placed wall is axis-aligned
+		# exactly as place_structure builds it.
+	else:
+		var r := float(extent["radius"])
+		var torus := TorusMesh.new()
+		torus.inner_radius = maxf(0.1, r - 0.2)
+		torus.outer_radius = r
+		torus.rings = 48
+		torus.ring_segments = 8
+		_aim_preview.mesh = torus
+		# No rotation: TorusMesh lies flat (XZ) as
+		# built — the ring must hug the ground.
+	_aim_preview.material_override = _aim_material(tint, 0.85)
+	parent.add_child(_aim_preview)
+	_aim_preview.global_position = _aim_point + Vector3(0, 0.15, 0)
+	var mr := _aim_max_range()
+	var rt := TorusMesh.new()
+	rt.inner_radius = maxf(0.1, mr - 0.15)
+	rt.outer_radius = mr
+	rt.rings = 64
+	rt.ring_segments = 8
+	_aim_range_ring = MeshInstance3D.new()
+	_aim_range_ring.name = "PlacementAimRange"
+	_aim_range_ring.mesh = rt
+	_aim_range_ring.material_override = _aim_material(tint, 0.22)
+	parent.add_child(_aim_range_ring)
+	_aim_range_ring.global_position = global_position + Vector3(0, 0.12, 0)
+
+
+func _aim_free_preview() -> void:
+	if _aim_preview != null and is_instance_valid(_aim_preview):
+		_aim_preview.queue_free()
+	_aim_preview = null
+	if _aim_range_ring != null and is_instance_valid(_aim_range_ring):
+		_aim_range_ring.queue_free()
+	_aim_range_ring = null
+
+
+## Issue #232: the totem refusal gates, read-only —
+## shared by the aim phase's arm (no spend) and by
+## the placement itself (spend after the gate). The
+## feedback is today's: same toasts, same ui_error.
+func _totem_gate(totem_id: String) -> bool:
+	if totem_id in ["sanctuary_totem", "doom_totem"]:
+		if float(ability_cds.get(totem_id, 0.0)) > 0.0:
+			if hud != null:
+				hud.toast("Signature on cooldown.")
+				AudioManager.sfx("ui_error")
+			return false
 	if totem_charges <= 0:
 		if hud != null:
 			hud.toast("No totem charges! Level up to earn more.")
 			AudioManager.sfx("ui_error")
+		return false
+	return true
+
+
+## Warrior totem placement (implemented in the totem task).
+## Issue #232: the body takes the placement point —
+## the warrior's feet for the legacy instant path,
+## the confirmed aim point from the aim phase.
+func _place_totem_at(totem_id: String, point: Vector3) -> void:
+	if totem_id == "":
+		totem_id = "reciprocity"
+	# Signature totems have their own activation.
+	if totem_id in ["sanctuary_totem", "doom_totem"]:
+		_activate_signature_totem_at(totem_id, point)
+		return
+	if not _totem_gate(totem_id):
 		return
 	totem_charges -= 1
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon != null:
-		dungeon.rpc("place_totem", totem_id, global_position, int(multiplayer.get_unique_id()), ability_rank())
+		dungeon.rpc("place_totem", totem_id, point, int(multiplayer.get_unique_id()), ability_rank())
 	_tree_note_totem_placed()
 	if hud != null:
 		hud.refresh_abilities(self)
+
+
+func _place_totem() -> void:
+	_place_totem_at(_selected_ability_id(), global_position)
 
 
 ## Issue #210 (Warlord's Tempo): placing a totem grants
@@ -3213,24 +3511,22 @@ func cast_tempest(dmg: float, owner: int, seq: int) -> void:
 ## Warrior: signature totems via T (uses totem charges).
 ## Sanctuary: 120s cooldown. Doom: 90s cooldown. Fixed power (rank 1).
 func _activate_signature_totem(totem_id: String) -> void:
+	_activate_signature_totem_at(totem_id, global_position)
+
+
+## Issue #232: the signature activation at a point
+## (the warrior's feet, or the confirmed aim point).
+func _activate_signature_totem_at(totem_id: String, point: Vector3) -> void:
 	var cd_key := totem_id
 	var cd := 120.0 if totem_id == "sanctuary_totem" else 90.0
-	if float(ability_cds.get(cd_key, 0.0)) > 0.0:
-		if hud != null:
-			hud.toast("Signature on cooldown.")
-			AudioManager.sfx("ui_error")
-		return
-	if totem_charges <= 0:
-		if hud != null:
-			hud.toast("No totem charges! Level up to earn more.")
-			AudioManager.sfx("ui_error")
+	if not _totem_gate(totem_id):
 		return
 	totem_charges -= 1
 	ability_cds[cd_key] = (cd) * cooldown_mult() \
 		* _tree_skill_mod(cd_key, "cd_mult", 1.0)
 	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
 	if dungeon != null:
-		dungeon.rpc("place_totem", totem_id, global_position, int(multiplayer.get_unique_id()), 1)
+		dungeon.rpc("place_totem", totem_id, point, int(multiplayer.get_unique_id()), 1)
 	_tree_note_totem_placed()
 	AudioManager.sfx("milestone")
 	if hud != null:
@@ -3559,6 +3855,8 @@ func switch_class(new_class: String) -> void:
 		return
 	if multiplayer.get_peers().size() > 0:
 		return  # solo only
+	# Issue #232: a class switch disarms the placement aim.
+	_aim_disarm()
 	# Issue #4 Phase 2: persist the outgoing class's collection before the
 	# reset below wipes it (mid-level earnings would otherwise be lost).
 	if not family_collection.is_empty():
@@ -4018,6 +4316,7 @@ func _process(delta: float) -> void:
 		_downed_marker.scale = Vector3.ONE * s
 	if is_multiplayer_authority():
 		_hl_process(delta)
+		_aim_process(delta)
 		if _reading_board != null:
 			_update_board_hover()
 			# Walking away from the board steps out of reading mode.
@@ -4296,27 +4595,32 @@ func _notify_echo_ability(ability_id: String) -> void:
 
 func _cast_spell() -> void:
 	# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
-	_notify_echo_ability(_selected_ability_id())
+	# Issue #232: meteor / blizzard ARM the aim phase
+	# instead of casting — their echo + cast sfx move
+	# to _aim_confirm (arming mutates nothing).
 	match _selected_ability_id():
 		"frost":
+			_notify_echo_ability(_selected_ability_id())
 			AudioManager.sfx("frost_cast")
 			_cast_frost_shard()
 		"lightning":
+			_notify_echo_ability(_selected_ability_id())
 			AudioManager.sfx("lightning_cast")
 			_cast_chain_lightning()
 		"meteor":
-			AudioManager.sfx("meteor_cast")
-			_cast_meteor()
+			_aim_begin("meteor")
 		"barrage":
+			_notify_echo_ability(_selected_ability_id())
 			AudioManager.sfx("barrage_cast")
 			_cast_barrage()
 		"blizzard":
-			AudioManager.sfx("blizzard_cast")
-			_cast_blizzard()
+			_aim_begin("blizzard")
 		"holy_light":
+			_notify_echo_ability(_selected_ability_id())
 			AudioManager.sfx("holy_light_cast")
 			_cast_holy_light()
 		_:
+			_notify_echo_ability(_selected_ability_id())
 			AudioManager.sfx("fireball_cast")
 			_cast_fireball()
 
@@ -4328,15 +4632,19 @@ var _structure_seq := 0
 
 func _cast_architect_ability() -> void:
 	# Echo recording (issue #9 Phase 2): log the cast. No-op when not recording.
-	_notify_echo_ability(_selected_ability_id())
+	# Issue #232: structures ARM the aim phase (echo +
+	# spend at confirm); the rest cast as today.
 	match _selected_ability_id():
 		"sentry_turret", "bulwark_wall", "spike_trap", "keystone":
-			_place_structure(_selected_ability_id())
+			_aim_begin(_selected_ability_id())
 		"reinforce":
+			_notify_echo_ability(_selected_ability_id())
 			_cast_reinforce()
 		"demolish":
+			_notify_echo_ability(_selected_ability_id())
 			_cast_demolish()
 		"hammer_smash":
+			_notify_echo_ability(_selected_ability_id())
 			_cast_hammer_smash()
 
 
@@ -4355,33 +4663,49 @@ func _cursor_ground_point() -> Vector3:
 	return point
 
 
-func _place_structure(structure_id: String) -> void:
-	var cds := {"sentry_turret": 12.0, "bulwark_wall": 8.0, "spike_trap": 10.0, "keystone": 30.0}
-	var cd: float = cds.get(structure_id, 10.0)
+## Issue #232: the structure refusal gates, read-only
+## — shared by the aim phase's arm and by the
+## placement itself. Feedback is today's.
+func _structure_gate(structure_id: String) -> bool:
 	if float(ability_cds.get(structure_id, 0.0)) > 0.0:
 		if hud != null:
 			hud.toast("Still recharging!")
 		AudioManager.sfx("ui_error")
-		return
+		return false
 	# Per-type caps, checked locally for instant feedback (dungeon enforces too).
 	var me := int(multiplayer.get_unique_id())
 	var same := 0
 	for n in get_tree().get_nodes_in_group("structures"):
-		var s := n as Structure
-		if s != null and s.owner_peer == me and not s.is_queued_for_deletion() \
-				and s.structure_id == structure_id:
+		var st := n as Structure
+		if st != null and st.owner_peer == me and not st.is_queued_for_deletion() \
+				and st.structure_id == structure_id:
 			same += 1
 	if structure_id == "spike_trap" and same >= 3:
 		if hud != null:
 			hud.toast("Trap limit reached (3)!")
 		AudioManager.sfx("ui_error")
-		return
+		return false
 	if structure_id == "keystone" and same >= 1:
 		if hud != null:
 			hud.toast("Only one keystone!")
 		AudioManager.sfx("ui_error")
+		return false
+	return true
+
+
+func _place_structure(structure_id: String) -> void:
+	_place_structure_at(structure_id, _cursor_ground_point())
+
+
+## Issue #232: placement at a point — the cursor
+## point for the legacy path, the confirmed aim
+## point (player-clamped at 20 m) from the aim phase.
+func _place_structure_at(structure_id: String, point: Vector3) -> void:
+	var cds := {"sentry_turret": 12.0, "bulwark_wall": 8.0, "spike_trap": 10.0, "keystone": 30.0}
+	var cd: float = cds.get(structure_id, 10.0)
+	if not _structure_gate(structure_id):
 		return
-	var point := _cursor_ground_point()
+	var me := int(multiplayer.get_unique_id())
 	ability_cds[structure_id] = (cd) * cooldown_mult() \
 		* _tree_skill_mod(structure_id, "cd_mult", 1.0)
 	_structure_seq += 1
@@ -4831,6 +5155,9 @@ func legend_state() -> String:
 		return "hl_charging"
 	if _hl_state == HLState.ARMED:
 		return "hl_armed"
+	# Issue #232: the placement-armed legend state.
+	if _aim_ability != "":
+		return "placement_aim"
 	# Issue #126 Phase 3: rod-out legend contexts. The bite and bobber
 	# mirrors come from the fishing director; with no bobber out, an
 	# aim probe at a mid charge decides Cast vs "aim at water".
@@ -5454,6 +5781,15 @@ func _cast_meteor() -> void:
 	var hit := space.intersect_ray(params)
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
+	_cast_meteor_at(point)
+
+
+## Issue #232: the meteor cast at a given point (the
+## crosshair point, or the confirmed aim point). The
+## damage expression, sequence, and rpc are untouched.
+func _cast_meteor_at(point: Vector3) -> void:
+	if _camera == null:
+		return
 	_cast_seq += 1
 	var dmg := damage * _buff_mult("damage") * rank_mult() * 2.0 * trait_damage_mult("meteor") * _tree_fire_mult("meteor")
 	# Meteor Shower (issue #206 variant): three meteors at
@@ -5513,6 +5849,14 @@ func _cast_blizzard() -> void:
 	var hit := space.intersect_ray(params)
 	var point: Vector3 = hit["position"] if not hit.is_empty() else target
 	point.y = maxf(point.y, 0.1)
+	_cast_blizzard_at(point)
+
+
+## Issue #232: the blizzard cast at a given point
+## (the crosshair point, or the confirmed aim point).
+func _cast_blizzard_at(point: Vector3) -> void:
+	if _camera == null:
+		return
 	_cast_seq += 1
 	var blizz_dmg := damage * _buff_mult("damage") * rank_mult() * 0.4 * trait_damage_mult("blizzard") * _tree_frost_mult("blizzard")
 	rpc("cast_blizzard", point, blizz_dmg, int(multiplayer.get_unique_id()), _cast_seq)
@@ -5755,6 +6099,9 @@ func _nearest_interact_node() -> Node3D:
 func _toggle_command_mode() -> void:
 	_command_mode = not _command_mode
 	if _command_mode:
+		# Issue #232: entering RTS command mode disarms
+		# the placement aim.
+		_aim_disarm()
 		# Cache the player's RTS faction.
 		_command_faction = int(get("rts_faction"))
 		if hud != null:
@@ -6671,6 +7018,8 @@ func _die() -> void:
 
 
 func _enter_downed() -> void:
+	# Issue #232: going down disarms the placement aim.
+	_aim_disarm()
 	downed = true
 	alive = false
 	no_death_streak = 0 # Relic Vault (issue #6): going down breaks the streak.
@@ -6777,6 +7126,8 @@ func _do_death() -> void:
 ## with run stats (no auto-respawn). In co-op the party keeps playing, so
 ## the toast + 3s respawn path is kept.
 func die() -> void:
+	# Issue #232: death disarms the placement aim.
+	_aim_disarm()
 	# Issue #91 Phase 1: death disarms Holy Light.
 	# Issue #91 Phase 2: death also ends an active beam.
 	if _hl_state == HLState.ARMED or _hl_state == HLState.CHARGING:

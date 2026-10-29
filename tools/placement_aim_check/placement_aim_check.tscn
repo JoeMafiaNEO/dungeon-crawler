@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://tools/placement_aim_check/placement_aim_check.gd" id="1"]
+
+[node name="PlacementAimCheck" type="Node"]
+script = ExtResource("1")
