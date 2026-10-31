@@ -69,12 +69,38 @@ var doors_open := false
 ## the old train interior; no Act 1 annex dresses as a train car
 ## now (the no-clues rule covers the sixth floor as well).
 var _plain_hub := false
+## Issue #239: whether this annex builds its boarding lobby at
+## all. Cached at _build from is_linear_hub(); defaults to
+## lobby-present so an unbuilt/bare instance behaves as legacy.
+var _has_lobby := true
 var _door_panels: Array = []
 var _door_blocker: StaticBody3D = null
 var _door_tween: Tween = null
 ## Arrival settle countdown; -1 = inactive. Doors start closed on build and
 ## the server opens them 1s after the annex appears.
 var _settle_left := -1.0
+
+
+## Issue #239: THE lobby predicate — one static, every consumer.
+## Jesse 2026-10-30: Act 1 elevator hubs lose the boarding lobby
+## (a leftover blocking the elevators), and the predicate keys
+## on the CURRENT hub — the station's _linear_mode reading
+## (station.gd) — not the departure destination: the hub
+## departing TO Warlord's loses lobby and lever too; Warlord's
+## itself keeps both; legacy hubs are untouched. The current
+## hub's theme is the axis theme at Dungeon.act1_step (the step
+## in effect during this level — the step follows the theme,
+## never the level number), the only current-theme source that
+## exists at annex build time; it agrees with the station's
+## _current_theme() wherever both can be read, including the
+## Vault detour (the held step reads the pre-detour theme, and
+## both readings are linear there).
+static func is_linear_hub() -> bool:
+	if Dungeon.act1_step < 0 \
+			or Dungeon.act1_step >= Dungeon.ACT1_ORDER.size():
+		return false
+	var cur: String = Dungeon.ACT1_ORDER[Dungeon.act1_step]
+	return cur != "" and cur != "warlord"
 
 
 ## Deterministic annex placement from the level seed.
@@ -153,6 +179,17 @@ func lobby_bounds() -> AABB:
 ## Interior arrival spawn spots, hall-local. Kept clear of benches/straps
 ## by construction.
 func lobby_spawn_spots() -> Array:
+	if not _has_lobby:
+		# Issue #239: no lobby — arrivals land on the open-hall
+		# grid centered on the relocated gold ring: 4 columns x
+		# 3 rows, the same 12-spot contract and hall-local frame
+		# (both consumers — arrival and the ride's straggler
+		# pull — ride this function and follow automatically).
+		var hall_spots := []
+		for z in [-3.6, -2.1, -0.6]:
+			for x in [-4.5, -2.5, -0.5, 1.5]:
+				hall_spots.append(Vector3(x, 0.0, z))
+		return hall_spots
 	# Grid covering the 8x5m lobby (Jesse 2026-10-10): scales to the
 	# 12-player cap instead of 4 hardcoded spots. 4 columns x 3 rows.
 	var spots := []
@@ -252,6 +289,8 @@ func _build() -> void:
 	# alone (open = an Act 1 hub, Warlord's included — Jesse
 	# 2026-10-27 removed the Warlord carve-out).
 	_plain_hub = Dungeon.act1_step >= 0 and Dungeon.next_theme_id != ""
+	# Issue #239: cache the lobby predicate beside _plain_hub.
+	_has_lobby = not is_linear_hub()
 	var h := arena_half
 	var ax := attach_x
 	var stone := _mat(Color(0.42, 0.40, 0.44))
@@ -325,7 +364,11 @@ func _build() -> void:
 			add_child(lamp)
 			lamps.append(lamp)
 
-	_build_lobby()
+	# Issue #239: in a linear hub the lobby is never built — the
+	# doors, the depart lever, and the settle arming are called
+	# only from inside _build_lobby, so they skip with it.
+	if _has_lobby:
+		_build_lobby()
 
 
 ## Boarding lobby (issue #93 Phase 1): waiting room dressed as a train car
@@ -444,12 +487,12 @@ func _build_lobby() -> void:
 ## Depart lever prop (issue #93 Phase 3): brass E-interact lever inside the
 ## lobby. The station's request_depart validates server-side.
 func _build_depart_lever() -> void:
-	# Jesse 2026-10-27: in a linear Act 1 hub the walk-in
-	# elevator cab replaces this lever (its button departs).
-	# The test mirrors the station's linear rule.
-	if Dungeon.act1_step >= 0 and Dungeon.next_theme_id != "" \
-			and Dungeon.next_theme_id != "warlord":
-		return
+	# Issue #239: no separate lever test lives here anymore —
+	# this builds only from inside _build_lobby, which the one
+	# is_linear_hub predicate gates, so the lever stands exactly
+	# where the lobby stands (legacy hubs and Warlord's, whose
+	# departure stays lever+train). In a linear hub neither is
+	# built: the walk-in cab's button departs (#227).
 	var lever = DepartLeverScript.new()
 	lever.position = _hl(LOBBY_LEVER_POS.x, LOBBY_LEVER_POS.y, LOBBY_LEVER_POS.z)
 	add_child(lever)
@@ -522,6 +565,9 @@ func _door_blocker_build() -> void:
 
 ## Server entry: decide the lobby door state, broadcast to all peers.
 func set_lobby_doors(open: bool) -> void:
+	# Issue #239: a lobby-less annex doesn't even broadcast.
+	if not _has_lobby:
+		return
 	if not multiplayer.is_server():
 		return
 	rpc("_rpc_lobby_doors", open)
@@ -535,6 +581,13 @@ func _rpc_lobby_doors(open: bool) -> void:
 ## Local apply: state + SFX + tween (snap when not in the tree, so tests can
 ## drive the state machine) + collision toggle. Idempotent.
 func _apply_lobby_doors(open: bool) -> void:
+	# Issue #239: the choke point every door path funnels
+	# through (server rpc, settle, direct drives). Without this
+	# guard, a lobby-less hub's build-time set_lobby_doors(true)
+	# would play a phantom door cue in an empty hall, and a
+	# later close would raise a LobbyDoorBlocker in open floor.
+	if not _has_lobby:
+		return
 	if doors_open == open:
 		return
 	doors_open = open

@@ -5922,7 +5922,59 @@ func _test_act1_axis_201() -> void:
 		"201 linear: the destination is the theme-keyed successor")
 	_assert(st.get_node_or_null("DepartureBoard") == null,
 		"201 linear: the departure board is not built (no votes, no popup, no Vault row)")
-	_assert(bool(annex.get("doors_open")), "201 linear: the lobby doors stand open")
+	# Issue #239: in a linear hub the annex builds NO lobby at
+	# all — the station's build-time set_lobby_doors(true) was a
+	# no-op (doors_open stays false, no blocker, no panels).
+	_assert(not bool(annex.get("doors_open")),
+		"239: no lobby in a linear hub — doors_open remains false")
+	_assert(annex.get_node_or_null("LobbyDoorBlocker") == null
+		and annex.find_children("LobbyDoorPanel*", "", true, false).is_empty(),
+		"239: no door blocker or panels exist in a linear hub")
+	# Pin 1: node census — nothing named Lobby*.
+	var lobby_nodes := 0
+	for n in annex.find_children("Lobby*", "", true, false):
+		lobby_nodes += 1
+	_assert(lobby_nodes == 0 and not bool(annex.get("_has_lobby")),
+		"239(1): a linear annex has no Lobby* nodes at all")
+	# Pin 2: arrival spots are exactly the hall grid, and every
+	# spot clears the constraint volumes geometrically.
+	var want_spots := []
+	for z in [-3.6, -2.1, -0.6]:
+		for x in [-4.5, -2.5, -0.5, 1.5]:
+			want_spots.append(Vector3(x, 0.0, z))
+	var spots_now: Array = annex.lobby_spawn_spots()
+	_assert(spots_now == want_spots,
+		"239(2): lobby_spawn_spots returns exactly the hall grid in a no-lobby hub")
+	var spots_g: Array = annex.lobby_spawn_spots_global()
+	_assert(spots_g.size() == 12,
+		"239(2): the global spawn set keeps the 12-spot contract")
+	var aabbs := [
+		AABB(Vector3(-3.5, -1, -8.25), Vector3(4.0, 3, 3.45)),
+		AABB(Vector3(-6.8, -1, -7.3), Vector3(1.6, 3, 1.6)),
+		AABB(Vector3(2.2, -1, 3.2), Vector3(2.0, 3, 2.0)),
+		AABB(Vector3(9.0, -1, -1.5), Vector3(2.0, 3, 2.0)),
+		AABB(Vector3(-10.5, -1, 2.5), Vector3(2.0, 3, 2.0)),
+	]
+	var clear := true
+	for sp in spots_now:
+		for b in aabbs:
+			if b.has_point(sp):
+				clear = false
+	_assert(clear,
+		"239(2): every hall spot clears the cab (expanded)/Vault/board/vendor/rest-pad volumes")
+	# Pin 3 (load-bearing): the door flow is a no-op without a
+	# lobby — no flip, no blocker, no tween, settle never arms.
+	annex.set_lobby_doors(true)
+	annex.call("_apply_lobby_doors", false)
+	annex.call("_process", 2.0)
+	_assert(not bool(annex.get("doors_open"))
+		and annex.get_node_or_null("LobbyDoorBlocker") == null
+		and annex.get("_door_tween") == null
+		and float(annex.get("_settle_left")) == -1.0,
+		"239(3): door flow is a NO-OP without a lobby (no flip, no blocker, no tween, no settle)")
+	# Pin 4: the gold ring stands at the cab doorway here.
+	_assert((st.get("_ring") as Node3D).position == Vector3(-1.5, 0.06, -3.6),
+		"239(4): the ring stands at the cab doorway in a linear hub")
 	_assert(str(st.get("_depart_theme")) == "misty_docks",
 		"201 linear: the lever is armed with the successor from the start")
 	_assert(str(st.depart_prompt_text()) == "Depart for Misty Docks",
@@ -6008,6 +6060,29 @@ func _test_act1_axis_201() -> void:
 	_assert(captured_c == ["mason_vault"], "201 vault: the departure resolves to the Vault")
 	holder_c.queue_free()
 
+	# E. Issue #239 pin (a): the hub departing TO Warlord's
+	# (Misty Docks, step 4). Under Jesse's current-hub reading
+	# it clears too — no lobby, no lever. (Under the retired
+	# next-theme reading this fixture kept both.)
+	DungeonScript.set("act1_step", 4)
+	var holder_e := Node3D.new()
+	root.add_child(holder_e)
+	var annex_e = AnnexScript.build(holder_e, AnnexScript.plan(12345, layout), layout)
+	var ste = StationScript.new()
+	ste.name = "Station"
+	ste.dungeon = holder_e
+	ste.annex = annex_e
+	ste.current_theme_id = "misty_docks"
+	ste.position = annex_e.hall_center()
+	holder_e.add_child(ste)
+	_assert(str(ste.linear_destination()) == "warlord",
+		"239(a): the fixture departs to Warlord's")
+	_assert(annex_e.find_children("Lobby*", "", true, false).is_empty()
+		and annex_e.get_node_or_null("DepartLever") == null
+		and not bool(annex_e.get("_has_lobby")),
+		"239(a): the hub departing TO Warlord's has NO lobby and NO lever (current-hub reading)")
+	holder_e.queue_free()
+
 	# C. The Warlord hub: the axis is open (step 5) but the interim
 	# owns departures FROM Warlord — the board flow stands.
 	DungeonScript.set("act1_step", 5)
@@ -6029,6 +6104,14 @@ func _test_act1_axis_201() -> void:
 		"201 interim: the board stands in the Warlord hub, as the interim requires")
 	_assert(bool(stw.record_vote(10, "village", [10])["ok"]),
 		"201 interim: votes record in the Warlord hub (legacy flow intact)")
+	# Issue #239 pin (b): Warlord's OWN hub keeps lobby + lever,
+	# and its ring keeps the lobby-doorway spot.
+	_assert(bool(annex_w.get("_has_lobby"))
+		and not annex_w.find_children("Lobby*", "", true, false).is_empty()
+		and annex_w.get_node_or_null("DepartLever") != null,
+		"239(b): Warlord's hub keeps its lobby and depart lever")
+	_assert((stw.get("_ring") as Node3D).position == Vector3(-1, 0.06, 3.0),
+		"239(4): the ring keeps the lobby-doorway spot at Warlord's")
 	holder_w.queue_free()
 
 	# Restore the snapshotted statics.
@@ -6292,6 +6375,8 @@ func _test_elevator_cab_201() -> void:
 	root.add_child(holder1)
 	var annex_p: Variant = AnnexScript.build(holder1, plan1, layout1)
 	_assert(annex_p._plain_hub, "201s2: annex is plain in an Act 1 hub")
+	_assert(annex_p.find_children("Lobby*", "", true, false).is_empty(),
+		"239: the plain hub has no lobby AT ALL — the room itself is gone")
 	_assert(annex_p.find_children("LobbyStrap*", "", true, false).is_empty(),
 		"201s2: no hanging straps in the plain waiting room")
 	_assert(annex_p.find_children("LobbyWindow*", "", true, false).is_empty()
@@ -6300,8 +6385,8 @@ func _test_elevator_cab_201() -> void:
 	_assert(annex_p.find_children("LobbyRack*", "", true, false).is_empty()
 		and annex_p.find_children("LobbyBag*", "", true, false).is_empty(),
 		"201s2: no luggage racks or bags in the plain waiting room")
-	_assert(not annex_p.find_children("LobbyBench*", "", true, false).is_empty(),
-		"201s2: waiting-room benches stay")
+	_assert(annex_p.find_children("LobbyBench*", "", true, false).is_empty(),
+		"239: waiting-room benches are lobby furniture — they go with the room")
 	var asrc := FileAccess.get_file_as_string("res://scripts/station/station_annex.gd")
 	_assert(asrc.contains('sfx("door_open" if open else "door_close")'),
 		"201s2: plain hub doors use the neutral cues")
@@ -10514,6 +10599,22 @@ func _test_train_spots_12p() -> void:
 	_assert(spots.size() >= 12,
 		"train: lobby grid has >=12 spots (got %d)" % spots.size())
 	annex.free()
+	# Issue #239 pin 5: the no-lobby twin — a BUILT linear annex
+	# returns the 12 hall spots (the bare instance above keeps
+	# the lobby grid by its lobby-present default).
+	var DungeonScript239: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	var ProcGenScript239: GDScript = load("res://scripts/procgen/procgen.gd")
+	var snap_step239: int = DungeonScript239.get("act1_step")
+	DungeonScript239.set("act1_step", 3)
+	var holder239 := Node3D.new()
+	root.add_child(holder239)
+	var layout239 = ProcGenScript239.generate(load("res://data/levels/theme_village.tres"), 12345)
+	var annex239 = annex_script.build(holder239, annex_script.plan(12345, layout239), layout239)
+	var hall_spots: Array = annex239.lobby_spawn_spots()
+	_assert(hall_spots.size() == 12 and hall_spots[0] == Vector3(-4.5, 0.0, -3.6),
+		"239(5): a built linear annex returns the 12 hall spots")
+	DungeonScript239.set("act1_step", snap_step239)
+	holder239.queue_free()
 
 
 func _test_mp_save_steam_ids() -> void:

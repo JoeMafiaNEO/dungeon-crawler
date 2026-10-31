@@ -991,7 +991,14 @@ func _build_station_embedded() -> void:
 	torus.outer_radius = 2.5
 	torus.material = ring_gold
 	_ring.mesh = torus
-	_ring.position = Vector3(-1, 0.06, 3.0)
+	# Issue #239: in a no-lobby (linear) hub there is no lobby
+	# doorway to straddle — the ring moves to the cab doorway,
+	# centered on the cab with its north arc at the threshold.
+	# Legacy and Warlord hubs keep the doorway spot. One
+	# predicate (StationAnnex.is_linear_hub), read live like the
+	# station's other mode tests.
+	_ring.position = Vector3(-1.5, 0.06, -3.6) \
+		if StationAnnex.is_linear_hub() else Vector3(-1, 0.06, 3.0)
 	add_child(_ring)
 	# Issue #201 slice 2, gate amendment: the BOARD HERE label is NOT
 	# built in an Act 1 hub — under Jesse's no-clues rule there is no
