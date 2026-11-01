@@ -250,6 +250,11 @@ static var act2_train_cities: Array = []
 static var train_state: Dictionary = {}
 static var train_local_departed_msec := 0
 static var train_disembark_station := ""
+## Issue #244 T4 (§7): the course under edit at the GPS
+## terminal — a shared draft, last editor wins. Holds
+## DESTINATION keys only; the train's current node is the
+## implicit origin at confirm time.
+static var train_draft: Array = []
 static var act2_anchor_building := ""
 static var act2_anchor_doorstep := Vector3.ZERO
 static var act2_last_transition := {}
@@ -622,6 +627,8 @@ static func reset_act2_state() -> void:
 	act2_spawn_at = ""
 	act2_positions = {}
 	act2_train_cities = []
+	train_state = {}
+	train_draft = []
 	floor_key = ""
 	floor_index = 0
 	floor_masks = {}

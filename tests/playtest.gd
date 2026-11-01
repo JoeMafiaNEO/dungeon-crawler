@@ -284,6 +284,7 @@ func _run() -> void:
 	_test_train_network_244()
 	_test_train_world_244()
 	_test_train_ride_244()
+	_test_train_chart_244()
 	_print_results()
 	quit()
 
@@ -33103,3 +33104,135 @@ func _b5_projectile_sites(dt, seed: int, hold: Node3D) -> void:
 	hold.remove_child(gk)
 	gk.free()
 	dgn.free()
+
+
+## Issue #244 T4: the GPS chart — §9-T4 pins. The chart
+## model reads the derived graph itself (fixture set);
+## edits are the chart's own statics; the draft sync
+## drives NetworkManager's publish on the server path.
+func _test_train_chart_244() -> void:
+	print("[Playtest] Train GPS chart (issue #244 T4)...")
+	var TN: GDScript = load("res://scripts/world/train_network.gd")
+	var Chart: GDScript = load("res://scripts/ui/train_chart.gd")
+	var seed := 20261023  # WorldGen.WORLD_SEED (the fixture seed)
+	var set1: Array = ["0,-2", "0,2"]
+	var hc := Vector2.ZERO
+	var hs := Vector2(124, 44)
+	# (A) The model IS the derived graph, on centers.
+	var idle: Dictionary = {"status": "idle", "at": "home"}
+	var m: Dictionary = TN.chart_model(seed, set1, hc, hs,
+		idle, 0)
+	var g: Dictionary = TN.derive_graph(seed, set1, hc)
+	_assert((m["nodes"] as Dictionary).size() == 3
+			and (m["nodes"] as Dictionary).has("home")
+			and (m["nodes"] as Dictionary).has("0,-2")
+			and (m["nodes"] as Dictionary).has("0,2"),
+		"244T4(A): the chart shows exactly the discovered set + home")
+	_assert((m["nodes"] as Dictionary)["0,-2"]
+			== (g["nodes"] as Dictionary)["0,-2"],
+		"244T4(A): chart nodes sit at the derived city centers")
+	_assert((m["edges"] as Array).size()
+			== (g["edges"] as Array).size(),
+		"244T4(A): chart edges are the derived edges")
+	_assert(not (m["nodes"] as Dictionary).has("7,0"),
+		"244T4(A): undiscovered cities are absent, not greyed")
+	_assert(String((m["train"] as Dictionary)["mode"])
+			== "at"
+			and String((m["train"] as Dictionary)["at"])
+				== "home",
+		"244T4(A): idle marker rests at the train's node")
+	# (A2) Moving marker rides the leg.
+	var rp0: Dictionary = TN.route_path(seed, set1, hc, hs,
+		["home", "0,-2"])
+	var dur0: int = TN.duration_msec_for(
+		float(rp0["length"]))
+	var mv: Dictionary = {"status": "moving", "at": "home",
+		"course": ["home", "0,-2"],
+		"path": rp0["nodes"], "duration_msec": dur0}
+	var mm: Dictionary = TN.chart_model(seed, set1, hc,
+		hs, mv, dur0 / 2)
+	_assert(String((mm["train"] as Dictionary)["mode"])
+			== "leg"
+			and String((mm["train"]
+				as Dictionary)["a"]) == "home"
+			and String((mm["train"]
+				as Dictionary)["b"]) == "0,-2",
+		"244T4(A2): the moving marker names its leg")
+	_assert(float((mm["train"] as Dictionary)["t"]) > 0.3
+			and float((mm["train"]
+				as Dictionary)["t"]) < 0.7,
+		"244T4(A2): mid-leg the marker is mid-leg")
+	# (B) Draft edit operations (the chart's own statics).
+	var d: Array = []
+	d = Chart.draft_toggle(d, "0,-2")
+	d = Chart.draft_toggle(d, "0,2")
+	_assert(d == ["0,-2", "0,2"],
+		"244T4(B): taps append in order")
+	d = Chart.draft_toggle(d, "0,-2")
+	_assert(d == ["0,2"],
+		"244T4(B): tapping a plotted node removes it")
+	_assert(Chart.confirm_course("home", ["0,2", "0,-2"])
+			== ["home", "0,2", "0,-2"],
+		"244T4(B): confirm heads the course with the origin")
+	_assert(Chart.confirm_course("home", ["home", "0,2"])
+			== ["home", "0,2"],
+		"244T4(B): the origin is never plotted twice")
+	# (C) The default view (§5): centered on the train,
+	# tightest zoom keeping the must-see points framed.
+	var fit: Dictionary = Chart.fit_view(Vector2.ZERO,
+		[Vector2(1024, -1024)], Vector2(1280, 800))
+	_assert((fit["center"] as Vector2) == Vector2.ZERO,
+		"244T4(C): the view centers on the train's node")
+	var corner := Vector2(1024, -1024) \
+		* float(fit["zoom"])
+	_assert(absf(corner.x) <= 1280.0 * 0.46 + 0.5
+			and absf(corner.y) <= 800.0 * 0.42 + 0.5,
+		"244T4(C): the must-see point stays in frame")
+	var fit2: Dictionary = Chart.fit_view(Vector2.ZERO,
+		[Vector2(2048, -2048)], Vector2(1280, 800))
+	_assert(float(fit2["zoom"]) < float(fit["zoom"]),
+		"244T4(C): wider must-see sets zoom out, never in")
+	# (D) The estimate's clock.
+	_assert(Chart.ride_time_text(28.0 * 61.0) == "1:01"
+			and Chart.ride_time_text(0.0) == "0:00",
+		"244T4(D): ride time is length over TRAIN_SPEED")
+	# (E) The draft sync lands on the shared static
+	# (server path drives locally; the rpc fan-out shape
+	# is source-pinned below — two-peer legs held, T3).
+	var D = load("res://scripts/dungeon/dungeon.gd")
+	var saved_draft: Array = D.train_draft
+	var NM4: Node = root.get_node("NetworkManager")
+	NM4.call("train_publish_draft", ["0,2"])
+	_assert(D.train_draft == ["0,2"],
+		"244T4(E): publishing a draft sets the shared draft")
+	NM4.call("train_publish_draft", [])
+	_assert((D.train_draft as Array).is_empty(),
+		"244T4(E): clearing publishes the empty draft")
+	D.train_draft = saved_draft
+	# (F) Surfaces (source).
+	var csrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/train_chart.gd")
+	_assert(csrc.contains("MOUSE_BUTTON_WHEEL_UP")
+			and csrc.contains("view only")
+			and csrc.contains("open_chart"),
+		"244T4(F): the chart pans/zooms, locks while moving, and opens from terminals")
+	var stsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/station_terminal.gd")
+	_assert(stsrc.contains("open_chart")
+			and stsrc.contains("\"station\""),
+		"244T4(F): the station terminal opens its chart face")
+	var isrc := FileAccess.get_file_as_string(
+		"res://scripts/station/train_interior.gd")
+	_assert(isrc.contains("class TrainGPS")
+			and isrc.contains("train_gps"),
+		"244T4(F): the car's GPS terminal is built (world rides only)")
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	_assert(psrc.contains("\"train_gps\""),
+		"244T4(F): the interact scan reaches the GPS terminal")
+	var nsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("rpc_train_draft")
+			and nsrc.contains("train_publish_draft"),
+		"244T4(F): the shared draft rides NetworkManager")
+	print("[Playtest] Train GPS chart (issue #244 T4) done.")

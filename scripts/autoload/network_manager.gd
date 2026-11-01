@@ -876,6 +876,10 @@ func _train_depart(course: Array, empty_run: bool) -> bool:
 	if empty_run:
 		st["riders"] = {}
 	_train_departed_msec = Time.get_ticks_msec()
+	# The plotted draft is consumed by the departure
+	# (issue #244 T4, §5 locking).
+	Dungeon.train_draft = []
+	rpc("rpc_train_draft", [])
 	_train_broadcast()
 	return true
 
@@ -1028,6 +1032,35 @@ func train_state_request() -> void:
 		return
 	rpc_id(sender, "rpc_train_state", Dungeon.train_state,
 		train_elapsed_msec())
+
+
+## --- Issue #244 T4: the shared course draft (§7 — any
+## rider drafts, last editor wins; the server validates
+## only at confirm). The draft holds destination keys;
+## the train's node is the implicit origin.
+
+func train_publish_draft(course: Array) -> void:
+	if multiplayer.is_server():
+		Dungeon.train_draft = course.duplicate()
+		rpc("rpc_train_draft", course)
+	else:
+		rpc_id(NetworkManager.server_peer_id,
+			"train_draft_request", course)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_draft_request(course: Array) -> void:
+	if not multiplayer.is_server():
+		return
+	Dungeon.train_draft = course.duplicate()
+	rpc("rpc_train_draft", course)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_train_draft(course: Array) -> void:
+	# The server also lands here when a departure clears
+	# the draft (its own broadcast loops back off-peer).
+	Dungeon.train_draft = course.duplicate()
 
 
 # --- Joining ---

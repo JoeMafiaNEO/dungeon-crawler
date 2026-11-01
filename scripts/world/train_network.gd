@@ -766,3 +766,48 @@ static func _grade_along(seed: int, ppts: Array,
 				clampf(traveled - acc, 0.0, seglen))
 		acc += seglen
 	return 0.0
+
+
+## --- Issue #244 T4: the chart model (§5). The chart is
+## a consumer: nodes at their city CENTERS (schematic,
+## not station points), edges from the derived graph, and
+## the train's marker — at a node, or on its current leg
+## interpolated over the path's station-point lengths.
+## Undiscovered cities are absent by construction: the
+## model is built from the discovered set alone.
+static func chart_model(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		train_state: Dictionary, elapsed_msec: int) \
+		-> Dictionary:
+	var g := derive_graph(seed, discovered, home_center)
+	var train: Dictionary = {"mode": "at",
+		"at": String(train_state.get("at", HOME_KEY)),
+		"a": "", "b": "", "t": 0.0}
+	if String(train_state.get("status", "idle")) \
+			== "moving":
+		var path: Array = train_state.get("path", [])
+		if path.size() >= 2:
+			var pts := station_points(seed, discovered,
+				home_center, home_station)
+			var traveled := clampf(
+				float(elapsed_msec) / 1000.0 * TRAIN_SPEED,
+				0.0, 1.0e12)
+			var acc := 0.0
+			for i in path.size() - 1:
+				var pa: Vector2 = pts.get(path[i],
+					Vector2.ZERO)
+				var pb: Vector2 = pts.get(path[i + 1],
+					Vector2.ZERO)
+				var seglen := pa.distance_to(pb)
+				if traveled <= acc + seglen \
+						or i == path.size() - 2:
+					train = {"mode": "leg",
+						"a": String(path[i]),
+						"b": String(path[i + 1]),
+						"t": clampf((traveled - acc)
+							/ maxf(seglen, 0.001),
+							0.0, 1.0)}
+					break
+				acc += seglen
+	return {"nodes": g["nodes"], "order": g["order"],
+		"edges": g["edges"], "train": train}

@@ -123,12 +123,29 @@ class SkipLever extends Node3D:
 				interior.rpc("request_skip_ride")
 
 
+## Issue #244 T4 (spec §5): the in-train GPS terminal —
+## the primary chart surface (Jesse's flow: enter the
+## train, find the terminal). Live only on world rides;
+## the hub car has no network to chart.
+class TrainGPS extends Node3D:
+	var interior: TrainInterior = null
+
+	func prompt_text() -> String:
+		return "Use the GPS terminal"
+
+	func interact(_player: Player) -> void:
+		if TrainInterior.world_ride:
+			(load("res://scripts/ui/train_chart.gd")
+				as GDScript).call("open_chart", "car", "")
+
+
 func _ready() -> void:
 	_build_car()
 	_build_dressing()
 	_build_scenery()
 	_build_platform()
 	_build_skip_lever()
+	_build_gps_terminal()
 	_build_disembark_zone()
 	_spawn_passengers()
 	if _local_hud != null:
@@ -1080,6 +1097,44 @@ func _build_platform() -> void:
 
 ## Skip lever (issue #3 Phase 3): E-interact prop near the rear door.
 ## Hidden (hence uninteractable) until the ride starts.
+## The GPS terminal prop (issue #244 T4): a pedestal +
+## tilted glowing screen at the car's front end, opposite
+## the skip lever. Invisible (hence uninteractable) on
+## hub rides — the network exists only in the world.
+func _build_gps_terminal() -> void:
+	var gps := TrainGPS.new()
+	gps.interior = self
+	gps.name = "TrainGPS"
+	gps.add_to_group("train_gps")
+	gps.position = Vector3(6.5, 0.0, 1.5)
+	gps.visible = world_ride
+	var dark := _mat(Color(0.10, 0.09, 0.11))
+	var pedestal := MeshInstance3D.new()
+	var pbm := BoxMesh.new()
+	pbm.size = Vector3(0.5, 1.0, 0.5)
+	pbm.material = dark
+	pedestal.mesh = pbm
+	pedestal.position = Vector3(0, 0.5, 0)
+	gps.add_child(pedestal)
+	var screen := MeshInstance3D.new()
+	var sbm := BoxMesh.new()
+	sbm.size = Vector3(0.9, 0.62, 0.08)
+	sbm.material = _mat(Color(0.06, 0.10, 0.16),
+		Color(0.25, 0.55, 0.85), 0.9)
+	screen.mesh = sbm
+	screen.position = Vector3(0, 1.25, 0)
+	screen.rotation.x = -0.35
+	gps.add_child(screen)
+	var tag := Label3D.new()
+	tag.text = "GPS"
+	tag.font_size = 42
+	tag.modulate = Color(0.75, 0.88, 1.0)
+	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	tag.position = Vector3(0, 1.85, 0)
+	gps.add_child(tag)
+	add_child(gps)
+
+
 func _build_skip_lever() -> void:
 	var lever := SkipLever.new()
 	lever.interior = self
