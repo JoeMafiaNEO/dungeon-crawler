@@ -28,6 +28,7 @@ extends Node3D
 const PlayerScene := preload("res://scenes/player/player.tscn")
 const HudScene := preload("res://scenes/ui/hud.tscn")
 const WorldGen := preload("res://scripts/world/world_gen.gd")
+const TrainNetwork := preload("res://scripts/world/train_network.gd")
 const WorldClock := preload("res://scripts/world/world_clock.gd")
 const StreamerScript := preload("res://scripts/world/world_streamer.gd")
 
@@ -231,6 +232,8 @@ func state_snapshot() -> Dictionary:
 		"buildings_cleared": Dungeon.buildings_cleared,
 		"home_anchor": Dungeon.home_anchor,
 		"act2": Dungeon.act2_record(),
+		"train": {"state": Dungeon.train_state,
+			"elapsed_msec": NetworkManager.train_elapsed_msec()},
 		"world_time": Dungeon.world_time}
 
 
@@ -293,6 +296,14 @@ func world_state_apply(snap: Dictionary) -> void:
 		return
 	Dungeon.restore_reveal_state(snap)
 	Dungeon.restore_act2_state(snap)
+	# Issue #244 T3: the train's state rides the snapshot —
+	# a late joiner sees the consist wherever it is, mid-leg
+	# included (its position is parametric in the elapsed).
+	var train_snap: Dictionary = snap.get("train", {})
+	if not train_snap.is_empty():
+		NetworkManager.train_apply_state(
+			train_snap.get("state", {}),
+			int(train_snap.get("elapsed_msec", 0)))
 	# Issue #242: arm the client's own continued class/state
 	# BEFORE _begin — _spawn_local reads exactly these two
 	# statics, in this precedence. Absent (a fresh join), both
@@ -311,8 +322,27 @@ func _begin() -> void:
 	_gate_deadline = Time.get_ticks_msec() / 1000.0 + GATE_BOUND_S
 	if Dungeon.world_time <= 0.0:
 		Dungeon.world_time = WorldClock.ENTRY_TIME
-	_spawn_point = _arrival_point()
+	if multiplayer.is_server():
+		NetworkManager.train_ensure_state()
+	if Dungeon.train_disembark_station != "":
+		# Issue #244 T3: a train arrival's disembark places
+		# the rider on the destination station's platform —
+		# its own placement flag, ahead of (and instead of)
+		# the arrival-point precedence, which stays
+		# untouched for every other entry.
+		var dkey := Dungeon.train_disembark_station
+		Dungeon.train_disembark_station = ""
+		var hb2: Dictionary = Dungeon.home_building()
+		_spawn_point = TrainNetwork.platform_point(
+			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
+			Vector2((hb2["origin"] as Vector3).x,
+				(hb2["origin"] as Vector3).z),
+			Vector2((hb2["doorstep"] as Vector3).x,
+				(hb2["doorstep"] as Vector3).z), dkey)
+	else:
+		_spawn_point = _arrival_point()
 	_setup_streamer()
+	_build_consist()
 	_build_home()
 	_spawn_local()
 	_announce_presence()
@@ -731,6 +761,7 @@ func _process(delta: float) -> void:
 	if _clock_t >= 0.25:
 		_clock_t = 0.0
 		_apply_clock()
+	_update_consist()
 	# The ready-gate.
 	if _started and not _gate_open:
 		if _entry_ring_ready() or Time.get_ticks_msec() \
@@ -758,6 +789,119 @@ func _entry_ring_ready() -> bool:
 					scx + dx, scz + dz)):
 				return false
 	return true
+
+
+## --- Issue #244 T3: the live consist --------------------
+## One train, owned here (in T2 it was chunk dressing; a
+## moving train cannot be static dressing — spec §4.3).
+## Its meshes are T2's derived box template
+## (TrainNetwork.consist_boxes) re-based into a local
+## frame; its transform each frame is
+## TrainNetwork.train_position over the run's train state
+## — the same parametric path every peer computes.
+## Boarding hangs off it while it stands at a station.
+
+class TrainBoarding extends Area3D:
+	var root: Node = null
+
+	func prompt_text() -> String:
+		return "Board train"
+
+	func interact(_player: Player) -> void:
+		if root != null:
+			root.call("board_world_train")
+
+
+var _consist: Node3D = null
+var _consist_board: Area3D = null
+var _train_hc := Vector2.ZERO
+var _train_hs := Vector2.ZERO
+
+
+func _build_consist() -> void:
+	if Dungeon.act2_train_cities.is_empty():
+		return
+	var hb: Dictionary = Dungeon.home_building()
+	_train_hc = Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	_train_hs = Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var boxes := TrainNetwork.consist_boxes(WorldGen.WORLD_SEED,
+		Dungeon.act2_train_cities, _train_hc, _train_hs)
+	if boxes.is_empty():
+		return
+	_consist = Node3D.new()
+	_consist.name = "TrainConsist"
+	add_child(_consist)
+	var yaw0 := float(boxes[0]["yaw"])
+	var fwd := Vector2(sin(yaw0), cos(yaw0))
+	var perp := Vector2(-fwd.y, fwd.x)
+	var body := StaticBody3D.new()
+	body.collision_layer = 1
+	body.collision_mask = 0
+	_consist.add_child(body)
+	for box in boxes:
+		var rel: Vector2 = (box["at"] as Vector2) - _train_hs
+		var local := Vector3(rel.dot(perp),
+			TrainNetwork.RAIL_TOP + float(box["y_off"]),
+			rel.dot(fwd))
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = box["size"]
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = box["color"]
+		bm.material = mat
+		mi.mesh = bm
+		mi.position = local
+		_consist.add_child(mi)
+		if str(box["kind"]) == "loco" \
+				or str(box["kind"]) == "car":
+			var cs := CollisionShape3D.new()
+			var shape := BoxShape3D.new()
+			shape.size = box["size"]
+			cs.shape = shape
+			cs.position = local
+			body.add_child(cs)
+	_consist_board = TrainBoarding.new()
+	(_consist_board as TrainBoarding).root = self
+	_consist_board.add_to_group("train_boarding")
+	var bcs := CollisionShape3D.new()
+	var bshape := BoxShape3D.new()
+	bshape.size = Vector3(4.0, 3.4, 21.0)
+	bcs.shape = bshape
+	bcs.position = Vector3(0, 1.7, -0.2)
+	_consist_board.add_child(bcs)
+	_consist.add_child(_consist_board)
+	_update_consist()
+
+
+func _update_consist() -> void:
+	if _consist == null:
+		return
+	var st := Dungeon.train_state
+	if st.is_empty():
+		_consist.visible = false
+		return
+	var pos := TrainNetwork.train_position(WorldGen.WORLD_SEED,
+		Dungeon.act2_train_cities, _train_hc, _train_hs, st,
+		NetworkManager.train_local_elapsed_msec())
+	_consist.visible = true
+	_consist.position = pos["pos"]
+	_consist.rotation = Vector3(-float(pos["pitch"]),
+		float(pos["yaw"]), 0.0)
+	if _consist_board != null:
+		_consist_board.visible = str(pos["mode"]) == "idle"
+
+
+## Boarding (spec §4.4): individual, at the train where it
+## stands. Capture my state (the interior applies it), then
+## the server's roster grant hops me into the car.
+func board_world_train() -> void:
+	if _local_player == null:
+		return
+	Dungeon.saved_player_state = _local_player.get_state()
+	NetworkManager.train_board(str(_local_player.class_id),
+		int(_local_player.steam_id))
 
 
 func _build_fade() -> void:

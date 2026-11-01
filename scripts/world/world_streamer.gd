@@ -183,7 +183,7 @@ var track_home_center := Vector2.ZERO
 var track_home_station := Vector2.ZERO
 var _track_edges: Array = [] ## station-point segments
 var _track_points: Dictionary = {} ## node key -> station point
-var _track_consist: Array = []
+
 var _track_mat: StandardMaterial3D = null
 
 const TrainNetwork := preload("res://scripts/world/train_network.gd")
@@ -203,7 +203,6 @@ func set_track_network(discovered: Array,
 	if track_discovered.is_empty():
 		_track_edges = []
 		_track_points = {}
-		_track_consist = []
 		return
 	_track_points = TrainNetwork.station_points(
 		WorldGen.WORLD_SEED, track_discovered, home_center,
@@ -211,9 +210,9 @@ func set_track_network(discovered: Array,
 	_track_edges = TrainNetwork.edge_segments(
 		WorldGen.WORLD_SEED, track_discovered, home_center,
 		home_station)
-	_track_consist = TrainNetwork.consist_boxes(
-		WorldGen.WORLD_SEED, track_discovered, home_center,
-		home_station)
+	# Issue #244 T3: the consist is no longer chunk dressing
+	# — it moves (WorldRoot owns the live consist node);
+	# track + stations stay baked here.
 
 
 ## The chunk's track segments from the cached edge list
@@ -1125,13 +1124,8 @@ func _track_job_step(rec: Dictionary, job: Dictionary) -> bool:
 				stations.append(key)
 		stations.sort()
 		job["stations"] = stations
-		var consist: Array = []
-		for box in _track_consist:
-			if rect.has_point(box["at"]):
-				consist.append(box)
-		job["consist"] = consist
-		if clipped.is_empty() and stations.is_empty() \
-				and consist.is_empty():
+		job["consist"] = []
+		if clipped.is_empty() and stations.is_empty():
 			job["t_done"] = true
 			return true
 		var tnode := Node3D.new()
@@ -1158,13 +1152,8 @@ func _track_job_step(rec: Dictionary, job: Dictionary) -> bool:
 		job["station_cursor"] = int(job["station_cursor"]) + 1
 		_track_append_station(job, data, key)
 		return false
-	if not (job["consist"] as Array).is_empty():
-		for box in job["consist"]:
-			_track_append_consist_box(job, data, box)
-		job["consist"] = []
-		return false
 	# Flush: one merged, vertex-colored mesh for the chunk's
-	# whole track dressing (bed, rails, stations, train).
+	# whole track dressing (bed, rails, stations).
 	var verts: PackedVector3Array = job["verts"]
 	if not verts.is_empty():
 		var arrays: Array = []
@@ -1440,6 +1429,7 @@ func _track_append_station(job: Dictionary,
 		Vector3(0.6, 0.45, 0.08), yaw,
 		Color(0.35, 0.75, 0.85))
 	var area := StationTerminal.new()
+	area.add_to_group("station_terminal")
 	area.station_key = key
 	area.position = term3 + Vector3(0, 0.8, 0)
 	var cs := CollisionShape3D.new()
@@ -1448,24 +1438,6 @@ func _track_append_station(job: Dictionary,
 	cs.shape = shape
 	area.add_child(cs)
 	(job["tnode"] as Node).add_child(area)
-
-
-## One consist box (locomotive / car / their parts) at its
-## derived stance: on the rails (grade + RAIL_TOP), yawed
-## along the home node's first edge.
-func _track_append_consist_box(job: Dictionary,
-		data: RefCounted, box: Dictionary) -> void:
-	var ox := float(data.cx) * WorldGen.CHUNK_SIZE
-	var oz := float(data.cz) * WorldGen.CHUNK_SIZE
-	var at: Vector2 = box["at"]
-	var center := Vector3(at.x - ox,
-		float(box["grade"]) + TrainNetwork.RAIL_TOP
-			+ float(box["y_off"]), at.y - oz)
-	_track_append_box(job, center, box["size"],
-		float(box["yaw"]), box["color"])
-	if box["kind"] == "loco" or box["kind"] == "car":
-		_track_add_box(job["body"], center, box["size"],
-			float(box["yaw"]))
 
 
 ## One bounded step of a chunk's buildings stage: up to

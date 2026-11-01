@@ -171,6 +171,9 @@ func _process(delta: float) -> void:
 				_note_session_lost()
 	else:
 		_session_poll_t = 0.0
+	# Issue #244 T3: the train's arrival beat is the
+	# server's, whichever scene the server's player is in.
+	_train_tick()
 
 
 ## Connect the Steam lobby signals (idempotent).
@@ -629,6 +632,402 @@ func load_station(level_number: int, cab: bool = false) -> void:
 	get_tree().change_scene_to_file(
 		"res://scenes/station/elevator_cab.tscn" if cab
 		else "res://scenes/station/train_interior.tscn")
+
+
+# --- Issue #244 Phase T3: the Act 2 train ----------------
+# The train's state lives in Dungeon.train_state and is
+# server-owned; this autoload carries its rpcs because it
+# is the only host present in every scene a peer can be in
+# (world, building, or the train interior itself). Motion
+# is parametric (spec §4.3): the server broadcasts state +
+# its elapsed msec, every peer stamps a local departure
+# tick and computes position from TrainNetwork — no
+# per-frame position RPCs. All addressing is by peer id.
+
+const TrainNetwork := preload("res://scripts/world/train_network.gd")
+const WorldGen := preload("res://scripts/world/world_gen.gd")
+const TRAIN_SCENE := "res://scenes/station/train_interior.tscn"
+
+## The server's own departure tick (its clock only).
+var _train_departed_msec := 0
+
+
+## Elapsed msec of the current leg on the server's clock.
+func train_elapsed_msec() -> int:
+	if str(Dungeon.train_state.get("status", "")) != "moving":
+		return 0
+	return Time.get_ticks_msec() - _train_departed_msec
+
+
+## This peer's elapsed msec (its own stamped tick).
+func train_local_elapsed_msec() -> int:
+	if str(Dungeon.train_state.get("status", "")) != "moving":
+		return 0
+	return Time.get_ticks_msec() - Dungeon.train_local_departed_msec
+
+
+## A fresh session starts the train at home (server, at
+## world begin). Session state only — never saved.
+func train_ensure_state() -> void:
+	if Dungeon.train_state.is_empty():
+		Dungeon.train_state = TrainNetwork.initial_state()
+
+
+## Broadcast the state with the server's elapsed stamp.
+func _train_broadcast() -> void:
+	rpc("rpc_train_state", Dungeon.train_state,
+		train_elapsed_msec())
+
+
+## Apply a received state (the rpc below, the world
+## snapshot, and the server's own local applications all
+## land here): stamp the local tick, then fire the beats —
+## interior forwarding for riders, positional cues for
+## world peers (the departure whistle at the origin
+## station, the brake at the destination; riders hear both
+## through the interior's own machinery).
+func train_apply_state(state: Dictionary, elapsed_msec: int) -> void:
+	var prev := str(Dungeon.train_state.get("status", "idle"))
+	var prev_dur := int(Dungeon.train_state.get("duration_msec", 0))
+	Dungeon.train_state = state.duplicate(true)
+	if str(state.get("status", "")) == "moving":
+		Dungeon.train_local_departed_msec = \
+			Time.get_ticks_msec() - elapsed_msec
+	var interiors := get_tree().get_nodes_in_group("train_interior")
+	var now_status := str(state.get("status", "idle"))
+	if interiors.size() > 0:
+		var car := interiors[0]
+		if now_status == "moving" and prev != "moving":
+			car.call("apply_world_departure",
+				_train_dest_label(state),
+				maxf((int(state.get("duration_msec", 0))
+					- elapsed_msec) / 1000.0, 0.0))
+		elif now_status == "moving" and prev == "moving" \
+				and int(state.get("duration_msec", 0)) != prev_dur:
+			car.call("apply_world_skip", maxf(
+				(int(state.get("duration_msec", 0))
+					- elapsed_msec) / 1000.0, 0.0))
+		elif now_status == "idle" and prev == "moving":
+			car.call("apply_world_arrival")
+		car.call("apply_world_riders", state.get("riders", {}))
+		return
+	# World-context cues (positioned at the stations).
+	var wr := get_tree().get_first_node_in_group("world_root")
+	if wr == null:
+		return
+	var hb: Dictionary = Dungeon.home_building()
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	if now_status == "moving" and prev != "moving":
+		var path: Array = state.get("path", [])
+		if not path.is_empty():
+			var p0 := TrainNetwork.train_position(
+				WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
+				hc, hs, state, 0)
+			AudioManager.sfx("train_whistle", p0["pos"])
+	elif now_status == "idle" and prev == "moving":
+		var p1 := TrainNetwork.train_position(
+			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
+			hc, hs, state, 0)
+		AudioManager.sfx("train_brake", p1["pos"])
+
+
+func _train_dest_label(state: Dictionary) -> String:
+	var path: Array = state.get("path", [])
+	if path.is_empty():
+		return ""
+	var dest := str(path[path.size() - 1])
+	return "HOME" if dest == "home" else dest
+
+
+@rpc("any_peer", "call_local", "reliable")
+func rpc_train_state(state: Dictionary, elapsed_msec: int) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		return
+	train_apply_state(state, elapsed_msec)
+
+
+# --- Server logic (peer-explicit; the suite drives these
+# --- directly, the wrappers below route live calls). -----
+
+## Boarding (spec §4.4): individual, any time the train
+## stands idle. The boarder's own client checked the train
+## is at their station (the consist is the interactable);
+## the server owns the roster.
+func train_board_server(peer: int, class_id: String,
+		steam_id: int) -> bool:
+	if not multiplayer.is_server():
+		return false
+	train_ensure_state()
+	if str(Dungeon.train_state.get("status", "")) == "moving":
+		return false
+	var riders: Dictionary = Dungeon.train_state.get("riders", {})
+	riders[peer] = [class_id, steam_id]
+	Dungeon.train_state["riders"] = riders
+	_train_broadcast()
+	_train_grant(peer)
+	return true
+
+
+func _train_grant(peer: int) -> void:
+	var classes := {}
+	var steams := {}
+	var riders: Dictionary = Dungeon.train_state.get("riders", {})
+	for pid in riders:
+		var info: Array = riders[pid]
+		classes[pid] = str(info[0])
+		steams[pid] = int(info[1])
+	if peer == multiplayer.get_unique_id():
+		train_board_granted(classes, steams)
+	else:
+		rpc_id(peer, "train_board_granted", classes, steams)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_board_request(class_id: String, steam_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	train_board_server(multiplayer.get_remote_sender_id(),
+		class_id, steam_id)
+
+
+## The boarder's hop: handoff statics in the legacy shape,
+## world_ride set, then the interior scene.
+@rpc("any_peer", "call_remote", "reliable")
+func train_board_granted(classes: Dictionary,
+		steams: Dictionary) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		return
+	TrainInterior.passenger_classes = classes
+	TrainInterior.passenger_steam_ids = steams
+	TrainInterior.ride_theme_id = "village"
+	TrainInterior.doors_locked = false
+	TrainInterior.world_ride = true
+	get_tree().call_deferred("change_scene_to_file", TRAIN_SCENE)
+
+
+## Departure (F6): the course confirmation, validated on
+## the server — idle train, plotter aboard, course starts
+## at the train, every node discovered, route exists.
+## Carries whoever is aboard; nobody else is consulted.
+func train_confirm_server(peer: int, course: Array) -> bool:
+	if not multiplayer.is_server():
+		return false
+	train_ensure_state()
+	var st := Dungeon.train_state
+	if str(st.get("status", "")) != "idle":
+		return false
+	var riders: Dictionary = st.get("riders", {})
+	if not riders.has(peer):
+		return false
+	return _train_depart(course, false)
+
+
+## Summon (F4): a station whose train stands idle
+## elsewhere calls it in — the run is empty, same motion.
+## Aboard riders block a summon (they hold the train).
+func train_summon_server(peer: int, station: String) -> bool:
+	if not multiplayer.is_server():
+		return false
+	train_ensure_state()
+	var st := Dungeon.train_state
+	if str(st.get("status", "")) != "idle":
+		return false
+	if not (st.get("riders", {}) as Dictionary).is_empty():
+		return false
+	if station == str(st.get("at", "")):
+		return false
+	return _train_depart([str(st.get("at", "home")), station],
+		true)
+
+
+## Shared departure: validate the course, route it, stamp
+## the leg, broadcast. Course-locked from this moment
+## (§9-T3: mid-ride course lock is the moving state
+## itself — confirms and summons both refuse).
+func _train_depart(course: Array, empty_run: bool) -> bool:
+	var st := Dungeon.train_state
+	if course.size() < 2:
+		return false
+	if str(course[0]) != str(st.get("at", "")):
+		return false
+	for k in course:
+		if str(k) != "home" and not Dungeon.act2_train_cities.has(str(k)):
+			return false
+	var hb: Dictionary = Dungeon.home_building()
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var rp := TrainNetwork.route_path(WorldGen.WORLD_SEED,
+		Dungeon.act2_train_cities, hc, hs, course)
+	if float(rp["length"]) <= 0.0:
+		return false
+	st["status"] = "moving"
+	st["course"] = course.duplicate()
+	st["path"] = rp["nodes"]
+	st["duration_msec"] = TrainNetwork.duration_msec_for(
+		float(rp["length"]))
+	st["empty_run"] = empty_run
+	if empty_run:
+		st["riders"] = {}
+	_train_departed_msec = Time.get_ticks_msec()
+	_train_broadcast()
+	return true
+
+
+## Skip (F5): the ride's only interruption — same
+## destination, ~2 s left, through the server so the world
+## consist and every interior agree.
+func train_skip_server(peer: int) -> bool:
+	if not multiplayer.is_server():
+		return false
+	var st := Dungeon.train_state
+	if str(st.get("status", "")) != "moving":
+		return false
+	if not (st.get("riders", {}) as Dictionary).has(peer):
+		return false
+	var elapsed := train_elapsed_msec()
+	if elapsed + 2000 >= int(st.get("duration_msec", 0)):
+		return false
+	st["duration_msec"] = elapsed + 2000
+	_train_broadcast()
+	return true
+
+
+## A rider leaves the car (disembark or voluntary exit).
+func train_leave_server(peer: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var riders: Dictionary = Dungeon.train_state.get("riders", {})
+	if riders.erase(peer):
+		Dungeon.train_state["riders"] = riders
+		_train_broadcast()
+
+
+## The arrival beat (server tick): validate elapsed >=
+## duration, settle at the final node, fire T1's expansion
+## hook shape at a city (T5 wires the full loop), doors via
+## the broadcast's interior forwarding.
+func train_arrive_server() -> void:
+	var st := Dungeon.train_state
+	var path: Array = st.get("path", [])
+	if path.is_empty():
+		return
+	var dest := str(path[path.size() - 1])
+	st["status"] = "idle"
+	st["at"] = dest
+	st["course"] = []
+	st["path"] = []
+	st["duration_msec"] = 0
+	st["empty_run"] = false
+	_train_broadcast()
+	if dest != "home":
+		Dungeon.train_expand_at(dest)
+
+
+func _train_tick() -> void:
+	if not multiplayer.is_server():
+		return
+	if str(Dungeon.train_state.get("status", "")) != "moving":
+		return
+	if train_elapsed_msec() >= int(Dungeon.train_state.get(
+			"duration_msec", 0)):
+		train_arrive_server()
+
+
+# --- Client wrappers (local-or-rpc routing) ---------------
+
+func train_board(class_id: String, steam_id: int) -> void:
+	if multiplayer.is_server():
+		train_board_server(multiplayer.get_unique_id(),
+			class_id, steam_id)
+	else:
+		rpc_id(NetworkManager.server_peer_id,
+			"train_board_request", class_id, steam_id)
+
+
+func train_confirm(course: Array) -> void:
+	if multiplayer.is_server():
+		train_confirm_server(multiplayer.get_unique_id(), course)
+	else:
+		rpc_id(NetworkManager.server_peer_id,
+			"train_confirm_request", course)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_confirm_request(course: Array) -> void:
+	if multiplayer.is_server():
+		train_confirm_server(multiplayer.get_remote_sender_id(),
+			course)
+
+
+func train_summon(station: String) -> void:
+	if multiplayer.is_server():
+		train_summon_server(multiplayer.get_unique_id(), station)
+	else:
+		rpc_id(NetworkManager.server_peer_id,
+			"train_summon_request", station)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_summon_request(station: String) -> void:
+	if multiplayer.is_server():
+		train_summon_server(multiplayer.get_remote_sender_id(),
+			station)
+
+
+func train_skip() -> void:
+	if multiplayer.is_server():
+		train_skip_server(multiplayer.get_unique_id())
+	else:
+		rpc_id(NetworkManager.server_peer_id, "train_skip_request")
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_skip_request() -> void:
+	if multiplayer.is_server():
+		train_skip_server(multiplayer.get_remote_sender_id())
+
+
+func train_leave() -> void:
+	if multiplayer.is_server():
+		train_leave_server(multiplayer.get_unique_id())
+	else:
+		rpc_id(NetworkManager.server_peer_id, "train_leave_request")
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_leave_request() -> void:
+	if multiplayer.is_server():
+		train_leave_server(multiplayer.get_remote_sender_id())
+
+
+## The world-mode ride-state pull (#135's pattern, NM
+## hosted): a late-loading rider asks; the server answers
+## with the state + its elapsed stamp.
+func train_pull_state() -> void:
+	if multiplayer.is_server():
+		train_apply_state(Dungeon.train_state,
+			train_elapsed_msec())
+	else:
+		rpc_id(NetworkManager.server_peer_id,
+			"train_state_request")
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_state_request() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		return
+	rpc_id(sender, "rpc_train_state", Dungeon.train_state,
+		train_elapsed_msec())
 
 
 # --- Joining ---

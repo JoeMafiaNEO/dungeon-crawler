@@ -236,6 +236,20 @@ static var act2_cleared: Array = []
 ## save = undiscovered, and the world entry arm
 ## initializes it from the home ring.
 static var act2_train_cities: Array = []
+## Issue #244 Phase T3: the Act 2 train's run state,
+## server-owned (its NetworkManager rpc block carries it):
+## TrainNetwork.initial_state()'s shape. Session state
+## only — a fresh session starts the train at home; the
+## discovered set (act2_train_cities) is what persists.
+## train_local_departed_msec is this peer's own departure
+## tick (stamped on every state receipt from the server's
+## elapsed stamp — peers share no clock), and
+## train_disembark_station is the one-shot placement flag
+## a train arrival's disembark sets for WorldRoot (the
+## spawn_in_annex pattern; _arrival_point is untouched).
+static var train_state: Dictionary = {}
+static var train_local_departed_msec := 0
+static var train_disembark_station := ""
 static var act2_anchor_building := ""
 static var act2_anchor_doorstep := Vector3.ZERO
 static var act2_last_transition := {}
@@ -4771,6 +4785,10 @@ func board_train_interior(theme_id: String, new_seed: int, new_level: int, class
 	# Fresh trip: the interior's late-_ready ride check must not see a stale
 	# ride_active from the previous ride (issue #3 Phase 3).
 	InteriorScript.ride_active = false
+	if not to_cab:
+		# Issue #244 T3: a hub ride is never a world ride
+		# (the world flow sets this on its own grant).
+		InteriorScript.world_ride = false
 	# Issue #93 Phase 3: the depart lever completes the departure — the
 	# car doors stay closed + locked for the ride.
 	InteriorScript.doors_locked = true

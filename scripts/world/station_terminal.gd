@@ -1,20 +1,30 @@
 class_name StationTerminal
 extends Area3D
-## The GPS terminal on every train station platform
-## (issue #244 T2, spec §3.2/§5): the interactable exists
-## from T2 — E prompts at it like any world interactable —
-## but the node chart it opens is T4; interact() is an
-## inert stub until then.
+## A station's GPS terminal (issue #244 T2 build, T3
+## wiring). The node chart is T4; T3 wires the SUMMON
+## (spec §4.4/F4): when the train stands idle at another
+## station, interacting here calls it in — it runs the
+## route empty. When the train is here (board at the
+## consist itself) or moving, the terminal is quiet.
 
 var station_key := ""
 
 
+## Summonable = the train is idle somewhere else.
+func _summonable() -> bool:
+	var st := Dungeon.train_state
+	if st.is_empty():
+		return false
+	return str(st.get("status", "")) == "idle" \
+		and str(st.get("at", "")) != station_key
+
+
 func prompt_text() -> String:
+	if _summonable():
+		return "Summon train"
 	return "GPS terminal"
 
 
-func interact(_player: Node) -> void:
-	# T4: open the node chart (pan/zoom canvas; a course is
-	# drafted by any rider, confirmed from aboard). Nothing
-	# chart-side exists to open yet.
-	pass
+func interact(_player: Player) -> void:
+	if _summonable():
+		NetworkManager.train_summon(station_key)

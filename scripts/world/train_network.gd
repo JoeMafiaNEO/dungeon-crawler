@@ -347,6 +347,10 @@ static func route(seed: int, discovered: Array,
 ## the chunk's rect — TRACK_HALF_WIDTH (4) plus two lots
 ## (16), so lot-candidacy distances (generate_chunk) and
 ## span claims reaching one lot past the border stay exact.
+## Phase T3: TRAIN_SPEED (spec §4.2, fork F7 — 28 m/s
+## placeholder). Ride duration is path length / TRAIN_SPEED.
+const TRAIN_SPEED := 28.0
+
 const SEGMENT_CHUNK_MARGIN := 20.0
 
 ## Grade (spec §3.3): terrain sampled every GRADE_SAMPLE_M
@@ -559,3 +563,206 @@ static func consist_boxes(seed: int, discovered: Array,
 			"size": p[2], "y_off": float(p[3]),
 			"yaw": yaw, "color": p[4]})
 	return out
+
+
+## --- Phase T3: the ride ------------------------------------
+## The train's state is a plain Dictionary owned by the
+## server (Dungeon.train_state; NetworkManager carries its
+## rpcs): {status: "idle"|"moving", at, course, path,
+## duration_msec, riders, empty_run}. Peers never share a
+## clock: every state send carries the server's elapsed
+## msec and each receiver stamps its own local departure
+## tick, so position is a pure function of (state, elapsed)
+## computed identically everywhere — client-compute applied
+## to motion (spec §4.3), no per-frame position RPCs.
+
+## The state of a fresh run: idle at home, nobody aboard.
+static func initial_state() -> Dictionary:
+	return {"status": "idle", "at": "home", "course": [],
+		"path": [], "duration_msec": 0, "riders": {},
+		"empty_run": false}
+
+
+## Route a plotted course (spec §2.3 applied per leg):
+## consecutive nodes routed over the graph, joints
+## deduplicated. Returns {nodes, length} with length the
+## summed station-point distance; an unroutable course
+## yields length -1.
+static func route_path(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		course: Array) -> Dictionary:
+	var nodes: Array = []
+	var length := 0.0
+	if course.size() < 2:
+		return {"nodes": nodes, "length": -1.0}
+	var pts := station_points(seed, discovered, home_center,
+		home_station)
+	for i in course.size() - 1:
+		var leg := route(seed, discovered, home_center,
+			str(course[i]), str(course[i + 1]))
+		if leg.size() < 2:
+			return {"nodes": [], "length": -1.0}
+		for k in leg:
+			if nodes.is_empty() or str(nodes[nodes.size() - 1]) != str(k):
+				nodes.append(str(k))
+	if nodes.size() < 2:
+		return {"nodes": [], "length": -1.0}
+	# Length in station-point meters (route() measures
+	# center-to-center; the physical path runs point to
+	# point — recompute on the points so duration and
+	# position share one metric).
+	var ppts := _path_points(pts, nodes)
+	length = 0.0
+	for i in ppts.size() - 1:
+		length += (ppts[i] as Vector2).distance_to(ppts[i + 1])
+	return {"nodes": nodes, "length": length}
+
+
+static func _path_points(pts: Dictionary, nodes: Array) -> Array:
+	var out: Array = []
+	for k in nodes:
+		out.append(pts[str(k)])
+	return out
+
+
+## Ride duration for a path length at TRAIN_SPEED (spec
+## §4.2: duration is real).
+static func duration_msec_for(length_m: float) -> int:
+	return int(round(length_m / TRAIN_SPEED * 1000.0))
+
+
+## A node's station frame: {pt, dir, perp, side} — dir
+## along its first incident edge, side toward its
+## settlement center (the platform side). Shared by the
+## streamer's station builder, the disembark point and
+## WorldRoot's placement so all three agree by construction.
+static func station_frame(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		key: String) -> Dictionary:
+	var g := derive_graph(seed, discovered, home_center)
+	var pts := _points_for_graph(g, seed, home_station)
+	var pt: Vector2 = pts.get(key, home_station)
+	var dir := Vector2(0, 1)
+	for e in g["edges"]:
+		var a := str(e[0])
+		var b := str(e[1])
+		if a == key or b == key:
+			var other: Vector2 = pts[b] if a == key else pts[a]
+			dir = (other - pt).normalized()
+			break
+	var perp := Vector2(-dir.y, dir.x)
+	var center2: Vector2 = (g["nodes"] as Dictionary).get(
+		key, pt)
+	var side := 1.0
+	if (center2 - pt).dot(perp) < 0.0:
+		side = -1.0
+	return {"pt": pt, "dir": dir, "perp": perp, "side": side}
+
+
+## The platform slab's center for a node (the streamer's
+## builder and the disembark placement read the same point).
+static func platform_center(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		key: String) -> Vector2:
+	var f := station_frame(seed, discovered, home_center,
+		home_station, key)
+	return (f["pt"] as Vector2) + (f["perp"] as Vector2) \
+		* (float(f["side"]) * (BED_WIDTH * 0.5 + 1.9))
+
+
+## Where a rider steps out: on the destination platform,
+## standing on the slab (grade + platform height).
+static func platform_point(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		key: String) -> Vector3:
+	var c := platform_center(seed, discovered, home_center,
+		home_station, key)
+	return Vector3(c.x, WorldGen.height_at(seed, c.x, c.y)
+		+ 0.55, c.y)
+
+
+## The train's world position for a state at an elapsed
+## time: {mode, pos (Vector3, on the rails), yaw, pitch,
+## at (when idle), leg}. Idle reads the station point;
+## moving walks the routed path's station points at
+## TRAIN_SPEED along T2's grade profile.
+static func train_position(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		state: Dictionary, elapsed_msec: int) -> Dictionary:
+	var pts := station_points(seed, discovered, home_center,
+		home_station)
+	if str(state.get("status", "idle")) != "moving":
+		var at := str(state.get("at", "home"))
+		var f := station_frame(seed, discovered, home_center,
+			home_station, at)
+		var pt: Vector2 = pts.get(at, home_station)
+		return {"mode": "idle", "at": at,
+			"pos": Vector3(pt.x, WorldGen.height_at(seed,
+				pt.x, pt.y) + RAIL_TOP, pt.y),
+			"yaw": atan2((f["dir"] as Vector2).x,
+				(f["dir"] as Vector2).y),
+			"pitch": 0.0, "leg": 0}
+	var path: Array = state.get("path", [])
+	var ppts := _path_points(pts, path)
+	if ppts.size() < 2:
+		return {"mode": "idle", "at": "home",
+			"pos": Vector3(home_station.x, WorldGen.height_at(
+				seed, home_station.x, home_station.y)
+				+ RAIL_TOP, home_station.y),
+			"yaw": 0.0, "pitch": 0.0, "leg": 0}
+	var total := 0.0
+	for i in ppts.size() - 1:
+		total += (ppts[i] as Vector2).distance_to(ppts[i + 1])
+	var traveled := clampf(elapsed_msec / 1000.0
+		* TRAIN_SPEED, 0.0, total)
+	return _position_at(seed, ppts, traveled)
+
+
+## Position + grade + heading at a traveled distance along
+## a point path (the pitch samples the same function 9 m
+## either side, so the consist's tilt is the grade's own).
+static func _position_at(seed: int, ppts: Array,
+		traveled: float) -> Dictionary:
+	var acc := 0.0
+	var seg := 0
+	var local := 0.0
+	for i in ppts.size() - 1:
+		var seglen := (ppts[i] as Vector2).distance_to(
+			ppts[i + 1])
+		if traveled <= acc + seglen or i == ppts.size() - 2:
+			seg = i
+			local = clampf(traveled - acc, 0.0, seglen)
+			break
+		acc += seglen
+	var a: Vector2 = ppts[seg]
+	var b: Vector2 = ppts[seg + 1]
+	var seglen2 := a.distance_to(b)
+	var pos2 := a.lerp(b, local / maxf(seglen2, 0.001))
+	var grade := grade_height(seed, a, b, local)
+	var dir := (b - a).normalized()
+	var total := 0.0
+	for i in ppts.size() - 1:
+		total += (ppts[i] as Vector2).distance_to(ppts[i + 1])
+	var back := clampf(traveled - 9.0, 0.0, total)
+	var ahead := clampf(traveled + 9.0, 0.0, total)
+	var pitch := 0.0
+	if ahead > back:
+		pitch = atan2(_grade_along(seed, ppts, ahead)
+			- _grade_along(seed, ppts, back), ahead - back)
+	return {"mode": "moving", "at": "",
+		"pos": Vector3(pos2.x, grade + RAIL_TOP, pos2.y),
+		"yaw": atan2(dir.x, dir.y), "pitch": pitch, "leg": seg}
+
+
+## The grade at a traveled distance along a point path.
+static func _grade_along(seed: int, ppts: Array,
+		traveled: float) -> float:
+	var acc := 0.0
+	for i in ppts.size() - 1:
+		var seglen := (ppts[i] as Vector2).distance_to(
+			ppts[i + 1])
+		if traveled <= acc + seglen or i == ppts.size() - 2:
+			return grade_height(seed, ppts[i], ppts[i + 1],
+				clampf(traveled - acc, 0.0, seglen))
+		acc += seglen
+	return 0.0

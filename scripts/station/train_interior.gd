@@ -31,6 +31,17 @@ static var ride_seconds := 25.0
 ## Test/driver override: when > 0 the ride lasts this long instead.
 static var ride_seconds_override := 0.0
 
+## Issue #244 Phase T3: world-ride mode. Set by
+## NetworkManager's board grant for the Act 2 train (hub
+## rides never set it): the ride's clock and beats are the
+## world train state's (NetworkManager carries them), the
+## scenery/dressing machinery is this car's own, and
+## disembark returns to the WORLD scene's destination
+## platform instead of a dungeon annex. world_dest_key is
+## the destination node key of the current/last leg.
+static var world_ride := false
+static var world_dest_key := ""
+
 ## Train audio policy (Jesse, 2026-10-05): his recordings are the train
 ## soundscape — inside-old-train ambient for the ride, his whistle for
 ## departure, his brake recording for arrival. The synth chug/rumble cues
@@ -103,7 +114,13 @@ class SkipLever extends Node3D:
 
 	func interact(_player: Player) -> void:
 		if interior != null and interior.is_riding():
-			interior.rpc("request_skip_ride")
+			if TrainInterior.world_ride:
+				# World rides: the skip goes through the
+				# server's train state (spec §4.5/F5), so
+				# the world consist agrees.
+				NetworkManager.train_skip()
+			else:
+				interior.rpc("request_skip_ride")
 
 
 func _ready() -> void:
@@ -118,6 +135,19 @@ func _ready() -> void:
 		_local_hud.fade_in(1.5)
 	if not doors_locked:
 		open_doors()
+	if world_ride:
+		# Issue #244 T3: the world ride's clock lives in the
+		# train state (NetworkManager), not in this scene —
+		# no _run_ride, and the late-load recovery pull is
+		# the NM-hosted one. The world scene background-loads
+		# for the disembark hop, and a rider waiting at the
+		# station may simply walk back out (the exit zone is
+		# live while the train stands).
+		add_to_group("train_interior")
+		ResourceLoader.load_threaded_request(Dungeon.WORLD_SCENE)
+		_disembark_area.monitoring = true
+		NetworkManager.train_pull_state()
+		return
 	# Background-load the next dungeon during the ride so disembark is instant.
 	ResourceLoader.load_threaded_request(DUNGEON_SCENE)
 	# Issue #135: a client that finishes loading after the server's
@@ -368,12 +398,132 @@ func _apply_arrival() -> void:
 	# itself stays voluntary.)
 
 
+## --- Issue #244 T3: world-ride appliers ------------------
+## NetworkManager's train-state application forwards the
+## beats here (this instance registered in the
+## "train_interior" group at _ready). The presentation is
+## the shipped machinery's; only the clock's source differs.
+
+## A world departure: ride the shipped ride-start with the
+## leg's true remaining seconds (path length / TRAIN_SPEED
+## on the server; a late loader gets the remainder).
+func apply_world_departure(dest_label: String,
+		seconds_left: float) -> void:
+	var path: Array = Dungeon.train_state.get("path", [])
+	if not path.is_empty():
+		world_dest_key = str(path[path.size() - 1])
+	ride_active = true
+	ride_dest_name = dest_label
+	ride_seconds = seconds_left
+	_apply_ride_started()
+	_ride_left = seconds_left
+
+
+## A world skip: the server's clamped remainder.
+func apply_world_skip(seconds_left: float) -> void:
+	if not is_riding():
+		return
+	_ride_left = minf(_ride_left, seconds_left)
+	_skipping = true
+	_show_ride_hud()
+
+
+## The world arrival beat: the shipped arrival, verbatim.
+func apply_world_arrival() -> void:
+	_apply_arrival()
+
+
+## The rider roster changed (a boarder joined, a rider
+## left): reconcile this car's player nodes with it.
+## Riders shape: {peer_id: [class_id, steam_id]}.
+func apply_world_riders(riders: Dictionary) -> void:
+	for pid in riders:
+		if get_node_or_null("Player_%d" % int(pid)) == null:
+			var info: Array = riders[pid]
+			_add_passenger(int(pid), str(info[0]), int(info[1]))
+	for n in get_children():
+		if n.name.begins_with("Player_"):
+			var pid := int(str(n.name).trim_prefix("Player_"))
+			if not riders.has(pid):
+				n.queue_free()
+
+
+## Spawn one passenger node (the _spawn_passengers shape,
+## for a single late boarder).
+func _add_passenger(pid: int, class_id: String,
+		steam_id: int) -> void:
+	var spots := spawn_points()
+	var p := PlayerScene.instantiate() as Player
+	p.name = "Player_%d" % pid
+	p.class_id = class_id
+	p.steam_id = steam_id
+	p.set_multiplayer_authority(pid)
+	var aboard := 0
+	for n in get_children():
+		if n.name.begins_with("Player_"):
+			aboard += 1
+	p.position = spots[aboard % spots.size()]
+	add_child(p)
+	if pid == multiplayer.get_unique_id():
+		if not Dungeon.saved_player_state.is_empty():
+			p.apply_state(Dungeon.saved_player_state)
+			Dungeon.saved_player_state = {}
+		_local_hud = HudScene.instantiate()
+		add_child(_local_hud)
+		_local_hud.setup(p)
+
+
+## World disembark / voluntary exit (local, voluntary —
+## issue #92's shape): step out onto a station platform in
+## the world scene. The server drops us from the roster;
+## WorldRoot places us from train_disembark_station.
+func do_world_disembark(station_key: String) -> void:
+	if _disembarked_local:
+		return
+	_disembarked_local = true
+	NetworkManager.train_leave()
+	var me := _my_player()
+	if me != null:
+		Dungeon.saved_player_state = me.get_state()
+	Dungeon.train_disembark_station = station_key
+	world_ride = false
+	var ps: PackedScene = ResourceLoader.load_threaded_get(
+		Dungeon.WORLD_SCENE) as PackedScene
+	if ps != null and ps.can_instantiate():
+		get_tree().call_deferred("change_scene_to_packed", ps)
+	else:
+		get_tree().call_deferred("change_scene_to_file",
+			Dungeon.WORLD_SCENE)
+
+
+## The world-mode voluntary exit (issue #244 T3): waiting
+## at a station (not riding, not arrived), walking out
+## steps back onto this station's platform. Returns true
+## when the walk was a world exit.
+func _world_exit_check(body: Node3D) -> bool:
+	if not world_ride or _arrived or _riding:
+		return false
+	if not body.is_in_group("players"):
+		return true
+	if int(body.get_multiplayer_authority()) != multiplayer.get_unique_id():
+		return true
+	do_world_disembark(str(Dungeon.train_state.get("at", "home")))
+	return true
+
+
 func _on_disembark_body_entered(body: Node3D) -> void:
+	if _world_exit_check(body):
+		return
 	if not _arrived:
 		return
 	if not body.is_in_group("players"):
 		return
 	if int(body.get_multiplayer_authority()) != multiplayer.get_unique_id():
+		return
+	if world_ride:
+		# Arrival disembark: out onto the destination
+		# station's platform in the world scene.
+		do_world_disembark(world_dest_key)
 		return
 	# Local hop (issue #92): no server RPC. The server's train may already be
 	# gone (host disembarked), which used to strand clients here.

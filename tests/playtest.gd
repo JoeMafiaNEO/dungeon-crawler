@@ -283,6 +283,7 @@ func _run() -> void:
 	_test_cloud_hardening_243()
 	_test_train_network_244()
 	_test_train_world_244()
+	_test_train_ride_244()
 	_print_results()
 	quit()
 
@@ -25726,12 +25727,9 @@ func _test_train_world_244() -> void:
 			stack.append(ch)
 	_assert(term_found,
 		"244T2(E): the home station's GPS terminal stands on the platform (inert until T4)")
-	var home_boxes := 0
-	for box in TN.consist_boxes(seed, set1, hc, hs):
-		if Rect2(0, 0, 128, 128).has_point(box["at"]):
-			home_boxes += 1
-	_assert(home_boxes == 7,
-		"244T2(E): all 7 consist boxes center in the home chunk (the train rests at the home station)")
+	# (T3: the consist is no longer chunk dressing — it
+	# moves, and WorldRoot owns the live node; the pure
+	# template is pinned in leg A and the ride section.)
 	# A corridor chunk: bed only, no station.
 	st.call("_build_chunk", 1, -5)
 	var rec_mid: Dictionary = active["1,-5"]
@@ -25762,6 +25760,241 @@ func _test_train_world_244() -> void:
 	_assert(wsrc.contains("set_track_network"),
 		"244T2(E): WorldRoot hands the streamer the run's network at setup")
 	print("[Playtest] Train world dressing (244 T2) test done.")
+
+
+func _test_train_ride_244() -> void:
+	print("[Playtest] Train ride (issue #244 T3)...")
+	var TN := load("res://scripts/world/train_network.gd")
+	var WG := load("res://scripts/world/world_gen.gd")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var NM: Node = root.get_node("NetworkManager")
+	var seed: int = WG.WORLD_SEED
+	var hc := Vector2.ZERO
+	var hs := Vector2(124.0, 44.0)
+	var set1: Array = ["0,-2", "0,2"]
+	# --- Leg A: routing a course + real duration ---------
+	var rp: Dictionary = TN.route_path(seed, set1, hc, hs,
+		["home", "0,-2"])
+	_assert(rp["nodes"] == ["home", "0,-2"],
+		"244T3(A): a single-leg course routes direct")
+	var len_ref := Vector2(124, 44).distance_to(
+		Vector2(348, -1084))
+	_assert(absf(float(rp["length"]) - len_ref) < 1.0,
+		"244T3(A): path length is the station-point distance (duration's metric)")
+	_assert(absf(TN.duration_msec_for(len_ref)
+			- len_ref / 28.0 * 1000.0) <= 1.0,
+		"244T3(A): duration = path length / TRAIN_SPEED (28 m/s, F7)")
+	var rp2: Dictionary = TN.route_path(seed, set1, hc, hs,
+		["home", "0,2", "0,-2"])
+	_assert(rp2["nodes"] == ["home", "0,2", "0,-2"],
+		"244T3(A): a two-leg course routes over the direct edge, joints deduplicated")
+	_assert(float(TN.route_path(seed, set1, hc, hs,
+			["home", "7,0"])["length"]) < 0.0,
+		"244T3(A): an undiscovered course node is unroutable")
+	# --- Leg B: parametric position ----------------------
+	var idle_pos: Dictionary = TN.train_position(seed, set1,
+		hc, hs, TN.initial_state(), 0)
+	_assert(str(idle_pos["mode"]) == "idle"
+			and (idle_pos["pos"] as Vector3).x == 124.0
+			and (idle_pos["pos"] as Vector3).z == 44.0,
+		"244T3(B): idle, the train stands at its station point")
+	var mv := {"status": "moving", "at": "home",
+		"course": ["home", "0,-2"], "path": ["home", "0,-2"],
+		"duration_msec": TN.duration_msec_for(len_ref),
+		"riders": {}, "empty_run": false}
+	var dur := int(mv["duration_msec"])
+	var p0: Dictionary = TN.train_position(seed, set1, hc, hs,
+		mv, 0)
+	_assert((p0["pos"] as Vector3).x == 124.0
+			and (p0["pos"] as Vector3).z == 44.0,
+		"244T3(B): at departure the consist is at the origin station")
+	var p1: Dictionary = TN.train_position(seed, set1, hc, hs,
+		mv, dur)
+	_assert(Vector2((p1["pos"] as Vector3).x,
+			(p1["pos"] as Vector3).z).distance_to(
+			Vector2(348, -1084)) < 0.5,
+		"244T3(B): at duration the consist is at the destination station (no RPCs — the same function on every peer)")
+	var pm: Dictionary = TN.train_position(seed, set1, hc, hs,
+		mv, dur / 2)
+	var mid_ref := Vector2(124, 44).lerp(
+		Vector2(348, -1084), 0.5)
+	_assert(Vector2((pm["pos"] as Vector3).x,
+			(pm["pos"] as Vector3).z).distance_to(mid_ref) < 30.0,
+		"244T3(B): mid-leg the consist is mid-path (grade priced the Y, position the path)")
+	_assert(absf((pm["pos"] as Vector3).y
+			- (TN.grade_height(seed, Vector2(124, 44),
+				Vector2(348, -1084), len_ref * 0.5)
+				+ TN.RAIL_TOP)) < 0.01,
+		"244T3(B): the ride reads T2's grade (one function, both consumers)")
+	# --- Leg C: the platform point -----------------------
+	var pc: Vector2 = TN.platform_center(seed, set1, hc, hs,
+		"home")
+	_assert(pc.distance_to(Vector2(120, 43)) < 0.5,
+		"244T3(C): the platform center matches T2's built station (mesh-centroid of record)")
+	var pp: Vector3 = TN.platform_point(seed, set1, hc, hs,
+		"0,-2")
+	var pc2: Vector2 = TN.platform_center(seed, set1, hc, hs,
+		"0,-2")
+	_assert(pp.x == pc2.x and pp.z == pc2.y
+			and absf(pp.y - (WG.height_at(seed, pc2.x, pc2.y)
+				+ 0.55)) < 0.01,
+		"244T3(C): disembark lands on the destination platform slab")
+	_assert(pc2.distance_to(Vector2(348, -1084)) > 4.09
+			and pc2.distance_to(Vector2(348, -1084)) < 4.11,
+		"244T3(C): the platform stands one platform-offset from the station point")
+	# --- Leg D: the server state machine -----------------
+	var saved_anchor: Dictionary = DungeonScript.home_anchor
+	var saved_cities: Array = DungeonScript.act2_train_cities
+	var saved_tstate: Dictionary = DungeonScript.train_state
+	DungeonScript.home_anchor = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.act2_train_cities = ["0,-2", "0,2"]
+	DungeonScript.train_state = {}
+	NM.call("train_ensure_state")
+	_assert(str(DungeonScript.train_state.get("status", ""))
+			== "idle"
+			and str(DungeonScript.train_state.get("at", ""))
+				== "home",
+		"244T3(D): a fresh session starts the train idle at home")
+	_assert(bool(NM.call("train_board_server", 1, "warrior",
+			111)),
+		"244T3(D): boarding is individual — the server registers the rider")
+	# A second rider at roster level (the grant hop for a
+	# remote peer is rpc-shaped and hardware-held; peer 1's
+	# board above exercised the grant path locally).
+	var riders0: Dictionary = DungeonScript.train_state["riders"]
+	riders0[7] = ["mage", 777]
+	DungeonScript.train_state["riders"] = riders0
+	_assert(not bool(NM.call("train_confirm_server", 9,
+			["home", "0,-2"])),
+		"244T3(D): confirm refuses a plotter who is not aboard (F6)")
+	_assert(not bool(NM.call("train_confirm_server", 1,
+			["0,2", "0,-2"])),
+		"244T3(D): confirm refuses a course that does not start at the train")
+	_assert(not bool(NM.call("train_confirm_server", 1,
+			["home", "7,0"])),
+		"244T3(D): confirm refuses an undiscovered node")
+	_assert(bool(NM.call("train_confirm_server", 1,
+			["home", "0,-2"])),
+		"244T3(D): a rider's valid course departs the train with whoever is aboard")
+	var hb: Dictionary = DungeonScript.home_building()
+	var rhc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var rhs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var rrp: Dictionary = TN.route_path(seed, ["0,-2", "0,2"],
+		rhc, rhs, ["home", "0,-2"])
+	_assert(str(DungeonScript.train_state["status"]) == "moving"
+			and DungeonScript.train_state["path"]
+				== ["home", "0,-2"]
+			and absf(int(DungeonScript.train_state[
+				"duration_msec"])
+				- TN.duration_msec_for(float(rrp["length"])))
+				<= 1.0,
+		"244T3(D): the departed state carries the routed path and the real duration")
+	_assert(not bool(NM.call("train_confirm_server", 1,
+			["0,-2", "home"]))
+			and not bool(NM.call("train_summon_server", 1,
+				"0,2"))
+			and not bool(NM.call("train_board_server", 5,
+				"rogue", 555)),
+		"244T3(D): mid-ride the course is locked — no confirm, no summon, no boarding")
+	_assert(not bool(NM.call("train_skip_server", 9)),
+		"244T3(D): skip refuses a non-rider")
+	_assert(bool(NM.call("train_skip_server", 7)),
+		"244T3(D): a rider's skip shortens the ride (F5)")
+	_assert(int(DungeonScript.train_state["duration_msec"])
+			<= 2100,
+		"244T3(D): the skip clamps the leg to ~2 s remaining, same destination")
+	NM.call("train_arrive_server")
+	_assert(str(DungeonScript.train_state["status"]) == "idle"
+			and str(DungeonScript.train_state["at"])
+				== "0,-2"
+			and (DungeonScript.train_state["path"] as Array)
+				.is_empty(),
+		"244T3(D): arrival settles the train at the destination (the server validates elapsed)")
+	_assert(not bool(NM.call("train_summon_server", 1, "0,2")),
+		"244T3(D): summon refuses while riders are aboard (they hold the train)")
+	NM.call("train_leave_server", 1)
+	NM.call("train_leave_server", 7)
+	_assert(bool(NM.call("train_summon_server", 1, "0,2"))
+			and bool(DungeonScript.train_state["empty_run"])
+			and (DungeonScript.train_state["riders"]
+				as Dictionary).is_empty(),
+		"244T3(D): a station summons the idle train — it runs the route empty (F4)")
+	NM.call("train_arrive_server")
+	_assert(str(DungeonScript.train_state["at"]) == "0,2",
+		"244T3(D): the summoned train arrives at the summoning station")
+	# The snapshot's apply path (world_state_apply calls
+	# exactly this): a mid-leg state + elapsed lands whole.
+	var snap_state := {"status": "moving", "at": "home",
+		"course": ["home", "0,2"], "path": ["home", "0,2"],
+		"duration_msec": 60000, "riders": {}, "empty_run": true}
+	NM.call("train_apply_state", snap_state, 30000)
+	_assert(str(DungeonScript.train_state["status"])
+			== "moving"
+			and absf(NM.call("train_local_elapsed_msec")
+				- 30000) < 100.0,
+		"244T3(D): a late joiner's snapshot applies the state with its elapsed stamp (position derives from it)")
+	DungeonScript.home_anchor = saved_anchor
+	DungeonScript.act2_train_cities = saved_cities
+	DungeonScript.train_state = saved_tstate
+	# --- Leg F: the interior forwarding, driven ----------
+	# A real car in the tree in world mode: the state
+	# application's beats land on its shipped machinery.
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	var saved_wr: bool = InteriorScript.world_ride
+	var saved_pc: Dictionary = InteriorScript.passenger_classes
+	InteriorScript.world_ride = true
+	InteriorScript.passenger_classes = {1: "warrior"}
+	InteriorScript.passenger_steam_ids = {1: 111}
+	DungeonScript.train_state = {"status": "idle",
+		"at": "home", "course": [], "path": [],
+		"duration_msec": 0, "riders": {1: ["warrior", 111]},
+		"empty_run": false}
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var car: Node = InteriorScript.new()
+	holder.add_child(car)
+	_assert(not bool(car.get("_riding"))
+			and not bool(car.get("_arrived")),
+		"244T3(F): a boarded car at the station waits (doors open, no clock of its own)")
+	NM.call("train_apply_state", {"status": "moving",
+		"at": "home", "course": ["home", "0,-2"],
+		"path": ["home", "0,-2"], "duration_msec": 60000,
+		"riders": {1: ["warrior", 111]}, "empty_run": false}, 0)
+	_assert(bool(car.get("_riding")),
+		"244T3(F): the departure beat starts the car's ride (HUD, scenery, ambient — the shipped _apply_ride_started)")
+	NM.call("train_apply_state", {"status": "idle",
+		"at": "0,-2", "course": [], "path": [],
+		"duration_msec": 0, "riders": {1: ["warrior", 111]},
+		"empty_run": false}, 0)
+	_assert(bool(car.get("_arrived"))
+			and not bool(car.get("_riding")),
+		"244T3(F): the arrival beat applies the shipped arrival (brake, doors, platform)")
+	holder.free()
+	InteriorScript.world_ride = saved_wr
+	InteriorScript.passenger_classes = saved_pc
+	InteriorScript.passenger_steam_ids = {}
+	DungeonScript.train_state = saved_tstate
+	# --- Leg E: wiring source pins ------------------------
+	var nm_src := FileAccess.get_file_as_string("res://scripts/autoload/network_manager.gd")
+	var ti_src := FileAccess.get_file_as_string("res://scripts/station/train_interior.gd")
+	var wr_src := FileAccess.get_file_as_string("res://scripts/world/world_root.gd")
+	_assert(nm_src.contains("server_peer_id")
+			and nm_src.contains("func rpc_train_state"),
+		"244T3(E): train rpcs address peers by peer id (the standing netcode rule)")
+	_assert(ti_src.contains("world_ride")
+			and ti_src.contains("apply_world_departure")
+			and ti_src.contains("train_disembark_station"),
+		"244T3(E): the interior carries the world-ride mode (clock from the state, disembark to the platform)")
+	_assert(wr_src.contains("train_disembark_station")
+			and wr_src.contains("TrainConsist")
+			and wr_src.contains("train_position"),
+		"244T3(E): WorldRoot places disembarks on the platform and moves the consist parametrically")
+	_assert(FileAccess.get_file_as_string("res://scripts/world/world_streamer.gd")
+			.contains("the consist is no longer chunk dressing"),
+		"244T3(E): the streamer no longer bakes the consist (WorldRoot's live node replaced it)")
+	print("[Playtest] Train ride (issue #244 T3) done.")
 
 
 func _test_mp_continue_242() -> void:
