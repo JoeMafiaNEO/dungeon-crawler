@@ -280,6 +280,7 @@ func _run() -> void:
 	_test_mp_continue_242()
 	_test_chunk_watchdog_240()
 	_test_entry_arming_241()
+	_test_cloud_hardening_243()
 	_print_results()
 	quit()
 
@@ -10980,8 +10981,15 @@ func _test_mp_save_bughunt() -> void:
 	_assert(csd.contains("_remote_slot_paths(_cloud_file_names())"),
 		"bughunt: cloud sync-down enumerates remote slot files (M-2 fixed)")
 	var cfn := _bughunt_body(ssrc, "_cloud_file_names")
-	_assert(cfn.contains("Steam.getFileCount()") and cfn.contains("Steam.getFileNameAndSize(i)"),
-		"bughunt: remote enumeration uses the RemoteStorage file listing (M-2 fixed)")
+	_assert(cfn.contains("_cloud_backend") and cfn.contains("file_names"),
+		"bughunt: remote enumeration delegates to the cloud backend (M-2; #243 seam)")
+	var bb243_start := ssrc.find("class SteamCloudBackend")
+	var bb243_end := ssrc.find("func _cloud_available", bb243_start)
+	var bbackend243: String = ""
+	if bb243_start >= 0 and bb243_end > bb243_start:
+		bbackend243 = ssrc.substr(bb243_start, bb243_end - bb243_start)
+	_assert(bbackend243.contains("Steam.getFileCount()") and bbackend243.contains("Steam.getFileNameAndSize(i)"),
+		"bughunt: remote enumeration uses the RemoteStorage file listing (M-2 fixed; backend since #243)")
 	var cf := _bughunt_body(ssrc, "_cloud_fetch")
 	_assert(cf.contains("size <= 0"),
 		"bughunt: tombstone guard intact — cleared saves never resurrect (M-2)")
@@ -24756,6 +24764,369 @@ func _test_world_save_238() -> void:
 ## below resets the Dungeon statics to their script defaults
 ## and ASSERTS the reset took before driving. A pin that
 ## skips the reset is not evidence.
+## Issue #243: fake in-memory cloud backend for the SaveManager seam
+## (design §6) — a dict store with a fail-writes switch, standing in
+## for Steam RemoteStorage so the real _cloud_write / _cloud_fetch /
+## _cloud_sync_down code can be driven without Steam.
+class FakeCloudBackend243:
+	extends RefCounted
+	var store := {}
+	var fail_writes := false
+
+	func available() -> bool:
+		return true
+
+	func write(rel_name: String, data: PackedByteArray) -> bool:
+		if fail_writes:
+			return false
+		store[rel_name] = data.duplicate()
+		return true
+
+	func read(rel_name: String, _size: int) -> Dictionary:
+		if not store.has(rel_name):
+			return {"ret": false, "buf": PackedByteArray()}
+		return {"ret": true,
+			"buf": (store[rel_name] as PackedByteArray).duplicate()}
+
+	func exists(rel_name: String) -> bool:
+		return store.has(rel_name)
+
+	func size(rel_name: String) -> int:
+		if store.has(rel_name):
+			return (store[rel_name] as PackedByteArray).size()
+		return 0
+
+	func file_names() -> Array:
+		var out: Array = []
+		for k in store.keys():
+			out.append(str(k))
+		return out
+
+
+## Issue #243: ConfigFile bytes for a run dict, for crafting cloud
+## copies at chosen save_seq / saved_at values.
+func _craft243_bytes(scratch: String, data: Dictionary) -> PackedByteArray:
+	var tmp := scratch + "/craft_tmp.cfg"
+	var cfg := ConfigFile.new()
+	cfg.set_value("run", "data", data)
+	cfg.save(tmp)
+	var bytes := FileAccess.get_file_as_bytes(tmp)
+	DirAccess.remove_absolute(tmp)
+	return bytes
+
+
+func _cleanup243_dir(scratch: String, files: Array) -> void:
+	for fname in files:
+		var fp := scratch + "/" + str(fname)
+		if FileAccess.file_exists(fp):
+			DirAccess.remove_absolute(fp)
+	DirAccess.remove_absolute(scratch)
+
+
+func _test_cloud_hardening_243() -> void:
+	print("[Playtest] SaveManager cloud hardening (243)...")
+	var SaveScript := load("res://scripts/autoload/save_manager.gd")
+	var ssrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/save_manager.gd")
+
+	# --- Leg 1: the decision table, pure (§7.1) -------------------
+	# _cloud_decide(local, cloud) over descriptors; no backend, no
+	# files, no clock. A zero-length cloud copy (tombstone) reaches
+	# the table as exists=false — the fetch's size guard maps it
+	# before deciding (the §3 row's guard, kept).
+	var mgr = SaveScript.new()
+	var c_absent := {"exists": false, "has_seq": false, "seq": 0,
+		"saved_at": ""}
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": true, "seq": 3,
+			"saved_at": "2026-01-01T00:00:00"}, c_absent) == "keep_local",
+		"243(1): cloud absent -> keep_local")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": true, "seq": 3,
+			"saved_at": "2026-01-01T00:00:00"},
+		{"exists": false, "has_seq": false, "seq": 0,
+			"saved_at": ""}) == "keep_local",
+		"243(1): tombstone (zero-length cloud) -> keep_local")
+	_assert(mgr._cloud_decide(c_absent,
+		{"exists": true, "has_seq": true, "seq": 5,
+			"saved_at": "2026-01-01T00:00:00"}) == "take_cloud",
+		"243(1): local absent -> take_cloud (the #107 M-2 restore)")
+	# The DST pair: the local stamp is the repeated hour's SECOND
+	# pass (truly newer, seq 41); the cloud stamp is its FIRST pass
+	# (string-greater, truly older, seq 40). The old string rule
+	# takes the cloud; the seq rule keeps the local.
+	_assert("2026-11-01T01:45:00" > "2026-11-01T01:15:00",
+		"243(1): premise — the stale cloud stamp string-sorts newer")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": true, "seq": 41,
+			"saved_at": "2026-11-01T01:15:00"},
+		{"exists": true, "has_seq": true, "seq": 40,
+			"saved_at": "2026-11-01T01:45:00"}) == "keep_local",
+		"243(1): DST pair — seq disarms the string inversion, keep_local")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": true, "seq": 41,
+			"saved_at": "2026-11-01T01:15:00"},
+		{"exists": true, "has_seq": true, "seq": 42,
+			"saved_at": "2026-11-01T01:45:00"}) == "take_cloud",
+		"243(1): cloud seq ahead -> take_cloud")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": true, "seq": 41,
+			"saved_at": "2026-11-01T01:15:00"},
+		{"exists": true, "has_seq": true, "seq": 41,
+			"saved_at": "2026-10-31T22:00:00"}) == "keep_local",
+		"243(1): seq tie (a fork) -> keep_local, home preference")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": true, "seq": 41,
+			"saved_at": "2026-11-01T01:15:00"},
+		{"exists": true, "has_seq": true, "seq": 39,
+			"saved_at": "2026-11-01T01:45:00"}) == "keep_local",
+		"243(1): stale cloud (seq behind) -> keep_local")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": false, "seq": 0,
+			"saved_at": "2026-10-01T10:00:00"},
+		{"exists": true, "has_seq": false, "seq": 0,
+			"saved_at": "2026-10-02T10:00:00"}) == "take_cloud",
+		"243(1): legacy pair, cloud strictly newer -> take_cloud")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": false, "seq": 0,
+			"saved_at": "2026-10-01T10:00:00"},
+		{"exists": true, "has_seq": false, "seq": 0,
+			"saved_at": "2026-10-01T10:00:00"}) == "keep_local",
+		"243(1): legacy pair, equal stamps -> keep_local")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": false, "seq": 0, "saved_at": ""},
+		{"exists": true, "has_seq": false, "seq": 0,
+			"saved_at": "2026-10-02T10:00:00"}) == "keep_local",
+		"243(1): existing local with an unreadable stamp is DATA, not an absence — the removed unconditional leg")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": true, "seq": 9,
+			"saved_at": "2026-01-01T00:00:00"},
+		{"exists": true, "has_seq": false, "seq": 0,
+			"saved_at": "2027-01-01T00:00:00"}) == "take_cloud",
+		"243(1): mixed pair (cloud legacy) falls to the narrowed string row")
+	_assert(mgr._cloud_decide(
+		{"exists": true, "has_seq": false, "seq": 0,
+			"saved_at": "2027-01-01T00:00:00"},
+		{"exists": true, "has_seq": true, "seq": 9,
+			"saved_at": "2026-01-01T00:00:00"}) == "keep_local",
+		"243(1): mixed pair (local legacy) — cloud not strictly newer -> keep_local")
+	mgr.free()
+
+	# --- Leg 2: the substitution shape, end-to-end (§7.2) ---------
+	var mgr2 = SaveScript.new()
+	mgr2.set("_test_account_pin", "fake243")
+	var scratch2 := "user://runs_243_test"
+	mgr2.set("_test_runs_dir", scratch2)
+	var fake2 = FakeCloudBackend243.new()
+	mgr2.set("_cloud_backend", fake2)
+	mgr2.load_game()  # primes the account; empty store -> no-op sync
+	var path3 := scratch2 + "/solo_3.cfg"
+	var rel3 := "runs_243_test/solo_3.cfg"
+	var run_a := {"theme_id": "warlord", "level_number": 6,
+		"class_id": "architect", "player_state": {"level": 18}}
+	_assert(mgr2.save_run(run_a, "solo", 3),
+		"243(2): street save 1 lands")
+	_assert(mgr2.save_run(run_a, "solo", 3),
+		"243(2): street save 2 lands")
+	_assert(fake2.store.has(rel3),
+		"243(2): premise — the write-through mirrored the slot")
+	var local_before := FileAccess.get_file_as_bytes(path3)
+	# A stale cloud copy (seq 1, five-behind shape in miniature) with
+	# a NEWER saved_at string: the pre-#243 rule substitutes it.
+	fake2.store[rel3] = _craft243_bytes(scratch2,
+		{"theme_id": "supermarket", "save_seq": 1,
+			"saved_at": "2999-01-01T00:00:00", "save_version": 2,
+			"player_state": {"level": 1}})
+	mgr2._cloud_sync_down()
+	_assert(FileAccess.get_file_as_bytes(path3) == local_before,
+		"243(2): stale cloud refused — the local bytes are unchanged")
+	_assert(str(mgr2.load_run("solo", 3).get("theme_id", "")) == "warlord",
+		"243(2): the street save still reads back")
+	var rec2: Dictionary = mgr2._cloud_last_sync.get(rel3, {})
+	_assert(str(rec2.get("verdict", "")) == "keep_local"
+		and int(rec2.get("behind", 0)) == 1,
+		"243(2): the refusal is recorded with its behind-count")
+	_assert(not FileAccess.file_exists(path3 + ".precloud"),
+		"243(2): no preservation sidecar was needed for a refusal")
+	# The mirror: cloud one seq ahead replaces — and preserves.
+	var pre_take := FileAccess.get_file_as_bytes(path3)
+	fake2.store[rel3] = _craft243_bytes(scratch2,
+		{"theme_id": "depths", "save_seq": 3,
+			"saved_at": "2026-06-01T00:00:00", "save_version": 2,
+			"player_state": {"level": 9}})
+	mgr2._cloud_sync_down()
+	var taken: Dictionary = mgr2.load_run("solo", 3)
+	_assert(str(taken.get("theme_id", "")) == "depths"
+		and int(taken.get("save_seq", 0)) == 3,
+		"243(2): cloud seq ahead -> the local file is replaced")
+	_assert(FileAccess.get_file_as_bytes(path3 + ".precloud") == pre_take,
+		"243(2): the replaced local bytes sit byte-equal at .precloud")
+	var rec2b: Dictionary = mgr2._cloud_last_sync.get(rel3, {})
+	_assert(str(rec2b.get("verdict", "")) == "take_cloud"
+		and str(rec2b.get("sidecar", "")).ends_with(".precloud"),
+		"243(2): the replacement is recorded with its sidecar path")
+	# §7.4 chain: the fetched copy becomes the seq base.
+	_assert(mgr2.save_run(run_a, "solo", 3),
+		"243(2): the next save after a fetch lands")
+	_assert(int(mgr2.load_run("solo", 3).get("save_seq", 0)) == 4,
+		"243(4): a slot fetched at seq 3 stamps 4 next (the fetched copy is the base)")
+	# Cloud-only slot still lands (the #107 M-2 regression shape).
+	# Name note: the enumeration lists production-shaped names
+	# ("runs/mp_7.cfg") and _remote_slot_paths maps them to local
+	# paths, while _cloud_fetch looks the copy up under the name the
+	# LOCAL path computes — identical strings on a real device
+	# (user://runs/...), divergent under the suite's scratch runs
+	# dir. The store is seeded under both names; the enumeration
+	# still has to discover the slot for the fetch to happen.
+	var mp7_bytes := _craft243_bytes(scratch2,
+		{"theme_id": "village", "save_seq": 4,
+			"saved_at": "2026-06-01T00:00:00", "save_version": 2,
+			"player_state": {"level": 2}})
+	fake2.store["runs/mp_7.cfg"] = mp7_bytes
+	fake2.store["runs_243_test/mp_7.cfg"] = mp7_bytes
+	mgr2._cloud_sync_down()
+	_assert(str(mgr2.load_run("mp", 7).get("theme_id", "")) == "village",
+		"243(2): a cloud-only slot still lands (M-2 regression)")
+	_assert(not FileAccess.file_exists(scratch2 + "/mp_7.cfg.precloud"),
+		"243(2): a fresh-device restore needs no sidecar")
+	# Tombstone never resurrects, in either direction.
+	fake2.store[rel3] = PackedByteArray()
+	mgr2._cloud_sync_down()
+	_assert(str(mgr2.load_run("solo", 3).get("theme_id", "")) == "warlord",
+		"243(2): a tombstone over a live slot changes nothing")
+	mgr2.clear_run("solo", 3)
+	_assert(mgr2.load_run("solo", 3).is_empty(),
+		"243(2): premise — the clear removed the slot")
+	mgr2._cloud_sync_down()
+	_assert(mgr2.load_run("solo", 3).is_empty(),
+		"243(2): the cleared slot stays cleared after a boot sync")
+	_cleanup243_dir(scratch2, ["solo_3.cfg", "solo_3.cfg.precloud",
+		"mp_7.cfg"])
+	mgr2.free()
+
+	# --- Leg 3: write-failure surfacing (§7.3) ----------------------
+	var mgr3 = SaveScript.new()
+	mgr3.set("_test_account_pin", "fail243")
+	var scratch3 := "user://runs_243f"
+	mgr3.set("_test_runs_dir", scratch3)
+	var fake3 = FakeCloudBackend243.new()
+	mgr3.set("_cloud_backend", fake3)
+	mgr3.load_game()
+	fake3.fail_writes = true
+	var run_f := {"theme_id": "dungeon", "player_state": {"level": 3}}
+	_assert(mgr3.save_run(run_f, "solo", 0),
+		"243(3): save_run still returns true when the mirror write fails")
+	var loaded_f: Dictionary = mgr3.load_run("solo", 0)
+	_assert(str(loaded_f.get("theme_id", "")) == "dungeon"
+		and int(loaded_f.get("save_seq", 0)) == 1,
+		"243(3): the local file is correct — the cloud never gates local")
+	_assert(int(mgr3._cloud_fail_count) == 1,
+		"243(3): the failure is counted")
+	var st3: Dictionary = mgr3.cloud_status()
+	_assert(str(st3.get("state", "")) == "degraded"
+		and bool(st3.get("degraded", false))
+		and int(st3.get("failures", 0)) == 1
+		and str(st3.get("last_failed", "")) == "runs_243f/solo_0.cfg",
+		"243(3): cloud_status reads degraded, naming the failed file")
+	_assert(int(mgr3._cloud_warn_count) == 1,
+		"243(3): the transition warning state is set — warned once")
+	_assert(mgr3.save_run(run_f, "solo", 0),
+		"243(3): a second failing save still lands locally")
+	_assert(int(mgr3._cloud_fail_count) == 2
+		and int(mgr3._cloud_warn_count) == 1,
+		"243(3): every failure counts; the warning never spams per save")
+	mgr3.clear_run("solo", 0)
+	_assert(int(mgr3._cloud_fail_count) == 3
+		and str(mgr3.cloud_status().get("state", "")) == "degraded",
+		"243(3): a forced-fail tombstone surfaces identically")
+	fake3.fail_writes = false
+	_assert(mgr3.save_run(run_f, "solo", 0),
+		"243(3): the mirror recovers on a later save")
+	var st3b: Dictionary = mgr3.cloud_status()
+	_assert(str(st3b.get("state", "")) == "ok"
+		and not bool(st3b.get("degraded", true))
+		and int(mgr3._cloud_warn_count) == 2,
+		"243(3): recovery flips the status back to ok (one more warning)")
+	_cleanup243_dir(scratch3, ["solo_0.cfg"])
+	mgr3.free()
+
+	# --- Leg 4: seq stamping (§7.4) ---------------------------------
+	var mgr4 = SaveScript.new()
+	mgr4.set("_test_account_pin", "seq243")
+	var scratch4 := "user://runs_243s"
+	mgr4.set("_test_runs_dir", scratch4)
+	var run_s := {"theme_id": "village", "player_state": {"level": 1}}
+	mgr4.save_run(run_s, "solo", 1)
+	_assert(int(mgr4.load_run("solo", 1).get("save_seq", 0)) == 1,
+		"243(4): the first save on a slot stamps seq 1")
+	mgr4.save_run(run_s, "solo", 1)
+	_assert(int(mgr4.load_run("solo", 1).get("save_seq", 0)) == 2,
+		"243(4): the second save stamps seq 2")
+	mgr4.save_run(run_s, "solo", 1)
+	_assert(int(mgr4.load_run("solo", 1).get("save_seq", 0)) == 3,
+		"243(4): the third save stamps seq 3")
+	# A file that arrived at seq 7 (crafted on disk, the fetched
+	# shape) bases its next save on 7.
+	var path42 := scratch4 + "/solo_2.cfg"
+	DirAccess.make_dir_recursive_absolute(scratch4)
+	var f42 := FileAccess.open(path42, FileAccess.WRITE)
+	f42.store_buffer(_craft243_bytes(scratch4,
+		{"theme_id": "depths", "save_seq": 7,
+			"saved_at": "2026-06-01T00:00:00", "save_version": 2,
+			"player_state": {"level": 5}}))
+	f42.close()
+	mgr4.save_run(run_s, "solo", 2)
+	_assert(int(mgr4.load_run("solo", 2).get("save_seq", 0)) == 8,
+		"243(4): a slot based at seq 7 stamps 8 on its next save")
+	# keep_saved_at migration saves preserve, never mint.
+	var mig := {"theme_id": "village",
+		"saved_at": "2020-05-05T05:05:05", "player_state": {"level": 1}}
+	mgr4.save_run(mig, "solo", 1, true)
+	var after_mig: Dictionary = mgr4.load_run("solo", 1)
+	_assert(int(after_mig.get("save_seq", 0)) == 3
+		and str(after_mig.get("saved_at", "")) == "2020-05-05T05:05:05",
+		"243(4): a keep_saved_at migration save preserves seq and stamp")
+	# The profile counter increments on the in-memory profile.
+	mgr4.save_game()
+	mgr4.save_game()
+	_assert(int(mgr4._profile.get_value("meta", "save_seq", 0)) == 2,
+		"243(4): save_game increments the profile's meta.save_seq")
+	var prof_cfg := ConfigFile.new()
+	_assert(prof_cfg.load("user://profile_seq243.cfg") == OK
+		and int(prof_cfg.get_value("meta", "save_seq", 0)) == 2,
+		"243(4): the profile counter is on disk at 2")
+	if FileAccess.file_exists("user://profile_seq243.cfg"):
+		DirAccess.remove_absolute("user://profile_seq243.cfg")
+	_cleanup243_dir(scratch4, ["solo_1.cfg", "solo_2.cfg"])
+	mgr4.free()
+
+	# --- Leg 5: inertness + seam hygiene (§7.5) ---------------------
+	_assert(ssrc.contains("var _cloud_backend = SteamCloudBackend.new()"),
+		"243(5): the backend var's default is the Steam backend")
+	_assert(ssrc.count("_cloud_backend =") == 1,
+		"243(5): no production path reassigns the backend var")
+	var bb5_start := ssrc.find("class SteamCloudBackend")
+	var bb5_end := ssrc.find("func _cloud_available", bb5_start)
+	var bbody5: String = ""
+	if bb5_start >= 0 and bb5_end > bb5_start:
+		bbody5 = ssrc.substr(bb5_start, bb5_end - bb5_start)
+	_assert(bbody5.contains("Steam.fileWrite")
+		and bbody5.contains("Steam.fileRead")
+		and bbody5.contains("Steam.fileExists")
+		and bbody5.contains("Steam.getFileSize")
+		and bbody5.contains("Steam.getFileCount()")
+		and bbody5.contains("Steam.getFileNameAndSize(i)"),
+		"243(5): every raw Steam call lives behind the backend")
+	var decide_body := _bughunt_body(ssrc, "_cloud_decide")
+	_assert(not decide_body.contains("FileAccess")
+		and not decide_body.contains("Steam")
+		and not decide_body.contains("Time.")
+		and not decide_body.contains("_cloud_backend"),
+		"243(5): _cloud_decide is pure — no files, no clock, no Steam")
+
+	print("[Playtest] Cloud hardening (243) test done.")
+
+
 func _test_mp_continue_242() -> void:
 	print("[Playtest] MP world/building continue (242) test...")
 	var D := load("res://scripts/dungeon/dungeon.gd")

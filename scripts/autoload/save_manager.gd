@@ -12,7 +12,11 @@ extends Node
 ## Steam Cloud (GodotSteam RemoteStorage): write-through on every save,
 ## read-through at boot. Every cloud call is guarded by _cloud_available()
 ## (SteamManager.initialized); headless/offline is local-only, zero errors.
-## Last-write-wins, no conflict resolution.
+## Issue #243: copies are ordered by a content-embedded monotonic
+## save_seq (never the offset-less saved_at clock string alone), a boot
+## fetch never silently or destructively replaces a local copy (the
+## loser is preserved at <path>.precloud and the outcome is logged),
+## and write-through failures surface via cloud_status().
 ##
 ## RUN SAVE FORMAT CONTRACT (v1, SAVE_VERSION = 1) — frozen by issue #111
 ## (Save-Format Future-Proofing). save_run() below is the ONLY sanctioned
@@ -126,6 +130,21 @@ var _settings := ConfigFile.new()
 ## Observability hook: cloud writes attempted (guard passed). Tests use this
 ## to prove no cloud call fires without Steam.
 var _cloud_write_count := 0
+## Issue #243: the cloud backend seam (design §6). The default is the
+## real Steam backend; production code NEVER reassigns this var (the
+## suite source-pins that). Tests assign a fake in-memory backend to a
+## standalone instance to exercise the layer without Steam.
+var _cloud_backend = SteamCloudBackend.new()
+## Issue #243: write-failure surfacing state (design §5). Every failed
+## mirror write is counted; the warning fires once on the transition
+## into degraded and once on recovery, never per save.
+var _cloud_fail_count := 0
+var _cloud_last_failed := ""
+var _cloud_degraded := false
+var _cloud_warn_count := 0
+## Issue #243: per-file outcome of the last boot fetch, keyed by
+## cloud-relative name: {verdict, local_seq, cloud_seq, behind, sidecar}.
+var _cloud_last_sync := {}
 
 
 # --- Legacy migration (issue #4 Phase 3) ---
@@ -209,6 +228,11 @@ func save_game() -> void:
 		_profile_account = account
 		_profile.load(_profile_path_for(account))
 	_profile.set_value("meta", "saved_at", Time.get_datetime_string_from_system())
+	# Issue #243: the profile's ordering counter rides the same stamp.
+	# The in-memory profile is authoritative in-session, so the
+	# increment lives here and never re-reads the file.
+	_profile.set_value("meta", "save_seq",
+		int(_profile.get_value("meta", "save_seq", 0)) + 1)
 	var path := _profile_path_for(_profile_account)
 	_profile.save(path)
 	_cloud_write(_relative(path), FileAccess.get_file_as_bytes(path))
@@ -224,9 +248,47 @@ func save_settings() -> void:
 
 # --- Steam Cloud sync ---
 
+## Issue #243 (design §6): every raw Steam RemoteStorage call lives
+## behind this backend object, held in _cloud_backend above. The layer
+## was previously untestable — inert in every VM probe with no seam by
+## which it could ever be exercised. Production code never reassigns
+## the var; tests assign a fake in-memory backend instead.
+class SteamCloudBackend:
+	extends RefCounted
+
+	## _cloud_available()'s condition, unchanged: Steam is up.
+	func available() -> bool:
+		return SteamManager.initialized and Engine.has_singleton("Steam")
+
+	func write(rel_name: String, data: PackedByteArray) -> bool:
+		return bool(Steam.fileWrite(rel_name, data))
+
+	## fileRead returns {"ret": bool, "buf": PackedByteArray}.
+	func read(rel_name: String, size: int) -> Dictionary:
+		var result: Dictionary = Steam.fileRead(rel_name, size)
+		return result
+
+	func exists(rel_name: String) -> bool:
+		return bool(Steam.fileExists(rel_name))
+
+	func size(rel_name: String) -> int:
+		return int(Steam.getFileSize(rel_name))
+
+	## RemoteStorage enumeration: getFileCount + getFileNameAndSize.
+	func file_names() -> Array:
+		var names: Array = []
+		var count := int(Steam.getFileCount())
+		for i in count:
+			var info: Dictionary = Steam.getFileNameAndSize(i)
+			var n := str(info.get("name", ""))
+			if n != "":
+				names.append(n)
+		return names
+
+
 ## Every cloud call funnels through here. Headless/offline: no-op.
 func _cloud_available() -> bool:
-	return SteamManager.initialized and Engine.has_singleton("Steam")
+	return bool(_cloud_backend.available())
 
 
 ## user://-relative name for the cloud (RemoteStorage keys are relative).
@@ -237,11 +299,41 @@ func _relative(path: String) -> String:
 
 
 ## Write-through: every profile/slot save also lands in the cloud.
+## Issue #243 (design §5): the mirror's bool is CAPTURED. A failure
+## never gates the local save (save_run's return stays the local
+## verdict alone) — it is counted, recorded, and warned about once on
+## the transition into the degraded state; recovery warns once back.
+## The clear tombstone rides this identical path, so a failed clear
+## (a cleared run that could resurrect) surfaces the same way.
 func _cloud_write(rel_name: String, data: PackedByteArray) -> void:
 	if not _cloud_available():
 		return
 	_cloud_write_count += 1
-	Steam.fileWrite(rel_name, data)
+	if bool(_cloud_backend.write(rel_name, data)):
+		if _cloud_degraded:
+			_cloud_degraded = false
+			_cloud_warn_count += 1
+			push_warning("[SaveManager] Steam Cloud writes recovered — mirror healthy again (last failure was %s)." % _cloud_last_failed)
+		return
+	_cloud_fail_count += 1
+	_cloud_last_failed = rel_name
+	if not _cloud_degraded:
+		_cloud_degraded = true
+		_cloud_warn_count += 1
+		push_warning("[SaveManager] Steam Cloud write FAILED for %s — the local save is intact; the cloud mirror is degraded and later saves keep retrying." % rel_name)
+
+
+## Issue #243 (design §5): the session's cloud health for any surface
+## that wants it (a player-visible indicator is a specced follow-up;
+## this build delivers the API). state is "ok" or "degraded".
+func cloud_status() -> Dictionary:
+	return {
+		"state": "degraded" if _cloud_degraded else "ok",
+		"degraded": _cloud_degraded,
+		"failures": _cloud_fail_count,
+		"last_failed": _cloud_last_failed,
+		"writes": _cloud_write_count,
+	}
 
 
 ## Boot read-through: if the cloud copy exists and its saved_at is newer
@@ -269,17 +361,12 @@ func _cloud_sync_down() -> void:
 			_cloud_fetch(path)
 
 
-## Names of every file stored in Steam Cloud (RemoteStorage
-## enumeration: getFileCount + getFileNameAndSize).
+## Names of every file stored in Steam Cloud (the backend's
+## RemoteStorage enumeration).
 func _cloud_file_names() -> Array:
-	var names: Array = []
-	var count := int(Steam.getFileCount())
-	for i in count:
-		var info: Dictionary = Steam.getFileNameAndSize(i)
-		var n := str(info.get("name", ""))
-		if n != "":
-			names.append(n)
-	return names
+	if not _cloud_available():
+		return []
+	return _cloud_backend.file_names()
 
 
 ## Map cloud file names to local slot paths. Cloud names are the
@@ -311,17 +398,29 @@ func _remote_slot_paths(remote_names: Array) -> Array:
 	return out
 
 
+## Boot read-through for one file. A zero-length cloud copy is a
+## clear tombstone: never restored. Issue #243 (design §§3–4): the
+## verdict comes from the pure _cloud_decide over content-embedded
+## save_seq counters — never from the offset-less saved_at string
+## alone, and never from the old unconditional leg that discarded an
+## existing local file whose stamp was unreadable. A winning fetch
+## over an existing local first preserves the local bytes at
+## <path>.precloud and logs both copies' identities; a stale-cloud
+## refusal logs how far behind the cloud copy is. Every decided
+## outcome is recorded in _cloud_last_sync.
 func _cloud_fetch(local_path: String) -> void:
 	if local_path == "":
 		return
-	var rel := _relative(local_path)
-	if not Steam.fileExists(rel):
+	if not _cloud_available():
 		return
-	var size := int(Steam.getFileSize(rel))
+	var rel := _relative(local_path)
+	if not _cloud_backend.exists(rel):
+		return
+	var size := _cloud_backend.size(rel)
 	if size <= 0:
 		return  # clear tombstone (or empty file): don't resurrect
-	# fileRead returns {"ret": bool, "buf": PackedByteArray}.
-	var result: Dictionary = Steam.fileRead(rel, size)
+	# Backend read returns {"ret": bool, "buf": PackedByteArray}.
+	var result: Dictionary = _cloud_backend.read(rel, size)
 	if not bool(result.get("ret", false)):
 		return
 	var bytes: PackedByteArray = result.get("buf", PackedByteArray())
@@ -338,13 +437,36 @@ func _cloud_fetch(local_path: String) -> void:
 		DirAccess.remove_absolute(tmp)
 		return
 	DirAccess.remove_absolute(tmp)
-	var cloud_at := _saved_at_of(cloud_cfg, local_path)
-	var local_at := ""
+	var cloud_desc := _cloud_describe(cloud_cfg, local_path)
+	var local_desc := {"exists": false, "has_seq": false, "seq": 0,
+		"saved_at": ""}
+	var local_bytes := PackedByteArray()
 	if FileAccess.file_exists(local_path):
+		local_desc["exists"] = true
+		local_bytes = FileAccess.get_file_as_bytes(local_path)
 		var local_cfg := ConfigFile.new()
 		if local_cfg.load(local_path) == OK:
-			local_at = _saved_at_of(local_cfg, local_path)
-	if local_at == "" or cloud_at > local_at:
+			local_desc = _cloud_describe(local_cfg, local_path)
+	var verdict := _cloud_decide(local_desc, cloud_desc)
+	var behind := 0
+	if bool(local_desc["has_seq"]) and bool(cloud_desc["has_seq"]):
+		behind = int(local_desc["seq"]) - int(cloud_desc["seq"])
+	if verdict == "take_cloud":
+		var sidecar := ""
+		if bool(local_desc["exists"]):
+			# §4 preservation: the losing local copy survives at
+			# <path>.precloud (latest replaced copy only). The suffix
+			# keeps it invisible to every consumer — list_slots matches
+			# <mode>_<int>.cfg exactly, the cloud enumeration filters
+			# on .cfg — and it is never passed to _cloud_write, so it
+			# is never uploaded.
+			sidecar = local_path + ".precloud"
+			var sf := FileAccess.open(sidecar, FileAccess.WRITE)
+			if sf != null:
+				sf.store_buffer(local_bytes)
+				sf.close()
+			else:
+				sidecar = ""
 		# Issue #107 (M-2): on a fresh device the runs directory may not
 		# exist yet — create it or the fetched run silently fails to land.
 		DirAccess.make_dir_recursive_absolute(local_path.get_base_dir())
@@ -352,6 +474,63 @@ func _cloud_fetch(local_path: String) -> void:
 		if out != null:
 			out.store_buffer(bytes)
 			out.close()
+		_cloud_last_sync[rel] = {"verdict": "take_cloud",
+			"local_seq": int(local_desc["seq"]),
+			"cloud_seq": int(cloud_desc["seq"]), "behind": behind,
+			"sidecar": sidecar}
+		if bool(local_desc["exists"]):
+			push_warning("[SaveManager] Steam Cloud fetch replaced %s: local (seq %d, saved_at %s) -> cloud (seq %d, saved_at %s); previous local copy preserved at %s" % [rel, int(local_desc["seq"]), str(local_desc["saved_at"]), int(cloud_desc["seq"]), str(cloud_desc["saved_at"]), sidecar])
+		else:
+			print("[SaveManager] Steam Cloud fetch restored %s from the cloud (seq %d, saved_at %s); no local copy existed." % [rel, int(cloud_desc["seq"]), str(cloud_desc["saved_at"])])
+	else:
+		_cloud_last_sync[rel] = {"verdict": "keep_local",
+			"local_seq": int(local_desc["seq"]),
+			"cloud_seq": int(cloud_desc["seq"]), "behind": behind,
+			"sidecar": ""}
+		if behind > 0:
+			push_warning("[SaveManager] Steam Cloud copy of %s is %d saves behind local (cloud seq %d < local seq %d); kept local." % [rel, behind, int(cloud_desc["seq"]), int(local_desc["seq"])])
+
+
+## Issue #243 (design §3): the fetch's verdict, factored PURE — no
+## file reads, no clock, no Steam — so the suite can pin the whole
+## table. Each side is {exists, has_seq, seq, saved_at} as built by
+## _cloud_describe; a zero-length cloud copy (clear tombstone) is
+## mapped to exists=false by the fetch's size guard before this is
+## ever called. Ordering rests on save_seq wherever both copies
+## carry one; the saved_at string survives only on the legacy row,
+## narrowed to a strict win over a readable local stamp.
+func _cloud_decide(local: Dictionary, cloud: Dictionary) -> String:
+	if not bool(cloud.get("exists", false)):
+		return "keep_local"
+	if not bool(local.get("exists", false)):
+		return "take_cloud"  # #107 M-2: fresh-device restore
+	if bool(local.get("has_seq", false)) and bool(cloud.get("has_seq", false)):
+		return "take_cloud" if int(cloud.get("seq", 0)) > int(local.get("seq", 0)) else "keep_local"
+	var local_at := str(local.get("saved_at", ""))
+	var cloud_at := str(cloud.get("saved_at", ""))
+	if local_at != "" and cloud_at > local_at:
+		return "take_cloud"
+	return "keep_local"
+
+
+## Issue #243: one side of a copy pair, in the shape _cloud_decide
+## consumes. Run slots carry their stamp inside the run dict; the
+## profile carries it in meta. A copy with no save_seq key is legacy
+## (has_seq false, seq reads as 0).
+func _cloud_describe(cfg: ConfigFile, local_path: String) -> Dictionary:
+	var runs_base := _test_runs_dir if _test_runs_dir != "" else RUNS_DIR
+	if local_path.begins_with(runs_base):
+		var data = cfg.get_value("run", "data", {})
+		if data is Dictionary:
+			var d: Dictionary = data
+			return {"exists": true, "has_seq": d.has("save_seq"),
+				"seq": int(d.get("save_seq", 0)),
+				"saved_at": str(d.get("saved_at", ""))}
+		return {"exists": true, "has_seq": false, "seq": 0, "saved_at": ""}
+	return {"exists": true,
+		"has_seq": cfg.has_section_key("meta", "save_seq"),
+		"seq": int(cfg.get_value("meta", "save_seq", 0)),
+		"saved_at": str(cfg.get_value("meta", "saved_at", ""))}
 
 
 func _saved_at_of(cfg: ConfigFile, local_path: String) -> String:
@@ -879,10 +1058,29 @@ func save_run(run: Dictionary, mode: String, slot: int, keep_saved_at := false) 
 		return false
 	var runs_base := _test_runs_dir if _test_runs_dir != "" else RUNS_DIR
 	DirAccess.make_dir_recursive_absolute(runs_base)
+	# Issue #243 (design §2): the slot's current on-disk save_seq is
+	# read BEFORE the atomic rename below replaces the file — the
+	# counter's integrity lives in that ordering, and the .tmp staging
+	# never becomes a second source of seq truth. -1 = no readable
+	# seq on disk (absent file, or a legacy seq-less copy).
+	var disk_seq := -1
+	if FileAccess.file_exists(path):
+		var prev := ConfigFile.new()
+		if prev.load(path) == OK:
+			var pd = prev.get_value("run", "data", {})
+			if pd is Dictionary and (pd as Dictionary).has("save_seq"):
+				disk_seq = int((pd as Dictionary)["save_seq"])
 	var cfg := ConfigFile.new()
 	var data := run.duplicate(true)
 	if not keep_saved_at or str(data.get("saved_at", "")) == "":
 		data["saved_at"] = Time.get_datetime_string_from_system()
+	if keep_saved_at:
+		# Migration re-write: preserve the existing seq exactly as
+		# saved_at is preserved — never mint newness for old content.
+		if disk_seq >= 0:
+			data["save_seq"] = disk_seq
+	else:
+		data["save_seq"] = maxi(disk_seq, 0) + 1
 	data["save_version"] = SAVE_VERSION
 	data["is_multiplayer"] = (mode == MODE_MP)
 	cfg.set_value("run", "data", data)
