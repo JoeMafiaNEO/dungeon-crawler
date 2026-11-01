@@ -281,6 +281,7 @@ func _run() -> void:
 	_test_chunk_watchdog_240()
 	_test_entry_arming_241()
 	_test_cloud_hardening_243()
+	_test_train_network_244()
 	_print_results()
 	quit()
 
@@ -25125,6 +25126,391 @@ func _test_cloud_hardening_243() -> void:
 		"243(5): _cloud_decide is pure — no files, no clock, no Steam")
 
 	print("[Playtest] Cloud hardening (243) test done.")
+
+
+func _test_train_network_244() -> void:
+	print("[Playtest] Train network derivation (issue #244)...")
+	var TN := load("res://scripts/world/train_network.gd")
+	var WG := load("res://scripts/world/world_gen.gd")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var seed: int = WG.WORLD_SEED
+	var home0 := Vector2.ZERO
+	# The independent expectation: the ring rule applied
+	# to the GENERATOR directly (settlement_in_cell is
+	# the world's placement knowledge), never through
+	# the SUT. It is trusted below only because it first
+	# reproduces the censused literal ring.
+	var ring_ref = func(center: Vector2, radius_chunks: int) -> Array:
+		var out: Array = []
+		var rm := float(radius_chunks) * 128.0
+		var cm := 8.0 * 128.0
+		for gx in range(int(floor((center.x - rm) / cm)),
+				int(floor((center.x + rm) / cm)) + 1):
+			for gz in range(int(floor((center.y - rm) / cm)),
+					int(floor((center.y + rm) / cm)) + 1):
+				var s: Dictionary = WG.settlement_in_cell(
+					seed, gx, gz)
+				if str(s.get("kind", "")) == "city" \
+						and center.distance_to(
+							s["center"]) <= rm:
+					out.append("%d,%d" % [gx, gz])
+		return out
+	var pair_set = func(edges: Array) -> Dictionary:
+		var out := {}
+		for e in edges:
+			out[str(e[0]) + "|" + str(e[1])] = float(e[2])
+		return out
+	# --- Leg A: the pure derivation --------------------------
+	_assert(ring_ref.call(home0, 24) == ["0,-2", "0,2"],
+		"244(A): the reference ring reproduces the censused literal (validates the reference)")
+	_assert(TN.initial_ring(seed, home0) == ["0,-2", "0,2"],
+		"244(A): the real seed's initial ring at the origin, asserted literally")
+	_assert(TN.initial_ring(seed, Vector2(512, 512))
+			== ring_ref.call(Vector2(512, 512), 24),
+		"244(A): the ring matches the generator reference at a second center")
+	var big := ["6,1", "7,0", "7,1", "11,8", "12,6", "12,7"]
+	var g_a: Dictionary = TN.derive_graph(seed, big, home0)
+	var g_b: Dictionary = TN.derive_graph(seed, big, home0)
+	var shuffled := ["12,7", "7,1", "11,8", "6,1", "12,6", "7,0"]
+	var g_c: Dictionary = TN.derive_graph(seed, shuffled, home0)
+	_assert(str(g_a["edges"]) == str(g_b["edges"])
+			and str(g_a["order"]) == str(g_b["order"]),
+		"244(A): determinism — same seed + set derives the identical graph twice")
+	_assert(str(g_a["edges"]) == str(g_c["edges"])
+			and str(g_a["order"]) == str(g_c["order"]),
+		"244(A): the graph does not depend on the set's storage order")
+	var g1: Dictionary = TN.derive_graph(seed, ["0,-2", "0,2"], home0)
+	var p1: Dictionary = pair_set.call(g1["edges"])
+	_assert(p1.size() == 3 and p1.has("0,-2|home")
+			and p1.has("0,-2|0,2") and p1.has("home|0,2"),
+		"244(A): the starter graph is the full triangle home + the two ring cities")
+	_assert(absf(float(p1["0,-2|home"]) - 1156.1) < 2.0
+			and absf(float(p1["home|0,2"]) - 2567.5) < 2.0
+			and absf(float(p1["0,-2|0,2"]) - 3667.8) < 2.0,
+		"244(A): edge lengths are the generator centers' distances (censused values)")
+	# Independent 2-nearest census over generator centers:
+	# the completion must add exactly what it adds.
+	var centers := {"home": home0}
+	for k in big:
+		var cell: Vector2i = TN.key_cell(k)
+		centers[k] = WG.settlement_in_cell(seed, cell.x, cell.y)["center"]
+	var order_ref := ["home", "6,1", "7,0", "7,1", "11,8", "12,6", "12,7"]
+	var raw_pairs := {}
+	for k in order_ref:
+		var cands: Array = []
+		for o in order_ref:
+			if o != k:
+				cands.append([o, (centers[k] as Vector2).distance_to(centers[o])])
+		cands.sort_custom(func(x: Array, y: Array) -> bool:
+			if float(x[1]) != float(y[1]):
+				return float(x[1]) < float(y[1])
+			return str(x[0]) < str(y[0]))
+		for i in mini(2, cands.size()):
+			var a := str(k)
+			var b := str(cands[i][0])
+			raw_pairs[(a + "|" + b) if order_ref.find(a) < order_ref.find(b)
+				else (b + "|" + a)] = true
+	_assert(raw_pairs.size() == 8,
+		"244(A): the reference 2-nearest set on the two-triangle fixture has 8 edges (premise)")
+	var p2: Dictionary = pair_set.call(g_a["edges"])
+	_assert(p2.size() == 9 and p2.has("7,1|11,8"),
+		"244(A): completion adds exactly one edge — the stranded triple's nearest cross edge (7,1|11,8)")
+	var adj := {}
+	for e in g_a["edges"]:
+		(adj.get_or_add(str(e[0]), []) as Array).append(str(e[1]))
+		(adj.get_or_add(str(e[1]), []) as Array).append(str(e[0]))
+	var seen := {"home": true}
+	var stack: Array = ["home"]
+	while not stack.is_empty():
+		var cur: String = stack.pop_back()
+		for nb in adj.get(cur, []):
+			if not seen.has(nb):
+				seen[nb] = true
+				stack.append(nb)
+	_assert(seen.size() == (g_a["order"] as Array).size(),
+		"244(A): the derived graph is connected — every node reachable from home")
+	var r1: Array = TN.route(seed, big, home0, "home", "12,7")
+	_assert(r1 == ["home", "7,1", "11,8", "12,7"],
+		"244(A): routing crosses the completion edge on the shortest path")
+	var r1_len := 0.0
+	for i in range(1, r1.size()):
+		var pk := (str(r1[i - 1]) + "|" + str(r1[i])) \
+			if p2.has(str(r1[i - 1]) + "|" + str(r1[i])) \
+			else (str(r1[i]) + "|" + str(r1[i - 1]))
+		r1_len += float(p2[pk])
+	_assert(absf(r1_len - 18016.5) < 4.0,
+		"244(A): the routed length is the Dijkstra sum over the derived edges")
+	_assert(TN.route(seed, ["0,-2", "0,2"], home0, "0,-2", "0,2")
+			== ["0,-2", "0,2"],
+		"244(A): routing takes the direct edge when it beats the two-leg path (3668 < 3724)")
+	_assert(TN.route(seed, big, home0, "7,0", "7,0") == ["7,0"]
+			and TN.route(seed, big, home0, "home", "3,3").is_empty()
+			and TN.route(seed, big, home0, "3,3", "home").is_empty(),
+		"244(A): route edges — self is a single node; undiscovered endpoints route nowhere")
+	_assert(TN.expansion_ring(seed, "7,0")
+			== ["6,1", "7,0", "7,1", "9,1"],
+		"244(A): the expansion ring at the dense cluster, asserted literally")
+	_assert(TN.expansion_ring(seed, "0,-2") == ["0,-2"]
+			and TN.expansion_ring(seed, "home").is_empty()
+			and TN.expansion_ring(seed, "bogus").is_empty(),
+		"244(A): expansion rings — a lone city rings only itself; home/malformed ring nothing")
+	var village_key := ""
+	for gx in range(-2, 3):
+		for gz in range(-2, 3):
+			if str(WG.settlement_in_cell(seed, gx, gz).get(
+					"kind", "")) == "village" and village_key == "":
+				village_key = "%d,%d" % [gx, gz]
+	_assert(village_key != ""
+			and TN.expansion_ring(seed, village_key).is_empty(),
+		"244(A): a village is not a network node in v1 (F3) and rings nothing")
+	_assert(str(WG.settlement_in_cell(seed, 0, 0).get(
+				"kind", "")) == "village",
+		"244(A): premise — cell (0,0) holds a village at the real seed")
+	var g_bad: Dictionary = TN.derive_graph(seed,
+		["0,-2", "junk", "0,0", "0,-2"], home0)
+	_assert((g_bad["nodes"] as Dictionary).size() == 2
+			and (g_bad["nodes"] as Dictionary).has("0,-2"),
+		"244(A): malformed, village-cell and duplicate discovered entries derive no nodes")
+	# --- Leg B: the record surface ---------------------------
+	DungeonScript.reset_act2_state()
+	_assert((DungeonScript.get("act2_train_cities")
+				as Array).is_empty()
+			and (DungeonScript.act2_record()["train_cities"]
+				as Array).is_empty(),
+		"244(B): reset clears the discovered set and the record carries it empty")
+	var added_b: Array = DungeonScript.apply_train_discovered(
+		["0,-2", "0,2", "0,-2", "junk", "home"])
+	_assert(added_b == ["0,-2", "0,2"]
+			and (DungeonScript.get("act2_train_cities")
+				as Array) == ["0,-2", "0,2"],
+		"244(B): the applier unions well-formed keys once — duplicates, junk and the home key refused")
+	_assert((DungeonScript.act2_record()["train_cities"]
+				as Array) == ["0,-2", "0,2"],
+		"244(B): the record carries the set beside cleared")
+	DungeonScript.restore_act2_state({"act2": {
+		"context": "world",
+		"train_cities": ["7,0", "bogus", "7,0", "6,1"]}})
+	_assert((DungeonScript.get("act2_train_cities")
+				as Array) == ["7,0", "6,1"],
+		"244(B): restore validates per entry — corrupt keys dropped, duplicates collapsed")
+	var wr = load("res://scripts/world/world_root.gd").new()
+	var snap: Dictionary = wr.state_snapshot()
+	_assert(((snap["act2"] as Dictionary)["train_cities"]
+				as Array) == ["7,0", "6,1"],
+		"244(B): the late-join snapshot carries the set through the record (zero new channels)")
+	wr.free()
+	DungeonScript.restore_act2_state({"act2": {"context": "world"}})
+	_assert((DungeonScript.get("act2_train_cities")
+				as Array).is_empty(),
+		"244(B): an absent key restores as undiscovered (the pre-train shape)")
+	# The #244 rider: restore-side healing of the legacy
+	# transition-point shape (either defective writer's
+	# files — the entry arm's Vector3, load_floor's).
+	DungeonScript.restore_act2_state({"act2": {
+		"context": "world",
+		"last_transition": {"building": "elsewhere",
+			"point": Vector3(5000.0, 12.0, 5000.0)}}})
+	var healed: Dictionary = DungeonScript.get(
+		"act2_last_transition")
+	_assert(healed.get("point") is Array
+			and (healed["point"] as Array)
+				== [5000.0, 12.0, 5000.0],
+		"244(B): restore heals a legacy Vector3 transition point to the canonical array")
+	DungeonScript.restore_act2_state({"act2": {
+		"context": "world",
+		"last_transition": {"building": "elsewhere",
+			"point": [1.0, 2.0, 3.0]}}})
+	_assert(((DungeonScript.get("act2_last_transition")
+			as Dictionary)["point"] as Array) == [1.0, 2.0, 3.0],
+		"244(B): a canonical array point restores untouched")
+	# --- Leg C: discovery initializes on world entry ---------
+	var nm = root.get_node("NetworkManager")
+	var sm = root.get_node("SaveManager")
+	var saved_mode: String = nm.get("active_run_mode")
+	var saved_slot: int = nm.get("active_run_slot")
+	for n in get_nodes_in_group("world_root"):
+		(n as Node).free()
+	for n in get_nodes_in_group("dungeon"):
+		(n as Node).free()
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	var holder := Node3D.new()
+	holder.name = "TrainNetwork244Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var reset_entry = func() -> void:
+		DungeonScript.reset_act2_state()
+		DungeonScript.set("revealed", false)
+		DungeonScript.set("home_anchor", {})
+		DungeonScript.set("world_time", 0.0)
+	var begin_world = func():
+		var w = load("res://scenes/world/world.tscn"
+			).instantiate()
+		root.add_child(w)
+		current_scene = w
+		return w
+	var end_world = func(w) -> void:
+		current_scene = holder
+		root.remove_child(w)
+		(w as Node).queue_free()
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	var home_c: Dictionary = DungeonScript.home_building()
+	var home_key_c := str(home_c["key"])
+	var doorstep_c: Vector3 = home_c["doorstep"]
+	var origin_c: Vector3 = home_c["origin"]
+	var anchor_dict_c: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var expected_ring: Array = ring_ref.call(
+		Vector2(origin_c.x, origin_c.z), 24)
+	_assert(expected_ring.size() >= 1,
+		"244(C): premise — the real home anchor has a non-empty ring (%s)" % str(expected_ring))
+	# C1: a pre-train save (world-shaped, no train_cities)
+	# gains the ring at its first world entry (Case A).
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict_c)
+	var run_c1 := {"theme_id": "warlord", "level_number": 6,
+		"act1_step": 5, "revealed": true, "buildings_cleared": 1,
+		"home_anchor": anchor_dict_c, "save_version": 2,
+		"seed": 1, "world_time": 3600.0,
+		"act2": {"context": "world", "cleared": [home_key_c],
+			"anchor_building": home_key_c,
+			"anchor_doorstep": [doorstep_c.x, doorstep_c.y,
+				doorstep_c.z],
+			"last_transition": {}, "floor_key": "",
+			"floor_index": 0, "floor_masks": {},
+			"floor_counted": []}}
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 44)
+	sm.call("save_run", run_c1, "solo", 44)
+	DungeonScript.restore_act2_state(run_c1)
+	_assert((DungeonScript.get("act2_train_cities")
+				as Array).is_empty(),
+		"244(C): the pre-train fixture restores undiscovered")
+	var w_c1 = begin_world.call()
+	_assert(str(w_c1.get("_entry_arm_outcome")) == "already",
+		"244(C): the world-shaped arrival takes the arm's Case A")
+	_assert((DungeonScript.get("act2_train_cities")
+				as Array) == expected_ring,
+		"244(C): the pre-train save gains the home ring on first world entry")
+	DungeonScript.save_act2_clock()
+	var loaded_c1: Dictionary = sm.call("load_run", "solo", 44)
+	_assert(((loaded_c1.get("act2", {}) as Dictionary).get(
+				"train_cities", []) as Array) == expected_ring,
+		"244(C): the next standard writer persists the initialized ring")
+	end_world.call(w_c1)
+	# C2: an already-discovered set is left exactly as it was.
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict_c)
+	DungeonScript.set("act2_context", "world")
+	DungeonScript.set("act2_train_cities", ["7,0"])
+	var w_c2 = begin_world.call()
+	_assert(str(w_c2.get("_entry_arm_outcome")) == "already"
+			and (DungeonScript.get("act2_train_cities")
+				as Array) == ["7,0"],
+		"244(C): entry init never touches a discovered set")
+	end_world.call(w_c2)
+	# C3: the reconstruction path (Case B) initializes too,
+	# and its stamp carries the ring.
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict_c)
+	nm.set("active_run_slot", 45)
+	sm.call("save_run", {"theme_id": "warlord",
+		"level_number": 6, "act1_step": 5, "revealed": true,
+		"buildings_cleared": 1, "home_anchor": anchor_dict_c,
+		"save_version": 2, "seed": 1}, "solo", 45)
+	var w_c3 = begin_world.call()
+	_assert(str(w_c3.get("_entry_arm_outcome")) == "armed",
+		"244(C): the unarmed arrival takes the arm's Case B")
+	_assert((DungeonScript.get("act2_train_cities")
+				as Array) == expected_ring,
+		"244(C): the reconstruction initializes the ring alongside the home ledger")
+	var loaded_c3: Dictionary = sm.call("load_run", "solo", 45)
+	_assert(((loaded_c3.get("act2", {}) as Dictionary).get(
+				"train_cities", []) as Array) == expected_ring,
+		"244(C): the Case B stamp carries the ring in its record")
+	var lt_c3: Dictionary = DungeonScript.get(
+		"act2_last_transition")
+	_assert(lt_c3.get("point") is Array
+			and (lt_c3["point"] as Array) == [doorstep_c.x,
+				doorstep_c.y, doorstep_c.z],
+		"244(C): the reconstruction stamps the transition point in the canonical array form (the #244 rider)")
+	var spawn_c3: Vector3 = w_c3.get("_spawn_point")
+	_assert(spawn_c3.distance_to(Vector3(doorstep_c.x,
+			WG.height_at(seed, doorstep_c.x, doorstep_c.z)
+				+ 0.4, doorstep_c.z)) < 0.01,
+		"244(C): the Case B arrival lands at the transition point (the home doorstep, terrain-grounded)")
+	end_world.call(w_c3)
+	# C4: a legacy file — Vector3 transition point at a
+	# NON-anchor location, healed at restore — lands its
+	# fall-through arrival AT that point, not the anchor.
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict_c)
+	DungeonScript.restore_act2_state({"act2": {
+		"context": "world", "cleared": [home_key_c],
+		"anchor_building": home_key_c,
+		"anchor_doorstep": [doorstep_c.x, doorstep_c.y,
+			doorstep_c.z],
+		"last_transition": {"building": "elsewhere",
+			"point": Vector3(5000.0, 12.0, 5000.0)}}})
+	var w_c4 = begin_world.call()
+	_assert(str(w_c4.get("_entry_arm_outcome")) == "already",
+		"244(C): the healed-file arrival takes the arm's Case A")
+	var spawn_c4: Vector3 = w_c4.get("_spawn_point")
+	_assert(spawn_c4.distance_to(Vector3(5000.0,
+			WG.height_at(seed, 5000.0, 5000.0) + 0.4,
+			5000.0)) < 0.01,
+		"244(C): the healed fall-through arrival lands at the stored transition point, not the anchor doorstep")
+	end_world.call(w_c4)
+	nm.set("active_run_mode", saved_mode)
+	nm.set("active_run_slot", saved_slot)
+	sm.call("clear_run", "solo", 44)
+	sm.call("clear_run", "solo", 45)
+	reset_entry.call()
+	current_scene = null
+	holder.queue_free()
+	# --- Leg D: the arrival expansion hook -------------------
+	DungeonScript.reset_act2_state()
+	DungeonScript.apply_train_discovered(["7,0"])
+	var added_d: Array = DungeonScript.train_expand_at("7,0")
+	_assert(added_d == ["6,1", "7,1", "9,1"]
+			and (DungeonScript.get("act2_train_cities")
+				as Array) == ["7,0", "6,1", "7,1", "9,1"],
+		"244(D): arrival expansion unions the arrived city's ring into the set")
+	_assert(DungeonScript.train_expand_at("7,0").is_empty()
+			and (DungeonScript.get("act2_train_cities")
+				as Array).size() == 4,
+		"244(D): re-expansion discovers nothing twice")
+	var added_d2: Array = DungeonScript.train_expand_at("0,-2")
+	var set_d: Array = DungeonScript.get("act2_train_cities")
+	_assert(added_d2 == ["0,-2"] and set_d.size() == 5
+			and set_d.has("7,0") and set_d.has("6,1")
+			and set_d.has("7,1") and set_d.has("9,1"),
+		"244(D): expansion never un-discovers — the set only grows")
+	var dsrc := FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.contains("@rpc(\"any_peer\", \"call_local\")\nfunc rpc_train_discovered")
+			and _bughunt_body(dsrc, "rpc_train_discovered")
+				.contains("apply_train_discovered(new_keys)"),
+		"244(D): the discovery sync is a call_local rpc applying the same union (spec section 7)")
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	_assert(wsrc.count("train_init_discovery()") == 2,
+		"244(D): the entry arm calls the discovery init at both its beats (Case A + Case B)")
+	var nmsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(_bughunt_body(nmsrc, "load_floor")
+			.contains("[step.x, step.y, step.z]"),
+		"244(D): load_floor stamps the transition point in the canonical array form (the #244 rider)")
+	_assert(_bughunt_body(wsrc, "_arm_act2_entry")
+			.contains("[doorstep.x, doorstep.y, doorstep.z]"),
+		"244(D): the entry arm's reconstruction stamps the canonical array form (the #244 rider)")
+	DungeonScript.reset_act2_state()
+	print("[Playtest] Train network derivation (244) test done.")
 
 
 func _test_mp_continue_242() -> void:

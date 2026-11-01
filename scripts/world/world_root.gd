@@ -128,6 +128,11 @@ func _arm_act2_entry() -> String:
 	# set it. Nothing touched, no stamp; the file
 	# self-maintains through the clock exactly as today.
 	if Dungeon.act2_context == "world":
+		# Issue #244 (train T1): the initial discovery
+		# beat rides this arm — a pre-train save (or a
+		# fresh reveal's first entry) gains the home
+		# ring here; a no-op once the set is discovered.
+		Dungeon.train_init_discovery()
 		return "already"
 	var mode: String = NetworkManager.active_run_mode
 	var slot: int = NetworkManager.active_run_slot
@@ -150,12 +155,26 @@ func _arm_act2_entry() -> String:
 			Dungeon.act2_cleared.append(key)
 			filled.append("cleared")
 		if Dungeon.act2_last_transition.is_empty():
+			# Issue #244 rider: the point in the record's
+			# canonical [x, y, z] array form — the same
+			# shape rpc_act2_transition writes and the
+			# arrival reader requires. (This line once
+			# stamped the raw Vector3; a fall-through
+			# arrival on the reconstructed record then
+			# hit a type error in _arrival_point.)
 			Dungeon.act2_last_transition = {
-				"building": key, "point": doorstep}
+				"building": key,
+				"point": [doorstep.x, doorstep.y, doorstep.z]}
 			filled.append("last_transition")
 		if Dungeon.world_time <= 0.0:
 			Dungeon.world_time = WorldClock.ENTRY_TIME
 			filled.append("world_time")
+		# Issue #244 (train T1): the initial discovery
+		# beat rides the reconstruction too — initialized
+		# BEFORE the stamp below, so a written stamp
+		# carries the home ring in its record.
+		if Dungeon.train_init_discovery():
+			filled.append("train_ring")
 		# The file stamp, CONDITIONED (Case B'): if the
 		# file already carries a world act2, do NOT stamp
 		# — its stored positions survive until the

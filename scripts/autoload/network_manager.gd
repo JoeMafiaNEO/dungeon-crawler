@@ -582,12 +582,17 @@ func load_floor(building_key: String, floor_idx: int,
 	Dungeon.act2_context = "building"
 	var rec := FloorGen.record_for(building_key, Dungeon.home_anchor)
 	if not rec.is_empty():
+		# Issue #244 rider: the transition point in the
+		# record's canonical [x, y, z] array form (the
+		# arrival reader's required shape), not the raw
+		# Vector3 this line once stamped.
+		var step: Vector3 = rec["doorstep"]
 		Dungeon.act2_last_transition = {
 			"building": building_key, "floor": floor_idx,
-			"point": rec["doorstep"]}
+			"point": [step.x, step.y, step.z]}
 		if entry:
 			Dungeon.act2_anchor_building = building_key
-			Dungeon.act2_anchor_doorstep = rec["doorstep"]
+			Dungeon.act2_anchor_doorstep = step
 	if multiplayer.is_server():
 		Dungeon.save_act2_clock()
 		# Issue #209: a street entry starts the attempt

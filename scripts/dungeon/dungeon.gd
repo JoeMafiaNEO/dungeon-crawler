@@ -227,6 +227,15 @@ static func reset_reveal_state() -> void:
 ##                    transition points, never mid-street.
 static var act2_context := ""
 static var act2_cleared: Array = []
+## Issue #244 (train T1): the discovered train-network
+## set — city cell keys ("gx,gz") the run has found.
+## Server-owned progression (spec section 7): the graph
+## itself is never saved, it derives from this set plus
+## the seed on every peer (TrainNetwork). Carried in the
+## act2 record beside cleared; absent in a pre-train
+## save = undiscovered, and the world entry arm
+## initializes it from the home ring.
+static var act2_train_cities: Array = []
 static var act2_anchor_building := ""
 static var act2_anchor_doorstep := Vector3.ZERO
 static var act2_last_transition := {}
@@ -338,6 +347,7 @@ static func save_act2_clock() -> void:
 	SaveManager.save_run(run, mode, slot)
 
 const WORLD_SCENE := "res://scenes/world/world.tscn"
+const TrainNetwork := preload("res://scripts/world/train_network.gd")
 const Act2BuildingGen := preload("res://scripts/world/building_gen.gd")
 const Act2WorldClock := preload("res://scripts/world/world_clock.gd")
 const Act2FloorGen := preload("res://scripts/world/floor_gen.gd")
@@ -391,6 +401,7 @@ static func home_building() -> Dictionary:
 static func act2_record() -> Dictionary:
 	var rec := {"context": act2_context,
 		"cleared": act2_cleared.duplicate(),
+		"train_cities": act2_train_cities.duplicate(),
 		"anchor_building": act2_anchor_building,
 		"anchor_doorstep": [act2_anchor_doorstep.x,
 			act2_anchor_doorstep.y, act2_anchor_doorstep.z],
@@ -457,16 +468,103 @@ static func act2_my_position() -> Array:
 	return e if e is Array else []
 
 
+## Issue #244 (train T1): union new city keys into the
+## discovered set — append-only (discovery NEVER
+## un-discovers), well-formed keys only, existing order
+## preserved, new keys in the caller's order. Returns
+## the keys that were actually new. This is the one
+## applier every discovery path runs: the entry init,
+## the arrival expansion, and the discovery rpc.
+static func apply_train_discovered(new_keys: Array) -> Array:
+	var added: Array = []
+	for e in new_keys:
+		var k := str(e)
+		if TrainNetwork.key_cell(k) == null:
+			continue
+		if act2_train_cities.has(k):
+			continue
+		act2_train_cities.append(k)
+		added.append(k)
+	return added
+
+
+## Issue #244: the initial discovery beat (spec section
+## 2.2) — the home ring, computed on the server when the
+## run first enters the world phase. Rides the world
+## entry arm (both its cases call here behind the arm's
+## server gate). A no-op once anything is discovered
+## (the set only ever grows, by expansion from there)
+## and before the reveal has a home to center on. The
+## ring is a pure function of the seed and the home
+## center, so initializing the static is enough: the
+## record's next writer persists it, and a session that
+## ends first simply re-derives the identical ring at
+## the next entry.
+static func train_init_discovery() -> bool:
+	if not act2_train_cities.is_empty():
+		return false
+	if act2_context != "world" or not revealed:
+		return false
+	var home := home_building()
+	if home.is_empty():
+		return false
+	var origin: Vector3 = home["origin"]
+	act2_train_cities = TrainNetwork.initial_ring(
+		RevealWorldGen.WORLD_SEED,
+		Vector2(origin.x, origin.z))
+	return true
+
+
+## Issue #244: the arrival-beat expansion hook (spec
+## sections 2.2/6) — the server runs this when the train
+## first arrives at a city; every city inside that
+## city's expansion ring joins the discovered set.
+## Returns the newly discovered keys (what the arrival
+## beat broadcasts through rpc_train_discovered and
+## what the next record writer stamps). T1 carries the
+## hook; T5 wires the full arrival loop to it.
+static func train_expand_at(city_key: String) -> Array:
+	return apply_train_discovered(
+		TrainNetwork.expansion_ring(RevealWorldGen.WORLD_SEED,
+			city_key))
+
+
 static func restore_act2_state(run: Dictionary) -> void:
 	var a: Dictionary = run.get("act2", {})
 	act2_context = str(a.get("context", ""))
 	act2_cleared = (a.get("cleared", []) as Array).duplicate()
+	# Issue #244: the discovered set, validated per entry
+	# (a well-formed "gx,gz" cell key). A corrupt entry
+	# is dropped here and can never reach the derivation;
+	# absent key = pre-train save = undiscovered.
+	act2_train_cities = []
+	var raw_tc = a.get("train_cities", [])
+	if raw_tc is Array:
+		for e in raw_tc:
+			if e is String \
+					and TrainNetwork.key_cell(str(e)) != null \
+					and not act2_train_cities.has(str(e)):
+				act2_train_cities.append(str(e))
 	act2_anchor_building = str(a.get("anchor_building", ""))
 	var ds: Array = a.get("anchor_doorstep", [])
 	act2_anchor_doorstep = Vector3(float(ds[0]), float(ds[1]),
 		float(ds[2])) if ds.size() == 3 else Vector3.ZERO
 	act2_last_transition = (a.get("last_transition", {})
 		as Dictionary).duplicate(true)
+	# Issue #244 rider: heal the legacy point shape at
+	# restore. The record's canonical form is the
+	# [x, y, z] array (rpc_act2_transition's shape), but
+	# two writers once stamped a raw Vector3 (the entry
+	# arm's reconstruction and load_floor's registry
+	# write) and the snapshot/restore path duplicates
+	# the record verbatim — so a save stamped by either
+	# would error a fall-through arrival forever. The
+	# writers are fixed; this is where files already in
+	# the wild get healed (the #111 pattern).
+	var lt_pt = act2_last_transition.get("point")
+	if lt_pt is Vector3:
+		var lt_v := lt_pt as Vector3
+		act2_last_transition["point"] = [lt_v.x, lt_v.y, lt_v.z]
 	# Issue #237: street positions, validated per entry —
 	# a 2-number array, finite, inside a generous sanity
 	# bound. A corrupt entry is dropped here and can
@@ -509,6 +607,7 @@ static func reset_act2_state() -> void:
 	act2_last_transition = {}
 	act2_spawn_at = ""
 	act2_positions = {}
+	act2_train_cities = []
 	floor_key = ""
 	floor_index = 0
 	floor_masks = {}
@@ -3874,6 +3973,19 @@ func rpc_act2_transition(building_key: String,
 	run["act2"] = act2_record()
 	run["world_time"] = world_time
 	SaveManager.save_run(run, mode, slot)
+
+
+## Issue #244: a discovery update rides the arrival
+## beat's broadcast (spec section 7) — the new keys,
+## applied to the same statics on every peer, so every
+## chart and derivation sees the grown set at once. The
+## record stays the save-side truth; this is only the
+## mid-session sync. Same trust posture as
+## rpc_act2_transition (any_peer, call_local, collective
+## run state).
+@rpc("any_peer", "call_local")
+func rpc_train_discovered(new_keys: Array) -> void:
+	apply_train_discovered(new_keys)
 
 
 ## Remove a world-bound peer's player node from this dungeon
