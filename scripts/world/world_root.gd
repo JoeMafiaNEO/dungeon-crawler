@@ -72,8 +72,13 @@ func _ready() -> void:
 	if _needs_pull():
 		_gate_deadline = Time.get_ticks_msec() / 1000.0 \
 			+ PULL_BOUND_S + GATE_BOUND_S
+		# Issue #242: the request carries the client's claimed
+		# Steam ID and lobby-picked class, so the server can
+		# answer with the client's own continued state (the
+		# world scene has no register flow to arm it).
 		rpc_id(NetworkManager.server_peer_id,
-			"world_state_request")
+			"world_state_request", SteamManager.steam_id,
+			NetworkManager.selected_class_id)
 	else:
 		_begin()
 
@@ -99,12 +104,57 @@ func state_snapshot() -> Dictionary:
 		"world_time": Dungeon.world_time}
 
 
+## Issue #242: the requester's own continued state, computed
+## pure (host_continue_plan's idiom, the register rule): the
+## claimed Steam ID is matched against the continued roster —
+## entry found: the saved class + saved player_state; EXCEPT
+## an off-class lobby pick backed by a delivered saved-class
+## notice, which returns the picked class with an EMPTY state
+## (a deliberate reselect — a fresh character). No entry (or
+## an empty roster — every non-continued session): {} — the
+## reply carries no your_state at all and the requester spawns
+## fresh, as mid-session joiners do today. Delivery is the
+## register path's trust posture: the roster match gates what
+## is delivered, and the reply goes only to the requester.
+static func continued_your_state(roster: Array,
+		chosen_class: String, notices: Dictionary,
+		claimed_id: int) -> Dictionary:
+	var saved_state := {}
+	var saved_class := "warrior"
+	for entry in roster:
+		if entry is Dictionary and claimed_id != 0 \
+				and int(entry.get("steam_id", 0)) == claimed_id:
+			saved_state = entry.get("player_state", {})
+			saved_class = str(entry.get("class_id", "warrior"))
+			var notice: Dictionary = notices.get(claimed_id, {})
+			if chosen_class != saved_class \
+					and not notice.is_empty() \
+					and str(notice.get("class_id", "")) \
+						== saved_class:
+				return {"class_id": chosen_class,
+					"player_state": {}}
+			return {"class_id": saved_class,
+				"player_state": saved_state}
+	return {}
+
+
 @rpc("any_peer")
-func world_state_request() -> void:
+func world_state_request(claimed_steam_id: int = 0,
+		chosen_class: String = "") -> void:
 	if not multiplayer.is_server():
 		return
+	var snap := state_snapshot()
+	# Issue #242: a continuing client's own class/state rides
+	# the reply (the snapshot itself is context-only, as
+	# before) — present only when the claim matches the
+	# continued roster.
+	var yours := continued_your_state(Dungeon.continued_roster,
+		chosen_class, NetworkManager.saved_class_notices,
+		claimed_steam_id)
+	if not yours.is_empty():
+		snap["your_state"] = yours
 	rpc_id(multiplayer.get_remote_sender_id(),
-		"world_state_apply", state_snapshot())
+		"world_state_apply", snap)
 
 
 @rpc("any_peer")
@@ -113,6 +163,14 @@ func world_state_apply(snap: Dictionary) -> void:
 		return
 	Dungeon.restore_reveal_state(snap)
 	Dungeon.restore_act2_state(snap)
+	# Issue #242: arm the client's own continued class/state
+	# BEFORE _begin — _spawn_local reads exactly these two
+	# statics, in this precedence. Absent (a fresh join), both
+	# keep whatever the restores left and the spawn is fresh.
+	var yours: Dictionary = snap.get("your_state", {})
+	if not yours.is_empty():
+		Dungeon.act2_local_class = str(yours.get("class_id", ""))
+		Dungeon.saved_player_state = yours.get("player_state", {})
 	_begin()
 
 
@@ -318,11 +376,22 @@ func save_multiplayer_run(theme_id: String, level_number: int,
 	_save_base["seed"] = level_seed
 	_save_base["is_multiplayer"] = true
 	_save_base["at_station"] = false
-	_save_base["act1_step"] = Dungeon.act1_step
-	_save_base["vault_return_theme"] = Dungeon.vault_return_theme
-	_save_base["revealed"] = Dungeon.revealed
-	_save_base["buildings_cleared"] = Dungeon.buildings_cleared
-	_save_base["home_anchor"] = Dungeon.home_anchor
+	# Issue #242 (§4): the identity block stamps from statics
+	# only when the session is ENGAGED — a real world session
+	# always is (context "world"; revealed for any post-reveal
+	# run). In a never-engaged session (the pre-#242 broken
+	# continue's spawn: context "" and unrevealed) the statics
+	# are script defaults holding no truth, and stamping them
+	# wiped the file's reveal/axis identity while its act2
+	# survived. Unengaged: the loaded dict's values stand.
+	if Dungeon.act2_context != "" or Dungeon.revealed:
+		_save_base["act1_step"] = Dungeon.act1_step
+		_save_base["vault_return_theme"] \
+			= Dungeon.vault_return_theme
+		_save_base["revealed"] = Dungeon.revealed
+		_save_base["buildings_cleared"] \
+			= Dungeon.buildings_cleared
+		_save_base["home_anchor"] = Dungeon.home_anchor
 	# The act2 stamp rides the SAME write as the roster (design
 	# §4): act2_record() samples every player's street position
 	# live, here in the world scene (issue #237).

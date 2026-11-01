@@ -1059,12 +1059,25 @@ func start_continued_run() -> void:
 	# state pull, the #135 pattern.
 	var a2: Dictionary = run.get("act2", {})
 	if str(a2.get("context", "")) == "world":
+		# Issue #242: restore BEFORE the broadcast. _continue_
+		# load_level is the flow's only restore point (plan,
+		# reveal + act2, roster stashes); broadcasting first
+		# booted the world on script-default statics — origin
+		# spawn, no home, a fresh warrior — and clients pulled
+		# that emptiness as the run's snapshot.
+		_continue_load_level()
 		rpc("load_world")
 		return
 	# Issue #205: a run saved inside a building resumes the
 	# whole party at that (building, floor) — the floor's
 	# uncleared waves reset (a fresh floor scene).
 	if str(a2.get("context", "")) == "building":
+		# Issue #242: restore first here too — load_floor's
+		# server leg stamps the act2 clock DURING the broadcast,
+		# so unrestored statics wrote a hollow record over the
+		# file's real one (and record_for missed the anchor).
+		# Restored first, the stamp is value-preserving.
+		_continue_load_level()
 		rpc("load_floor", str(a2.get("floor_key", "")),
 			int(a2.get("floor_index", 0)), false)
 		return

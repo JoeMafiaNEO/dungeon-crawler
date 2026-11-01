@@ -277,6 +277,7 @@ func _run() -> void:
 	_test_held_prop_yaw_141()
 
 	_test_world_save_238()
+	_test_mp_continue_242()
 	_print_results()
 	quit()
 
@@ -24103,6 +24104,334 @@ func _test_world_save_238() -> void:
 	steam.set("steam_id", prev_sid)
 	mgr.set("_test_runs_dir", "")
 	print("[Playtest] World save (238) test done.")
+
+
+## Issue #242: the Steam MP continue of an Act 2 save never
+## restored the run — start_continued_run broadcast first and
+## returned early for the world and building contexts, so
+## _continue_load_level (the flow's ONLY restore point) never
+## ran. The defect is INVISIBLE under warm statics (a
+## same-session continue mostly works), so every restore pin
+## below resets the Dungeon statics to their script defaults
+## and ASSERTS the reset took before driving. A pin that
+## skips the reset is not evidence.
+func _test_mp_continue_242() -> void:
+	print("[Playtest] MP world/building continue (242) test...")
+	var D := load("res://scripts/dungeon/dungeon.gd")
+	var WR := load("res://scripts/world/world_root.gd")
+	var mgr = root.get_node("SaveManager")
+	var nm = root.get_node("NetworkManager")
+	var steam = root.get_node("SteamManager")
+	var prev_sid := int(steam.get("steam_id"))
+	var prev_mode := str(nm.get("active_run_mode"))
+	var prev_slot := int(nm.get("active_run_slot"))
+	var HOST_ID := 76561198000000042
+	var CLIENT_ID := 76561198000000043
+	var host_state := {"class_id": "mage", "level": 7, "xp": 4321}
+	var client_state := {"class_id": "rogue", "level": 5,
+		"xp": 2222}
+	var roster: Array = [
+		{"steam_id": HOST_ID, "class_id": "mage",
+			"player_state": host_state},
+		{"steam_id": CLIENT_ID, "class_id": "rogue",
+			"player_state": client_state}]
+	var anchor: Dictionary = D.call("compute_home_anchor", 96.0)
+	# The fresh-statics reset (design section 5, verbatim) —
+	# WITH the asserts that it took. Every fresh leg calls it.
+	var reset_statics := func() -> void:
+		D.call("reset_act2_state")
+		D.set("act1_step", -1)
+		D.set("vault_return_theme", "")
+		D.set("revealed", false)
+		D.set("buildings_cleared", 0)
+		D.set("home_anchor", {})
+		D.set("saved_player_state", {})
+		D.set("act2_local_class", "")
+		D.set("continued_roster", [])
+		nm.set("continued_session_roster", [])
+		nm.set("saved_class_notices", {})
+		_assert(int(D.get("act1_step")) == -1
+			and not bool(D.get("revealed"))
+			and int(D.get("buildings_cleared")) == 0
+			and (D.get("home_anchor") as Dictionary).is_empty(),
+			"242(reset): identity statics at script defaults")
+		_assert(str(D.get("act2_context")) == ""
+			and (D.get("act2_positions") as Dictionary).is_empty()
+			and (D.get("act2_cleared") as Array).is_empty()
+			and str(D.get("floor_key")) == ""
+			and int(D.get("floor_index")) == 0,
+			"242(reset): act2/floor statics at script defaults")
+		_assert((D.get("saved_player_state")
+				as Dictionary).is_empty()
+			and str(D.get("act2_local_class")) == ""
+			and (D.get("continued_roster") as Array).is_empty(),
+			"242(reset): player/roster statics at script defaults")
+	# A real-shaped world fixture, its act2 record built by
+	# the game's own record funnel (positions injected, the
+	# #237 restore-validated shape).
+	var world_fixture := func() -> Dictionary:
+		D.set("act2_context", "world")
+		D.set("act2_cleared", ["-18,42"])
+		D.set("act2_anchor_building", "-18,42")
+		D.set("act2_anchor_doorstep", Vector3(10, 0, 20))
+		D.set("act2_last_transition", {})
+		var a2: Dictionary = D.call("act2_record")
+		a2["positions"] = {str(HOST_ID): [64.0, -32.0],
+			str(CLIENT_ID): [70.0, -30.0]}
+		return {"theme_id": "warlord", "level_number": 6,
+			"seed": 4242, "wave": 0, "class_id": "mage",
+			"player_state": host_state.duplicate(true),
+			"is_multiplayer": true, "revealed": true,
+			"buildings_cleared": 1,
+			"home_anchor": anchor.duplicate(true),
+			"act1_step": 5, "vault_return_theme": "",
+			"roster": roster.duplicate(true),
+			"act2": a2, "world_time": 512.0}
+	# --- Leg 3: branch composition (source pins). Both Act 2
+	# branches restore BEFORE their broadcast; the station/
+	# dungeon fall-through call still stands.
+	var nsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	var fs := nsrc.find("func start_continued_run")
+	var fe := nsrc.find("## Continued-run reselect", fs)
+	var body := nsrc.substr(fs, fe - fs)
+	var wi := body.find('== "world"')
+	var wcall := body.find("_continue_load_level()", wi)
+	var wrpc := body.find('rpc("load_world")', wi)
+	_assert(wi >= 0 and wcall > wi and wrpc > wcall,
+		"242(3): the world branch restores before load_world")
+	var bi := body.find('== "building"')
+	var bcall := body.find("_continue_load_level()", bi)
+	var brpc := body.find('rpc("load_floor"', bi)
+	_assert(bi >= 0 and bcall > bi and brpc > bcall,
+		"242(3): the building branch restores before load_floor")
+	_assert(body.count("_continue_load_level()") >= 3,
+		"242(3): the fall-through restore call still stands")
+	# --- Leg 1: host world restore, FRESH statics.
+	reset_statics.call()
+	steam.set("steam_id", HOST_ID)
+	nm.set("selected_class_id", "mage")
+	nm.set("_continued_run", world_fixture.call())
+	nm.call("_continue_load_level")
+	_assert(str(nm.get("selected_class_id")) == "mage",
+		"242(1): the host plan resolves to the saved class")
+	_assert(D.get("saved_player_state") == host_state,
+		"242(1): the host's saved player_state is armed")
+	_assert(D.call("act2_my_position") == [64.0, -32.0],
+		"242(1): act2_my_position returns the fixture position")
+	_assert(D.get("continued_roster") == roster,
+		"242(1): continued_roster holds the fixture roster")
+	_assert(nm.get("continued_session_roster") == roster,
+		"242(1): continued_session_roster holds the fixture")
+	_assert(str(D.get("act2_local_class")) == "",
+		"242(1): act2_local_class untouched (world != building)")
+	_assert(bool(D.get("revealed"))
+		and int(D.get("buildings_cleared")) == 1
+		and int(D.get("act1_step")) == 5
+		and str(D.get("act2_context")) == "world",
+		"242(1): reveal/axis/act2 statics restored")
+	# --- Leg 7 (rides leg 1's restore): COLD-CACHE arrival.
+	# The suite's fresh-XDG ritual leaves user://world_cache
+	# empty by construction, so this world boot IS the
+	# cold-cache leg: the restored statics feed a real world
+	# scene, and its arrival resolves to the stored position.
+	var wroot1 = load(
+		"res://scenes/world/world.tscn").instantiate()
+	root.add_child(wroot1)
+	var spawn1: Vector3 = wroot1.get("_spawn_point")
+	_assert(spawn1.x == 64.0 and spawn1.z == -32.0,
+		"242(7) COLD-CACHE: arrival lands on the stored "
+		+ "position with an empty world cache")
+	root.remove_child(wroot1)
+	wroot1.free()
+	# --- Leg 2: warm control — the same drive with NO reset
+	# passes identically (the fix is not fresh-only).
+	nm.set("selected_class_id", "mage")
+	nm.set("_continued_run", world_fixture.call())
+	nm.call("_continue_load_level")
+	_assert(str(nm.get("selected_class_id")) == "mage"
+		and D.get("saved_player_state") == host_state
+		and D.call("act2_my_position") == [64.0, -32.0],
+		"242(2): the warm drive restores identically")
+	# --- Leg 4: host building restore, FRESH statics.
+	reset_statics.call()
+	D.set("act2_context", "building")
+	D.set("act2_cleared", ["-18,42"])
+	D.set("act2_anchor_building", "-18,42")
+	D.set("act2_anchor_doorstep", Vector3(10, 0, 20))
+	D.set("floor_key", "5,5")
+	D.set("floor_index", 2)
+	D.set("floor_masks", {"5,5": 3})
+	D.set("floor_counted", ["5,5:0"])
+	var a2b: Dictionary = D.call("act2_record")
+	var bfix: Dictionary = world_fixture.call()
+	bfix["act2"] = a2b
+	nm.set("selected_class_id", "mage")
+	nm.set("_continued_run", bfix)
+	nm.call("_continue_load_level")
+	_assert(str(D.get("act2_context")) == "building"
+		and str(D.get("floor_key")) == "5,5"
+		and int(D.get("floor_index")) == 2,
+		"242(4): the floor statics are restored")
+	_assert(str(D.get("act2_local_class")) == "mage",
+		"242(4): the S3 door stash holds the host's saved class")
+	_assert(D.get("saved_player_state") == host_state
+		and D.get("continued_roster") == roster,
+		"242(4): host state + roster stashes restored")
+	_assert((D.get("act2_positions") as Dictionary).is_empty(),
+		"242(4): a building record carries no positions")
+	# --- Leg 5a: the snapshot after a leg-1 restore carries
+	# the run's context verbatim (positions re-sample live by
+	# the #237 invariant; the record's own fields are exact).
+	nm.set("selected_class_id", "mage")
+	nm.set("_continued_run", world_fixture.call())
+	nm.call("_continue_load_level")
+	var wr_bare = WR.new()
+	var snap: Dictionary = wr_bare.call("state_snapshot")
+	wr_bare.free()
+	_assert(str((snap.get("act2", {}) as Dictionary)
+			.get("context", "")) == "world"
+		and bool(snap.get("revealed", false))
+		and snap.get("home_anchor") == anchor
+		and float(snap.get("world_time", 0.0)) == 512.0
+		and (snap.get("act2", {}) as Dictionary).get(
+			"cleared", []) == ["-18,42"],
+		"242(5a): state_snapshot carries the restored run")
+	# --- Leg 5b: the your_state computation, driven pure.
+	var notices := {CLIENT_ID: {"class_id": "rogue",
+		"level": 5}}
+	_assert(WR.call("continued_your_state", roster, "rogue",
+			{}, CLIENT_ID)
+		== {"class_id": "rogue", "player_state": client_state},
+		"242(5b-a): matching claim, saved pick -> saved state")
+	_assert(WR.call("continued_your_state", roster, "mage",
+			notices, CLIENT_ID)
+		== {"class_id": "mage", "player_state": {}},
+		"242(5b-b): off-class pick + notice -> picked, fresh")
+	_assert(WR.call("continued_your_state", roster, "mage",
+			{}, CLIENT_ID)
+		== {"class_id": "rogue", "player_state": client_state},
+		"242(5b-c): off-class pick, NO notice -> saved stands")
+	_assert(WR.call("continued_your_state", roster, "mage",
+			{CLIENT_ID: {"class_id": "mage", "level": 9}},
+			CLIENT_ID)
+		== {"class_id": "rogue", "player_state": client_state},
+		"242(5b-c2): a notice for another class does not open "
+		+ "the reselect")
+	_assert(WR.call("continued_your_state", roster, "rogue",
+			{}, 999999999).is_empty()
+		and WR.call("continued_your_state", roster, "rogue",
+			{}, 0).is_empty(),
+		"242(5b-d): stranger / zero claims receive nothing")
+	_assert(WR.call("continued_your_state", [], "rogue",
+			notices, CLIENT_ID).is_empty(),
+		"242(5b-e): an empty continued roster delivers nothing")
+	# --- Leg 5c: world_state_apply on a fresh-statics client
+	# arms both statics before _begin; the spawn resolves to
+	# the saved class, not "warrior".
+	var wroot2 = load(
+		"res://scenes/world/world.tscn").instantiate()
+	root.add_child(wroot2)
+	var csnap := {"revealed": true, "buildings_cleared": 1,
+		"home_anchor": anchor.duplicate(true),
+		"act2": world_fixture.call()["act2"],
+		"world_time": 512.0,
+		"your_state": {"class_id": "rogue",
+			"player_state": client_state.duplicate(true)}}
+	reset_statics.call()
+	wroot2.set("_started", false)
+	wroot2.call("world_state_apply", csnap)
+	_assert(str(D.get("act2_local_class")) == "rogue",
+		"242(5c): apply arms act2_local_class from your_state")
+	_assert((D.get("saved_player_state")
+			as Dictionary).is_empty(),
+		"242(5c): the armed state was consumed by the spawn "
+		+ "(apply_state ran; it is not left staged)")
+	var lp2 = wroot2.get("_local_player")
+	_assert(lp2 != null and str(lp2.get("class_id")) == "rogue"
+		and int(lp2.call("get_state").get("xp", -1)) == 2222,
+		"242(5c): the client spawns as its saved class + state")
+	root.remove_child(wroot2)
+	wroot2.free()
+	# --- Leg 6: the amplifier guard, both legs (the #238
+	# section's writer-drive idiom, on the booted root).
+	var scratch := "/home/hatch/workspace/.scratch/act242_" \
+		+ str(Time.get_ticks_msec())
+	DirAccess.make_dir_recursive_absolute(scratch)
+	mgr.set("_test_runs_dir", scratch)
+	var wroot3 = load(
+		"res://scenes/world/world.tscn").instantiate()
+	root.add_child(wroot3)
+	var idfix := {"theme_id": "warlord", "level_number": 6,
+		"seed": 4242, "wave": 0, "is_multiplayer": true,
+		"revealed": true, "buildings_cleared": 7,
+		"act1_step": 5, "vault_return_theme": "depths",
+		"home_anchor": anchor.duplicate(true), "roster": [],
+		"act2": world_fixture.call()["act2"],
+		"world_time": 512.0}
+	mgr.call("save_run", idfix, "mp", 97)
+	nm.set("active_run_mode", "mp")
+	nm.set("active_run_slot", 97)
+	# Anchor dicts cross the ConfigFile boundary in this leg,
+	# which stores floats at reduced precision — compare
+	# field-wise with a tolerance, never by dictionary ==.
+	var anchor_eq := func(a: Dictionary, b: Dictionary) -> bool:
+		if a.size() != b.size():
+			return false
+		for k in a.keys():
+			if not b.has(k):
+				return false
+			var av = a[k]
+			var bv = b[k]
+			if (av is float or av is int) \
+					and (bv is float or bv is int):
+				if absf(float(av) - float(bv)) > 0.001:
+					return false
+			elif av != bv:
+				return false
+		return true
+	# Never-engaged: script-default identity statics, context
+	# "" and unrevealed — the pre-fix broken continue's spawn.
+	D.call("reset_act2_state")
+	D.set("revealed", false)
+	D.set("act1_step", -1)
+	D.set("buildings_cleared", 0)
+	D.set("home_anchor", {})
+	D.set("vault_return_theme", "")
+	wroot3.call("save_multiplayer_run", "warlord", 6, 4242)
+	var kept: Dictionary = mgr.call("load_run", "mp", 97)
+	_assert(bool(kept.get("revealed", false))
+		and int(kept.get("buildings_cleared", 0)) == 7
+		and int(kept.get("act1_step", -1)) == 5
+		and str(kept.get("vault_return_theme", "")) == "depths"
+		and anchor_eq.call(kept.get("home_anchor", {}), anchor),
+		"242(6): never-engaged, the loaded identity STANDS")
+	# Engaged: the live statics stamp, as every legitimate
+	# world save does by construction.
+	var anchor2: Dictionary = D.call("compute_home_anchor",
+		128.0)
+	D.set("act2_context", "world")
+	D.set("revealed", true)
+	D.set("act1_step", 5)
+	D.set("buildings_cleared", 9)
+	D.set("home_anchor", anchor2)
+	D.set("vault_return_theme", "supermarket")
+	wroot3.call("save_multiplayer_run", "warlord", 6, 4242)
+	var stamped: Dictionary = mgr.call("load_run", "mp", 97)
+	_assert(int(stamped.get("buildings_cleared", 0)) == 9
+		and str(stamped.get("vault_return_theme", ""))
+			== "supermarket"
+		and anchor_eq.call(stamped.get("home_anchor", {}),
+			anchor2),
+		"242(6): engaged, the identity stamps the live values")
+	root.remove_child(wroot3)
+	wroot3.free()
+	# Restore session state.
+	steam.set("steam_id", prev_sid)
+	nm.set("active_run_mode", prev_mode)
+	nm.set("active_run_slot", prev_slot)
+	mgr.set("_test_runs_dir", "")
+	print("[Playtest] MP world/building continue (242) test done.")
 
 
 func _test_world_gen_197() -> void:
