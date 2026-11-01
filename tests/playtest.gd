@@ -278,6 +278,7 @@ func _run() -> void:
 
 	_test_world_save_238()
 	_test_mp_continue_242()
+	_test_chunk_watchdog_240()
 	_print_results()
 	quit()
 
@@ -23199,6 +23200,297 @@ func _test_chunk_edge_force_231() -> void:
 	current_scene = null
 	holder.queue_free()
 	print("[Playtest] Chunk edge force test done.")
+
+
+func _test_chunk_watchdog_240() -> void:
+	print("[Playtest] Desired-chunk watchdog (issue #240)...")
+	var Streamer = load("res://scripts/world/"
+		+ "world_streamer.gd")
+	var cmap: Dictionary = (Streamer as GDScript
+		).get_script_constant_map()
+	_assert(int(cmap.get("WATCHDOG_BOUND_MSEC", 0)) == 5000,
+		"240: the watchdog bound is 5000 msec")
+	_assert(int(cmap.get("WATCHDOG_BACKOFF_CAP_MSEC", 0)) == 60000,
+		"240: the backoff cap is 60000 msec")
+	_assert(int(cmap.get("WATCHDOG_PER_STEP", 0)) == 1,
+		"240: at most one watchdog recovery per step")
+	var holder := Node3D.new()
+	holder.name = "ChunkWatchdog240Holder"
+	root.add_child(holder)
+	current_scene = holder
+	# Fill helper: drive steps at a FIXED synthetic now
+	# until the whole radius-1 ring around chunk (0,0) is
+	# healthy (stamps set at that now never age mid-fill).
+	var fill_ring = func(st) -> void:
+		st.call("set_target_position", Vector3(64, 0, 64))
+		var guard := 0
+		var all_ok := false
+		while not all_ok and guard < 400:
+			st.call("update_streaming", 1000)
+			guard += 1
+			all_ok = true
+			for dx in range(-1, 2):
+				for dz in range(-1, 2):
+					if not bool(st.call("_chunk_healthy",
+							st.call("_key", dx, dz))):
+						all_ok = false
+	var new_streamer = func():
+		var st = Streamer.new()
+		holder.add_child(st)
+		st.set("load_radius", 1)
+		st.set("unload_radius", 3)
+		return st
+	# --- (iv) classify: the exact token per sub-state --------
+	var stc = new_streamer.call()
+	var kc: String = stc.call("_key", 9, 9)
+	_assert(str(stc.call("_watchdog_classify", kc))
+			== "undispatched",
+		"240(iv): a key in no structure classifies undispatched")
+	(stc.get("_pending") as Dictionary)[kc] = {
+		"task": -1, "data": null}
+	_assert(str(stc.call("_watchdog_classify", kc)) == "pending",
+		"240(iv): a slotted key classifies pending")
+	(stc.get("_pending") as Dictionary).erase(kc)
+	var data_c = stc.call("_chunk_data_sync", 9, 9)
+	(stc.get("_ready_data") as Dictionary)[kc] = data_c
+	_assert(str(stc.call("_watchdog_classify", kc)) == "ready",
+		"240(iv): a harvested key classifies ready")
+	(stc.get("_ready_data") as Dictionary).erase(kc)
+	stc.call("_build_chunk", 9, 9)
+	var rec_c: Dictionary = (stc.get("_active")
+		as Dictionary)[kc]
+	var terr_c: MeshInstance3D = (rec_c["node"] as Node
+		).get_node("Terrain") as MeshInstance3D
+	terr_c.mesh = null
+	_assert(str(stc.call("_watchdog_classify", kc))
+			== "active_no_mesh",
+		"240(iv): an active chunk with a null mesh classifies active_no_mesh")
+	terr_c.free()
+	_assert(str(stc.call("_watchdog_classify", kc))
+			== "active_no_terrain",
+		"240(iv): an active chunk with no Terrain child classifies active_no_terrain")
+	stc.queue_free()
+	# --- (iv) census content: the firing's line composes ----
+	# the classify token with the section-4 context fields,
+	# and the pass is called after the catch-up wait (the
+	# load-bearing placement).
+	var src240 := FileAccess.get_file_as_string(
+		"res://scripts/world/world_streamer.gd")
+	_assert(src240.contains("watchdog %s key=%s missing_msec=%d pending=%d ring_built=%d target=%d,%d radius=%d"),
+		"240(iv): the census line composes token + key + missing msec + pending size + ring built + target + radius")
+	_assert(src240.contains("watchdog recovered key=%s class=%s"),
+		"240(iv): a verified recovery emits the recovered outcome line")
+	var upd0 := src240.find("func update_streaming")
+	var upd1 := src240.find("func _update_buildings", upd0)
+	var upd_body := src240.substr(upd0, upd1 - upd0)
+	_assert(upd_body.find("_watchdog_pass(desired, tcx, tcz, now)")
+			> upd_body.find("built_now == 0 and not _pending.is_empty()"),
+		"240(iv): the watchdog pass runs after the catch-up wait, at the end of update_streaming")
+	# --- (v) stamp bookkeeping semantics ----------------------
+	var stv = new_streamer.call()
+	var kv: String = stv.call("_key", 0, 0)
+	(stv.get("_desired_since") as Dictionary)[kv] = 111
+	(stv.get("_watchdog_next") as Dictionary)[kv] = 222
+	(stv.get("_watchdog_gap") as Dictionary)[kv] = 10000
+	stv.call("_watchdog_pass", {}, 0, 0, 5000)
+	_assert(not (stv.get("_desired_since") as Dictionary).has(kv)
+			and not (stv.get("_watchdog_next") as Dictionary).has(kv)
+			and not (stv.get("_watchdog_gap") as Dictionary).has(kv),
+		"240(v): a key leaving the desired set loses stamp + backoff state")
+	var desired_v := {kv: Vector2i(0, 0)}
+	stv.call("_watchdog_pass", desired_v, 0, 0, 424242)
+	_assert(int((stv.get("_desired_since")
+			as Dictionary).get(kv, -1)) == 424242,
+		"240(v): a fresh unhealthy desired key is stamped with the STEP's now, never a fresh clock read")
+	stv.call("_build_chunk", 0, 0)
+	stv.call("_watchdog_pass", desired_v, 0, 0, 424243)
+	_assert(not (stv.get("_desired_since") as Dictionary).has(kv),
+		"240(v): a key that becomes healthy loses its stamp")
+	stv.queue_free()
+	# --- (i)(d) active_no_mesh, end to end --------------------
+	var std = new_streamer.call()
+	fill_ring.call(std)
+	var kd: String = std.call("_key", 0, 0)
+	var rec_d: Dictionary = (std.get("_active")
+		as Dictionary)[kd]
+	var old_node: Node = rec_d["node"]
+	((old_node as Node).get_node("Terrain")
+		as MeshInstance3D).mesh = null
+	(std.get("_desired_since") as Dictionary)[kd] = 1000
+	std.call("update_streaming", 6001)
+	_assert(bool(std.call("_chunk_healthy", kd)),
+		"240(i)(d): a mesh-nulled active chunk is rebuilt by the first step past the bound")
+	_assert(not is_instance_valid(old_node),
+		"240(i)(d): the broken chunk node is freed, not orphaned")
+	_assert(int(std.call("debug_chunk_state", 0, 0
+			)["watchdog_fires"]) == 1,
+		"240(i)(d): exactly one firing")
+	std.queue_free()
+	# --- (i)(a) null-data pending ------------------------------
+	var sta = new_streamer.call()
+	fill_ring.call(sta)
+	var ka: String = sta.call("_key", 0, 0)
+	((sta.get("_active") as Dictionary)[ka]["node"]
+		as Node).free()
+	(sta.get("_active") as Dictionary).erase(ka)
+	var done_task := WorkerThreadPool.add_task(
+		func() -> void: pass)
+	WorkerThreadPool.wait_for_task_completion(done_task)
+	(sta.get("_pending") as Dictionary)[ka] = {
+		"task": done_task, "data": null}
+	(sta.get("_desired_since") as Dictionary)[ka] = 1000
+	sta.call("update_streaming", 6001)
+	_assert(bool(sta.call("_chunk_healthy", ka)),
+		"240(i)(a): a null-data pending wedge ends BUILT (the sync fall-through), never the force-path give-up")
+	# Direct fire: the pending branch itself harvests the
+	# completed slot and falls through to sync on null data.
+	((sta.get("_active") as Dictionary)[ka]["node"]
+		as Node).free()
+	(sta.get("_active") as Dictionary).erase(ka)
+	(sta.get("_pending") as Dictionary)[ka] = {
+		"task": done_task, "data": null}
+	(sta.get("_desired_since") as Dictionary)[ka] = 1000
+	sta.call("_watchdog_fire", ka, Vector2i(0, 0), 0, 0, 6001,
+		{ka: Vector2i(0, 0)})
+	_assert(bool(sta.call("_chunk_healthy", ka))
+			and not (sta.get("_pending") as Dictionary).has(ka),
+		"240(i)(a): fired directly, the completed null-data slot is consumed and the chunk sync-built")
+	sta.queue_free()
+	# --- (i)(b) never-completing pending: NO WAIT --------------
+	var stb2 = new_streamer.call()
+	fill_ring.call(stb2)
+	var kb: String = stb2.call("_key", 0, 0)
+	((stb2.get("_active") as Dictionary)[kb]["node"]
+		as Node).free()
+	(stb2.get("_active") as Dictionary).erase(kb)
+	var long_task := WorkerThreadPool.add_task(
+		func() -> void: OS.delay_msec(20000))
+	(stb2.get("_pending") as Dictionary)[kb] = {
+		"task": long_task, "data": null}
+	(stb2.get("_desired_since") as Dictionary)[kb] = 1000
+	# A sacrificial ready chunk consumes the step's normal
+	# assembly, so the catch-up wait never engages and the
+	# step reaches the watchdog with the wedge still slotted.
+	var ks: String = stb2.call("_key", 1, 0)
+	var rec_s: Dictionary = (stb2.get("_active")
+		as Dictionary)[ks]
+	(stb2.get("_ready_data") as Dictionary)[ks] = rec_s["data"]
+	(rec_s["node"] as Node).free()
+	(stb2.get("_active") as Dictionary).erase(ks)
+	var t0 := Time.get_ticks_msec()
+	stb2.call("update_streaming", 6001)
+	var elapsed := Time.get_ticks_msec() - t0
+	_assert(elapsed < 5000,
+		"240(i)(b): the watchdog step returns promptly — it never waits on the wedged task (took %d msec)" % elapsed)
+	_assert(bool(stb2.call("_chunk_healthy", kb))
+			and not (stb2.get("_pending") as Dictionary).has(kb),
+		"240(i)(b): the wedged slot is abandoned and the chunk builds via the sync path")
+	_assert(bool(stb2.call("_chunk_healthy", ks)),
+		"240(i)(b): the sacrificial ready chunk assembled normally in the same step")
+	stb2.queue_free()
+	# --- (i)(c) ready-held -------------------------------------
+	var stc2 = new_streamer.call()
+	fill_ring.call(stc2)
+	var k_lo: String = stc2.call("_key", 0, 0)
+	var k_hi: String = stc2.call("_key", 1, 0)
+	for kk in [k_lo, k_hi]:
+		var rec_r: Dictionary = (stc2.get("_active")
+			as Dictionary)[kk]
+		(stc2.get("_ready_data") as Dictionary)[kk] = rec_r["data"]
+		(rec_r["node"] as Node).free()
+		(stc2.get("_active") as Dictionary).erase(kk)
+	(stc2.get("_desired_since") as Dictionary)[k_hi] = 1000
+	stc2.call("update_streaming", 6001)
+	_assert(bool(stc2.call("_chunk_healthy", k_lo)),
+		"240(i)(c): the higher-priority ready chunk takes the step's normal assembly")
+	_assert(bool(stc2.call("_chunk_healthy", k_hi))
+			and int(stc2.call("debug_chunk_state", 1, 0
+				)["watchdog_fires"]) == 1,
+		"240(i)(c): the ready-held wedge is assembled out-of-band by the watchdog, past the per-step bound")
+	stc2.queue_free()
+	# --- (i)(e) undispatched ------------------------------------
+	var ste = new_streamer.call()
+	fill_ring.call(ste)
+	var ke: String = ste.call("_key", 0, 0)
+	((ste.get("_active") as Dictionary)[ke]["node"]
+		as Node).free()
+	(ste.get("_active") as Dictionary).erase(ke)
+	(ste.get("_desired_since") as Dictionary)[ke] = 1000
+	ste.call("update_streaming", 6001)
+	_assert(bool(ste.call("_chunk_healthy", ke)),
+		"240(i)(e): a stamp with no backing state is recovered by the first step past the bound")
+	((ste.get("_active") as Dictionary)[ke]["node"]
+		as Node).free()
+	(ste.get("_active") as Dictionary).erase(ke)
+	(ste.get("_desired_since") as Dictionary)[ke] = 1000
+	_assert(str(ste.call("_watchdog_classify", ke))
+			== "undispatched",
+		"240(i)(e): with every structure empty the wedge classifies undispatched")
+	ste.call("_watchdog_fire", ke, Vector2i(0, 0), 0, 0, 6001,
+		{ke: Vector2i(0, 0)})
+	_assert(bool(ste.call("_chunk_healthy", ke)),
+		"240(i)(e): fired directly, the undispatched wedge sync-builds")
+	ste.queue_free()
+	# --- (ii) legit-fill silence ---------------------------------
+	var sti = new_streamer.call()
+	sti.call("set_target_position", Vector3(64, 0, 64))
+	var now_i := 1000
+	var guard_i := 0
+	var filled := false
+	while not filled and guard_i < 300:
+		sti.call("update_streaming", now_i)
+		now_i += 100
+		guard_i += 1
+		filled = true
+		for dx in range(-1, 2):
+			for dz in range(-1, 2):
+				if not bool(sti.call("_chunk_healthy",
+						sti.call("_key", dx, dz))):
+					filled = false
+	_assert(filled,
+		"240(ii): the cold ring fill completes")
+	_assert(int(sti.call("debug_chunk_state", 0, 0
+			)["watchdog_fires"]) == 0,
+		"240(ii): a legitimate cold fill produces ZERO watchdog firings")
+	_assert((sti.get("_desired_since") as Dictionary).is_empty(),
+		"240(ii): no stamp survives a completed fill")
+	sti.queue_free()
+	# --- (iii) no spam: a re-broken wedge decelerates ------------
+	var stn = new_streamer.call()
+	fill_ring.call(stn)
+	var kn: String = stn.call("_key", 0, 0)
+	var fire_times: Array = []
+	var seen_fires := 0
+	var t := 2000
+	while t <= 602000:
+		if bool(stn.call("_chunk_healthy", kn)):
+			var rec_n: Dictionary = (stn.get("_active")
+				as Dictionary)[kn]
+			((rec_n["node"] as Node).get_node("Terrain")
+				as MeshInstance3D).mesh = null
+		stn.call("update_streaming", t)
+		var f_now := int(stn.call("debug_chunk_state", 0, 0
+			)["watchdog_fires"])
+		if f_now > seen_fires:
+			seen_fires = f_now
+			fire_times.append(t)
+		t += 1000
+	_assert(fire_times.size() >= 4 and fire_times.size() <= 13,
+		"240(iii): a wedge re-broken after every recovery fires on the doubling ladder — bounded over a synthetic 10 minutes (got %d)" % fire_times.size())
+	var gaps_ok := true
+	for i in range(1, fire_times.size()):
+		if int(fire_times[i]) - int(fire_times[i - 1]) < 5000:
+			gaps_ok = false
+	for i in range(2, fire_times.size()):
+		if int(fire_times[i]) - int(fire_times[i - 1]) \
+				< int(fire_times[i - 1]) - int(fire_times[i - 2]):
+			gaps_ok = false
+	_assert(gaps_ok,
+		"240(iii): inter-firing gaps never shrink and never drop below the bound — no per-step storm")
+	stn.queue_free()
+	current_scene = null
+	holder.queue_free()
+	print("[Playtest] Chunk watchdog (240) test done.")
 
 
 func _test_home_door_236() -> void:

@@ -56,6 +56,9 @@ const BUILDING_RADIUS := 3
 const BUILDING_DESPAWN_MSEC := 5000 ## tuning placeholder (#198)
 const EDGE_FORCE_DIST := 16.0 ## Issue #231 (Jesse's ruling): a player this close to the border of an unbuilt neighbor chunk should not wait on the async pipeline - the chunk generates IN FRAME (data + terrain assembly; detail stays staged). A feel number - Jesse's staging test judges it.
 const EDGE_FORCE_PER_STEP := 1 ## The #231 bound: at most one forced in-frame generation per streaming step (worst case one ~50-70 ms sync build); a corner's remaining neighbors force on the following steps.
+const WATCHDOG_BOUND_MSEC := 5000 ## Issue #240: a desired chunk unhealthy continuously for longer than this is wedged by definition (a generation is ~62 ms of pure math; the slowest legitimate ring fill observed anywhere is <3 s). Tuning placeholder — Jesse's feel call.
+const WATCHDOG_BACKOFF_CAP_MSEC := 60000 ## Issue #240: the recovery backoff's ceiling — a permanently poisoned coordinate degrades to one recovery attempt per minute, never a per-step storm.
+const WATCHDOG_PER_STEP := 1 ## Issue #240: at most one watchdog recovery per streaming step (the EDGE_FORCE_PER_STEP idiom; a sync recovery is a ~50-70 ms worst case and one per step bounds the hitch).
 const CONE_COS := 0.4226 ## cos(65 deg): the view-cone priority band
 
 const WorldGen := preload("res://scripts/world/world_gen.gd")
@@ -140,6 +143,23 @@ var _scouts := {}
 ## harvested but not yet assembled (key -> ChunkData).
 var _pending := {}
 var _ready_data := {}
+## Issue #240 (desired-chunk watchdog): per-key bookkeeping,
+## all timed on update_streaming's `now` — never a fresh
+## clock read, so pins driving update_streaming(now) control
+## time exactly. _desired_since: when a desired key was
+## first seen unhealthy (clears on healthy / leaving the
+## ring). _watchdog_next: the key's backoff gate (earliest
+## `now` it may fire again). _watchdog_gap: the key's
+## current backoff gap (first gap = the bound, doubling per
+## firing, capped) — the ladder persists while the key
+## stays desired, so a coordinate re-broken after every
+## recovery keeps decelerating instead of resetting to the
+## bound each episode (design §5(iii)); all three clear
+## when the key leaves the desired set.
+var _desired_since := {}
+var _watchdog_next := {}
+var _watchdog_gap := {}
+var _watchdog_fires := 0 ## Test-visible firing counter (debug_chunk_state's idiom).
 ## "cx,cz" -> int visibility: 1 visible, 0 hidden, absent = unknown
 var _vis := {}
 
@@ -200,10 +220,12 @@ func debug_chunk_state(cx: int, cz: int) -> Dictionary:
 	var k := _key(cx, cz)
 	if not _active.has(k):
 		return {"built": false, "has_buildings": false,
-			"vis": int(_vis.get(k, -1))}
+			"vis": int(_vis.get(k, -1)),
+			"watchdog_fires": _watchdog_fires}
 	var rec: Dictionary = _active[k]
 	return {"built": true, "has_buildings": rec["buildings"] != null,
 		"vis": int(_vis.get(k, -1)),
+		"watchdog_fires": _watchdog_fires,
 		"shell_pieces": int(rec.get("shell_pieces", 0)),
 		"interior_pieces": int(rec.get("interior_pieces", 0)),
 		"collision_shapes": int(rec.get("collision_shapes", 0)),
@@ -409,6 +431,204 @@ func _force_build_chunk(cx: int, cz: int) -> void:
 	_build_chunk(cx, cz)
 
 
+# ------------------------------------------------------------------
+# Issue #240: the desired-chunk watchdog. A desired chunk
+# that stays UNHEALTHY past the bound is wedged — the
+# normal machinery (pipeline, harvest, assembly, catch-up,
+# edge-force) has had its chance at every step and the hole
+# persists (Jesse's session: a ring chunk unbuilt forever
+# at 60 fps, zero errors). The watchdog runs at the END of
+# update_streaming, sees only what the machinery failed to
+# fix, classifies the wedge, and recovers it — once per
+# step, oldest first, behind a doubling backoff, with the
+# census line emitted BEFORE the recovery attempt so the
+# evidence survives even if the recovery itself errors.
+# ------------------------------------------------------------------
+
+## The health predicate (design §2): terrain PRESENCE is
+## the bar — the chunk is in _active and its node carries
+## a Terrain child whose mesh exists. (Detail completeness
+## is chunk_fully_built's separate contract.)
+func _chunk_healthy(k: String) -> bool:
+	if not _active.has(k):
+		return false
+	var node: Node = _active[k].get("node")
+	if node == null:
+		return false
+	var terrain := node.get_node_or_null("Terrain") as MeshInstance3D
+	return terrain != null and terrain.mesh != null
+
+
+## The wedge's sub-state, as one of five tokens (design
+## §3). A pure read, factored out so the pins can drive it
+## directly. Defined over the watch set (desired-and-
+## unhealthy keys); a healthy key is outside its domain.
+func _watchdog_classify(key: String) -> String:
+	if _pending.has(key):
+		return "pending"
+	if _ready_data.has(key):
+		return "ready"
+	if _active.has(key):
+		var node: Node = _active[key].get("node")
+		var terrain: MeshInstance3D = null
+		if node != null:
+			terrain = node.get_node_or_null("Terrain") as MeshInstance3D
+		if terrain == null:
+			return "active_no_terrain"
+		if terrain.mesh == null:
+			return "active_no_mesh"
+	return "undispatched"
+
+
+## The census composition, shared by the pre-recovery line
+## and the not-recovered outcome line (the census repeats).
+func _watchdog_census(token: String, k: String, now: int,
+		desired: Dictionary, tcx: int, tcz: int) -> String:
+	var built := 0
+	for dk in desired.keys():
+		if _active.has(dk):
+			built += 1
+	var line := "watchdog %s key=%s missing_msec=%d pending=%d ring_built=%d target=%d,%d radius=%d" % [
+		token, k, now - int(_desired_since.get(k, now)),
+		_pending.size(), built, tcx, tcz, load_radius]
+	if token == "pending":
+		var slot: Dictionary = _pending[k]
+		line += " task=%d completed=%s" % [
+			int(slot["task"]),
+			str(WorkerThreadPool.is_task_completed(int(slot["task"])))]
+	return line
+
+
+## The watchdog pass — the LAST thing update_streaming
+## does, after the pipeline, harvest, assembly and
+## catch-up wait. Stamp bookkeeping first (desired-and-
+## unhealthy, on the step's `now`), then at most
+## WATCHDOG_PER_STEP firings, oldest stamp first.
+func _watchdog_pass(desired: Dictionary, tcx: int, tcz: int,
+		now: int) -> void:
+	for k in desired.keys():
+		if _chunk_healthy(k):
+			_desired_since.erase(k)
+		elif not _desired_since.has(k):
+			_desired_since[k] = now
+	var tracked := {}
+	for k in _desired_since.keys():
+		tracked[k] = true
+	for k in _watchdog_next.keys():
+		tracked[k] = true
+	for k in _watchdog_gap.keys():
+		tracked[k] = true
+	for k in tracked.keys():
+		if not desired.has(k):
+			_desired_since.erase(k)
+			_watchdog_next.erase(k)
+			_watchdog_gap.erase(k)
+	var fired := 0
+	while fired < WATCHDOG_PER_STEP:
+		var fire_key := ""
+		var fire_since := 0
+		for k in _desired_since.keys():
+			var since: int = _desired_since[k]
+			if now - since <= WATCHDOG_BOUND_MSEC:
+				continue
+			if now < int(_watchdog_next.get(k, -1)):
+				continue
+			if fire_key == "" or since < fire_since:
+				fire_key = k
+				fire_since = since
+		if fire_key == "":
+			return
+		_watchdog_fire(fire_key, desired[fire_key], tcx, tcz,
+			now, desired)
+		fired += 1
+
+
+## One firing, in the design's §4 order: backoff
+## bookkeeping and the census line BEFORE any action (a
+## recovery that errors mid-assembly aborts the step, and
+## a line composed after it would be lost in exactly the
+## case it exists to name); the orphan sweep; the
+## class-specific recovery; verification in the same
+## firing. No path here waits on an incomplete worker
+## task (§6.1) — completed tasks harvest inline, wedged
+## ones are abandoned and the sync path builds the chunk.
+func _watchdog_fire(k: String, c: Vector2i, tcx: int,
+		tcz: int, now: int, desired: Dictionary) -> void:
+	var cx := c.x
+	var cz := c.y
+	# Step 0: the backoff state is written FIRST.
+	var gap: int = int(_watchdog_gap.get(k, WATCHDOG_BOUND_MSEC))
+	_watchdog_next[k] = now + gap
+	_watchdog_gap[k] = mini(gap * 2, WATCHDOG_BACKOFF_CAP_MSEC)
+	_watchdog_fires += 1
+	var token := _watchdog_classify(k)
+	push_warning("[WorldStreamer] " + _watchdog_census(
+		token, k, now, desired, tcx, tcz))
+	# Orphan sweep: a chunk node named for this key that is
+	# not the active record's node is the residue of an
+	# errored assembly — freed, so ghosts cannot accumulate
+	# across firings or collide with the recovery's build.
+	var live_node: Node = null
+	if _active.has(k):
+		live_node = _active[k].get("node")
+	var chunk_name := "Chunk_%d_%d" % [cx, cz]
+	for child in get_children():
+		if (str(child.name) == chunk_name
+				or str(child.name).begins_with(chunk_name + "@")) \
+				and child != live_node:
+			child.free()
+	# Recovery, by class. Every path first erases the key
+	# from whichever structure held it (the _force_build_
+	# chunk discipline), then builds through the one
+	# _assemble_chunk — no double-build is reachable.
+	match token:
+		"active_no_mesh", "active_no_terrain":
+			(_active[k]["node"] as Node).free()
+			_active.erase(k)
+			_vis.erase(k)
+			_build_chunk(cx, cz)
+		"pending":
+			var slot: Dictionary = _pending[k]
+			if WorkerThreadPool.is_task_completed(int(slot["task"])):
+				WorkerThreadPool.wait_for_task_completion(
+					int(slot["task"]))
+				_pending.erase(k)
+				var pdata: RefCounted = slot["data"]
+				if pdata != null:
+					WorldCache.write_data(pdata)
+					_assemble_chunk(cx, cz, pdata)
+				else:
+					# Null data falls through to the sync
+					# path — NEVER the _force_build_chunk
+					# give-up return.
+					_build_chunk(cx, cz)
+			else:
+				# Wedged by definition (a generation is
+				# ~62 ms; this one is past the 5 s bound):
+				# abandon the slot WITHOUT waiting. The
+				# orphaned lambda, if it ever finishes,
+				# writes into a slot dictionary nobody
+				# reads, and the harvest iterates _pending,
+				# so it can never assemble a second time.
+				_pending.erase(k)
+				_build_chunk(cx, cz)
+		"ready":
+			var rdata: RefCounted = _ready_data[k]
+			_ready_data.erase(k)
+			_assemble_chunk(cx, cz, rdata)
+		_:
+			_build_chunk(cx, cz)
+	# Verify in the same firing.
+	if _chunk_healthy(k):
+		_desired_since.erase(k)
+		push_warning("[WorldStreamer] watchdog recovered key=%s class=%s"
+			% [k, token])
+	else:
+		push_warning("[WorldStreamer] watchdog still_unhealthy "
+			+ _watchdog_census(_watchdog_classify(k), k, now,
+				desired, tcx, tcz))
+
+
 func update_streaming(now_msec: int = -1) -> void:
 	if not _has_target:
 		return
@@ -534,6 +754,14 @@ func update_streaming(now_msec: int = -1) -> void:
 					WorldCache.write_data(wdata)
 					_assemble_chunk(c.x, c.y, wdata)
 				break
+	# Issue #240: the desired-chunk watchdog pass runs
+	# LAST — after the pipeline, harvest, assembly and
+	# catch-up have had their chance at this step's state —
+	# so it only ever sees what the normal machinery failed
+	# to fix, and can never race the same step's assembly
+	# for a key. (Placement is load-bearing; the design's
+	# §4 double-build argument depends on it.)
+	_watchdog_pass(desired, tcx, tcz, now)
 
 
 ## Buildings: materialize inside BUILDING_RADIUS when not reported
