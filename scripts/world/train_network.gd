@@ -326,3 +326,236 @@ static func route(seed: int, discovered: Array,
 		at = str(prev[at])
 		path.push_front(at)
 	return path
+
+
+# ------------------------------------------------------------------
+# Physical layer (T2): station points, per-chunk segments,
+# the smoothed grade, and the resting consist — the graph
+# made geometry. Still pure: everything derives from
+# (seed, discovered, home_center, home_station).
+#
+# Placement note: the spec names this family WorldGen's,
+# but the graph it reads is T1's derivation, which lives
+# here — world_gen.gd cannot host it without a preload
+# cycle (this file preloads world_gen) or a second
+# derivation. The road idiom is kept exactly: [Vector2,
+# Vector2] world-space endpoint pairs, per-chunk questions.
+# ------------------------------------------------------------------
+
+## Chunk-inclusion margin for segment queries: a segment
+## counts for a chunk when it comes within this distance of
+## the chunk's rect — TRACK_HALF_WIDTH (4) plus two lots
+## (16), so lot-candidacy distances (generate_chunk) and
+## span claims reaching one lot past the border stay exact.
+const SEGMENT_CHUNK_MARGIN := 20.0
+
+## Grade (spec §3.3): terrain sampled every GRADE_SAMPLE_M
+## along a segment, box-smoothed over +-GRADE_SMOOTH_RADIUS
+## samples. One function, two consumers (bed, motion).
+const GRADE_SAMPLE_M := 16.0
+const GRADE_SMOOTH_RADIUS := 2
+
+## Track cross-section (shared by the renderer's ribbons
+## and the consist's stance, so the wheels sit on the
+## rails by construction).
+const BED_WIDTH := 4.4
+const BED_LIFT := 0.18 ## bed top above grade
+const RAIL_GAUGE_HALF := 0.75
+const RAIL_WIDTH := 0.09
+const RAIL_TOP := 0.30 ## rail top above grade
+
+
+## Every node's station point (spec §3.2): the home node's
+## is the caller-supplied doorstep point; a city's is its
+## center snapped by WorldGen's lot search.
+static func station_points(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> Dictionary:
+	var graph := derive_graph(seed, discovered, home_center)
+	return _points_for_graph(graph, seed, home_station)
+
+
+static func _points_for_graph(graph: Dictionary, seed: int,
+		home_station: Vector2) -> Dictionary:
+	var nodes: Dictionary = graph["nodes"]
+	var out := {}
+	for key in graph["order"]:
+		if key == HOME_KEY:
+			out[key] = home_station
+		else:
+			out[key] = WorldGen.station_point_for(
+				seed, nodes[key])
+	return out
+
+
+## The graph's edges as physical segments: station point to
+## station point (spec §2.4), in graph edge order.
+static func edge_segments(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> Array:
+	var graph := derive_graph(seed, discovered, home_center)
+	var pts := _points_for_graph(graph, seed, home_station)
+	var out: Array = []
+	for e in graph["edges"]:
+		out.append([pts[e[0]], pts[e[1]]])
+	return out
+
+
+## The road function's per-chunk question, track-shaped:
+## the segments that can cross (or come within margin of)
+## chunk (cx, cz).
+static func track_segments_near_chunk(seed: int, cx: int,
+		cz: int, discovered: Array, home_center: Vector2,
+		home_station: Vector2) -> Array:
+	return filter_segments_for_chunk(edge_segments(seed,
+		discovered, home_center, home_station), cx, cz)
+
+
+## The geometric half of the per-chunk question, over a
+## precomputed segment list (the streamer's cached form).
+static func filter_segments_for_chunk(segments: Array,
+		cx: int, cz: int) -> Array:
+	var rect := Rect2(float(cx) * WorldGen.CHUNK_SIZE,
+		float(cz) * WorldGen.CHUNK_SIZE,
+		WorldGen.CHUNK_SIZE, WorldGen.CHUNK_SIZE)
+	rect = rect.grow(SEGMENT_CHUNK_MARGIN)
+	var out: Array = []
+	for seg in segments:
+		var t := _clip_t(seg[0], seg[1], rect)
+		if t.x <= t.y:
+			out.append(seg)
+	return out
+
+
+## A segment's parameter range inside a rect, as
+## Vector2(t0, t1); empty (t0 > t1) when it misses. The
+## streamer clips geometry with the same math, so the
+## query and the built bed always agree.
+static func _clip_t(a: Vector2, b: Vector2,
+		rect: Rect2) -> Vector2:
+	var t0 := 0.0
+	var t1 := 1.0
+	var d := b - a
+	if absf(d.x) < 0.000001:
+		if a.x < rect.position.x or a.x > rect.end.x:
+			return Vector2(1.0, 0.0)
+	else:
+		var ta := (rect.position.x - a.x) / d.x
+		var tb := (rect.end.x - a.x) / d.x
+		t0 = maxf(t0, minf(ta, tb))
+		t1 = minf(t1, maxf(ta, tb))
+	if absf(d.y) < 0.000001:
+		if a.y < rect.position.y or a.y > rect.end.y:
+			return Vector2(1.0, 0.0)
+	else:
+		var ta := (rect.position.y - a.y) / d.y
+		var tb := (rect.end.y - a.y) / d.y
+		t0 = maxf(t0, minf(ta, tb))
+		t1 = minf(t1, maxf(ta, tb))
+	return Vector2(t0, t1)
+
+
+## The segment clipped to a chunk's own rect (no margin),
+## as [Vector2, Vector2] world points, or [] when the
+## segment does not cross the chunk.
+static func clip_segment_to_chunk(a: Vector2, b: Vector2,
+		cx: int, cz: int) -> Array:
+	var rect := Rect2(float(cx) * WorldGen.CHUNK_SIZE,
+		float(cz) * WorldGen.CHUNK_SIZE,
+		WorldGen.CHUNK_SIZE, WorldGen.CHUNK_SIZE)
+	var t := _clip_t(a, b, rect)
+	if t.x > t.y:
+		return []
+	return [a + (b - a) * t.x, a + (b - a) * t.y]
+
+
+static func _grade_raw(seed: int, a: Vector2, dir: Vector2,
+		d: float) -> float:
+	var p := a + dir * d
+	return WorldGen.height_at(seed, p.x, p.y)
+
+
+static func _grade_smoothed(seed: int, a: Vector2,
+		dir: Vector2, length: float, n: int, k: int) -> float:
+	var sum := 0.0
+	var count := 0
+	for j in range(maxi(0, k - GRADE_SMOOTH_RADIUS),
+			mini(n, k + GRADE_SMOOTH_RADIUS) + 1):
+		sum += _grade_raw(seed, a, dir,
+			minf(float(j) * GRADE_SAMPLE_M, length))
+		count += 1
+	return sum / float(count)
+
+
+## THE grade function (spec §3.3): the smoothed height of
+## the track bed's centerline at `dist_along` meters from
+## a toward b. The rendered bed and (T3) the train's
+## motion profile both read this, so they agree exactly.
+static func grade_height(seed: int, a: Vector2, b: Vector2,
+		dist_along: float) -> float:
+	var length := a.distance_to(b)
+	if length <= 0.001:
+		return WorldGen.height_at(seed, a.x, a.y)
+	var dir := (b - a) / length
+	var n := maxi(1, int(ceil(length / GRADE_SAMPLE_M)))
+	var d := clampf(dist_along, 0.0, length)
+	var i := mini(int(floor(d / GRADE_SAMPLE_M)), n - 1)
+	var d0 := float(i) * GRADE_SAMPLE_M
+	var d1 := minf(float(i + 1) * GRADE_SAMPLE_M, length)
+	var f := 0.0
+	if d1 > d0:
+		f = (d - d0) / (d1 - d0)
+	return lerpf(_grade_smoothed(seed, a, dir, length, n, i),
+		_grade_smoothed(seed, a, dir, length, n, i + 1), f)
+
+
+## The resting consist (T2): locomotive + car as pure box
+## facts on the home node's first edge (graph order), at
+## the home station — {kind, at (XZ center), grade, size,
+## y_off (center height above rail top), yaw, color} per
+## box, frames/roofs/chimney included. The streamer builds
+## the boxes whose center lies in its chunk; T3 takes the
+## train over from here.
+static func consist_boxes(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> Array:
+	var graph := derive_graph(seed, discovered, home_center)
+	var pts := _points_for_graph(graph, seed, home_station)
+	var other := ""
+	for e in graph["edges"]:
+		if e[0] == HOME_KEY:
+			other = e[1]
+			break
+		if e[1] == HOME_KEY:
+			other = e[0]
+			break
+	if other == "":
+		return []
+	var target: Vector2 = pts[other]
+	var dir := (target - home_station).normalized()
+	var yaw := atan2(dir.x, dir.y)
+	var out: Array = []
+	# kind, dist along dir, size, center height above rail
+	# top, color — the consist centered on the station:
+	# locomotive ahead (+), car behind (-).
+	var parts := [
+		["loco_frame", 4.6, Vector3(2.6, 0.5, 7.0), 0.25,
+			Color(0.07, 0.07, 0.08)],
+		["loco", 4.6, Vector3(2.9, 2.6, 7.6), 1.8,
+			Color(0.13, 0.24, 0.16)],
+		["loco_roof", 4.6, Vector3(2.5, 0.35, 7.0), 3.28,
+			Color(0.08, 0.08, 0.09)],
+		["loco_chimney", 7.2, Vector3(0.55, 0.8, 0.55), 3.85,
+			Color(0.05, 0.05, 0.05)],
+		["car_frame", -5.0, Vector3(2.6, 0.5, 8.6), 0.25,
+			Color(0.07, 0.07, 0.08)],
+		["car", -5.0, Vector3(2.9, 2.4, 9.2), 1.7,
+			Color(0.42, 0.20, 0.13)],
+		["car_roof", -5.0, Vector3(2.6, 0.3, 8.6), 3.05,
+			Color(0.25, 0.13, 0.09)],
+	]
+	for p in parts:
+		var at: Vector2 = home_station + dir * float(p[1])
+		out.append({"kind": p[0], "at": at,
+			"grade": grade_height(seed, home_station,
+				target, float(p[1])),
+			"size": p[2], "y_off": float(p[3]),
+			"yaw": yaw, "color": p[4]})
+	return out

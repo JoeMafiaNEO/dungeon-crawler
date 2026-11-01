@@ -171,6 +171,78 @@ var _vis := {}
 var suppress_rect := Rect2()
 var suppress_enabled := false
 
+## Issue #244 T2: the run's train network, in the
+## suppress_rect pattern — WorldRoot sets it from the
+## Dungeon statics before streaming starts. The derivation
+## stays pure in TrainNetwork (seed + set as arguments);
+## the streamer only supplies them and caches the derived
+## geometry sources. An empty set = no network = the
+## pre-#244 world, byte-identical.
+var track_discovered: Array = []
+var track_home_center := Vector2.ZERO
+var track_home_station := Vector2.ZERO
+var _track_edges: Array = [] ## station-point segments
+var _track_points: Dictionary = {} ## node key -> station point
+var _track_consist: Array = []
+var _track_mat: StandardMaterial3D = null
+
+const TrainNetwork := preload("res://scripts/world/train_network.gd")
+const StationTerminal := preload("res://scripts/world/station_terminal.gd")
+
+
+## Set the track network dressing source (WorldRoot, at
+## world begin). Recomputes the cached derivations; call
+## before chunks stream — dressing already built is not
+## retroactively changed (mid-session re-dressing is the
+## expansion phase's wiring, T5).
+func set_track_network(discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> void:
+	track_discovered = discovered.duplicate()
+	track_home_center = home_center
+	track_home_station = home_station
+	if track_discovered.is_empty():
+		_track_edges = []
+		_track_points = {}
+		_track_consist = []
+		return
+	_track_points = TrainNetwork.station_points(
+		WorldGen.WORLD_SEED, track_discovered, home_center,
+		home_station)
+	_track_edges = TrainNetwork.edge_segments(
+		WorldGen.WORLD_SEED, track_discovered, home_center,
+		home_station)
+	_track_consist = TrainNetwork.consist_boxes(
+		WorldGen.WORLD_SEED, track_discovered, home_center,
+		home_station)
+
+
+## The chunk's track segments from the cached edge list
+## ([] when no network is set).
+func _track_segments_for(cx: int, cz: int) -> Array:
+	if _track_edges.is_empty():
+		return []
+	return TrainNetwork.filter_segments_for_chunk(
+		_track_edges, cx, cz)
+
+
+## Chunk-data cache discipline under a live track network:
+## generate_chunk's output depends on the discovered set
+## via dist_track, so while a set is live the (seed-pure)
+## disk cache is bypassed BOTH ways — a cached payload
+## would plant buildings on corridors, and a set-shaped
+## payload would poison the pure cache.
+func _cache_read(cx: int, cz: int) -> RefCounted:
+	if not track_discovered.is_empty():
+		return null
+	return WorldCache.read_data(cx, cz)
+
+
+func _cache_write(data: RefCounted) -> void:
+	if not track_discovered.is_empty():
+		return
+	WorldCache.write_data(data)
+
+
 var _box_mesh: BoxMesh = null
 var _building_mat: StandardMaterial3D = null
 var _building_mats: Array = [] ## #208: the six facade variants
@@ -324,10 +396,15 @@ func _ready() -> void:
 ## task complete.
 func _dispatch_gen(cx: int, cz: int) -> void:
 	var slot := {"task": -1, "data": null}
+	# Issue #244 T2: the chunk's track segments ride the
+	# dispatch (computed here on the main thread; the
+	# lambda only reads them — generate_chunk stays a pure
+	# function of its arguments on the worker).
+	var segs := _track_segments_for(cx, cz)
 	var task := WorkerThreadPool.add_task(
 		func() -> void:
 			slot["data"] = WorldGen.generate_chunk(
-				cx, cz, WorldGen.WORLD_SEED),
+				cx, cz, WorldGen.WORLD_SEED, segs),
 		false, "chunk gen %d,%d" % [cx, cz])
 	slot["task"] = task
 	_pending[_key(cx, cz)] = slot
@@ -420,7 +497,7 @@ func _force_build_chunk(cx: int, cz: int) -> void:
 		_pending.erase(k)
 		var pdata: RefCounted = slot["data"]
 		if pdata != null:
-			WorldCache.write_data(pdata)
+			_cache_write(pdata)
 			_assemble_chunk(cx, cz, pdata)
 		return
 	if _ready_data.has(k):
@@ -595,7 +672,7 @@ func _watchdog_fire(k: String, c: Vector2i, tcx: int,
 				_pending.erase(k)
 				var pdata: RefCounted = slot["data"]
 				if pdata != null:
-					WorldCache.write_data(pdata)
+					_cache_write(pdata)
 					_assemble_chunk(cx, cz, pdata)
 				else:
 					# Null data falls through to the sync
@@ -690,7 +767,7 @@ func update_streaming(now_msec: int = -1) -> void:
 		var k := _key(c.x, c.y)
 		if _ready_data.has(k) or _pending.has(k):
 			continue
-		var cached := WorldCache.read_data(c.x, c.y)
+		var cached := _cache_read(c.x, c.y)
 		if cached != null:
 			_ready_data[k] = cached
 		elif inflight < GEN_DISPATCH_WINDOW:
@@ -706,7 +783,7 @@ func update_streaming(now_msec: int = -1) -> void:
 			_pending.erase(k)
 			var gdata: RefCounted = slot["data"]
 			if gdata != null:
-				WorldCache.write_data(gdata)
+				_cache_write(gdata)
 				if desired.has(k):
 					_ready_data[k] = gdata
 	# Assemble at most BUILD_PER_FRAME terrains, priority
@@ -751,7 +828,7 @@ func update_streaming(now_msec: int = -1) -> void:
 				_pending.erase(k)
 				var wdata: RefCounted = slot["data"]
 				if wdata != null:
-					WorldCache.write_data(wdata)
+					_cache_write(wdata)
 					_assemble_chunk(c.x, c.y, wdata)
 				break
 	# Issue #240: the desired-chunk watchdog pass runs
@@ -804,6 +881,9 @@ func _update_buildings(tcx: int, tcz: int, now: int,
 				var js = dj["s"]["snode"]
 				if js != null and js != rec["scatter"]:
 					(js as Node).queue_free()
+				var jt = dj["t"]["tnode"]
+				if jt != null and jt != rec.get("track"):
+					(jt as Node).queue_free()
 			if rec["buildings"] != null:
 				(rec["buildings"] as Node).queue_free()
 				rec["buildings"] = null
@@ -816,6 +896,9 @@ func _update_buildings(tcx: int, tcz: int, now: int,
 			if rec.get("scatter") != null:
 				(rec["scatter"] as Node).queue_free()
 				rec["scatter"] = null
+			if rec.get("track") != null:
+				(rec["track"] as Node).queue_free()
+				rec["track"] = null
 			rec["detail_done"] = false
 			rec["detail_job"] = null
 		elif not bool(rec.get("detail_done", false)) \
@@ -855,7 +938,15 @@ func _detail_job(rec: Dictionary) -> Dictionary:
 				"gen": null, "gen_done": false,
 				"scatter": null, "snode": null,
 				"type_idx": 0, "item_idx": 0, "mm": null,
-				"total": 0}}
+				"total": 0},
+			"t": {"t_done": false, "started": false,
+				"segs": [], "cursor": 0, "stations": [],
+				"station_cursor": 0, "consist": [],
+				"verts": PackedVector3Array(),
+				"normals": PackedVector3Array(),
+				"colors": PackedColorArray(),
+				"indices": PackedInt32Array(),
+				"tnode": null, "body": null}}
 		rec["detail_job"] = dj
 		var data: RefCounted = rec["data"]
 		if not (data.buildings as Array).is_empty():
@@ -877,7 +968,10 @@ func _detail_step(rec: Dictionary) -> void:
 		_buildings_job_step(rec, dj["b"])
 	elif not bool(dj["s"]["s_done"]):
 		_scatter_job_step(rec, dj["s"])
-	if bool(dj["b"]["b_done"]) and bool(dj["s"]["s_done"]):
+	elif not bool(dj["t"]["t_done"]):
+		_track_job_step(rec, dj["t"])
+	if bool(dj["b"]["b_done"]) and bool(dj["s"]["s_done"]) \
+			and bool(dj["t"]["t_done"]):
 		rec["detail_done"] = true
 		rec["detail_job"] = null
 
@@ -908,11 +1002,12 @@ func _build_chunk(cx: int, cz: int) -> void:
 ## roundtrip against generation's 42-62 ms), generating —
 ## and caching — on a miss.
 func _chunk_data_sync(cx: int, cz: int) -> RefCounted:
-	var cached := WorldCache.read_data(cx, cz)
+	var cached := _cache_read(cx, cz)
 	if cached != null:
 		return cached
-	var data := WorldGen.generate_chunk(cx, cz)
-	WorldCache.write_data(data)
+	var data := WorldGen.generate_chunk(cx, cz,
+		WorldGen.WORLD_SEED, _track_segments_for(cx, cz))
+	_cache_write(data)
 	return data
 
 
@@ -954,7 +1049,8 @@ func _assemble_chunk(cx: int, cz: int, data: RefCounted) -> void:
 	notifier.screen_entered.connect(_note_visible.bind(cx, cz))
 	notifier.screen_exited.connect(_note_hidden.bind(cx, cz))
 	_active[_key(cx, cz)] = {"node": node, "data": data,
-		"buildings": null, "scatter": null, "off_since": -1,
+		"buildings": null, "scatter": null, "track": null,
+		"off_since": -1,
 		"detail_job": null, "plans": {}, "shell_pieces": 0, "interior_pieces": 0,
 		"collision_shapes": 0, "scatter_count": 0,
 		"playable_doors": 0, "solid_buildings": 0,
@@ -989,6 +1085,387 @@ func _make_buildings(rec: Dictionary) -> Node:
 	while not bool(dj["b"]["b_done"]):
 		_buildings_job_step(rec, dj["b"])
 	return rec["buildings"]
+
+
+## One-shot form of the track stage (pins + standalone
+## callers), mirroring _make_buildings.
+func _make_track(rec: Dictionary) -> Node:
+	var dj := _detail_job(rec)
+	while not bool(dj["t"]["t_done"]):
+		_track_job_step(rec, dj["t"])
+	return rec["track"]
+
+
+## Issue #244 T2: one bounded step of a chunk's track stage
+## — the setup scan, or one segment's ribbons, or one
+## station's dressing, or the consist boxes centered in
+## this chunk, or the final mesh flush. Everything derives
+## from the cached network (set_track_network); a chunk the
+## network does not touch finishes in its first step and
+## builds nothing — no nodes, no cost beyond the scan.
+func _track_job_step(rec: Dictionary, job: Dictionary) -> bool:
+	if bool(job["t_done"]):
+		return true
+	var data: RefCounted = rec["data"]
+	if not bool(job["started"]):
+		job["started"] = true
+		var clipped: Array = []
+		for seg in _track_segments_for(data.cx, data.cz):
+			var c := TrainNetwork.clip_segment_to_chunk(
+				seg[0], seg[1], data.cx, data.cz)
+			if not c.is_empty():
+				clipped.append([seg, c])
+		job["segs"] = clipped
+		var rect := Rect2(float(data.cx) * WorldGen.CHUNK_SIZE,
+			float(data.cz) * WorldGen.CHUNK_SIZE,
+			WorldGen.CHUNK_SIZE, WorldGen.CHUNK_SIZE)
+		var stations: Array = []
+		for key in _track_points:
+			if rect.has_point(_track_points[key]):
+				stations.append(key)
+		stations.sort()
+		job["stations"] = stations
+		var consist: Array = []
+		for box in _track_consist:
+			if rect.has_point(box["at"]):
+				consist.append(box)
+		job["consist"] = consist
+		if clipped.is_empty() and stations.is_empty() \
+				and consist.is_empty():
+			job["t_done"] = true
+			return true
+		var tnode := Node3D.new()
+		tnode.name = "Track"
+		(rec["node"] as Node).add_child(tnode)
+		job["tnode"] = tnode
+		var body := StaticBody3D.new()
+		body.name = "TrackCollision"
+		body.collision_layer = 1
+		body.collision_mask = 0
+		tnode.add_child(body)
+		job["body"] = body
+		return false
+	if int(job["cursor"]) < (job["segs"] as Array).size():
+		var pair: Array = (job["segs"] as Array)[
+			int(job["cursor"])]
+		job["cursor"] = int(job["cursor"]) + 1
+		_track_append_segment(job, data, pair[0], pair[1])
+		return false
+	if int(job["station_cursor"]) \
+			< (job["stations"] as Array).size():
+		var key := str((job["stations"] as Array)[
+			int(job["station_cursor"])])
+		job["station_cursor"] = int(job["station_cursor"]) + 1
+		_track_append_station(job, data, key)
+		return false
+	if not (job["consist"] as Array).is_empty():
+		for box in job["consist"]:
+			_track_append_consist_box(job, data, box)
+		job["consist"] = []
+		return false
+	# Flush: one merged, vertex-colored mesh for the chunk's
+	# whole track dressing (bed, rails, stations, train).
+	var verts: PackedVector3Array = job["verts"]
+	if not verts.is_empty():
+		var arrays: Array = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		arrays[Mesh.ARRAY_NORMAL] = job["normals"]
+		arrays[Mesh.ARRAY_COLOR] = job["colors"]
+		arrays[Mesh.ARRAY_INDEX] = job["indices"]
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(
+			Mesh.PRIMITIVE_TRIANGLES, arrays)
+		_ensure_assets()
+		mesh.surface_set_material(0, _track_mat)
+		var mi := MeshInstance3D.new()
+		mi.name = "TrackMesh"
+		mi.mesh = mesh
+		(job["tnode"] as Node).add_child(mi)
+	rec["track"] = job["tnode"]
+	job["t_done"] = true
+	return true
+
+
+## Append 4 verts + one quad ([a, b, c], [b, d, c] — the
+## winding the terrain pass proved) to the job's arrays.
+func _track_quad(job: Dictionary, a: Vector3, b: Vector3,
+		c: Vector3, d: Vector3, n: Vector3,
+		color: Color) -> void:
+	var verts: PackedVector3Array = job["verts"]
+	var normals: PackedVector3Array = job["normals"]
+	var colors: PackedColorArray = job["colors"]
+	var indices: PackedInt32Array = job["indices"]
+	var base := verts.size()
+	verts.append_array([a, b, c, d])
+	for i in 4:
+		normals.append(n)
+		colors.append(color)
+	indices.append_array([base, base + 1, base + 2,
+		base + 1, base + 3, base + 2])
+	job["verts"] = verts
+	job["normals"] = normals
+	job["colors"] = colors
+	job["indices"] = indices
+
+
+## A horizontal ribbon between two cross-sections: centers
+## (chunk-local XZ) + grades ride in s0/s1 as [Vector2,
+## float]; the ribbon sits at center + perp * (off +-
+## half_w), grade + y_off.
+func _track_append_ribbon(job: Dictionary, s0: Array,
+		s1: Array, perp: Vector2, off: float,
+		half_w: float, y_off: float, n: Vector3,
+		color: Color) -> void:
+	var c0: Vector2 = s0[0]
+	var c1: Vector2 = s1[0]
+	var g0 := float(s0[1]) + y_off
+	var g1 := float(s1[1]) + y_off
+	var lm := perp * (off - half_w)
+	var lp := perp * (off + half_w)
+	_track_quad(job,
+		Vector3(c0.x + lm.x, g0, c0.y + lm.y),
+		Vector3(c1.x + lm.x, g1, c1.y + lm.y),
+		Vector3(c0.x + lp.x, g0, c0.y + lp.y),
+		Vector3(c1.x + lp.x, g1, c1.y + lp.y), n, color)
+
+
+## A bed skirt: the vertical face from one bed edge down
+## 1.6 m — rises bury it (embankment), dips show it
+## (trestle-low fill). No terrain is modified (spec §3.3).
+func _track_append_skirt(job: Dictionary, s0: Array,
+		s1: Array, perp: Vector2, side: float) -> void:
+	var e := perp * (side * TrainNetwork.BED_WIDTH * 0.5)
+	var c0: Vector2 = s0[0]
+	var c1: Vector2 = s1[0]
+	var t0 := Vector3(c0.x + e.x,
+		float(s0[1]) + TrainNetwork.BED_LIFT, c0.y + e.y)
+	var t1 := Vector3(c1.x + e.x,
+		float(s1[1]) + TrainNetwork.BED_LIFT, c1.y + e.y)
+	var b0 := Vector3(t0.x, t0.y - 1.6, t0.z)
+	var b1 := Vector3(t1.x, t1.y - 1.6, t1.z)
+	var n := Vector3(perp.x, 0.0, perp.y) * side
+	var col := Color(0.35, 0.28, 0.22)
+	if side < 0.0:
+		_track_quad(job, t0, b0, t1, b1, n, col)
+	else:
+		_track_quad(job, t0, t1, b0, b1, n, col)
+
+
+## Append one segment's bed + skirts + rails (chunk-local
+## coords). Cross-sections every ~8 m along the clipped
+## part; heights from TrainNetwork's grade function — the
+## same numbers T3's motion profile will read.
+func _track_append_segment(job: Dictionary,
+		data: RefCounted, full: Array, clip: Array) -> void:
+	var a: Vector2 = full[0]
+	var b: Vector2 = full[1]
+	var total := a.distance_to(b)
+	if total < 0.01:
+		return
+	var dir := (b - a) / total
+	var perp := Vector2(-dir.y, dir.x)
+	var d0 := a.distance_to(clip[0])
+	var d1 := a.distance_to(clip[1])
+	var steps := maxi(1, int(ceil((d1 - d0) / 8.0)))
+	var ox := float(data.cx) * WorldGen.CHUNK_SIZE
+	var oz := float(data.cz) * WorldGen.CHUNK_SIZE
+	var secs: Array = []
+	for i in steps + 1:
+		var d := lerpf(d0, d1, float(i) / float(steps))
+		var c := a + dir * d
+		secs.append([Vector2(c.x - ox, c.y - oz),
+			TrainNetwork.grade_height(
+				WorldGen.WORLD_SEED, a, b, d)])
+	var dd := (d1 - d0) / float(steps)
+	for i in steps:
+		var s0: Array = secs[i]
+		var s1: Array = secs[i + 1]
+		var slope := 0.0
+		if dd > 0.001:
+			slope = (float(s1[1]) - float(s0[1])) / dd
+		var n := Vector3(-dir.x * slope, 1.0,
+			-dir.y * slope).normalized()
+		_track_append_ribbon(job, s0, s1, perp, 0.0,
+			TrainNetwork.BED_WIDTH * 0.5,
+			TrainNetwork.BED_LIFT, n,
+			Color(0.23, 0.19, 0.16))
+		_track_append_skirt(job, s0, s1, perp, -1.0)
+		_track_append_skirt(job, s0, s1, perp, 1.0)
+		for side in [-TrainNetwork.RAIL_GAUGE_HALF,
+				TrainNetwork.RAIL_GAUGE_HALF]:
+			_track_append_ribbon(job, s0, s1, perp, side,
+				TrainNetwork.RAIL_WIDTH * 0.5,
+				TrainNetwork.RAIL_TOP, n,
+				Color(0.62, 0.64, 0.66))
+
+
+## Append an axis-rotated box (chunk-local center, size,
+## yaw, one flat color). The (a, b, c, d) corner table per
+## face winds so the right-hand cross is -normal — Godot's
+## front-face convention, the terrain pass's lesson.
+func _track_append_box(job: Dictionary, center: Vector3,
+		size: Vector3, yaw: float, color: Color) -> void:
+	var bas := Basis(Vector3.UP, yaw)
+	var hx := size.x * 0.5
+	var hy := size.y * 0.5
+	var hz := size.z * 0.5
+	var faces := [
+		[Vector3(0, 1, 0), Vector3(-hx, hy, hz),
+			Vector3(-hx, hy, -hz), Vector3(hx, hy, hz),
+			Vector3(hx, hy, -hz)],
+		[Vector3(0, -1, 0), Vector3(-hx, -hy, -hz),
+			Vector3(-hx, -hy, hz), Vector3(hx, -hy, -hz),
+			Vector3(hx, -hy, hz)],
+		[Vector3(0, 0, 1), Vector3(-hx, -hy, hz),
+			Vector3(-hx, hy, hz), Vector3(hx, -hy, hz),
+			Vector3(hx, hy, hz)],
+		[Vector3(0, 0, -1), Vector3(hx, -hy, -hz),
+			Vector3(hx, hy, -hz), Vector3(-hx, -hy, -hz),
+			Vector3(-hx, hy, -hz)],
+		[Vector3(1, 0, 0), Vector3(hx, -hy, hz),
+			Vector3(hx, hy, hz), Vector3(hx, -hy, -hz),
+			Vector3(hx, hy, -hz)],
+		[Vector3(-1, 0, 0), Vector3(-hx, -hy, -hz),
+			Vector3(-hx, hy, -hz), Vector3(-hx, -hy, hz),
+			Vector3(-hx, hy, hz)],
+	]
+	for f in faces:
+		_track_quad(job,
+			center + bas * f[1], center + bas * f[2],
+			center + bas * f[3], center + bas * f[4],
+			(bas * f[0]).normalized(), color)
+
+
+## A rotated collision box for track dressing (platform,
+## shelter, consist). _add_box_shape's contract is
+## axis-aligned pieces; rotated dressing sets the shape
+## size directly and lets the node transform carry the yaw
+## basis at unit scale (the #221 double-scale trap avoided:
+## the scale lives in the shape alone).
+func _track_add_box(body: StaticBody3D, center: Vector3,
+		size: Vector3, yaw: float) -> void:
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = size
+	cs.shape = box
+	cs.transform = Transform3D(Basis(Vector3.UP, yaw), center)
+	body.add_child(cs)
+
+
+## One station's dressing (spec §3.2): platform slab
+## alongside the track's end on the settlement side, a
+## shelter, an identity sign, and the GPS terminal — the
+## interactable exists from T2 (its chart is T4). The
+## disembark point is the platform; all of it is derived,
+## never saved.
+func _track_append_station(job: Dictionary,
+		data: RefCounted, key: String) -> void:
+	var pt: Vector2 = _track_points[key]
+	var ga := Vector2.ZERO
+	var gb := Vector2.ZERO
+	var other := Vector2.ZERO
+	for seg in _track_edges:
+		if seg[0] == pt:
+			ga = seg[0]
+			gb = seg[1]
+			other = seg[1]
+			break
+		if seg[1] == pt:
+			ga = seg[0]
+			gb = seg[1]
+			other = seg[0]
+			break
+	var dir := (other - pt).normalized()
+	if dir == Vector2.ZERO:
+		dir = Vector2.RIGHT
+	var perp := Vector2(-dir.y, dir.x)
+	var g := WorldGen.height_at(WorldGen.WORLD_SEED,
+		pt.x, pt.y)
+	if ga != gb:
+		g = TrainNetwork.grade_height(WorldGen.WORLD_SEED,
+			ga, gb, ga.distance_to(pt))
+	var ox := float(data.cx) * WorldGen.CHUNK_SIZE
+	var oz := float(data.cz) * WorldGen.CHUNK_SIZE
+	var center2 := track_home_center
+	if key != TrainNetwork.HOME_KEY:
+		center2 = TrainNetwork.node_center(
+			WorldGen.WORLD_SEED, key, track_home_center)
+	var side := 1.0
+	if (center2 - pt).dot(perp) < 0.0:
+		side = -1.0
+	var yaw := atan2(dir.x, dir.y)
+	var base := g + TrainNetwork.BED_LIFT
+	var plat := pt + perp * (side
+		* (TrainNetwork.BED_WIDTH * 0.5 + 1.9))
+	var plat3 := Vector3(plat.x - ox, base + 0.175,
+		plat.y - oz)
+	_track_append_box(job, plat3, Vector3(3.6, 0.35, 16.0),
+		yaw, Color(0.52, 0.50, 0.47))
+	_track_add_box(job["body"], plat3,
+		Vector3(3.6, 0.35, 16.0), yaw)
+	var shel := plat + perp * (side * 1.1) - dir * 3.0
+	var shel3 := Vector3(shel.x - ox, base + 0.35 + 1.15,
+		shel.y - oz)
+	_track_append_box(job, shel3, Vector3(2.4, 2.3, 3.4),
+		yaw, Color(0.40, 0.30, 0.20))
+	_track_append_box(job, shel3 + Vector3(0, 1.32, 0),
+		Vector3(3.0, 0.18, 4.0), yaw, Color(0.25, 0.16, 0.11))
+	_track_add_box(job["body"], shel3,
+		Vector3(2.4, 2.3, 3.4), yaw)
+	var signp := plat + dir * 6.5 - perp * (side * 1.2)
+	var sign3 := Vector3(signp.x - ox, base + 0.35,
+		signp.y - oz)
+	_track_append_box(job, sign3 + Vector3(0, 0.8, 0),
+		Vector3(0.14, 1.6, 0.14), 0.0,
+		Color(0.30, 0.22, 0.15))
+	_track_append_box(job, sign3 + Vector3(0, 1.75, 0),
+		Vector3(0.18, 0.7, 2.2), yaw,
+		Color(0.85, 0.78, 0.55))
+	var label := Label3D.new()
+	label.text = "HOME" if key == TrainNetwork.HOME_KEY \
+		else key
+	label.position = sign3 + Vector3(0, 1.78, 0)
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.font_size = 128
+	label.modulate = Color(0.15, 0.12, 0.08)
+	(job["tnode"] as Node).add_child(label)
+	var term := plat + dir * 6.8
+	var term3 := Vector3(term.x - ox, base + 0.35,
+		term.y - oz)
+	_track_append_box(job, term3 + Vector3(0, 0.55, 0),
+		Vector3(0.55, 1.1, 0.4), yaw,
+		Color(0.16, 0.17, 0.19))
+	_track_append_box(job, term3 + Vector3(0, 1.22, 0),
+		Vector3(0.6, 0.45, 0.08), yaw,
+		Color(0.35, 0.75, 0.85))
+	var area := StationTerminal.new()
+	area.station_key = key
+	area.position = term3 + Vector3(0, 0.8, 0)
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.5, 1.8, 1.5)
+	cs.shape = shape
+	area.add_child(cs)
+	(job["tnode"] as Node).add_child(area)
+
+
+## One consist box (locomotive / car / their parts) at its
+## derived stance: on the rails (grade + RAIL_TOP), yawed
+## along the home node's first edge.
+func _track_append_consist_box(job: Dictionary,
+		data: RefCounted, box: Dictionary) -> void:
+	var ox := float(data.cx) * WorldGen.CHUNK_SIZE
+	var oz := float(data.cz) * WorldGen.CHUNK_SIZE
+	var at: Vector2 = box["at"]
+	var center := Vector3(at.x - ox,
+		float(box["grade"]) + TrainNetwork.RAIL_TOP
+			+ float(box["y_off"]), at.y - oz)
+	_track_append_box(job, center, box["size"],
+		float(box["yaw"]), box["color"])
+	if box["kind"] == "loco" or box["kind"] == "car":
+		_track_add_box(job["body"], center, box["size"],
+			float(box["yaw"]))
 
 
 ## One bounded step of a chunk's buildings stage: up to
@@ -1482,6 +1959,9 @@ func _ensure_assets() -> void:
 	_terrain_mat = StandardMaterial3D.new()
 	_terrain_mat.vertex_color_use_as_albedo = true
 	_terrain_mat.roughness = 1.0
+	_track_mat = StandardMaterial3D.new()
+	_track_mat.vertex_color_use_as_albedo = true
+	_track_mat.roughness = 1.0
 	_building_mat = StandardMaterial3D.new()
 	_building_mat.albedo_texture = _window_texture()
 	_building_mat.roughness = 0.9

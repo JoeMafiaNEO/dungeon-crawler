@@ -21,6 +21,7 @@ const LOT_SIZE := 8.0
 const LOTS_PER_CHUNK := 16
 const CELL_CHUNKS := 8 ## settlement lattice cell = 8x8 chunks
 const ROAD_HALF_WIDTH := 6.0 ## meters from a segment = road lot
+const TRACK_HALF_WIDTH := 4.0 ## Issue #244 T2: meters from a track segment centerline = track corridor (no building anchors) — the dist_track analog of ROAD_HALF_WIDTH.
 const FLOOR_HEIGHT := 3.0
 
 # Layer salts (hash domain separation).
@@ -203,6 +204,57 @@ static func road_segments_near_chunk(seed: int, cx: int, cz: int) -> Array:
 	return out
 
 
+## Issue #244 T2 (spec §3.2): a settlement's station point —
+## the center of the world lot nearest the settlement center
+## that is neither a building anchor nor a road lot.
+## Deterministic outward search in the lot grid: ring by
+## ring around the center's lot, candidates in (distance,
+## wlx, wlz) order, so every peer derives the identical
+## point. The search reads the seed-pure layout (no track
+## knowledge): corridors derive FROM station points, never
+## the other way around. The home node's station is its
+## doorstep — no search; the caller supplies it.
+static func station_point_for(seed: int, center: Vector2) -> Vector2:
+	var clx := int(floor(center.x / LOT_SIZE))
+	var clz := int(floor(center.y / LOT_SIZE))
+	var seg_cache := {}
+	var by_dist_then_lot := func(p: Vector2i, q: Vector2i) -> bool:
+		var pc := Vector2((float(p.x) + 0.5) * LOT_SIZE,
+			(float(p.y) + 0.5) * LOT_SIZE)
+		var qc := Vector2((float(q.x) + 0.5) * LOT_SIZE,
+			(float(q.y) + 0.5) * LOT_SIZE)
+		var pd := pc.distance_squared_to(center)
+		var qd := qc.distance_squared_to(center)
+		if pd != qd:
+			return pd < qd
+		if p.x != q.x:
+			return p.x < q.x
+		return p.y < q.y
+	for r in 33:
+		var cands: Array = []
+		for wlz in range(clz - r, clz + r + 1):
+			for wlx in range(clx - r, clx + r + 1):
+				if r > 0 and absi(wlx - clx) < r \
+						and absi(wlz - clz) < r:
+					continue # the inner box was examined
+				cands.append(Vector2i(wlx, wlz))
+		cands.sort_custom(by_dist_then_lot)
+		for c in cands:
+			var lot: Vector2i = c
+			if _lot_is_road(seed, lot.x, lot.y, seg_cache):
+				continue
+			if not building_at(seed, lot.x, lot.y, {},
+					seg_cache).is_empty():
+				continue
+			return Vector2((float(lot.x) + 0.5) * LOT_SIZE,
+				(float(lot.y) + 0.5) * LOT_SIZE)
+	# No qualifying lot within 32 lots (256 m) — defensive;
+	# settlements thin out long before this. Fall back to the
+	# center's own lot center so callers still get a point.
+	return Vector2((float(clx) + 0.5) * LOT_SIZE,
+		(float(clz) + 0.5) * LOT_SIZE)
+
+
 static func _dist_to_segment(p: Vector2, a: Vector2, b: Vector2) -> float:
 	var ab := b - a
 	var len2 := ab.length_squared()
@@ -271,7 +323,14 @@ static func height_at(seed: int, wx: float, wz: float) -> float:
 # Layer 4 + assembly: lots & buildings.
 # ------------------------------------------------------------------
 
-static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED) -> RefCounted:
+## Chunk generation. `track_segs` (issue #244 T2) is the
+## chunk's track segment list ([Vector2, Vector2] station-
+## point pairs, from TrainNetwork) — with it, lots inside a
+## track corridor lose anchor candidacy via the lot context's
+## dist_track term; without it (the default, every pre-#244
+## caller) the output is the seed-pure world, byte-identical.
+static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED,
+		track_segs: Array = []) -> RefCounted:
 	var data := ChunkData.new()
 	data.cx = cx
 	data.cz = cz
@@ -290,6 +349,10 @@ static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED) -> RefCount
 	# chunk generation encountered it (chunks never share lots, but
 	# the discipline keeps the rule uniform across layers).
 	var seg_cache := {"%d,%d" % [cx, cz]: segments}
+	if not track_segs.is_empty():
+		# Read by _lot_context / _lot_is_track for span
+		# resolution (the per-lot term below rides the ctx).
+		seg_cache["__track_segs"] = track_segs
 	for lz in LOTS_PER_CHUNK:
 		for lx in LOTS_PER_CHUNK:
 			var wlx := cx * LOTS_PER_CHUNK + lx
@@ -299,6 +362,10 @@ static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED) -> RefCount
 			var dist_road := 1.0e9
 			for seg in segments:
 				dist_road = minf(dist_road, _dist_to_segment(center, seg[0], seg[1]))
+			var dist_track := 1.0e9
+			for seg in track_segs:
+				dist_track = minf(dist_track,
+					_dist_to_segment(center, seg[0], seg[1]))
 			var idx := lz * LOTS_PER_CHUNK + lx
 			if dist_road <= ROAD_HALF_WIDTH:
 				data.lots[idx] = ChunkData.ROAD
@@ -309,7 +376,8 @@ static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED) -> RefCount
 				data.lots[idx] = ChunkData.EMPTY
 				continue
 			var b := building_at(seed, wlx, wlz,
-				{"dist_road": dist_road, "dinfo": dinfo}, seg_cache)
+				{"dist_road": dist_road, "dist_track": dist_track,
+					"dinfo": dinfo}, seg_cache)
 			if not b.is_empty():
 				data.lots[idx] = ChunkData.BUILDING
 				data.buildings.append([lx, lz, int(b["floors"]),
@@ -358,7 +426,17 @@ static func _lot_context(seed: int, wlx: int, wlz: int, seg_cache: Dictionary) -
 	var dist_road := 1.0e9
 	for seg in seg_cache[key]:
 		dist_road = minf(dist_road, _dist_to_segment(center, seg[0], seg[1]))
-	return {"dist_road": dist_road,
+	# Issue #244 T2: the dist_track term, present when the
+	# caller's cache carries the chunk's track segments
+	# (generate_chunk stashes them under "__track_segs").
+	# Absent segments = no track knowledge = infinite
+	# distance, so every track-blind caller keeps the
+	# pre-#244 answers byte-identically.
+	var dist_track := 1.0e9
+	for seg in seg_cache.get("__track_segs", []):
+		dist_track = minf(dist_track,
+			_dist_to_segment(center, seg[0], seg[1]))
+	return {"dist_road": dist_road, "dist_track": dist_track,
 		"dinfo": density_at_world(seed, center.x, center.y)}
 
 
@@ -366,11 +444,24 @@ static func _lot_is_road(seed: int, wlx: int, wlz: int, seg_cache: Dictionary) -
 	return float(_lot_context(seed, wlx, wlz, seg_cache)["dist_road"]) <= ROAD_HALF_WIDTH
 
 
+## Issue #244 T2: the road test's track twin — a lot inside
+## a track corridor (the "__track_segs" the caller stashed,
+## exactly as _lot_context reads them).
+static func _lot_is_track(seed: int, wlx: int, wlz: int, seg_cache: Dictionary) -> bool:
+	return float(_lot_context(seed, wlx, wlz, seg_cache)["dist_track"]) <= TRACK_HALF_WIDTH
+
+
 ## The anchor candidacy of one lot (the #197 building rule with
 ## the #200 caps): {} when the lot carries no building of its own,
 ## else {floors, style, dens}.
 static func _anchor_candidate(seed: int, wlx: int, wlz: int, ctx: Dictionary) -> Dictionary:
 	if float(ctx["dist_road"]) <= ROAD_HALF_WIDTH:
+		return {}
+	# Issue #244 T2: buildings never anchor on the track —
+	# a lot inside a track corridor is treated as a road
+	# lot for candidacy (spec §3.3). A ctx without the
+	# term (every pre-#244 caller) reads as infinite.
+	if float(ctx.get("dist_track", 1.0e9)) <= TRACK_HALF_WIDTH:
 		return {}
 	var dinfo: Dictionary = ctx["dinfo"]
 	var dens := float(dinfo["density"])
@@ -432,6 +523,10 @@ static func _resolve_span(seed: int, wlx: int, wlz: int, dens: float,
 			var mx := wlx + dx
 			var mz := wlz + dz
 			if _lot_is_road(seed, mx, mz, seg_cache):
+				return Vector2i(1, 1)
+			# Issue #244 T2: a span never claims a track
+			# lot either (the road rule's twin).
+			if _lot_is_track(seed, mx, mz, seg_cache):
 				return Vector2i(1, 1)
 			var mctx := _lot_context(seed, mx, mz, seg_cache)
 			if not _anchor_candidate(seed, mx, mz, mctx).is_empty():

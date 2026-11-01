@@ -282,6 +282,7 @@ func _run() -> void:
 	_test_entry_arming_241()
 	_test_cloud_hardening_243()
 	_test_train_network_244()
+	_test_train_world_244()
 	_print_results()
 	quit()
 
@@ -25511,6 +25512,256 @@ func _test_train_network_244() -> void:
 		"244(D): the entry arm's reconstruction stamps the canonical array form (the #244 rider)")
 	DungeonScript.reset_act2_state()
 	print("[Playtest] Train network derivation (244) test done.")
+
+
+## Issue #244 Phase T2 — track + stations in the world: the
+## physical layer (station points, per-chunk segments, the
+## grade), the dist_track world-gen delta, and the
+## streamer's detail-pass dressing. Pure legs drive the
+## derivations directly (expectations counted from the
+## generator / first principles, never from the SUT's own
+## tables); the census leg measures the delta chunk by
+## chunk; the streamer leg composes a real streamer.
+func _test_train_world_244() -> void:
+	var WG := load("res://scripts/world/world_gen.gd")
+	var TN := load("res://scripts/world/train_network.gd")
+	var Streamer := load("res://scripts/world/world_streamer.gd")
+	var WorldCache := load("res://scripts/world/world_cache.gd")
+	var seed: int = WG.WORLD_SEED
+	var hc := Vector2.ZERO
+	var hs := Vector2(124.0, 44.0)
+	var set1: Array = ["0,-2", "0,2"]
+
+	# ----- A: segments are the graph, station to station --
+	var pts: Dictionary = TN.station_points(seed, set1, hc, hs)
+	_assert(pts["home"] == hs,
+		"244T2(A): the home station point is the supplied doorstep point")
+	_assert(pts["0,-2"] == Vector2(348.0, -1084.0)
+			and pts["0,2"] == Vector2(156.0, 2548.0),
+		"244T2(A): city station points match the independently probed lot snaps ((348,-1084) / (156,2548))")
+	var segs: Array = TN.edge_segments(seed, set1, hc, hs)
+	_assert(segs.size() == 3,
+		"244T2(A): the starter graph's 3 edges are 3 physical segments")
+	var seg_strs := {}
+	for s in segs:
+		seg_strs["%s>%s" % [s[0], s[1]]] = true
+		_assert(pts.values().has(s[0]) and pts.values().has(s[1]),
+			"244T2(A): every segment endpoint is a station point (spec 2.4)")
+	_assert(TN.track_segments_near_chunk(seed, 0, 0,
+			set1, hc, hs).size() == 2,
+		"244T2(A): the home chunk's query returns home's two segments")
+	_assert(TN.track_segments_near_chunk(seed, 40, 40,
+			set1, hc, hs).is_empty(),
+		"244T2(A): a far chunk's query returns nothing")
+	var mid_seg: Array = []
+	for s in segs:
+		if (s[0] == hs and s[1] == pts["0,-2"]) \
+				or (s[1] == hs and s[0] == pts["0,-2"]):
+			mid_seg = s
+	var midp := (Vector2(mid_seg[0]) + Vector2(mid_seg[1])) * 0.5
+	var mc := Vector2i(int(floor(midp.x / 128.0)),
+		int(floor(midp.y / 128.0)))
+	var in_mid := false
+	for s in TN.track_segments_near_chunk(seed, mc.x, mc.y,
+			set1, hc, hs):
+		if s == mid_seg:
+			in_mid = true
+	_assert(in_mid,
+		"244T2(A): the segment crosses its midpoint chunk's query (border continuity)")
+
+	# ----- B: station point character ----------------------
+	for key in ["0,-2", "0,2"]:
+		var p: Vector2 = pts[key]
+		var wlx := int(floor(p.x / 8.0))
+		var wlz := int(floor(p.y / 8.0))
+		_assert(absf(fposmod(p.x - 4.0, 8.0)) < 0.01
+				and absf(fposmod(p.y - 4.0, 8.0)) < 0.01,
+			"244T2(B): a station point is a lot center (%s)" % key)
+		_assert((WG.building_at(seed, wlx, wlz)
+				as Dictionary).is_empty(),
+			"244T2(B): the station lot carries no building anchor (%s)" % key)
+		_assert(not WG._lot_is_road(seed, wlx, wlz, {}),
+			"244T2(B): the station lot is not a road lot (%s)" % key)
+		_assert(p.distance_to(TN.node_center(seed, key, hc)) < 64.0,
+			"244T2(B): the station lot is near its settlement center (%s)" % key)
+		_assert(WG.station_point_for(seed,
+				TN.node_center(seed, key, hc)) == p,
+			"244T2(B): the station search is deterministic (%s)" % key)
+
+	# ----- C: the grade ------------------------------------
+	var ga: Vector2 = pts["home"]
+	var gb: Vector2 = pts["0,-2"]
+	var glen := ga.distance_to(gb)
+	var gdir := (gb - ga) / glen
+	var raw_at = func(k: int) -> float:
+		var pp := ga + gdir * minf(float(k) * 16.0, glen)
+		return WG.height_at(seed, pp.x, pp.y)
+	_assert(absf(TN.grade_height(seed, ga, gb, 0.0)
+			- (raw_at.call(0) + raw_at.call(1)
+				+ raw_at.call(2)) / 3.0) < 0.001,
+		"244T2(C): grade at the station is the window-smoothed sample mean (recomputed independently)")
+	var gn := maxi(1, int(ceil(glen / 16.0)))
+	_assert(absf(TN.grade_height(seed, ga, gb, glen)
+			- (raw_at.call(gn - 2) + raw_at.call(gn - 1)
+				+ raw_at.call(gn)) / 3.0) < 0.001,
+		"244T2(C): grade at the far station is the end-clamped window mean")
+	var max_step := 0.0
+	var max_dev := 0.0
+	var prev: float = TN.grade_height(seed, ga, gb, 0.0)
+	var gd := 4.0
+	while gd < glen:
+		var gv: float = TN.grade_height(seed, ga, gb, gd)
+		max_step = maxf(max_step, absf(gv - prev))
+		prev = gv
+		var pp2 := ga + gdir * gd
+		max_dev = maxf(max_dev,
+			absf(gv - WG.height_at(seed, pp2.x, pp2.y)))
+		gd += 4.0
+	_assert(max_step < 1.5,
+		"244T2(C): the grade is continuous (max 4 m step %.2f m)" % max_step)
+	_assert(max_dev > 0.5,
+		"244T2(C): the smoothing does real work (max |grade - raw| %.2f m)" % max_dev)
+
+	# ----- D: the world-gen delta census -------------------
+	var city_chunk := Vector2i(2, -9)
+	_assert(WG.generate_chunk(city_chunk.x, city_chunk.y).serialize()
+			== WG.generate_chunk(city_chunk.x,
+				city_chunk.y, seed, []).serialize(),
+		"244T2(D): the default (no segments) generation is the seed-pure world, byte-identical")
+	var differing := 0
+	var scanned := 0
+	var seen_chunks := {}
+	var sd := 0.0
+	while sd < glen and scanned < 40:
+		var pp3 := ga + gdir * sd
+		sd += 64.0
+		var cc := Vector2i(int(floor(pp3.x / 128.0)),
+			int(floor(pp3.y / 128.0)))
+		if seen_chunks.has(cc):
+			continue
+		seen_chunks[cc] = true
+		scanned += 1
+		var chunk_segs: Array = TN.track_segments_near_chunk(
+			seed, cc.x, cc.y, set1, hc, hs)
+		var bare = WG.generate_chunk(cc.x, cc.y)
+		var with = WG.generate_chunk(cc.x, cc.y, seed,
+			chunk_segs)
+		_assert((bare.heights as PackedFloat32Array)
+				== (with.heights as PackedFloat32Array),
+			"244T2(D): heights identical on corridor chunk %s (terrain untouched)" % str(cc))
+		# Lot classes: a suppressed anchor's lot falls back
+		# to its class roll, so classes differ exactly where
+		# buildings changed — every differing lot must be
+		# provably on-corridor, like the records below.
+		var bare_lots: Array = bare.lots
+		var with_lots: Array = with.lots
+		for li in bare_lots.size():
+			if bare_lots[li] == with_lots[li]:
+				continue
+			var lot_c := Vector2(
+				(float(cc.x * 16 + li % 16) + 0.5) * 8.0,
+				(float(cc.y * 16 + li / 16) + 0.5) * 8.0)
+			var lbest := 1.0e9
+			for s in TN.edge_segments(seed, set1, hc, hs):
+				lbest = minf(lbest, WG._dist_to_segment(
+					lot_c, s[0], s[1]))
+			_assert(lbest <= WG.TRACK_HALF_WIDTH + 24.0,
+				"244T2(D): every changed lot class is provably on-corridor (lot %.1f m from a segment, chunk %s)" % [lbest, str(cc)])
+		var bare_recs: Array = bare.buildings
+		var with_recs: Array = with.buildings
+		for r in with_recs:
+			_assert(bare_recs.has(r),
+				"244T2(D): track generation never creates a building (chunk %s)" % str(cc))
+		for r in bare_recs:
+			if with_recs.has(r):
+				continue
+			differing += 1
+			var anchor := Vector2(
+				(float(cc.x * 16 + int(r[0])) + 0.5) * 8.0,
+				(float(cc.y * 16 + int(r[1])) + 0.5) * 8.0)
+			var best := 1.0e9
+			for s in TN.edge_segments(seed, set1, hc, hs):
+				best = minf(best, WG._dist_to_segment(
+					anchor, s[0], s[1]))
+			_assert(best <= WG.TRACK_HALF_WIDTH + 24.0,
+				"244T2(D): every changed building is provably on-corridor (anchor %.1f m from a segment, chunk %s)" % [best, str(cc)])
+	_assert(differing > 0,
+		"244T2(D): the delta is real — buildings on the corridor are suppressed (%d changed over %d chunks)" % [differing, scanned])
+
+	# ----- E: the streamer dressing -------------------------
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var st = Streamer.new()
+	holder.add_child(st)
+	st.call("set_track_network", set1, hc, hs)
+	# Cache discipline: a live set bypasses the pure cache.
+	var probe_c := Vector2i(7, -13)
+	st.call("_chunk_data_sync", probe_c.x, probe_c.y)
+	_assert((WorldCache.read_payload(probe_c.x,
+			probe_c.y) as Dictionary).is_empty(),
+		"244T2(E): with a live set, generation writes nothing to the seed-pure cache")
+	# The home chunk: track + station + the resting consist.
+	st.call("_build_chunk", 0, 0)
+	var active: Dictionary = st.get("_active")
+	var rec: Dictionary = active["0,0"]
+	st.call("_make_track", rec)
+	var tnode: Node = rec["track"]
+	_assert(tnode != null,
+		"244T2(E): the home chunk gains track dressing")
+	var mesh_inst := tnode.get_node_or_null("TrackMesh") \
+		as MeshInstance3D
+	_assert(mesh_inst != null and mesh_inst.mesh != null,
+		"244T2(E): the dressing flushes to a merged mesh")
+	var varr: PackedVector3Array = mesh_inst.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	_assert(varr.size() > 400,
+		"244T2(E): the home chunk's mesh carries the bed, station, and consist (%d verts)" % varr.size())
+	var term_found := false
+	var stack: Array = [tnode]
+	while not stack.is_empty():
+		var nd: Node = stack.pop_back()
+		if nd.get("station_key") != null \
+				and str(nd.get("station_key")) == "home":
+			term_found = true
+		for ch in nd.get_children():
+			stack.append(ch)
+	_assert(term_found,
+		"244T2(E): the home station's GPS terminal stands on the platform (inert until T4)")
+	var home_boxes := 0
+	for box in TN.consist_boxes(seed, set1, hc, hs):
+		if Rect2(0, 0, 128, 128).has_point(box["at"]):
+			home_boxes += 1
+	_assert(home_boxes == 7,
+		"244T2(E): all 7 consist boxes center in the home chunk (the train rests at the home station)")
+	# A corridor chunk: bed only, no station.
+	st.call("_build_chunk", 1, -5)
+	var rec_mid: Dictionary = active["1,-5"]
+	st.call("_make_track", rec_mid)
+	_assert(rec_mid["track"] != null,
+		"244T2(E): a corridor chunk builds its bed")
+	# An off-network chunk: nothing, and the stage is free.
+	st.call("_build_chunk", 40, 40)
+	var rec_far: Dictionary = active["40,40"]
+	_assert(st.call("_make_track", rec_far) == null,
+		"244T2(E): an off-network chunk builds no track dressing")
+	# Despawn frees the dressing like every other detail.
+	var guard := 0
+	while not bool(rec["detail_done"]) and guard < 600:
+		st.call("_detail_step", rec)
+		guard += 1
+	_assert(bool(rec["detail_done"]),
+		"244T2(E): the home chunk's detail completes with the track stage inside detail_done")
+	st.call("_update_buildings", 100, 100,
+		Time.get_ticks_msec())
+	_assert(rec["track"] == null
+			and not bool(rec["detail_done"]),
+		"244T2(E): leaving the ring frees the track dressing and resets the detail pass")
+	st.queue_free()
+	holder.queue_free()
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	_assert(wsrc.contains("set_track_network"),
+		"244T2(E): WorldRoot hands the streamer the run's network at setup")
+	print("[Playtest] Train world dressing (244 T2) test done.")
 
 
 func _test_mp_continue_242() -> void:

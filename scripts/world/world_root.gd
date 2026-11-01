@@ -359,6 +359,17 @@ func _setup_streamer() -> void:
 			float(ha["rect_x"]), float(ha["rect_z"]),
 			float(ha["rect_w"]), float(ha["rect_d"])))
 		_streamer.set("suppress_enabled", true)
+	# Issue #244 T2: hand the streamer the run's train
+	# network — the discovered set from the statics + the
+	# home node's center and station point (the home
+	# building's doorstep), the suppress_rect pattern.
+	var home := Dungeon.home_building()
+	if not home.is_empty():
+		var ho: Vector3 = home["origin"]
+		var hd: Vector3 = home["doorstep"]
+		_streamer.call("set_track_network",
+			Dungeon.act2_train_cities,
+			Vector2(ho.x, ho.z), Vector2(hd.x, hd.z))
 	_streamer.call("set_target_position", _spawn_point)
 
 
