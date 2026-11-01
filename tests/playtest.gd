@@ -279,6 +279,7 @@ func _run() -> void:
 	_test_world_save_238()
 	_test_mp_continue_242()
 	_test_chunk_watchdog_240()
+	_test_entry_arming_241()
 	_print_results()
 	quit()
 
@@ -23491,6 +23492,354 @@ func _test_chunk_watchdog_240() -> void:
 	current_scene = null
 	holder.queue_free()
 	print("[Playtest] Chunk watchdog (240) test done.")
+
+
+func _test_entry_arming_241() -> void:
+	print("[Playtest] Entry arming (issue #241)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var ClockRes := load("res://scripts/world/world_clock.gd")
+	var nm = root.get_node("NetworkManager")
+	var sm = root.get_node("SaveManager")
+	var stm = root.get_node("SteamManager")
+	var saved_mode: String = nm.get("active_run_mode")
+	var saved_slot: int = nm.get("active_run_slot")
+	var saved_host: bool = bool(nm.get("is_host"))
+	var saved_steam: int = int(stm.get("steam_id"))
+	# Leaked scene fixtures from earlier sections would
+	# poison the record funnel's sampling gate — purge
+	# the composition groups first (the #238 rule).
+	for n in get_nodes_in_group("world_root"):
+		(n as Node).free()
+	for n in get_nodes_in_group("dungeon"):
+		(n as Node).free()
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	var holder := Node3D.new()
+	holder.name = "EntryArming241Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var mp241 = holder.get_multiplayer()
+	# #242 fresh-statics discipline: reset the act2/reveal
+	# statics to script defaults and ASSERT the reset took
+	# before any leg drives entry state.
+	var reset_entry = func() -> void:
+		DungeonScript.reset_act2_state()
+		DungeonScript.set("revealed", false)
+		DungeonScript.set("home_anchor", {})
+		DungeonScript.set("saved_player_state", {})
+		DungeonScript.set("act2_local_class", "")
+		DungeonScript.set("act2_spawn_at", "")
+		DungeonScript.set("world_time", 0.0)
+	var assert_reset = func(tag: String) -> void:
+		_assert(str(DungeonScript.get("act2_context")) == ""
+			and (DungeonScript.get("act2_cleared")
+				as Array).is_empty()
+			and str(DungeonScript.get(
+				"act2_anchor_building")) == ""
+			and not bool(DungeonScript.get("revealed")),
+			"241: fresh-statics reset took (%s)" % tag)
+	var mk_state = func() -> Dictionary:
+		var pl = load("res://scenes/player/player.tscn"
+			).instantiate()
+		root.add_child(pl)
+		var st: Dictionary = pl.call("get_state")
+		pl.free()
+		return st
+	var begin_world = func():
+		var w = load("res://scenes/world/world.tscn"
+			).instantiate()
+		root.add_child(w)
+		current_scene = w
+		return w
+	var end_world = func(w) -> void:
+		current_scene = holder
+		root.remove_child(w)
+		(w as Node).queue_free()
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	var home: Dictionary = DungeonScript.home_building()
+	var home_key := str(home["key"])
+	var doorstep: Vector3 = home["doorstep"]
+	var anchor_dict: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	# --- Leg 1: the Jesse shape (red-before) -----------------
+	reset_entry.call()
+	assert_reset.call("leg 1")
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict)
+	var state1: Dictionary = mk_state.call()
+	DungeonScript.set("saved_player_state", state1)
+	DungeonScript.set("act2_local_class", "architect")
+	DungeonScript.set("act2_spawn_at", "doorstep")
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 41)
+	sm.call("save_run", {"theme_id": "warlord",
+		"level_number": 6, "act1_step": 5, "revealed": true,
+		"buildings_cleared": 1, "home_anchor": anchor_dict,
+		"class_id": "architect", "player_state": state1,
+		"save_version": 2, "seed": 1}, "solo", 41)
+	var seeded1: Dictionary = sm.call("load_run", "solo", 41)
+	_assert(not seeded1.has("act2")
+			and not seeded1.has("world_time"),
+		"241(1): the fixture slot is the pulled slot's shape — act2-less, world_time-less")
+	var w1 = begin_world.call()
+	_assert(str(w1.get("_entry_arm_outcome")) == "armed",
+		"241(1): an unarmed revealed arrival is ARMED by the world begin")
+	_assert(str(DungeonScript.get("act2_context")) == "world",
+		"241(1): the context is world after the arm")
+	_assert(str(DungeonScript.get("act2_anchor_building"))
+			== home_key
+			and (DungeonScript.get("act2_anchor_doorstep")
+				as Vector3) == doorstep,
+		"241(1): the reconstructed anchor is the home building at its doorstep")
+	var loaded1: Dictionary = sm.call("load_run", "solo", 41)
+	var act2_1: Dictionary = loaded1.get("act2", {})
+	_assert(str(act2_1.get("context", "")) == "world"
+			and loaded1.has("world_time"),
+		"241(1): the slot now carries act2 (context world) and world_time TOGETHER")
+	# Arrival lands at the doorstep: pump the streamer
+	# until the local player stands (the entry gate).
+	var streamer1 = w1.get_node("WorldStreamer")
+	var deadline1 := Time.get_ticks_msec() + 30000
+	while w1.get("_local_player") == null \
+			and Time.get_ticks_msec() < deadline1:
+		streamer1.call("update_streaming")
+	var player1 = w1.get("_local_player")
+	_assert(player1 != null
+			and Vector2((player1 as Node3D).global_position.x,
+				(player1 as Node3D).global_position.z).distance_to(
+				Vector2(doorstep.x, doorstep.z)) < 2.5,
+		"241(1): arrival lands at the home doorstep")
+	end_world.call(w1)
+	# --- Leg 6 fixture: the transition-stamped record --------
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict)
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 40)
+	sm.call("save_run", {"theme_id": "warlord",
+		"level_number": 6, "seed": 1}, "solo", 40)
+	var dfx = DungeonScript.new()
+	root.add_child(dfx)
+	dfx.call("rpc_act2_transition", home_key, doorstep)
+	var loaded6: Dictionary = sm.call("load_run", "solo", 40)
+	var act2_6: Dictionary = loaded6.get("act2", {})
+	dfx.free()
+	var ds1: Array = act2_1.get("anchor_doorstep", [])
+	var ds6: Array = act2_6.get("anchor_doorstep", [])
+	_assert(str(act2_1.get("context", ""))
+				== str(act2_6.get("context", ""))
+			and str(act2_1.get("anchor_building", ""))
+				== str(act2_6.get("anchor_building", ""))
+			and ds1.size() == 3 and ds6.size() == 3
+			and absf(float(ds1[0]) - float(ds6[0])) < 0.01
+			and absf(float(ds1[2]) - float(ds6[2])) < 0.01
+			and (act2_1.get("cleared", []) as Array).has(home_key)
+			and (act2_6.get("cleared", []) as Array).has(home_key)
+			and str((act2_1.get("last_transition", {})
+				as Dictionary).get("building", ""))
+				== str((act2_6.get("last_transition", {})
+					as Dictionary).get("building", "")),
+		"241(6): the arm's stamped record matches the transition's on context/anchor/cleared/transition")
+	# --- Leg 2: already-armed regression ----------------------
+	reset_entry.call()
+	assert_reset.call("leg 2")
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict)
+	DungeonScript.set("act2_context", "world")
+	DungeonScript.set("act2_anchor_building", home_key)
+	DungeonScript.set("act2_anchor_doorstep", doorstep)
+	DungeonScript.set("act2_cleared", [home_key])
+	DungeonScript.set("act2_last_transition",
+		{"building": home_key, "point": doorstep})
+	DungeonScript.set("world_time", 321.0)
+	DungeonScript.set("saved_player_state", state1)
+	DungeonScript.set("act2_local_class", "architect")
+	DungeonScript.set("act2_spawn_at", "doorstep")
+	var fixture_act2 := {"context": "world",
+		"anchor_building": home_key,
+		"anchor_doorstep": [1.5, 0.25, -2.75],
+		"cleared": [home_key], "floor_index": 0,
+		"floor_key": "", "floor_masks": {},
+		"floor_counted": [],
+		"last_transition": {"building": home_key,
+			"point": [1.5, 0.25, -2.75]},
+		"positions": {"76561198414951018": [12.5, -34.25]}}
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 42)
+	sm.call("save_run", {"theme_id": "warlord",
+		"level_number": 6, "act1_step": 5, "revealed": true,
+		"home_anchor": anchor_dict, "act2": fixture_act2,
+		"world_time": 321.0}, "solo", 42)
+	var before2: Dictionary = (sm.call("load_run",
+		"solo", 42).get("act2", {}) as Dictionary
+		).duplicate(true)
+	var w2 = begin_world.call()
+	_assert(str(w2.get("_entry_arm_outcome")) == "already",
+		"241(2): an armed arrival reports already")
+	var after2: Dictionary = sm.call("load_run", "solo", 42)
+	_assert((after2.get("act2", {}) as Dictionary) == before2
+			and is_equal_approx(float(after2.get(
+				"world_time", 0.0)), 321.0),
+		"241(2): NO arrival stamp — the file's act2 (positions included) is the fixture's, byte-for-byte in value")
+	end_world.call(w2)
+	# --- Leg 3: Case B' — statics arm, positions survive ------
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict)
+	DungeonScript.set("saved_player_state", state1)
+	DungeonScript.set("act2_local_class", "architect")
+	DungeonScript.set("act2_spawn_at", "doorstep")
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 43)
+	sm.call("save_run", {"theme_id": "warlord",
+		"level_number": 6, "act1_step": 5, "revealed": true,
+		"home_anchor": anchor_dict, "act2": fixture_act2,
+		"world_time": 222.0}, "solo", 43)
+	var w3 = begin_world.call()
+	_assert(str(w3.get("_entry_arm_outcome")) == "armed"
+			and str(DungeonScript.get("act2_context"))
+				== "world"
+			and str(DungeonScript.get(
+				"act2_anchor_building")) == home_key,
+		"241(3): bare statics arm against a world-shaped file")
+	var after3: Dictionary = sm.call("load_run", "solo", 43)
+	_assert(((after3.get("act2", {}) as Dictionary
+			).get("positions", {}) as Dictionary)
+			== (fixture_act2["positions"] as Dictionary)
+			and is_equal_approx(float(after3.get(
+				"world_time", 0.0)), 222.0),
+		"241(3): the file is NOT re-stamped — its stored positions survive the begin")
+	end_world.call(w3)
+	# --- Leg 4: refused, loud / skipped, silent ----------------
+	reset_entry.call()
+	assert_reset.call("leg 4")
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 44)
+	sm.call("save_run", {"theme_id": "depths",
+		"level_number": 3, "seed": 7}, "solo", 44)
+	var before4: Dictionary = (sm.call("load_run",
+		"solo", 44) as Dictionary).duplicate(true)
+	var w4 = begin_world.call()
+	_assert(str(w4.get("_entry_arm_outcome")) == "refused",
+		"241(4): a pre-reveal arrival with an active run REFUSES, loudly")
+	_assert(str(DungeonScript.get("act2_context")) == ""
+			and (sm.call("load_run", "solo", 44)
+				as Dictionary) == before4,
+		"241(4): refusal changes no statics and writes nothing")
+	end_world.call(w4)
+	nm.set("active_run_slot", 45)
+	var w4b = begin_world.call()
+	_assert(str(w4b.get("_entry_arm_outcome")) == "skipped"
+			and (sm.call("load_run", "solo", 45)
+				as Dictionary).is_empty(),
+		"241(4): with no active run the arm skips silently and writes nothing")
+	end_world.call(w4b)
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	_assert(wsrc.contains("#241 entry arm: REFUSED")
+			and wsrc.contains("mode=%s slot=%d"),
+		"241(4): the refusal is bound to its full-census warning (context/revealed/anchor/mode/slot)")
+	# --- Leg 5: the door leg, rpc neutered (red-before) --------
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict)
+	DungeonScript.set("saved_player_state", state1)
+	DungeonScript.set("act2_local_class", "architect")
+	nm.set("active_run_mode", "solo")
+	nm.set("active_run_slot", 46)
+	nm.set("is_host", true)
+	stm.set("steam_id", 76561198000000001)
+	mp241.multiplayer_peer = OfflineMultiplayerPeer.new()
+	sm.call("save_run", {"theme_id": "warlord",
+		"level_number": 6, "act1_step": 5, "revealed": true,
+		"home_anchor": anchor_dict,
+		"player_state": state1}, "solo", 46)
+	var holder2 := Node3D.new()
+	holder2.name = "EntryArming241DoorHolder"
+	root.add_child(holder2)
+	# The neutered composition: the current scene is a
+	# bare node WITHOUT rpc_act2_transition — the
+	# has_method-guard shape itself.
+	current_scene = holder2
+	var dgn = load("res://scenes/dungeon/dungeon.tscn"
+		).instantiate()
+	holder2.add_child(dgn)
+	dgn.call("_create_rooftop_door")
+	var door5: Node = null
+	for n in get_nodes_in_group("rooftop_door"):
+		if dgn.is_ancestor_of(n):
+			door5 = n
+	var player5: Node = null
+	for n in get_nodes_in_group("players"):
+		if dgn.is_ancestor_of(n):
+			player5 = n
+	_assert(door5 != null and player5 != null,
+		"241(5): premise — the real dungeon composed its door and its player")
+	_assert(str(DungeonScript.get("act2_context")) == ""
+			and str(DungeonScript.get(
+				"act2_spawn_at")) == "",
+		"241(5): premise — entry state is bare before the interact")
+	door5.call("interact", player5)
+	_assert(str(DungeonScript.get("act2_spawn_at"))
+			== "doorstep",
+		"241(5): the interact ran (its sibling statics are set)")
+	_assert(str(DungeonScript.get("act2_context")) == "world",
+		"241(5): with the rpc path neutered, interact STILL arms the context locally")
+	current_scene = null
+	holder2.queue_free()
+	stm.set("steam_id", saved_steam)
+	# --- Leg 7: MP host arms; a client never does --------------
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict)
+	DungeonScript.set("saved_player_state", state1)
+	DungeonScript.set("act2_local_class", "architect")
+	DungeonScript.set("act2_spawn_at", "doorstep")
+	nm.set("active_run_mode", "mp")
+	nm.set("active_run_slot", 47)
+	sm.call("save_run", {"theme_id": "warlord",
+		"level_number": 6, "act1_step": 5, "revealed": true,
+		"home_anchor": anchor_dict,
+		"player_state": state1}, "mp", 47)
+	var w7 = begin_world.call()
+	var loaded7: Dictionary = sm.call("load_run",
+		"mp", 47)
+	_assert(str(w7.get("_entry_arm_outcome")) == "armed"
+			and (loaded7.get("act2", {}) as Dictionary
+				).get("context", "") == "world"
+			and loaded7.has("world_time"),
+		"241(7): the arm fires on an MP host's begin and stamps the MP slot")
+	end_world.call(w7)
+	reset_entry.call()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor", anchor_dict)
+	DungeonScript.set("saved_player_state", state1)
+	DungeonScript.set("act2_local_class", "architect")
+	DungeonScript.set("act2_spawn_at", "doorstep")
+	var epeer := ENetMultiplayerPeer.new()
+	epeer.create_client("127.0.0.1", 49321)
+	mp241.multiplayer_peer = epeer
+	var w7b = begin_world.call()
+	_assert(str(w7b.get("_entry_arm_outcome")) == "skipped"
+			and str(DungeonScript.get("act2_context")) == "",
+		"241(7): a client-shaped begin NEVER arms — its context stays bare until the pull's apply")
+	end_world.call(w7b)
+	mp241.multiplayer_peer = OfflineMultiplayerPeer.new()
+	epeer.close()
+	# Cleanup.
+	for s in [40, 41, 42, 43, 44, 46]:
+		sm.call("clear_run", "solo", s)
+	sm.call("clear_run", "mp", 47)
+	nm.set("active_run_mode", saved_mode)
+	nm.set("active_run_slot", saved_slot)
+	nm.set("is_host", saved_host)
+	reset_entry.call()
+	current_scene = null
+	holder.queue_free()
+	print("[Playtest] Entry arming (241) test done.")
 
 
 func _test_home_door_236() -> void:

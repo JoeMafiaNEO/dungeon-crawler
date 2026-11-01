@@ -47,6 +47,15 @@ func interact(player: Player) -> void:
 	Dungeon.saved_player_state = player.get_state()
 	Dungeon.act2_local_class = player.class_id
 	Dungeon.act2_spawn_at = "doorstep"
+	# Issue #241: the context is this peer's entry fact,
+	# like the three statics above — set it LOCALLY, so the
+	# arriving peer's statics no longer depend on the
+	# transition rpc landing (its has_method guard can skip
+	# silently). The rpc keeps its collective jobs (the
+	# cleared/anchor/transition record, the server write);
+	# the world scene's entry arm is the guarantee that the
+	# file side landed.
+	Dungeon.act2_context = "world"
 	get_tree().call_deferred("change_scene_to_file",
 		Dungeon.WORLD_SCENE)
 

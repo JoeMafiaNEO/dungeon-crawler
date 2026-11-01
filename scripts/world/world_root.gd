@@ -59,6 +59,10 @@ var _save_base: Dictionary = {}
 var _save_slot := -1
 var _respawn_in := -1.0
 var _started := false
+## Issue #241: the entry arm's outcome for this begin
+## (already / armed / refused / skipped) — the pins read
+## it; the arm itself is _arm_act2_entry below.
+var _entry_arm_outcome := ""
 
 
 func _ready() -> void:
@@ -69,6 +73,13 @@ func _ready() -> void:
 	_build_environment()
 	_streamer = get_node_or_null("WorldStreamer")
 	_build_fade()
+	# Issue #241: the entry arm runs HERE — after the
+	# group registration above (the act2_record funnel's
+	# sampling gate; before it, the funnel samples
+	# nothing) and before the pull branch, so the host's
+	# _begin and every snapshot it later serves see the
+	# armed state. The order is specified, not cosmetic.
+	_entry_arm_outcome = _arm_act2_entry()
 	if _needs_pull():
 		_gate_deadline = Time.get_ticks_msec() / 1000.0 \
 			+ PULL_BOUND_S + GATE_BOUND_S
@@ -88,6 +99,106 @@ func _needs_pull() -> bool:
 			or multiplayer.is_server():
 		return false
 	return Dungeon.home_anchor.is_empty()
+
+
+## Issue #241: the entry arm — entry arming must not be
+## fire-and-forget. The door's transition rpc can fail to
+## land silently (its has_method guard, its server leg's
+## empty-slot return), and a host/solo begin that accepts
+## a context-"" arrival silently poisons every later save
+## that session: the clock refuses at "", the writers skip
+## the stamp, and the run's Act 2 record is unrecoverable.
+## The world scene is where every fresh-entry route
+## converges and where the record funnel samples positions
+## legitimately, so the guarantee lives here: the arm
+## inspects the arrival state itself and either finds it
+## armed, repairs it loudly, or refuses it loudly.
+## Returns the outcome token: already / armed / refused /
+## skipped.
+func _arm_act2_entry() -> String:
+	# Clients never execute the arm: their context
+	# arrives by the state pull, and a client that
+	# self-armed would fabricate against the host's
+	# record.
+	if multiplayer.multiplayer_peer != null \
+			and not multiplayer.is_server():
+		return "skipped"
+	# Case A: the overwhelming common case — the door's
+	# rpc landed, a continue restored, an in-session hop
+	# set it. Nothing touched, no stamp; the file
+	# self-maintains through the clock exactly as today.
+	if Dungeon.act2_context == "world":
+		return "already"
+	var mode: String = NetworkManager.active_run_mode
+	var slot: int = NetworkManager.active_run_slot
+	var home := Dungeon.home_building()
+	if Dungeon.revealed and not home.is_empty():
+		# Case B (the Jesse shape): reconstruct the
+		# transition record the rpc would have set, from
+		# the same source the door used — fill-if-missing
+		# only, never overwrite: a partially landed
+		# transition keeps what it set.
+		var key := str(home["key"])
+		var doorstep: Vector3 = home["doorstep"]
+		var filled: Array = []
+		Dungeon.act2_context = "world"
+		if Dungeon.act2_anchor_building == "":
+			Dungeon.act2_anchor_building = key
+			Dungeon.act2_anchor_doorstep = doorstep
+			filled.append("anchor")
+		if not Dungeon.act2_cleared.has(key):
+			Dungeon.act2_cleared.append(key)
+			filled.append("cleared")
+		if Dungeon.act2_last_transition.is_empty():
+			Dungeon.act2_last_transition = {
+				"building": key, "point": doorstep}
+			filled.append("last_transition")
+		if Dungeon.world_time <= 0.0:
+			Dungeon.world_time = WorldClock.ENTRY_TIME
+			filled.append("world_time")
+		# The file stamp, CONDITIONED (Case B'): if the
+		# file already carries a world act2, do NOT stamp
+		# — its stored positions survive until the
+		# session's own clock re-stamps from live play.
+		# An unconditional stamp here would wipe #237
+		# positions with a pre-spawn sample. (At _ready
+		# no player has spawned, so a stamp taken now
+		# samples no positions — the format's "no stored
+		# position"; positions arrive with the first
+		# clock tick, sampled live in this scene.)
+		var run: Dictionary = SaveManager.load_run(mode, slot)
+		var file_act2: Dictionary = run.get("act2", {})
+		var stamp := "written"
+		if run.is_empty():
+			stamp = "no_file"
+		elif str(file_act2.get("context", "")) == "world":
+			stamp = "held_file_already_world"
+		else:
+			Dungeon.save_act2_clock()
+		push_warning("[WorldRoot] #241 entry arm: repaired "
+			+ "unarmed arrival (mode=%s slot=%d filled=%s stamp=%s)"
+			% [mode, slot,
+				",".join(PackedStringArray(filled))
+					if not filled.is_empty() else "context",
+				stamp])
+		return "armed"
+	# Case C: nothing faithful to arm — a pre-reveal run
+	# has no Act 2 record, and fabricating one would be
+	# worse than the disease. An active run that loads
+	# non-empty is a real session whose statics deny its
+	# own reveal: refuse LOUDLY (no statics changed, no
+	# write; the session proceeds, but the shape is named
+	# in the log). No active run at all (dev/staging
+	# boots, which are legitimate and frequent): skipped,
+	# silent by design.
+	var run_c: Dictionary = SaveManager.load_run(mode, slot)
+	if run_c.is_empty():
+		return "skipped"
+	push_warning("[WorldRoot] #241 entry arm: REFUSED "
+		+ "unarmed arrival (context='%s' revealed=%s home_anchor=%s mode=%s slot=%d)"
+		% [Dungeon.act2_context, str(Dungeon.revealed),
+			str(not Dungeon.home_anchor.is_empty()), mode, slot])
+	return "refused"
 
 
 ## The server root answers a joiner's pull with the run's
