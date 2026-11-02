@@ -286,6 +286,7 @@ func _run() -> void:
 	_test_train_ride_244()
 	_test_train_chart_244()
 	_test_train_expansion_244()
+	_test_boot_icon_245()
 	_print_results()
 	quit()
 
@@ -33421,3 +33422,49 @@ func _test_train_expansion_244() -> void:
 	D.act2_train_cities = saved_cities
 	D.train_state = saved_tstate
 	print("[Playtest] Train expansion live (issue #244 T5) done.")
+
+
+## Issue #245: boot splash + app icon — the project
+## boots on the game's own wordmark (black background),
+## and the app icon is the architect-conductor portrait
+## as a multi-size .ico, wired in the project config AND
+## the Windows export preset.
+func _test_boot_icon_245() -> void:
+	print("[Playtest] Boot splash + app icon (issue #245)...")
+	var pg := FileAccess.get_file_as_string(
+		"res://project.godot")
+	_assert(pg.contains(
+			"boot_splash/image=\"res://assets/sprites/ui/logo.png\""),
+		"245: the boot splash is the hintergald wordmark")
+	_assert(pg.contains("boot_splash/bg_color=Color(0, 0, 0, 1)"),
+		"245: the boot splash background is black")
+	_assert(pg.contains("config/icon=\"res://icon.ico\""),
+		"245: the project icon is the portrait .ico")
+	_assert(FileAccess.file_exists(
+			"res://assets/sprites/ui/logo.png"),
+		"245: the splash image exists in the repo")
+	var ep := FileAccess.get_file_as_string(
+		"res://export_presets.cfg")
+	_assert(ep.contains("application/icon=\"res://icon.ico\""),
+		"245: the Windows export preset carries the portrait icon")
+	# The .ico itself: a valid multi-size container whose
+	# entries span the small taskbar sizes up to 256.
+	_assert(FileAccess.file_exists("res://icon.ico"),
+		"245: icon.ico exists in the repo")
+	var f := FileAccess.open("res://icon.ico",
+		FileAccess.READ)
+	if f != null:
+		_assert(f.get_16() == 0 and f.get_16() == 1,
+			"245: icon.ico header is a valid icon container")
+		var count := f.get_16()
+		_assert(count >= 7,
+			"245: icon.ico carries the full size set")
+		var widths: Array = []
+		for i in count:
+			f.seek(6 + i * 16)
+			widths.append(f.get_8())
+		_assert(widths.has(0) and widths.has(16)
+				and widths.has(32) and widths.has(48),
+			"245: icon.ico spans 16/32/48 through 256 (width byte 0)")
+		f.close()
+	print("[Playtest] Boot splash + app icon (issue #245) done.")
