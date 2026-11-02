@@ -580,7 +580,7 @@ static func consist_boxes(seed: int, discovered: Array,
 static func initial_state() -> Dictionary:
 	return {"status": "idle", "at": "home", "course": [],
 		"path": [], "duration_msec": 0, "riders": {},
-		"empty_run": false}
+		"empty_run": false, "legs": []}
 
 
 ## Route a plotted course (spec §2.3 applied per leg):

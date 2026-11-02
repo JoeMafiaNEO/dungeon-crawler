@@ -651,6 +651,10 @@ const TRAIN_SCENE := "res://scenes/station/train_interior.tscn"
 ## The server's own departure tick (its clock only).
 var _train_departed_msec := 0
 
+## The server's arrival tick at an intermediate stop
+## (issue #244 T6): the dwell clock starts here.
+var _train_stopped_msec := 0
+
 
 ## Elapsed msec of the current leg on the server's clock.
 func train_elapsed_msec() -> int:
@@ -707,7 +711,11 @@ func train_apply_state(state: Dictionary, elapsed_msec: int) -> void:
 			car.call("apply_world_skip", maxf(
 				(int(state.get("duration_msec", 0))
 					- elapsed_msec) / 1000.0, 0.0))
-		elif now_status == "idle" and prev == "moving":
+		elif (now_status == "idle" or now_status == "stopped") \
+				and prev == "moving":
+			# Final settle AND intermediate stops (T6)
+			# both run the car's arrival beat: doors,
+			# brake, the disembark body at this station.
 			car.call("apply_world_arrival")
 		car.call("apply_world_riders", state.get("riders", {}))
 		return
@@ -727,7 +735,8 @@ func train_apply_state(state: Dictionary, elapsed_msec: int) -> void:
 				WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
 				hc, hs, state, 0)
 			AudioManager.sfx("train_whistle", p0["pos"])
-	elif now_status == "idle" and prev == "moving":
+	elif (now_status == "idle" or now_status == "stopped") \
+			and prev == "moving":
 		var p1 := TrainNetwork.train_position(
 			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
 			hc, hs, state, 0)
@@ -845,8 +854,12 @@ func train_summon_server(peer: int, station: String) -> bool:
 		true)
 
 
-## Shared departure: validate the course, route it, stamp
-## the leg, broadcast. Course-locked from this moment
+## Shared departure: validate the course, then depart
+## its FIRST leg (issue #244 T6: the ride is leg-wise —
+## the train stops at every plotted node, §5). The full
+## course is validated up front (any unroutable leg
+## refuses the whole confirm); each leg's motion is
+## routed as it departs. Course-locked from this moment
 ## (§9-T3: mid-ride course lock is the moving state
 ## itself — confirms and summons both refuse).
 func _train_depart(course: Array, empty_run: bool) -> bool:
@@ -863,25 +876,63 @@ func _train_depart(course: Array, empty_run: bool) -> bool:
 		(hb["origin"] as Vector3).z)
 	var hs := Vector2((hb["doorstep"] as Vector3).x,
 		(hb["doorstep"] as Vector3).z)
-	var rp := TrainNetwork.route_path(WorldGen.WORLD_SEED,
+	var whole := TrainNetwork.route_path(WorldGen.WORLD_SEED,
 		Dungeon.act2_train_cities, hc, hs, course)
-	if float(rp["length"]) <= 0.0:
+	if float(whole["length"]) <= 0.0:
 		return false
-	st["status"] = "moving"
 	st["course"] = course.duplicate()
-	st["path"] = rp["nodes"]
-	st["duration_msec"] = TrainNetwork.duration_msec_for(
-		float(rp["length"]))
+	st["legs"] = course.slice(1)
 	st["empty_run"] = empty_run
 	if empty_run:
 		st["riders"] = {}
-	_train_departed_msec = Time.get_ticks_msec()
 	# The plotted draft is consumed by the departure
 	# (issue #244 T4, §5 locking).
 	Dungeon.train_draft = []
 	rpc("rpc_train_draft", [])
+	return _train_depart_leg()
+
+
+## Depart the current leg: from the train's node to the
+## head of the remaining legs. Shared by the initial
+## departure and by a stop's continuation (T6).
+func _train_depart_leg() -> bool:
+	var st := Dungeon.train_state
+	var legs: Array = st.get("legs", [])
+	if legs.is_empty():
+		return false
+	var hb: Dictionary = Dungeon.home_building()
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var rp := TrainNetwork.route_path(WorldGen.WORLD_SEED,
+		Dungeon.act2_train_cities, hc, hs,
+		[str(st.get("at", "home")), str(legs[0])])
+	if float(rp["length"]) <= 0.0:
+		return false
+	st["status"] = "moving"
+	st["path"] = rp["nodes"]
+	st["duration_msec"] = TrainNetwork.duration_msec_for(
+		float(rp["length"]))
+	_train_departed_msec = Time.get_ticks_msec()
 	_train_broadcast()
 	return true
+
+
+## Continue from an intermediate stop (issue #244 T6):
+## depart the course's next leg. Jesse's dwell ruling
+## (2026-11-02): the train departs a stop ONLY when a
+## rider confirms — no timed auto-continue. Confirm
+## requires the sender aboard (F6, as for courses).
+func train_continue_server(peer: int) -> bool:
+	if not multiplayer.is_server():
+		return false
+	var st := Dungeon.train_state
+	if str(st.get("status", "")) != "stopped":
+		return false
+	if not (st.get("riders", {}) as Dictionary).has(peer):
+		return false
+	return _train_depart_leg()
 
 
 ## Skip (F5): the ride's only interruption — same
@@ -891,6 +942,11 @@ func train_skip_server(peer: int) -> bool:
 	if not multiplayer.is_server():
 		return false
 	var st := Dungeon.train_state
+	if str(st.get("status", "")) == "stopped":
+		# At an intermediate stop the lever departs the
+		# next leg now (T6: the dwell ruling's confirm
+		# semantics, rider-gated inside continue).
+		return train_continue_server(peer)
 	if str(st.get("status", "")) != "moving":
 		return false
 	if not (st.get("riders", {}) as Dictionary).has(peer):
@@ -913,28 +969,38 @@ func train_leave_server(peer: int) -> void:
 		_train_broadcast()
 
 
-## The arrival beat (server tick): validate elapsed >=
-## duration, settle at the final node, then the §6
-## expansion loop (issue #244 T5): the hook applies the
-## arrival city's ring locally, and any NEW keys ride
-## the discovery sync so every peer's set (and chart)
-## grows at once. The record stamps itself — every save
-## writer funnels through act2_record(), which reads the
-## grown statics. The beat's shape (settle → expand →
-## broadcast) is per-arrival: T6's intermediate stops
-## fire this same beat per plotted node.
+## The arrival beat (server tick): the leg has ended at
+## a plotted node. The §6 expansion loop (issue #244
+## T5) fires at EVERY plotted-city arrival: the hook
+## applies the arrival city's ring locally, and any NEW
+## keys ride the discovery sync so every peer's set (and
+## chart) grows at once; the record stamps itself
+## through the act2_record funnel. If the course has
+## legs left, this arrival is a STOP (issue #244 T6,
+## §5: stops are the plotted nodes) — the train stands
+## at the station, boardable, until the continuation
+## departs the next leg; the final plotted node settles
+## idle exactly as before.
 func train_arrive_server() -> void:
 	var st := Dungeon.train_state
 	var path: Array = st.get("path", [])
 	if path.is_empty():
 		return
 	var dest := str(path[path.size() - 1])
-	st["status"] = "idle"
+	var legs: Array = st.get("legs", [])
+	if not legs.is_empty() and str(legs[0]) == dest:
+		legs = legs.slice(1)
+	st["legs"] = legs
 	st["at"] = dest
-	st["course"] = []
 	st["path"] = []
 	st["duration_msec"] = 0
-	st["empty_run"] = false
+	if legs.is_empty():
+		st["status"] = "idle"
+		st["course"] = []
+		st["empty_run"] = false
+	else:
+		st["status"] = "stopped"
+		_train_stopped_msec = Time.get_ticks_msec()
 	_train_broadcast()
 	if dest != "home":
 		var added: Array = Dungeon.train_expand_at(dest)
@@ -1008,6 +1074,24 @@ func train_summon_request(station: String) -> void:
 	if multiplayer.is_server():
 		train_summon_server(multiplayer.get_remote_sender_id(),
 			station)
+
+
+## Continue from an intermediate stop (issue #244 T6):
+## the chart's Confirm while stopped and the skip lever
+## both land here — a rider's confirm departs the leg.
+func train_continue() -> void:
+	if multiplayer.is_server():
+		train_continue_server(multiplayer.get_unique_id())
+	else:
+		rpc_id(NetworkManager.server_peer_id,
+			"train_continue_request")
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_continue_request() -> void:
+	if multiplayer.is_server():
+		train_continue_server(
+			multiplayer.get_remote_sender_id())
 
 
 func train_skip() -> void:

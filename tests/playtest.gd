@@ -287,6 +287,7 @@ func _run() -> void:
 	_test_train_chart_244()
 	_test_train_expansion_244()
 	_test_boot_icon_245()
+	_test_train_multistop_244()
 	_print_results()
 	quit()
 
@@ -33468,3 +33469,158 @@ func _test_boot_icon_245() -> void:
 			"245: icon.ico spans 16/32/48 through 256 (width byte 0)")
 		f.close()
 	print("[Playtest] Boot splash + app icon (issue #245) done.")
+
+
+## Issue #244 T6: multi-stop courses — the train stops
+## at every PLOTTED node (the T5 arrival beat fires per
+## stop), passes unplotted interchanges without
+## stopping, and settles at the final node as before.
+## Continuation is driven through train_continue_server
+## (the dwell trigger's seam).
+func _test_train_multistop_244() -> void:
+	print("[Playtest] Train multi-stop courses (issue #244 T6)...")
+	var TN: GDScript = load("res://scripts/world/train_network.gd")
+	var D = load("res://scripts/dungeon/dungeon.gd")
+	var seed := 20261023  # WorldGen.WORLD_SEED
+	var NM6: Node = root.get_node("NetworkManager")
+	var saved_anchor: Dictionary = D.home_anchor
+	var saved_cities: Array = D.act2_train_cities
+	var saved_tstate: Dictionary = D.train_state
+	var saved_draft: Array = D.train_draft
+	D.home_anchor = D.compute_home_anchor(96.0)
+	var hb: Dictionary = D.home_building()
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	# "7,1" is withheld: it sits in 7,0's expansion ring,
+	# so the 7,0 STOP must discover it mid-course.
+	D.act2_train_cities = ["7,0", "9,1", "6,1"]
+	NM6.call("train_ensure_state")
+	D.train_state = TN.initial_state()
+	D.train_state["riders"] = {1: [0, 76561198000000000]}
+	# (A) A three-stop course departs its FIRST leg only.
+	_assert(bool(NM6.call("train_confirm_server", 1,
+			["home", "7,0", "9,1", "6,1"])),
+		"244T6(A): the multi-stop course confirms")
+	_assert(String(D.train_state.get("status", ""))
+			== "moving",
+		"244T6(A): the first leg is moving")
+	_assert((D.train_state.get("legs", []) as Array)
+			== ["7,0", "9,1", "6,1"],
+		"244T6(A): the legs are the plotted destinations")
+	_assert(String((D.train_state["path"] as Array).back())
+			== "7,0",
+		"244T6(A): the moving path ends at the first stop")
+	_assert((D.train_state["course"] as Array)
+			== ["home", "7,0", "9,1", "6,1"],
+		"244T6(A): the full course is retained")
+	# (B) Arrival at 7,0 is a STOP: the beat fires
+	# (expansion discovers 7,1), the course survives.
+	NM6.call("train_skip_server", 1)
+	NM6.call("train_arrive_server")
+	_assert(String(D.train_state.get("status", ""))
+			== "stopped",
+		"244T6(B): the train STOPS at the plotted node")
+	_assert(String(D.train_state.get("at", "")) == "7,0",
+		"244T6(B): the stop is 7,0")
+	_assert((D.train_state.get("legs", []) as Array)
+			== ["9,1", "6,1"],
+		"244T6(B): the remaining legs survive the stop")
+	_assert((D.act2_train_cities as Array).has("7,1"),
+		"244T6(B): the expansion beat fired AT THE STOP")
+	_assert((D.train_state["course"] as Array)
+			== ["home", "7,0", "9,1", "6,1"],
+		"244T6(B): expansion never rewrites the ridden course")
+	# (C) At the stop: boarding is open (§4.4), confirm
+	# and summon refuse (a course is underway).
+	_assert(bool(NM6.call("train_board_server", 2,
+			"rogue", 76561198000000002)),
+		"244T6(C): a player may board at the stop")
+	_assert(not bool(NM6.call("train_confirm_server", 1,
+			["7,0", "6,1"])),
+		"244T6(C): no new course confirms mid-course")
+	_assert(not bool(NM6.call("train_summon_server", 2,
+			"6,1")),
+		"244T6(C): a stopped train is not summonable")
+	_assert(not bool(NM6.call("train_continue_server", 77)),
+		"244T6(C): a non-rider cannot confirm departure")
+	_assert(not bool(NM6.call("train_skip_server", 77)),
+		"244T6(C): a non-rider's skip cannot depart the stop")
+	NM6.set("_train_stopped_msec", 0)
+	NM6.call("_train_tick")
+	_assert(String(D.train_state.get("status", ""))
+			== "stopped",
+		"244T6(C): no timed auto-continue, however old the stop")
+	# (D) Continue: the next leg departs; arrival at 9,1
+	# stops again.
+	_assert(bool(NM6.call("train_continue_server", 1)),
+		"244T6(D): a rider's confirm departs the next leg")
+	_assert(String((D.train_state["path"] as Array).back())
+			== "9,1",
+		"244T6(D): the second leg ends at 9,1")
+	NM6.call("train_skip_server", 1)
+	NM6.call("train_arrive_server")
+	_assert(String(D.train_state.get("status", ""))
+			== "stopped"
+			and String(D.train_state.get("at", "")) == "9,1",
+		"244T6(D): the train stops at the second plotted node")
+	# (E) The final leg settles idle, exactly as before.
+	_assert(bool(NM6.call("train_skip_server", 1)),
+		"244T6(E): skip at a stop departs the final leg")
+	_assert(String(D.train_state.get("status", ""))
+			== "moving",
+		"244T6(E): the final leg is moving after the skip")
+	NM6.call("train_skip_server", 1)
+	NM6.call("train_arrive_server")
+	_assert(String(D.train_state.get("status", ""))
+			== "idle"
+			and String(D.train_state.get("at", "")) == "6,1",
+		"244T6(E): the final plotted node settles idle")
+	_assert((D.train_state.get("legs", []) as Array).is_empty()
+			and (D.train_state["course"] as Array).is_empty(),
+		"244T6(E): the settled state is the pre-T6 shape")
+	# (F) Pass-through: a course whose route crosses an
+	# unplotted interchange never stops there — its one
+	# leg ends at the plotted destination.
+	D.train_state = TN.initial_state()
+	D.train_state["riders"] = {1: [0, 76561198000000000]}
+	var dest_f := ""
+	for cand in ["9,1", "6,1", "7,0", "7,1"]:
+		if not (D.act2_train_cities as Array).has(cand):
+			continue
+		var rp0: Dictionary = TN.route_path(seed,
+			D.act2_train_cities, hc, hs,
+			["home", String(cand)])
+		if (rp0["nodes"] as Array).size() > 2:
+			dest_f = String(cand)
+			break
+	_assert(dest_f != "",
+		"244T6(F): the fixture offers a route across an interchange")
+	if dest_f != "":
+		_assert(bool(NM6.call("train_confirm_server", 1,
+				["home", dest_f])),
+			"244T6(F): the pass-through course confirms")
+		NM6.call("train_skip_server", 1)
+		NM6.call("train_arrive_server")
+		_assert(String(D.train_state.get("status", ""))
+				== "idle"
+				and String(D.train_state.get("at", ""))
+					== dest_f,
+			"244T6(F): the interchange was passed without stopping")
+	# (G) Surfaces (source).
+	var nsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("train_continue_server")
+			and nsrc.contains("train_continue_request")
+			and nsrc.contains("\"stopped\""),
+		"244T6(F): the machine carries stops + continuation")
+	var csrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/train_chart.gd")
+	_assert(csrc.contains("_underway"),
+		"244T6(F): the chart treats a stop as underway")
+	D.home_anchor = saved_anchor
+	D.act2_train_cities = saved_cities
+	D.train_state = saved_tstate
+	D.train_draft = saved_draft
+	print("[Playtest] Train multi-stop courses (issue #244 T6) done.")

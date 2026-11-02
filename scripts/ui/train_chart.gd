@@ -311,6 +311,17 @@ func _moving() -> bool:
 		"idle")) == "moving"
 
 
+## Issue #244 T6: a course is underway while the train
+## moves AND while it stands at an intermediate stop —
+## confirms and summons refuse in both (the server's
+## idle checks say the same); the draft may still be
+## edited at the stop for the NEXT course.
+func _underway() -> bool:
+	var s := String(Dungeon.train_state.get("status",
+		"idle"))
+	return s == "moving" or s == "stopped"
+
+
 func _update_chrome() -> void:
 	var st: Dictionary = Dungeon.train_state
 	var moving := _moving()
@@ -320,15 +331,26 @@ func _update_chrome() -> void:
 			String(path[0]) if not path.is_empty() else "?",
 			String(path[path.size() - 1])
 			if not path.is_empty() else "?"]
+	elif String(st.get("status", "idle")) == "stopped":
+		var course: Array = st.get("course", [])
+		_status_lbl.text = "Stopped at %s — course to %s underway" % [
+			String(st.get("at", "home")),
+			String(course[course.size() - 1])
+			if not course.is_empty() else "?"]
 	else:
 		_status_lbl.text = "At %s — %s" % [
 			String(st.get("at", "home")),
 			"plot a course" if _face == "car"
 			else "plot a course, or summon"]
 	var draft: Array = Dungeon.train_draft
-	_confirm_btn.disabled = moving or draft.is_empty()
+	var stopped := String(st.get("status", "idle")) \
+		== "stopped"
+	_confirm_btn.disabled = moving or (not stopped \
+		and draft.is_empty())
+	_confirm_btn.text = "Depart — next leg" if stopped \
+		else "Confirm — depart"
 	_clear_btn.disabled = moving or draft.is_empty()
-	var can_summon := _face == "station" and not moving \
+	var can_summon := _face == "station" and not _underway() \
 		and String(st.get("at", "")) != _station_key \
 		and (_station_key == TrainNetwork.HOME_KEY
 			or Dungeon.act2_train_cities.has(_station_key))
@@ -370,6 +392,15 @@ func _on_clear() -> void:
 
 func _on_confirm() -> void:
 	if _moving():
+		return
+	# Issue #244 T6: while stopped mid-course, Confirm
+	# is the dwell ruling's departure — a rider confirms
+	# and the next leg departs (no re-plot; the server
+	# gates on the sender being aboard).
+	if String(Dungeon.train_state.get("status", "idle")) \
+			== "stopped":
+		NetworkManager.train_continue()
+		_refresh(false)
 		return
 	var course := confirm_course(
 		String(Dungeon.train_state.get("at", "home")),
@@ -467,11 +498,14 @@ func _draw() -> void:
 	var draft: Array = Dungeon.train_draft
 	var pass_through: Dictionary = {}
 	var path_pts: Array = []
-	if not draft.is_empty() or _moving():
+	if not draft.is_empty() or _underway():
 		var st: Dictionary = Dungeon.train_state
+		var stops: Array = st.get("course", []) \
+			if _underway() else draft
 		var course: Array = st.get("path", []) if _moving() \
-			else confirm_course(
-				String(st.get("at", "home")), draft)
+			else (st.get("course", []) if _underway()
+				else confirm_course(
+					String(st.get("at", "home")), draft))
 		var hb: Dictionary = Dungeon.home_building()
 		var hc := Vector2((hb["origin"] as Vector3).x,
 			(hb["origin"] as Vector3).z)
@@ -483,7 +517,7 @@ func _draw() -> void:
 		for k in rp["nodes"]:
 			path_pts.append(nodes.get(String(k),
 				Vector2.ZERO))
-			if not draft.has(String(k)) and String(k) \
+			if not stops.has(String(k)) and String(k) \
 					!= String(st.get("at", "")):
 				pass_through[String(k)] = true
 	# Edges.
