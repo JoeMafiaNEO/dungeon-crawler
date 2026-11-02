@@ -47,6 +47,11 @@ var _fade: ColorRect = null
 var _gate_open := false
 var _gate_deadline := 0.0
 var _spawn_point := Vector3.ZERO
+## Issue #244 T5: the track network as last handed to
+## the streamer (mid-session expansion re-hands it).
+var _track_applied: Array = []
+var _track_home_center := Vector2.ZERO
+var _track_home_station := Vector2.ZERO
 var _presence := {} # peer_id -> Player (remote world peers)
 var _clock_t := 0.0
 var _sync_t := 0.0
@@ -397,9 +402,12 @@ func _setup_streamer() -> void:
 	if not home.is_empty():
 		var ho: Vector3 = home["origin"]
 		var hd: Vector3 = home["doorstep"]
+		_track_home_center = Vector2(ho.x, ho.z)
+		_track_home_station = Vector2(hd.x, hd.z)
+		_track_applied = Dungeon.act2_train_cities.duplicate()
 		_streamer.call("set_track_network",
 			Dungeon.act2_train_cities,
-			Vector2(ho.x, ho.z), Vector2(hd.x, hd.z))
+			_track_home_center, _track_home_station)
 	_streamer.call("set_target_position", _spawn_point)
 
 
@@ -762,6 +770,17 @@ func _process(delta: float) -> void:
 		_clock_t = 0.0
 		_apply_clock()
 	_update_consist()
+	# Issue #244 T5: the discovered set grew mid-session
+	# (the arrival beat's expansion, applied locally or
+	# via rpc_train_discovered) — hand the streamer the
+	# new set; it re-dresses the built chunks the new
+	# network changes.
+	if _streamer != null \
+			and Dungeon.act2_train_cities != _track_applied:
+		_track_applied = Dungeon.act2_train_cities.duplicate()
+		_streamer.call("set_track_network",
+			Dungeon.act2_train_cities,
+			_track_home_center, _track_home_station)
 	# The ready-gate.
 	if _started and not _gate_open:
 		if _entry_ring_ready() or Time.get_ticks_msec() \

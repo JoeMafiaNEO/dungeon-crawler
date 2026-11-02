@@ -191,28 +191,144 @@ const StationTerminal := preload("res://scripts/world/station_terminal.gd")
 
 
 ## Set the track network dressing source (WorldRoot, at
-## world begin). Recomputes the cached derivations; call
-## before chunks stream — dressing already built is not
-## retroactively changed (mid-session re-dressing is the
-## expansion phase's wiring, T5).
+## world begin — and again mid-session when the
+## discovered set grows, issue #244 T5). Recomputes the
+## cached derivations; chunks not yet built derive from
+## the new set when they stream. Already-built chunks
+## whose track-stage inputs changed are RE-DRESSED: the
+## old track node is freed and the stage resets, so the
+## budgeted detail flow rebuilds their track + stations
+## from the new set (the chunk's terrain/buildings/
+## scatter keep their build-time derivation — the
+## re-dress is the track dressing, per §9-T5).
 func set_track_network(discovered: Array,
 		home_center: Vector2, home_station: Vector2) -> void:
+	var changed := discovered != track_discovered
+	# Snapshot what each built chunk's track stage would
+	# build under the CURRENT (old) cache — the re-dress
+	# compares it against the new cache's answer, which
+	# covers completed chunks too (their job records are
+	# discarded at completion).
+	var old_inputs := {}
+	if changed:
+		for k in _active:
+			var d0: RefCounted = _active[k]["data"]
+			old_inputs[k] = _track_stage_inputs(d0.cx, d0.cz)
 	track_discovered = discovered.duplicate()
 	track_home_center = home_center
 	track_home_station = home_station
 	if track_discovered.is_empty():
 		_track_edges = []
 		_track_points = {}
-		return
-	_track_points = TrainNetwork.station_points(
-		WorldGen.WORLD_SEED, track_discovered, home_center,
-		home_station)
-	_track_edges = TrainNetwork.edge_segments(
-		WorldGen.WORLD_SEED, track_discovered, home_center,
-		home_station)
+	else:
+		_track_points = TrainNetwork.station_points(
+			WorldGen.WORLD_SEED, track_discovered,
+			home_center, home_station)
+		_track_edges = TrainNetwork.edge_segments(
+			WorldGen.WORLD_SEED, track_discovered,
+			home_center, home_station)
 	# Issue #244 T3: the consist is no longer chunk dressing
 	# — it moves (WorldRoot owns the live consist node);
 	# track + stations stay baked here.
+	if changed:
+		_redress_changed_chunks(old_inputs)
+
+
+## What a chunk's track stage would build from the
+## CURRENT cached network (the stage's own setup scan,
+## factored out so the re-dress compares like with like).
+func _track_stage_inputs(cx: int, cz: int) -> Dictionary:
+	var clipped: Array = []
+	for seg in _track_segments_for(cx, cz):
+		var c := TrainNetwork.clip_segment_to_chunk(
+			seg[0], seg[1], cx, cz)
+		if not c.is_empty():
+			clipped.append([seg, c])
+	var rect := Rect2(float(cx) * WorldGen.CHUNK_SIZE,
+		float(cz) * WorldGen.CHUNK_SIZE,
+		WorldGen.CHUNK_SIZE, WorldGen.CHUNK_SIZE)
+	var stations: Array = []
+	for key in _track_points:
+		if rect.has_point(_track_points[key]):
+			stations.append(key)
+	stations.sort()
+	return {"segs": clipped, "stations": stations}
+
+
+## The track stage's fresh state (the detail-job
+## initializer's "t" entry, factored out for the
+## re-dress).
+func _fresh_track_stage() -> Dictionary:
+	return {"t_done": false, "started": false,
+		"segs": [], "cursor": 0, "stations": [],
+		"station_cursor": 0, "consist": [],
+		"verts": PackedVector3Array(),
+		"normals": PackedVector3Array(),
+		"colors": PackedColorArray(),
+		"indices": PackedInt32Array(),
+		"tnode": null, "body": null}
+
+
+## Issue #244 T5: after a mid-session set change, reset
+## the track stage of every built chunk whose inputs the
+## new set changes (old_inputs were snapshotted under
+## the old cache by set_track_network). Only the track
+## stage re-runs — buildings/scatter keep their built
+## state. Untouched chunks keep their nodes.
+func _redress_changed_chunks(old_inputs: Dictionary) -> void:
+	for k in _active:
+		if not old_inputs.has(k):
+			continue
+		var rec: Dictionary = _active[k]
+		var data: RefCounted = rec["data"]
+		var now := _track_stage_inputs(data.cx, data.cz)
+		var was: Dictionary = old_inputs[k]
+		if now["segs"] == was["segs"] \
+				and now["stations"] == was["stations"]:
+			continue
+		var dj = rec.get("detail_job")
+		if dj == null and not bool(rec.get("detail_done",
+				false)):
+			continue  # Never detailed: reads the new cache.
+		# Free the built track node (in-flight job's node
+		# and the record's may be the same object).
+		var tnode: Object = null
+		if dj != null:
+			tnode = (dj as Dictionary)["t"].get("tnode")
+		if tnode != null and is_instance_valid(tnode):
+			(tnode as Node).queue_free()
+		if rec.get("track") != null \
+				and rec["track"] != tnode:
+			(rec["track"] as Node).queue_free()
+		rec["track"] = null
+		if dj != null:
+			# In flight: reset only a started track
+			# stage; an unstarted one reads the new
+			# cache when it begins.
+			var job: Dictionary = (dj as Dictionary)["t"]
+			if bool(job.get("started", false)):
+				(dj as Dictionary)["t"] = _fresh_track_stage()
+				rec["detail_done"] = false
+		else:
+			# Completed chunk (its job was discarded):
+			# hand back a job with buildings + scatter
+			# already done, so the detail flow re-runs
+			# ONLY the track stage.
+			rec["detail_job"] = {
+				"b": {"b_done": true, "cursor": 0,
+					"bnode": rec.get("buildings"),
+					"buckets": {}, "door_xforms": [],
+					"shell_total": 0, "collision_shapes": 0,
+					"playable_doors": 0,
+					"solid_buildings": 0},
+				"s": {"s_done": true, "started": true,
+					"gen": null, "gen_done": true,
+					"scatter": rec.get("scatter"),
+					"snode": rec.get("scatter"),
+					"type_idx": 0, "item_idx": 0,
+					"mm": null, "total": 0},
+				"t": _fresh_track_stage()}
+			rec["detail_done"] = false
 
 
 ## The chunk's track segments from the cached edge list
@@ -938,14 +1054,7 @@ func _detail_job(rec: Dictionary) -> Dictionary:
 				"scatter": null, "snode": null,
 				"type_idx": 0, "item_idx": 0, "mm": null,
 				"total": 0},
-			"t": {"t_done": false, "started": false,
-				"segs": [], "cursor": 0, "stations": [],
-				"station_cursor": 0, "consist": [],
-				"verts": PackedVector3Array(),
-				"normals": PackedVector3Array(),
-				"colors": PackedColorArray(),
-				"indices": PackedInt32Array(),
-				"tnode": null, "body": null}}
+			"t": _fresh_track_stage()}
 		rec["detail_job"] = dj
 		var data: RefCounted = rec["data"]
 		if not (data.buildings as Array).is_empty():
@@ -1108,24 +1217,13 @@ func _track_job_step(rec: Dictionary, job: Dictionary) -> bool:
 	var data: RefCounted = rec["data"]
 	if not bool(job["started"]):
 		job["started"] = true
-		var clipped: Array = []
-		for seg in _track_segments_for(data.cx, data.cz):
-			var c := TrainNetwork.clip_segment_to_chunk(
-				seg[0], seg[1], data.cx, data.cz)
-			if not c.is_empty():
-				clipped.append([seg, c])
-		job["segs"] = clipped
-		var rect := Rect2(float(data.cx) * WorldGen.CHUNK_SIZE,
-			float(data.cz) * WorldGen.CHUNK_SIZE,
-			WorldGen.CHUNK_SIZE, WorldGen.CHUNK_SIZE)
-		var stations: Array = []
-		for key in _track_points:
-			if rect.has_point(_track_points[key]):
-				stations.append(key)
-		stations.sort()
-		job["stations"] = stations
+		var inputs := _track_stage_inputs(data.cx, data.cz)
+		job["segs"] = inputs["segs"]
+		job["stations"] = inputs["stations"]
 		job["consist"] = []
-		if clipped.is_empty() and stations.is_empty():
+		var clipped: Array = inputs["segs"]
+		if clipped.is_empty() \
+				and (inputs["stations"] as Array).is_empty():
 			job["t_done"] = true
 			return true
 		var tnode := Node3D.new()

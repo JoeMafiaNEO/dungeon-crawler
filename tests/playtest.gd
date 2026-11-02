@@ -285,6 +285,7 @@ func _run() -> void:
 	_test_train_world_244()
 	_test_train_ride_244()
 	_test_train_chart_244()
+	_test_train_expansion_244()
 	_print_results()
 	quit()
 
@@ -33236,3 +33237,187 @@ func _test_train_chart_244() -> void:
 			and nsrc.contains("train_publish_draft"),
 		"244T4(F): the shared draft rides NetworkManager")
 	print("[Playtest] Train GPS chart (issue #244 T4) done.")
+
+
+## Issue #244 T5: expansion live — §9-T5's full loop at
+## the state level: derive -> ride -> arrive -> the set
+## grows (apply + chart) -> built chunks re-dress ->
+## plot onward from the new node. The ride target is
+## T1's fixture city "7,0": its expansion ring adds
+## three cities (the starter cities' own rings add
+## none — the next city sits outside the 16-chunk ring).
+func _test_train_expansion_244() -> void:
+	print("[Playtest] Train expansion live (issue #244 T5)...")
+	var TN: GDScript = load("res://scripts/world/train_network.gd")
+	var D = load("res://scripts/dungeon/dungeon.gd")
+	var seed := 20261023  # WorldGen.WORLD_SEED
+	var NM5: Node = root.get_node("NetworkManager")
+	var saved_anchor: Dictionary = D.home_anchor
+	var saved_cities: Array = D.act2_train_cities
+	var saved_tstate: Dictionary = D.train_state
+	D.home_anchor = D.compute_home_anchor(96.0)
+	var hb: Dictionary = D.home_building()
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var starter: Array = ["7,0"]
+	D.act2_train_cities = starter.duplicate()
+	NM5.call("train_ensure_state")
+	D.train_state["riders"] = {1: [0, 76561198000000000]}
+	# (A) Ride to "7,0"; the arrival beat grows the set
+	# by exactly that city's expansion ring.
+	var ring: Array = TN.expansion_ring(seed, "7,0")
+	var grown_expect: Array = starter.duplicate()
+	for k in ring:
+		if not grown_expect.has(k):
+			grown_expect.append(k)
+	_assert(grown_expect.size() > starter.size(),
+		"244T5(A): the fixture city's ring adds cities")
+	_assert(bool(NM5.call("train_confirm_server", 1,
+			["home", "7,0"])),
+		"244T5(A): the ride out confirms")
+	_assert(bool(NM5.call("train_skip_server", 1)),
+		"244T5(A): skip arms the arrival")
+	NM5.call("train_arrive_server")
+	_assert(String(D.train_state.get("at", "")) == "7,0",
+		"244T5(A): the train stands at the arrival city")
+	_assert((D.act2_train_cities as Array).size()
+			== grown_expect.size(),
+		"244T5(A): the set grew by exactly the ring (no more, no less)")
+	for k in grown_expect:
+		_assert((D.act2_train_cities as Array).has(k),
+			"244T5(A): every ring city is discovered")
+	# (B) A second arrival at the same city adds nothing
+	# (expansion is append-only and idempotent), and a
+	# course being ridden never changes underway.
+	NM5.call("train_confirm_server", 1, ["7,0", "home"])
+	NM5.call("train_skip_server", 1)
+	NM5.call("train_arrive_server")
+	_assert(bool(NM5.call("train_confirm_server", 1,
+			["home", "7,0"])),
+		"244T5(B): the second ride out confirms")
+	var underway: Array = (D.train_state["path"]
+		as Array).duplicate()
+	D.apply_train_discovered(["0,2"])
+	_assert((D.train_state["path"] as Array) == underway,
+		"244T5(B): discovery never rewrites a course underway")
+	NM5.call("train_skip_server", 1)
+	NM5.call("train_arrive_server")
+	_assert((D.act2_train_cities as Array).size()
+			== grown_expect.size() + 1,
+		"244T5(B): re-arrival adds nothing (only the manual 0,2 joined)")
+	# (C) The chart model grows with the set.
+	var model: Dictionary = TN.chart_model(seed,
+		D.act2_train_cities, hc, hs,
+		{"status": "idle", "at": "7,0"}, 0)
+	var new_key := ""
+	for k in ring:
+		if k != "7,0":
+			new_key = String(k)
+			break
+	_assert((model["nodes"] as Dictionary).has(new_key),
+		"244T5(C): a newly discovered city appears on the chart")
+	_assert((model["nodes"] as Dictionary).size()
+			== grown_expect.size() + 2,
+		"244T5(C): chart nodes == home + the discovered set")
+	# (E) Plot onward from the new node, at the server.
+	_assert(bool(NM5.call("train_confirm_server", 1,
+			["7,0", new_key])),
+		"244T5(E): a course onward from the new node confirms")
+	NM5.call("train_arrive_server")
+	# (D) Re-dress: a bare streamer over the same fixture.
+	# Pick (via the derivation itself) a chunk near the
+	# arrival city whose segment count the grown set
+	# increases; build it under the starter set, then
+	# hand the streamer the grown set.
+	var pts: Dictionary = TN.station_points(seed,
+		grown_expect, hc, hs)
+	var home_chunk := Vector2i(
+		int(floor((pts["7,0"] as Vector2).x / 128.0)),
+		int(floor((pts["7,0"] as Vector2).y / 128.0)))
+	var pick := home_chunk
+	var found_pick := false
+	for dz in range(-2, 3):
+		for dx in range(-2, 3):
+			var cx := home_chunk.x + dx
+			var cz := home_chunk.y + dz
+			var na: Array = TN.track_segments_near_chunk(
+				seed, cx, cz, starter, hc, hs)
+			var nb: Array = TN.track_segments_near_chunk(
+				seed, cx, cz, grown_expect, hc, hs)
+			if na.size() > 0 and nb.size() > na.size() \
+					and not found_pick:
+				pick = Vector2i(cx, cz)
+				found_pick = true
+	_assert(found_pick,
+		"244T5(D): the grown network adds segments on some chunk near the arrival city")
+	if found_pick:
+		var Streamer := load("res://scripts/world/world_streamer.gd")
+		var holder := Node3D.new()
+		root.add_child(holder)
+		var st = Streamer.new()
+		holder.add_child(st)
+		st.call("set_track_network", starter, hc, hs)
+		st.call("_build_chunk", pick.x, pick.y)
+		st.call("_build_chunk", 40, 40)
+		var active: Dictionary = st.get("_active")
+		var rec: Dictionary = active["%d,%d" % [pick.x, pick.y]]
+		var old_segs: Array = []
+		var guard := 0
+		while not bool(rec["detail_done"]) and guard < 900:
+			st.call("_detail_step", rec)
+			guard += 1
+			var dj1 = rec.get("detail_job")
+			if dj1 != null:
+				old_segs = ((dj1 as Dictionary)["t"]
+					as Dictionary)["segs"].duplicate()
+		var rec_far: Dictionary = active["40,40"]
+		guard = 0
+		while not bool(rec_far["detail_done"]) and guard < 900:
+			st.call("_detail_step", rec_far)
+			guard += 1
+		_assert(rec["track"] != null,
+			"244T5(D): the segment chunk dressed under the starter set")
+		var old_track: Object = rec["track"]
+		st.call("set_track_network", grown_expect, hc, hs)
+		_assert(rec["track"] == null
+				and not bool(rec["detail_done"]),
+			"244T5(D): the grown set resets the changed chunk's track stage")
+		_assert(rec_far["track"] == null
+				and bool(rec_far["detail_done"]),
+			"244T5(D): an untouched chunk is not re-dressed")
+		var new_segs: Array = []
+		guard = 0
+		while not bool(rec["detail_done"]) and guard < 900:
+			st.call("_detail_step", rec)
+			guard += 1
+			var dj2 = rec.get("detail_job")
+			if dj2 != null:
+				new_segs = ((dj2 as Dictionary)["t"]
+					as Dictionary)["segs"].duplicate()
+		_assert(rec["track"] != null and rec["track"] != old_track,
+			"244T5(D): the chunk re-dresses with a fresh track node")
+		_assert(new_segs.size() > (old_segs as Array).size(),
+			"244T5(D): the re-dressed chunk carries the new edges' segments")
+		holder.free()
+	# (F) Surfaces (source).
+	var nsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("rpc_train_discovered_sync")
+			and nsrc.contains("train_expand_at")
+			and nsrc.contains("apply_train_discovered"),
+		"244T5(F): the arrival beat expands and broadcasts")
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_streamer.gd")
+	_assert(wsrc.contains("_redress_changed_chunks")
+			and wsrc.contains("_track_stage_inputs"),
+		"244T5(F): the streamer re-dresses changed chunks from the live set")
+	var rsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	_assert(rsrc.contains("_track_applied"),
+		"244T5(F): WorldRoot re-hands the set mid-session")
+	D.home_anchor = saved_anchor
+	D.act2_train_cities = saved_cities
+	D.train_state = saved_tstate
+	print("[Playtest] Train expansion live (issue #244 T5) done.")

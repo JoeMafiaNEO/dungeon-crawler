@@ -914,9 +914,15 @@ func train_leave_server(peer: int) -> void:
 
 
 ## The arrival beat (server tick): validate elapsed >=
-## duration, settle at the final node, fire T1's expansion
-## hook shape at a city (T5 wires the full loop), doors via
-## the broadcast's interior forwarding.
+## duration, settle at the final node, then the §6
+## expansion loop (issue #244 T5): the hook applies the
+## arrival city's ring locally, and any NEW keys ride
+## the discovery sync so every peer's set (and chart)
+## grows at once. The record stamps itself — every save
+## writer funnels through act2_record(), which reads the
+## grown statics. The beat's shape (settle → expand →
+## broadcast) is per-arrival: T6's intermediate stops
+## fire this same beat per plotted node.
 func train_arrive_server() -> void:
 	var st := Dungeon.train_state
 	var path: Array = st.get("path", [])
@@ -931,7 +937,26 @@ func train_arrive_server() -> void:
 	st["empty_run"] = false
 	_train_broadcast()
 	if dest != "home":
-		Dungeon.train_expand_at(dest)
+		var added: Array = Dungeon.train_expand_at(dest)
+		if not added.is_empty():
+			rpc("rpc_train_discovered_sync", added)
+
+
+## Issue #244 T5: the discovery sync transport. The
+## discovered set is server-owned (§7), so only the
+## server's sends apply — the train family's sender
+## guard. The transport rides THIS autoload (like every
+## train rpc) because the beat lives here and Dungeon
+## is a scene class, not an autoload: its own
+## rpc_train_discovered (T1) remains the scene-local
+## surface. The server's copy already applied inside
+## train_expand_at; the applier is idempotent.
+@rpc("any_peer", "call_local")
+func rpc_train_discovered_sync(added: Array) -> void:
+	if multiplayer.get_remote_sender_id() \
+			!= server_peer_id:
+		return
+	Dungeon.apply_train_discovered(added)
 
 
 func _train_tick() -> void:
