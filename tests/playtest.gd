@@ -288,6 +288,7 @@ func _run() -> void:
 	_test_train_expansion_244()
 	_test_boot_icon_245()
 	_test_train_multistop_244()
+	_test_train_routing_246()
 	_print_results()
 	quit()
 
@@ -25783,8 +25784,17 @@ func _test_train_ride_244() -> void:
 		"244T3(A): a single-leg course routes direct")
 	var len_ref := Vector2(124, 44).distance_to(
 		Vector2(348, -1084))
-	_assert(absf(float(rp["length"]) - len_ref) < 1.0,
-		"244T3(A): path length is the station-point distance (duration's metric)")
+	# Issue #246: the length is the ROUTED polyline's —
+	# never shorter than the straight station distance,
+	# and exactly the routed points' sum.
+	var rpts: Array = TN.routed_points(seed, set1, hc, hs,
+		Vector2(124, 44), Vector2(348, -1084))
+	var rsum := 0.0
+	for i in rpts.size() - 1:
+		rsum += (rpts[i] as Vector2).distance_to(rpts[i + 1])
+	_assert(absf(float(rp["length"]) - rsum) < 0.01
+			and float(rp["length"]) >= len_ref - 0.01,
+		"244T3(A): path length is the routed length (issue #246; duration's metric)")
 	_assert(absf(TN.duration_msec_for(len_ref)
 			- len_ref / 28.0 * 1000.0) <= 1.0,
 		"244T3(A): duration = path length / TRAIN_SPEED (28 m/s, F7)")
@@ -25804,7 +25814,8 @@ func _test_train_ride_244() -> void:
 		"244T3(B): idle, the train stands at its station point")
 	var mv := {"status": "moving", "at": "home",
 		"course": ["home", "0,-2"], "path": ["home", "0,-2"],
-		"duration_msec": TN.duration_msec_for(len_ref),
+		"duration_msec": TN.duration_msec_for(
+			float(rp["length"])),
 		"riders": {}, "empty_run": false}
 	var dur := int(mv["duration_msec"])
 	var p0: Dictionary = TN.train_position(seed, set1, hc, hs,
@@ -25820,16 +25831,25 @@ func _test_train_ride_244() -> void:
 		"244T3(B): at duration the consist is at the destination station (no RPCs — the same function on every peer)")
 	var pm: Dictionary = TN.train_position(seed, set1, hc, hs,
 		mv, dur / 2)
-	var mid_ref := Vector2(124, 44).lerp(
-		Vector2(348, -1084), 0.5)
+	# Issue #246: mid-leg means the routed polyline's own
+	# midpoint, priced by the grade along that polyline.
+	var half := 0.0
+	var mid_ref := Vector2(348, -1084)
+	for i in rpts.size() - 1:
+		var sl: float = (rpts[i] as Vector2).distance_to(
+			rpts[i + 1])
+		if half + sl >= rsum * 0.5:
+			mid_ref = (rpts[i] as Vector2).lerp(
+				rpts[i + 1], (rsum * 0.5 - half) / sl)
+			break
+		half += sl
 	_assert(Vector2((pm["pos"] as Vector3).x,
-			(pm["pos"] as Vector3).z).distance_to(mid_ref) < 30.0,
+			(pm["pos"] as Vector3).z).distance_to(mid_ref) < 1.0,
 		"244T3(B): mid-leg the consist is mid-path (grade priced the Y, position the path)")
 	_assert(absf((pm["pos"] as Vector3).y
-			- (TN.grade_height(seed, Vector2(124, 44),
-				Vector2(348, -1084), len_ref * 0.5)
+			- (TN._grade_along(seed, rpts, rsum * 0.5)
 				+ TN.RAIL_TOP)) < 0.01,
-		"244T3(B): the ride reads T2's grade (one function, both consumers)")
+		"244T3(B): the ride reads the grade along the routed path (one function, both consumers)")
 	# --- Leg C: the platform point -----------------------
 	var pc: Vector2 = TN.platform_center(seed, set1, hc, hs,
 		"home")
@@ -25843,8 +25863,13 @@ func _test_train_ride_244() -> void:
 			and absf(pp.y - (WG.height_at(seed, pc2.x, pc2.y)
 				+ 0.55)) < 0.01,
 		"244T3(C): disembark lands on the destination platform slab")
-	_assert(pc2.distance_to(Vector2(348, -1084)) > 4.09
-			and pc2.distance_to(Vector2(348, -1084)) < 4.11,
+	# Issue #246 fix 2: "0,-2"'s plain offset INTUDES on a
+	# footprint (the characterization's 0.03 m case), so
+	# its platform is the validated one — the offset
+	# contract is pinned at home, whose plain point is
+	# clear (its center match is asserted just above).
+	_assert(pc.distance_to(Vector2(124, 44)) > 4.09
+			and pc.distance_to(Vector2(124, 44)) < 4.11,
 		"244T3(C): the platform stands one platform-offset from the station point")
 	# --- Leg D: the server state machine -----------------
 	var saved_anchor: Dictionary = DungeonScript.home_anchor
@@ -33624,3 +33649,286 @@ func _test_train_multistop_244() -> void:
 	D.train_state = saved_tstate
 	D.train_draft = saved_draft
 	print("[Playtest] Train multi-stop courses (issue #244 T6) done.")
+
+
+func _test_train_routing_246() -> void:
+	print("[Playtest] Train routing around buildings (issue #246)...")
+	var TN: GDScript = load("res://scripts/world/train_network.gd")
+	var WG: GDScript = load("res://scripts/world/world_gen.gd")
+	var D = load("res://scripts/dungeon/dungeon.gd")
+	var seed := 20261023  # WorldGen.WORLD_SEED
+	var saved_anchor: Dictionary = D.home_anchor
+	D.home_anchor = D.compute_home_anchor(96.0)
+	var hb: Dictionary = D.home_building()
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var init_disc: Array = ["home"] + TN.initial_ring(seed, hc)
+	var grown: Array = ["home", "0,-2", "0,2", "7,0",
+		"6,1", "7,1", "9,1"]
+	var straight_init: Array = TN.edge_segments(seed,
+		init_disc, hc, hs)
+	var pts_init: Dictionary = TN.station_points(seed,
+		init_disc, hc, hs)
+	# (A) Every edge of both real networks routes; the
+	# failure ledger stays empty (a production failure
+	# would be a stop-and-report, not a silent straight).
+	TN.route_failures = []
+	var routed_init: Array = TN.routed_edge_segments(seed,
+		init_disc, hc, hs)
+	var routed_grown: Array = TN.routed_edge_segments(seed,
+		grown, hc, hs)
+	_assert(TN.route_failures.is_empty(),
+		"246(A): no route failures on the real networks")
+	_assert(routed_init.size() > straight_init.size(),
+		"246(A): routed dressing has more segments than the straight graph (bends exist)")
+	_assert(routed_grown.size() > 20,
+		"246(A): the grown network routes to sub-segments")
+	# (B) Purity: the same edge routes identically warm
+	# (memo) and cold (memo cleared) — the bend is a pure
+	# function of (seed, discovered set, endpoints).
+	var ea: Vector2 = pts_init["home"]
+	var eb: Vector2 = pts_init["0,2"]
+	var r1: Array = TN.routed_points(seed, init_disc,
+		hc, hs, ea, eb)
+	var r2: Array = TN.routed_points(seed, init_disc,
+		hc, hs, ea, eb)
+	_assert(r1 == r2,
+		"246(B): routed points are identical across calls")
+	TN._route_memo = {}
+	var r3: Array = TN.routed_points(seed, init_disc,
+		hc, hs, ea, eb)
+	_assert(r1 == r3,
+		"246(B): routed points are identical cold (purity)")
+	_assert(r1.size() > 2,
+		"246(B): the home -> 0,2 edge bends (interior points)")
+	# Direction-canonical: the reverse ask returns the
+	# reverse polyline (dressing walks graph direction,
+	# motion walks course direction — one bend or the
+	# bed and the consist would disagree).
+	var rrev: Array = TN.routed_points(seed, init_disc,
+		hc, hs, eb, ea)
+	var r1flip := r1.duplicate()
+	r1flip.reverse()
+	_assert(rrev == r1flip,
+		"246(B): routing is direction-canonical (reverse ask, reverse path)")
+	# (C) The verification census, independently measured:
+	# for every initial-network edge, an in-pin field
+	# census around the ROUTED polyline (per-chunk
+	# straight-segment caches, home suppression) must
+	# keep every routed segment >= ROUTE_BED_CLEAR from
+	# every footprint. This is the gate's pin: clearance
+	# is proven here, not asserted by construction.
+	var suppress := Rect2(hc - Vector2(48, 48),
+		Vector2(96, 96))
+	var graph_init: Dictionary = TN.derive_graph(seed,
+		init_disc, hc)
+	for e in graph_init["edges"]:
+		var a2: Vector2 = pts_init[e[0]]
+		var b2: Vector2 = pts_init[e[1]]
+		var rp: Array = TN.routed_points(seed, init_disc,
+			hc, hs, a2, b2)
+		var rects: Array = []
+		var caches := {}
+		var mn := Vector2(1e9, 1e9)
+		var mx := Vector2(-1e9, -1e9)
+		for p in rp:
+			mn = mn.min(p)
+			mx = mx.max(p)
+		mn -= Vector2(56, 56)
+		mx += Vector2(56, 56)
+		for lz in range(int(floor(mn.y / 8.0)),
+				int(floor(mx.y / 8.0)) + 1):
+			for lx in range(int(floor(mn.x / 8.0)),
+					int(floor(mx.x / 8.0)) + 1):
+				var ctr := Vector2((float(lx) + 0.5) * 8.0,
+					(float(lz) + 0.5) * 8.0)
+				var near := false
+				for i in rp.size() - 1:
+					if WG._dist_to_segment(ctr, rp[i],
+							rp[i + 1]) <= 48.0:
+						near = true
+						break
+				if not near:
+					continue
+				var ccx := lx >> 4
+				var ccz := lz >> 4
+				var ckey := "%d,%d" % [ccx, ccz]
+				if not caches.has(ckey):
+					caches[ckey] = {"__track_segs":
+						TN.filter_segments_for_chunk(
+							straight_init, ccx, ccz)}
+				var bb: Dictionary = WG.building_at(seed,
+					lx, lz, {}, caches[ckey])
+				if bb.is_empty():
+					continue
+				var rr := Rect2(Vector2(lx, lz) * 8.0,
+					Vector2(int(bb["span_x"]),
+						int(bb["span_z"])) * 8.0)
+				if suppress.intersects(rr):
+					continue
+				rects.append(rr)
+		var worst := 1.0e9
+		for i in rp.size() - 1:
+			worst = minf(worst, TN._seg_rect_dist(
+				rp[i], rp[i + 1], rects))
+		_assert(worst >= TN.ROUTE_BED_CLEAR - 0.001,
+			"246(C): edge %s -> %s keeps bed clearance (worst %.2f)"
+				% [e[0], e[1], worst])
+	# (D) The characterization's eight intruding anchors
+	# by name: each derived footprint keeps bed clearance
+	# from every routed segment of the initial network.
+	var anchors := [Vector2i(18, 313), Vector2i(43, -124),
+		Vector2i(38, -114), Vector2i(18, 315),
+		Vector2i(40, -128), Vector2i(17, 305),
+		Vector2i(43, -121), Vector2i(18, 316)]
+	var derived_n := 0
+	var anchor_worst := 1.0e9
+	var all_rp: Array = []
+	for e in graph_init["edges"]:
+		all_rp.append(TN.routed_points(seed, init_disc,
+			hc, hs, pts_init[e[0]], pts_init[e[1]]))
+	for an in anchors:
+		var cache := {"__track_segs":
+			TN.filter_segments_for_chunk(straight_init,
+				an.x >> 4, an.y >> 4)}
+		var bb2: Dictionary = WG.building_at(seed, an.x,
+			an.y, {}, cache)
+		if bb2.is_empty():
+			continue
+		derived_n += 1
+		var rr2 := Rect2(Vector2(an.x, an.y) * 8.0,
+			Vector2(int(bb2["span_x"]), int(bb2["span_z"]))
+				* 8.0)
+		for rp2 in all_rp:
+			for i in rp2.size() - 1:
+				anchor_worst = minf(anchor_worst,
+					TN._seg_rect_dist(rp2[i], rp2[i + 1],
+						[rr2]))
+	_assert(derived_n >= 4,
+		"246(D): the characterized anchors reproduce (%d/8)"
+			% derived_n)
+	_assert(anchor_worst >= TN.ROUTE_BED_CLEAR - 0.001,
+		"246(D): every characterized intrusion clears the routed path (worst %.2f)"
+			% anchor_worst)
+	# (E) Plausibility: no edge on either network turns
+	# sharper than 45 degrees at any vertex.
+	for disc in [init_disc, grown]:
+		var gm: Dictionary = TN.derive_graph(seed, disc, hc)
+		var pm: Dictionary = TN.station_points(seed, disc,
+			hc, hs)
+		for e in gm["edges"]:
+			var rp3: Array = TN.routed_points(seed, disc,
+				hc, hs, pm[e[0]], pm[e[1]])
+			_assert(TN._route_max_turn(rp3) <= 45.0,
+				"246(E): edge %s -> %s turns plausibly (%.0f deg)"
+					% [e[0], e[1], TN._route_max_turn(rp3)])
+	# (F) Platforms (fix 2): "0,2" and "0,-2" validate
+	# clear of every footprint (the characterization had
+	# their plain points at 0.0 / 0.03 m); home's
+	# platform is unmoved (suppressed plot).
+	for key in ["0,2", "0,-2"]:
+		var f: Dictionary = TN.station_frame(seed,
+			init_disc, hc, hs, key)
+		var plain: Vector2 = f["pt"] \
+			+ (f["perp"] as Vector2) * (float(f["side"])
+				* (TN.BED_WIDTH * 0.5 + 1.9))
+		var pc: Vector2 = TN.platform_center(seed,
+			init_disc, hc, hs, key)
+		var rects2: Array = TN._route_field(seed,
+			straight_init, hc,
+			(f["pt"] as Vector2) - (f["dir"] as Vector2) * 72.0,
+			(f["pt"] as Vector2) + (f["dir"] as Vector2) * 72.0,
+			40.0)
+		_assert(TN._plat_clear(pc, f["dir"], f["perp"],
+				rects2),
+			"246(F): platform %s validates clear" % key)
+		_assert(pc != plain,
+			"246(F): platform %s MOVED off its intruding plain point" % key)
+		# The backstop: the old plain point steps clear,
+		# and a validated point is returned unchanged.
+		var fx: Vector2 = TN.clear_spawn_point(seed,
+			init_disc, hc, hs, plain)
+		var fxw := 1.0e9
+		for r in rects2:
+			fxw = minf(fxw, TN._point_rect_dist(fx, r))
+		_assert(fxw >= 0.7 - 0.001,
+			"246(F): backstop clears %s's plain point (%.2f)"
+				% [key, fxw])
+		_assert(TN.clear_spawn_point(seed, init_disc,
+				hc, hs, pc) == pc,
+			"246(F): backstop leaves %s's clear point alone" % key)
+	var fh: Dictionary = TN.station_frame(seed, init_disc,
+		hc, hs, "home")
+	var plain_h: Vector2 = fh["pt"] \
+		+ (fh["perp"] as Vector2) * (float(fh["side"])
+			* (TN.BED_WIDTH * 0.5 + 1.9))
+	_assert(TN.platform_center(seed, init_disc, hc, hs,
+			"home") == plain_h,
+		"246(F): the home platform is unmoved")
+	# (G) The motion wiring rides the bends: route_path's
+	# length is the routed length (>= the straight
+	# station distance), and a mid-ride train_position
+	# lies ON the routed polyline.
+	var rp_len: Dictionary = TN.route_path(seed, init_disc,
+		hc, hs, ["home", "0,2"])
+	var straight_len: float = (pts_init["home"] as Vector2).distance_to(
+		pts_init["0,2"])
+	_assert(float(rp_len["length"]) >= straight_len,
+		"246(G): route length is the routed length")
+	var st: Dictionary = TN.initial_state()
+	st["status"] = "moving"
+	st["path"] = ["home", "0,2"]
+	st["at"] = "home"
+	var dur: int = TN.duration_msec_for(float(rp_len["length"]))
+	var pos: Dictionary = TN.train_position(seed, init_disc,
+		hc, hs, st, dur / 2)
+	var pos2 := Vector2((pos["pos"] as Vector3).x,
+		(pos["pos"] as Vector3).z)
+	var on := 1.0e9
+	var home_rp: Array = TN.routed_points(seed, init_disc,
+		hc, hs, pts_init["home"], pts_init["0,2"])
+	for i in home_rp.size() - 1:
+		on = minf(on, WG._dist_to_segment(pos2,
+			home_rp[i], home_rp[i + 1]))
+	_assert(on <= 0.05,
+		"246(G): the moving train rides the routed polyline (off by %.3f)" % on)
+	# (H) The streamer dresses ROUTED segments while its
+	# data input stays straight: over a chunk scan, the
+	# track-stage inputs contain a bend vertex (an
+	# endpoint that is no station point), and every
+	# data segment still joins two station points.
+	var Streamer := load("res://scripts/world/world_streamer.gd")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var stm = Streamer.new()
+	holder.add_child(stm)
+	stm.call("set_track_network", init_disc, hc, hs)
+	var station_vals: Array = pts_init.values()
+	var bend_found := false
+	var data_ok := true
+	var data_n := 0
+	for cz in range(-14, 24):
+		for cx in range(-4, 6):
+			var inputs: Dictionary = stm.call(
+				"_track_stage_inputs", cx, cz)
+			for pair in inputs["segs"]:
+				var seg: Array = pair[0]
+				if not station_vals.has(seg[0]) \
+						or not station_vals.has(seg[1]):
+					bend_found = true
+			var dsegs: Array = stm.call(
+				"_track_segments_for", cx, cz)
+			for seg2 in dsegs:
+				data_n += 1
+				if not station_vals.has(seg2[0]) \
+						or not station_vals.has(seg2[1]):
+					data_ok = false
+	_assert(bend_found,
+		"246(H): the dressed track contains bend vertices")
+	_assert(data_ok and data_n > 0,
+		"246(H): the data derivation still sees straight segments only")
+	holder.free()
+	D.home_anchor = saved_anchor
+	print("[Playtest] Train routing 246 done.")

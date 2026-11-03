@@ -338,12 +338,26 @@ func _begin() -> void:
 		var dkey := Dungeon.train_disembark_station
 		Dungeon.train_disembark_station = ""
 		var hb2: Dictionary = Dungeon.home_building()
+		var hc2 := Vector2((hb2["origin"] as Vector3).x,
+			(hb2["origin"] as Vector3).z)
+		var hs2 := Vector2((hb2["doorstep"] as Vector3).x,
+			(hb2["doorstep"] as Vector3).z)
 		_spawn_point = TrainNetwork.platform_point(
 			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
-			Vector2((hb2["origin"] as Vector3).x,
-				(hb2["origin"] as Vector3).z),
-			Vector2((hb2["doorstep"] as Vector3).x,
-				(hb2["doorstep"] as Vector3).z), dkey)
+			hc2, hs2, dkey)
+		# Issue #246 fix 2 (backstop): the platform point
+		# is validated in TrainNetwork.platform_center;
+		# this is the final guarantee at placement time —
+		# if the point still sits inside a footprint's
+		# margin, step to the first clear point nearby.
+		var sp2 := Vector2(_spawn_point.x, _spawn_point.z)
+		var fixed2 := TrainNetwork.clear_spawn_point(
+			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
+			hc2, hs2, sp2)
+		if fixed2 != sp2:
+			_spawn_point = Vector3(fixed2.x,
+				WorldGen.height_at(WorldGen.WORLD_SEED,
+					fixed2.x, fixed2.y) + 0.55, fixed2.y)
 	else:
 		_spawn_point = _arrival_point()
 	_setup_streamer()

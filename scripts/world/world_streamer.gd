@@ -182,6 +182,11 @@ var track_discovered: Array = []
 var track_home_center := Vector2.ZERO
 var track_home_station := Vector2.ZERO
 var _track_edges: Array = [] ## station-point segments
+## Issue #246: the same edges as building-avoiding
+## routed sub-segments — the DRESSING's geometry. The
+## data derivation keeps the straight list above (the
+## router's obstacle field is defined against it).
+var _track_edges_routed: Array = []
 var _track_points: Dictionary = {} ## node key -> station point
 
 var _track_mat: StandardMaterial3D = null
@@ -219,12 +224,16 @@ func set_track_network(discovered: Array,
 	track_home_station = home_station
 	if track_discovered.is_empty():
 		_track_edges = []
+		_track_edges_routed = []
 		_track_points = {}
 	else:
 		_track_points = TrainNetwork.station_points(
 			WorldGen.WORLD_SEED, track_discovered,
 			home_center, home_station)
 		_track_edges = TrainNetwork.edge_segments(
+			WorldGen.WORLD_SEED, track_discovered,
+			home_center, home_station)
+		_track_edges_routed = TrainNetwork.routed_edge_segments(
 			WorldGen.WORLD_SEED, track_discovered,
 			home_center, home_station)
 	# Issue #244 T3: the consist is no longer chunk dressing
@@ -239,7 +248,7 @@ func set_track_network(discovered: Array,
 ## factored out so the re-dress compares like with like).
 func _track_stage_inputs(cx: int, cz: int) -> Dictionary:
 	var clipped: Array = []
-	for seg in _track_segments_for(cx, cz):
+	for seg in _track_segments_routed_for(cx, cz):
 		var c := TrainNetwork.clip_segment_to_chunk(
 			seg[0], seg[1], cx, cz)
 		if not c.is_empty():
@@ -332,12 +341,23 @@ func _redress_changed_chunks(old_inputs: Dictionary) -> void:
 
 
 ## The chunk's track segments from the cached edge list
-## ([] when no network is set).
+## ([] when no network is set). STRAIGHT segments: this
+## is the chunk DATA derivation's input (and the worker
+## dispatch's) — the obstacle field's own definition.
 func _track_segments_for(cx: int, cz: int) -> Array:
 	if _track_edges.is_empty():
 		return []
 	return TrainNetwork.filter_segments_for_chunk(
 		_track_edges, cx, cz)
+
+
+## The chunk's ROUTED segments — what the track stage
+## dresses (issue #246).
+func _track_segments_routed_for(cx: int, cz: int) -> Array:
+	if _track_edges_routed.is_empty():
+		return []
+	return TrainNetwork.filter_segments_for_chunk(
+		_track_edges_routed, cx, cz)
 
 
 ## Chunk-data cache discipline under a live track network:
@@ -1474,24 +1494,27 @@ func _track_append_station(job: Dictionary,
 			ga, gb, ga.distance_to(pt))
 	var ox := float(data.cx) * WorldGen.CHUNK_SIZE
 	var oz := float(data.cz) * WorldGen.CHUNK_SIZE
-	var center2 := track_home_center
-	if key != TrainNetwork.HOME_KEY:
-		center2 = TrainNetwork.node_center(
-			WorldGen.WORLD_SEED, key, track_home_center)
-	var side := 1.0
-	if (center2 - pt).dot(perp) < 0.0:
-		side = -1.0
 	var yaw := atan2(dir.x, dir.y)
 	var base := g + TrainNetwork.BED_LIFT
-	var plat := pt + perp * (side
-		* (TrainNetwork.BED_WIDTH * 0.5 + 1.9))
+	# Issue #246 fix 2: the platform center comes from
+	# TrainNetwork.platform_center — validated against
+	# the derived footprints (flip / shift) — so the
+	# dressed slab and the disembark point are one point
+	# by construction, not by duplicated formula. The
+	# shelter and sign follow the VALIDATED side.
+	var plat := TrainNetwork.platform_center(
+		WorldGen.WORLD_SEED, track_discovered,
+		track_home_center, track_home_station, key)
+	var eff_side := 1.0
+	if (plat - pt).dot(perp) < 0.0:
+		eff_side = -1.0
 	var plat3 := Vector3(plat.x - ox, base + 0.175,
 		plat.y - oz)
 	_track_append_box(job, plat3, Vector3(3.6, 0.35, 16.0),
 		yaw, Color(0.52, 0.50, 0.47))
 	_track_add_box(job["body"], plat3,
 		Vector3(3.6, 0.35, 16.0), yaw)
-	var shel := plat + perp * (side * 1.1) - dir * 3.0
+	var shel := plat + perp * (eff_side * 1.1) - dir * 3.0
 	var shel3 := Vector3(shel.x - ox, base + 0.35 + 1.15,
 		shel.y - oz)
 	_track_append_box(job, shel3, Vector3(2.4, 2.3, 3.4),
@@ -1500,7 +1523,7 @@ func _track_append_station(job: Dictionary,
 		Vector3(3.0, 0.18, 4.0), yaw, Color(0.25, 0.16, 0.11))
 	_track_add_box(job["body"], shel3,
 		Vector3(2.4, 2.3, 3.4), yaw)
-	var signp := plat + dir * 6.5 - perp * (side * 1.2)
+	var signp := plat + dir * 6.5 - perp * (eff_side * 1.2)
 	var sign3 := Vector3(signp.x - ox, base + 0.35,
 		signp.y - oz)
 	_track_append_box(job, sign3 + Vector3(0, 0.8, 0),

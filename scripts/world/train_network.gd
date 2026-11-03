@@ -403,6 +403,576 @@ static func edge_segments(seed: int, discovered: Array,
 	return out
 
 
+## --- Issue #246: building-avoiding routing. Jesse's
+## ruling (2026-11-02): the track BENDS around buildings
+## — the graph, its edges, and the stations are
+## unchanged; each edge's GEOMETRY becomes a polyline
+## that keeps the consist's bed clear of every derived
+## building footprint. Nothing is cleared or moved.
+## The router is a pure function of (seed, discovered
+## set, endpoints): the obstacle field is the SHIPPED
+## derivation itself — building_at fed exactly the
+## per-chunk straight-segment cache generate_chunk
+## receives, plus the streamer's home-plot suppression
+## (the anchor rect, 96 x 96 at the home center) — so
+## the router avoids precisely the buildings the world
+## builds, and every peer derives the identical bend.
+
+## Footprints are inflated by this much for the search
+## simplifications (bed half-width + margin).
+const ROUTE_INFLATE := 3.5
+## The verification floor: no final segment may come
+## closer than this to a raw footprint (the bed's half
+## width — what the consist sweeps).
+const ROUTE_BED_CLEAR := 2.2
+## The search corridor's half width (perpendicular to
+## the straight edge); failures widen it x2, twice.
+const ROUTE_BAND := 64.0
+## The obstacle field reaches this far past the corridor
+## so verification sees every footprint a bent segment
+## could approach.
+const ROUTE_FIELD_PAD := 24.0
+
+static var _route_memo := {}
+## Edges that exhausted every band and fell back to the
+## straight segment (with a push_error at compute time).
+## The suite pins this empty over the real networks.
+static var route_failures: Array = []
+
+
+## The routed polyline for one graph edge, station
+## point to station point (both included). Memoized;
+## the value is pure in (seed, discovered, a, b).
+static func routed_points(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		a: Vector2, b: Vector2) -> Array:
+	# Direction-canonical (issue #246, caught by the
+	# T2(E) pin): the search is not symmetric, so every
+	# edge is routed in ONE canonical direction —
+	# lexicographically smaller endpoint first — and
+	# reversed for the caller when asked the other way.
+	# Dressing (graph direction), motion (course
+	# direction), and the chart therefore share the
+	# identical bend on every peer.
+	var flipped := false
+	if b.x < a.x or (b.x == a.x and b.y < a.y):
+		var tmp := a
+		a = b
+		b = tmp
+		flipped = true
+	var out := _routed_points_canonical(seed, discovered,
+		home_center, home_station, a, b)
+	if flipped:
+		out.reverse()
+	return out
+
+
+static func _routed_points_canonical(seed: int,
+		discovered: Array, home_center: Vector2,
+		home_station: Vector2, a: Vector2,
+		b: Vector2) -> Array:
+	var straight := edge_segments(seed, discovered,
+		home_center, home_station)
+	# The memo key names what the route actually depends
+	# on: this edge plus the straight segments that come
+	# within the widest possible field of it (they alone
+	# shape its obstacle field). A discovery wave on the
+	# far side of the world therefore does NOT invalidate
+	# this edge's bend — only a nearby change re-routes.
+	var near: Array = []
+	for seg in straight:
+		var p: Vector2 = seg[0]
+		var q: Vector2 = seg[1]
+		var d := 1.0e9
+		if Geometry2D.segment_intersects_segment(
+				a, b, p, q) != null:
+			d = 0.0
+		else:
+			d = minf(minf(
+				WorldGen._dist_to_segment(p, a, b),
+				WorldGen._dist_to_segment(q, a, b)), minf(
+				WorldGen._dist_to_segment(a, p, q),
+				WorldGen._dist_to_segment(b, p, q)))
+		if d <= 300.0:
+			near.append("%f,%f,%f,%f" % [p.x, p.y, q.x, q.y])
+	near.sort()
+	var key := "%d|%f,%f|%f,%f|%s" % [seed, a.x, a.y,
+		b.x, b.y, ",".join(near)]
+	if _route_memo.has(key):
+		return (_route_memo[key] as Array).duplicate()
+	var out := _route_compute(seed, straight, home_center,
+		a, b)
+	_route_memo[key] = out.duplicate()
+	return out
+
+
+## Every graph edge as routed sub-segments — the track
+## dressing's form of routed_points (the derivation
+## keeps using the straight edge_segments: the field is
+## defined against them, never against routed output).
+static func routed_edge_segments(seed: int,
+		discovered: Array, home_center: Vector2,
+		home_station: Vector2) -> Array:
+	var out: Array = []
+	for seg in edge_segments(seed, discovered,
+			home_center, home_station):
+		var rp := routed_points(seed, discovered,
+			home_center, home_station, seg[0], seg[1])
+		for i in rp.size() - 1:
+			out.append([rp[i], rp[i + 1]])
+	return out
+
+
+static func _route_compute(seed: int, straight: Array,
+		home_center: Vector2, a: Vector2, b: Vector2) -> Array:
+	if a.distance_to(b) < 1.0:
+		return [a, b]
+	var band := ROUTE_BAND
+	for attempt in 3:
+		var rects := _route_field(seed, straight,
+			home_center, a, b, band + ROUTE_FIELD_PAD)
+		if _seg_rect_dist(a, b, rects) >= ROUTE_BED_CLEAR:
+			return [a, b]  # the straight edge already clears
+		var raw := _route_astar(a, b, band,
+			_route_blocked(rects))
+		if raw.is_empty():
+			band *= 2.0
+			continue
+		var inflated: Array = []
+		for r in rects:
+			inflated.append((r as Rect2).grow(ROUTE_INFLATE))
+		var pulled := _route_pull(raw, inflated)
+		var smoothed := _route_smooth(pulled, rects)
+		var decimated := _route_decimate(smoothed, rects)
+		if _route_verify(decimated, rects):
+			return decimated
+		if _route_verify(smoothed, rects):
+			return smoothed
+		if _route_verify(pulled, rects):
+			return pulled
+		band *= 2.0
+	route_failures.append([a, b])
+	push_error("[TrainNetwork] no routed path for edge ",
+		a, " -> ", b, "; straight segment kept")
+	return [a, b]
+
+
+## The obstacle field near one edge: derived building
+## footprints (anchor rects) whose lots' centers lie
+## within pad of the straight segment, minus the
+## home-plot suppression. Mirrors generate_chunk's own
+## inputs per chunk (its seg cache + stash), so the
+## field IS the built world.
+static func _route_field(seed: int, straight: Array,
+		home_center: Vector2, a: Vector2, b: Vector2,
+		pad: float) -> Array:
+	var suppress := Rect2(home_center - Vector2(48, 48),
+		Vector2(96, 96))
+	var out: Array = []
+	var caches := {}
+	var mn := a.min(b) - Vector2(pad + 16.0, pad + 16.0)
+	var mx := a.max(b) + Vector2(pad + 16.0, pad + 16.0)
+	for lz in range(int(floor(mn.y / WorldGen.LOT_SIZE)),
+			int(floor(mx.y / WorldGen.LOT_SIZE)) + 1):
+		for lx in range(int(floor(mn.x / WorldGen.LOT_SIZE)),
+				int(floor(mx.x / WorldGen.LOT_SIZE)) + 1):
+			var ctr := Vector2((float(lx) + 0.5)
+				* WorldGen.LOT_SIZE, (float(lz) + 0.5)
+				* WorldGen.LOT_SIZE)
+			if WorldGen._dist_to_segment(ctr, a, b) > pad + 12.0:
+				continue
+			var ccx := lx >> 4
+			var ccz := lz >> 4
+			var ckey := "%d,%d" % [ccx, ccz]
+			if not caches.has(ckey):
+				caches[ckey] = {"__track_segs":
+					filter_segments_for_chunk(straight,
+						ccx, ccz)}
+			var bb: Dictionary = WorldGen.building_at(seed,
+				lx, lz, {}, caches[ckey])
+			if bb.is_empty():
+				continue
+			var r := Rect2(Vector2(lx, lz) * WorldGen.LOT_SIZE,
+				Vector2(int(bb["span_x"]), int(bb["span_z"]))
+					* WorldGen.LOT_SIZE)
+			if suppress.intersects(r):
+				continue
+			out.append(r)
+	return out
+
+
+## Footprint lots, stamped blocked for the search.
+static func _route_blocked(rects: Array) -> Dictionary:
+	var blocked := {}
+	for r in rects:
+		var x0 := int(floor((r as Rect2).position.x
+			/ WorldGen.LOT_SIZE))
+		var y0 := int(floor((r as Rect2).position.y
+			/ WorldGen.LOT_SIZE))
+		var x1 := int(floor(((r as Rect2).end.x - 0.01)
+			/ WorldGen.LOT_SIZE))
+		var y1 := int(floor(((r as Rect2).end.y - 0.01)
+			/ WorldGen.LOT_SIZE))
+		for ly in range(y0, y1 + 1):
+			for lx in range(x0, x1 + 1):
+				blocked[Vector2i(lx, ly)] = true
+	return blocked
+
+
+## Lot-grid A* in the edge's corridor frame. Endpoints'
+## lots are always enterable (the train ends there by
+## definition); diagonal steps never cut a blocked
+## orthogonal neighbor (no corner squeezing). The
+## heuristic is weighted (x1.25) — determinism does not
+## ride on optimality: the shipped path is defined by
+## the verified geometry downstream.
+static func _route_astar(a: Vector2, b: Vector2,
+		band_v: float, blocked: Dictionary) -> Array:
+	var start_lot := Vector2i(int(floor(a.x
+		/ WorldGen.LOT_SIZE)), int(floor(a.y
+		/ WorldGen.LOT_SIZE)))
+	var goal_lot := Vector2i(int(floor(b.x
+		/ WorldGen.LOT_SIZE)), int(floor(b.y
+		/ WorldGen.LOT_SIZE)))
+	if start_lot == goal_lot:
+		return [a, b]
+	var dir := (b - a).normalized()
+	var perp := Vector2(-dir.y, dir.x)
+	var length := a.distance_to(b)
+	var gscore := {start_lot: 0.0}
+	var came := {}
+	var closed := {}
+	var heap: Array = []  # [f, lot] with (f, x, y) order
+	_route_heap_push(heap, 0.0, start_lot)
+	var found := false
+	var expansions := 0
+	while not heap.is_empty() and expansions < 40000:
+		expansions += 1
+		var cur: Vector2i = _route_heap_pop(heap)
+		if closed.has(cur):
+			continue
+		if cur == goal_lot:
+			found = true
+			break
+		closed[cur] = true
+		for d in [Vector2i(-1, -1), Vector2i(0, -1),
+				Vector2i(1, -1), Vector2i(-1, 0),
+				Vector2i(1, 0), Vector2i(-1, 1),
+				Vector2i(0, 1), Vector2i(1, 1)]:
+			var nl: Vector2i = cur + d
+			if closed.has(nl):
+				continue
+			if blocked.has(nl) and nl != goal_lot \
+					and nl != start_lot:
+				continue
+			if d.x != 0 and d.y != 0:
+				var ox := Vector2i(cur.x + d.x, cur.y)
+				var oy := Vector2i(cur.x, cur.y + d.y)
+				if (blocked.has(ox) and ox != goal_lot
+						and ox != start_lot) \
+						or (blocked.has(oy)
+						and oy != goal_lot
+						and oy != start_lot):
+					continue  # no corner squeezing
+			var nc := Vector2((float(nl.x) + 0.5)
+				* WorldGen.LOT_SIZE, (float(nl.y) + 0.5)
+				* WorldGen.LOT_SIZE)
+			var rel := nc - a
+			if rel.dot(dir) < -24.0 \
+					or rel.dot(dir) > length + 24.0 \
+					or absf(rel.dot(perp)) > band_v:
+				continue
+			var step := 8.0 if (d.x == 0 or d.y == 0) \
+				else 11.3137
+			var ng := float(gscore[cur]) + step
+			if ng < float(gscore.get(nl, INF)):
+				gscore[nl] = ng
+				came[nl] = cur
+				_route_heap_push(heap,
+					ng + nc.distance_to(b) * 1.25, nl)
+	if not found:
+		return []
+	var centers: Array = [a]
+	var chain: Array = []
+	var cur2 := goal_lot
+	while cur2 != start_lot:
+		chain.push_front(cur2)
+		cur2 = came[cur2]
+	for l in chain:
+		centers.append(Vector2((float(l.x) + 0.5)
+			* WorldGen.LOT_SIZE, (float(l.y) + 0.5)
+			* WorldGen.LOT_SIZE))
+	centers.append(b)
+	var out: Array = []
+	for p in centers:
+		if out.is_empty() or (out[out.size() - 1] as Vector2).distance_to(p) > 0.01:
+			out.append(p)
+	return out
+
+
+## Binary heap over (f, lot.x, lot.y) — a total order,
+## so extraction order is insertion-independent and the
+## search is identical on every peer.
+static func _route_heap_push(heap: Array, f: float,
+		lot: Vector2i) -> void:
+	heap.append([f, lot])
+	var i := heap.size() - 1
+	while i > 0:
+		var parent := (i - 1) >> 1
+		if not _route_heap_less(heap[i], heap[parent]):
+			break
+		var tmp = heap[i]
+		heap[i] = heap[parent]
+		heap[parent] = tmp
+		i = parent
+
+
+static func _route_heap_pop(heap: Array) -> Vector2i:
+	var top: Vector2i = heap[0][1]
+	var last = heap[heap.size() - 1]
+	heap.resize(heap.size() - 1)
+	if not heap.is_empty():
+		heap[0] = last
+		var i := 0
+		while true:
+			var l := i * 2 + 1
+			var r := i * 2 + 2
+			var smallest := i
+			if l < heap.size() and _route_heap_less(
+					heap[l], heap[smallest]):
+				smallest = l
+			if r < heap.size() and _route_heap_less(
+					heap[r], heap[smallest]):
+				smallest = r
+			if smallest == i:
+				break
+			var tmp = heap[i]
+			heap[i] = heap[smallest]
+			heap[smallest] = tmp
+			i = smallest
+	return top
+
+
+static func _route_heap_less(x: Array, y: Array) -> bool:
+	if float(x[0]) != float(y[0]):
+		return float(x[0]) < float(y[0])
+	var xl: Vector2i = x[1]
+	var yl: Vector2i = y[1]
+	if xl.x != yl.x:
+		return xl.x < yl.x
+	return xl.y < yl.y
+
+
+## Greedy farthest-visible simplification against the
+## inflated field. Visibility is a preference, never a
+## trap: when even the next raw point is not visible
+## (an exempt endpoint lot's approach), the raw step is
+## kept and the raw-rect verification decides.
+static func _route_pull(pts: Array, inflated: Array) -> Array:
+	var out: Array = [pts[0]]
+	var i := 0
+	while i < pts.size() - 1:
+		var hi := mini(i + 64, pts.size() - 1)
+		var j := hi
+		while j > i + 1 and _seg_hits_any(pts[i], pts[j],
+				inflated):
+			j -= 1
+		out.append(pts[j])
+		i = j
+	return out
+
+
+## Corner rounding: each interior vertex is replaced by
+## a quadratic Bezier arc (the vertex as control point,
+## samples at .25/.5/.75) whose radius starts at
+## min(14 m, 40% of the shorter leg) and halves while
+## any arc segment would breach the bed clearance — a
+## corner the geometry cannot round keeps its vertex.
+## Two rounds compose arcs on shared legs. The
+## candidate as a whole is still accepted only through
+## _route_verify; Chaikin-style uniform cuts were tried
+## first and measurably stalled at city corners (the
+## 25% cut dips a hair past the floor and is rejected
+## whole, leaving the grid's 90-degree turns standing).
+static func _route_smooth(pts: Array, rects: Array) -> Array:
+	var cur := pts.duplicate()
+	for round_i in 2:
+		var out: Array = [cur[0]]
+		for i in range(1, cur.size() - 1):
+			var v: Vector2 = cur[i]
+			var pin := v - (cur[i - 1] as Vector2)
+			var pout := (cur[i + 1] as Vector2) - v
+			var lin := pin.length()
+			var lout := pout.length()
+			if lin < 0.01 or lout < 0.01:
+				out.append(v)
+				continue
+			var din := pin / lin
+			var dout := pout / lout
+			var d := minf(14.0, 0.4 * minf(lin, lout))
+			var placed := false
+			while d >= 1.5:
+				var a1 := v - din * d
+				var a2 := v + dout * d
+				var samples := [a1,
+					_route_bez(a1, v, a2, 0.25),
+					_route_bez(a1, v, a2, 0.5),
+					_route_bez(a1, v, a2, 0.75), a2]
+				var ok := true
+				for j in samples.size() - 1:
+					if _seg_rect_dist(samples[j],
+							samples[j + 1], rects) \
+							< ROUTE_BED_CLEAR:
+						ok = false
+						break
+				if ok:
+					for s in samples:
+						out.append(s)
+					placed = true
+					break
+				d *= 0.5
+			if not placed:
+				out.append(v)
+		out.append(cur[cur.size() - 1])
+		cur = out
+	return cur
+
+
+static func _route_bez(a: Vector2, c: Vector2,
+		b: Vector2, t: float) -> Vector2:
+	var u := 1.0 - t
+	return a * (u * u) + c * (2.0 * u * t) + b * (t * t)
+
+
+## The sharpest direction change along a point list,
+## in degrees.
+static func _route_max_turn(pts: Array) -> float:
+	var worst := 0.0
+	for i in range(1, pts.size() - 1):
+		var d1 := ((pts[i] as Vector2)
+			- (pts[i - 1] as Vector2)).normalized()
+		var d2 := ((pts[i + 1] as Vector2)
+			- (pts[i] as Vector2)).normalized()
+		if d1 == Vector2.ZERO or d2 == Vector2.ZERO:
+			continue
+		worst = maxf(worst, rad_to_deg(acos(
+			clampf(d1.dot(d2), -1.0, 1.0))))
+	return worst
+
+
+## Point-count cleanup that respects the smoothing: a
+## point is dropped only when it is close to the last
+## kept point, the merged segment keeps the bed
+## clearance, AND the point deviates from the merged
+## chord by at most 35 degrees on both sides — merging
+## across a rounded corner's samples would re-sharpen
+## the very turn the arc spent itself softening.
+static func _route_decimate(pts: Array, rects: Array) -> Array:
+	if pts.size() < 3:
+		return pts.duplicate()
+	var out: Array = [pts[0]]
+	for i in range(1, pts.size() - 1):
+		var p: Vector2 = pts[i]
+		var last: Vector2 = out[out.size() - 1]
+		var nxt: Vector2 = pts[i + 1]
+		if last.distance_to(p) >= 4.0 \
+				or _seg_rect_dist(last, nxt, rects) \
+					< ROUTE_BED_CLEAR:
+			out.append(p)
+			continue
+		# The merge is allowed only if the turns it
+		# CREATES stay plausible: at `last` (its incoming
+		# segment against the merged chord) and at `nxt`
+		# (the merged chord against its outgoing one).
+		var turn_ok := true
+		if out.size() >= 2:
+			turn_ok = _route_angle(out[out.size() - 2],
+				last, last, nxt) <= 40.0
+		if turn_ok and i + 2 < pts.size():
+			turn_ok = _route_angle(last, nxt, nxt,
+				pts[i + 2]) <= 40.0
+		if not turn_ok:
+			out.append(p)
+	out.append(pts[pts.size() - 1])
+	return out
+
+
+## The angle between two segments, in degrees.
+static func _route_angle(a1: Vector2, a2: Vector2,
+		b1: Vector2, b2: Vector2) -> float:
+	var d1 := (a2 - a1).normalized()
+	var d2 := (b2 - b1).normalized()
+	if d1 == Vector2.ZERO or d2 == Vector2.ZERO:
+		return 0.0
+	return rad_to_deg(acos(clampf(d1.dot(d2), -1.0, 1.0)))
+
+
+## The verification pass (pinned behavior, issue #246):
+## every segment of the candidate path keeps at least
+## ROUTE_BED_CLEAR from every raw footprint.
+static func _route_verify(pts: Array, rects: Array) -> bool:
+	for i in pts.size() - 1:
+		if _seg_rect_dist(pts[i], pts[i + 1], rects) \
+				< ROUTE_BED_CLEAR - 0.001:
+			return false
+	return true
+
+
+## Minimum distance from a segment to a set of rects
+## (bbox-pruned per rect).
+static func _seg_rect_dist(a: Vector2, b: Vector2,
+		rects: Array) -> float:
+	var best := 1.0e9
+	var bb := Rect2(a.min(b), (b - a).abs()).grow(64.0)
+	for r in rects:
+		if not bb.intersects(r):
+			continue
+		best = minf(best, _seg_one_rect_dist(a, b, r))
+	return best
+
+
+static func _seg_one_rect_dist(a: Vector2, b: Vector2,
+		r: Rect2) -> float:
+	if _seg_hits_rect(a, b, r):
+		return 0.0
+	var best := 1.0e9
+	var corners := [r.position,
+		r.position + Vector2(r.size.x, 0), r.end,
+		r.position + Vector2(0, r.size.y)]
+	for c in corners:
+		best = minf(best, WorldGen._dist_to_segment(c, a, b))
+	for p in [a, b]:
+		var cl := Vector2(clampf(p.x, r.position.x, r.end.x),
+			clampf(p.y, r.position.y, r.end.y))
+		best = minf(best, p.distance_to(cl))
+	return best
+
+
+static func _seg_hits_any(a: Vector2, b: Vector2,
+		rects: Array) -> bool:
+	var bb := Rect2(a.min(b), (b - a).abs())
+	for r in rects:
+		if bb.intersects(r) and _seg_hits_rect(a, b, r):
+			return true
+	return false
+
+
+static func _seg_hits_rect(a: Vector2, b: Vector2,
+		r: Rect2) -> bool:
+	if r.has_point(a) or r.has_point(b):
+		return true
+	var corners := [r.position,
+		r.position + Vector2(r.size.x, 0), r.end,
+		r.position + Vector2(0, r.size.y)]
+	for i in 4:
+		var c: Vector2 = corners[i]
+		var d: Vector2 = corners[(i + 1) % 4]
+		if Geometry2D.segment_intersects_segment(
+				a, b, c, d) != null:
+			return true
+	return false
+
+
 ## The road function's per-chunk question, track-shaped:
 ## the segments that can cross (or come within margin of)
 ## chunk (cx, cz).
@@ -611,17 +1181,32 @@ static func route_path(seed: int, discovered: Array,
 	# center-to-center; the physical path runs point to
 	# point — recompute on the points so duration and
 	# position share one metric).
-	var ppts := _path_points(pts, nodes)
+	var ppts := _path_points(seed, discovered,
+		home_center, home_station, pts, nodes)
 	length = 0.0
 	for i in ppts.size() - 1:
 		length += (ppts[i] as Vector2).distance_to(ppts[i + 1])
 	return {"nodes": nodes, "length": length}
 
 
-static func _path_points(pts: Dictionary, nodes: Array) -> Array:
+## The physical point list of a node path: station
+## points with each edge's routed bend in between
+## (issue #246 — position, grade, duration, and the
+## chart's ridden polyline all share this one metric).
+static func _path_points(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		pts: Dictionary, nodes: Array) -> Array:
 	var out: Array = []
+	var prev := Vector2.ZERO
 	for k in nodes:
-		out.append(pts[str(k)])
+		var p: Vector2 = pts[str(k)]
+		if not out.is_empty():
+			var rp := routed_points(seed, discovered,
+				home_center, home_station, prev, p)
+			for j in range(1, rp.size() - 1):
+				out.append(rp[j])
+		out.append(p)
+		prev = p
 	return out
 
 
@@ -661,13 +1246,135 @@ static func station_frame(seed: int, discovered: Array,
 
 ## The platform slab's center for a node (the streamer's
 ## builder and the disembark placement read the same point).
+## Issue #246 fix 2: the plain offset — frame side, fixed
+## 4.1 m — can land inside the building beside the station
+## (the characterization's station "0,2" platform sat at
+## distance 0.0 from a 23-floor footprint; "0,-2" at
+## 0.03 m). The center is VALIDATED against the derived
+## footprints: the frame side first, then the flipped
+## side, then deterministic shifts along the track; the
+## first candidate whose slab rect (3.6 x 16, the built
+## size) keeps 0.6 m from every footprint wins. When no
+## candidate clears, the plain offset stands and the
+## WorldRoot disembark backstop is the last line.
 static func platform_center(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		key: String) -> Vector2:
 	var f := station_frame(seed, discovered, home_center,
 		home_station, key)
-	return (f["pt"] as Vector2) + (f["perp"] as Vector2) \
-		* (float(f["side"]) * (BED_WIDTH * 0.5 + 1.9))
+	var pt: Vector2 = f["pt"]
+	var dir: Vector2 = f["dir"]
+	var perp: Vector2 = f["perp"]
+	var side := float(f["side"])
+	var plain := pt + perp * (side * (BED_WIDTH * 0.5 + 1.9))
+	var straight := edge_segments(seed, discovered,
+		home_center, home_station)
+	var rects := _route_field(seed, straight, home_center,
+		pt - dir * 72.0, pt + dir * 72.0, 40.0)
+	if rects.is_empty():
+		return plain
+	for shift in [0.0, 8.0, -8.0, 16.0, -16.0, 24.0, -24.0,
+			28.0, -28.0, 32.0, -32.0, 40.0, -40.0, 48.0,
+			-48.0, 56.0, -56.0, 64.0, -64.0]:
+		for s in [side, -side]:
+			var c: Vector2 = pt + perp * (s * (BED_WIDTH * 0.5 + 1.9)) \
+				+ dir * shift
+			if _plat_clear(c, dir, perp, rects):
+				return c
+	return plain
+
+
+## A platform candidate's clearance: the slab rect
+## (half extents 8.0 along dir, 1.8 along perp — the
+## built 16.0 x 3.6) keeps >= 0.6 m from every footprint.
+static func _plat_clear(c: Vector2, dir: Vector2,
+		perp: Vector2, rects: Array) -> bool:
+	for r in rects:
+		if _obb_aabb_dist(c, dir, perp, 8.0, 1.8, r) < 0.6:
+			return false
+	return true
+
+
+## Exact distance between an oriented rect (center,
+## axes, half extents) and an axis-aligned rect: zero on
+## overlap (SAT over both rects' axes), else the least
+## vertex-to-rect distance over both directions.
+static func _obb_aabb_dist(c: Vector2, dir: Vector2,
+		perp: Vector2, hd: float, hp: float, r: Rect2) -> float:
+	var oc: Array = []
+	for su in [-1.0, 1.0]:
+		for sv in [-1.0, 1.0]:
+			oc.append(c + dir * (su * hd) + perp * (sv * hp))
+	var rc := [r.position, r.position + Vector2(r.size.x, 0),
+		r.end, r.position + Vector2(0, r.size.y)]
+	for axis in [dir, perp, Vector2(1, 0), Vector2(0, 1)]:
+		var mn_o := 1.0e9
+		var mx_o := -1.0e9
+		var mn_r := 1.0e9
+		var mx_r := -1.0e9
+		for p in oc:
+			var d := (p as Vector2).dot(axis)
+			mn_o = minf(mn_o, d)
+			mx_o = maxf(mx_o, d)
+		for p in rc:
+			var d := (p as Vector2).dot(axis)
+			mn_r = minf(mn_r, d)
+			mx_r = maxf(mx_r, d)
+		if mx_o < mn_r or mx_r < mn_o:
+			break  # separated on this axis: not overlapping
+		if axis == Vector2(0, 1):
+			return 0.0  # overlapped on every axis
+	var best := 1.0e9
+	for p in oc:
+		best = minf(best, _point_rect_dist(p, r))
+	for p in rc:
+		var rel := (p as Vector2) - c
+		var u := rel.dot(dir)
+		var v := rel.dot(perp)
+		var du := maxf(absf(u) - hd, 0.0)
+		var dv := maxf(absf(v) - hp, 0.0)
+		if du == 0.0 and dv == 0.0:
+			return 0.0
+		best = minf(best, Vector2(du, dv).length())
+	return best
+
+
+static func _point_rect_dist(p: Vector2, r: Rect2) -> float:
+	var cl := Vector2(clampf(p.x, r.position.x, r.end.x),
+		clampf(p.y, r.position.y, r.end.y))
+	return p.distance_to(cl)
+
+
+## The disembark backstop's question (issue #246 fix 2,
+## WorldRoot's half): p itself when it keeps 0.7 m from
+## every footprint near it, else the first clear point
+## on a deterministic ring scan (2 m steps to 12 m, 8
+## directions), else p unchanged — placement next to a
+## station should never need the far rings; the scan is
+## a guarantee of effort, not an expectation.
+static func clear_spawn_point(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		p: Vector2) -> Vector2:
+	var straight := edge_segments(seed, discovered,
+		home_center, home_station)
+	var rects := _route_field(seed, straight, home_center,
+		p, p + Vector2(0.01, 0.0), 20.0)
+	if _point_clear(p, rects):
+		return p
+	for ring in [2.0, 4.0, 6.0, 8.0, 10.0, 12.0]:
+		for k in 8:
+			var ang := float(k) * PI * 0.25
+			var c: Vector2 = p + Vector2(cos(ang), sin(ang)) * ring
+			if _point_clear(c, rects):
+				return c
+	return p
+
+
+static func _point_clear(p: Vector2, rects: Array) -> bool:
+	for r in rects:
+		if _point_rect_dist(p, r) < 0.7:
+			return false
+	return true
 
 
 ## Where a rider steps out: on the destination platform,
@@ -703,7 +1410,8 @@ static func train_position(seed: int, discovered: Array,
 				(f["dir"] as Vector2).y),
 			"pitch": 0.0, "leg": 0}
 	var path: Array = state.get("path", [])
-	var ppts := _path_points(pts, path)
+	var ppts := _path_points(seed, discovered,
+		home_center, home_station, pts, path)
 	if ppts.size() < 2:
 		return {"mode": "idle", "at": "home",
 			"pos": Vector3(home_station.x, WorldGen.height_at(
@@ -798,7 +1506,15 @@ static func chart_model(seed: int, discovered: Array,
 					Vector2.ZERO)
 				var pb: Vector2 = pts.get(path[i + 1],
 					Vector2.ZERO)
-				var seglen := pa.distance_to(pb)
+				# The leg's length is its ROUTED length
+				# (issue #246), so the marker's fraction
+				# tracks the train's real progress even
+				# though the chart draws it schematically.
+				var seglen := 0.0
+				var rp := routed_points(seed, discovered,
+					home_center, home_station, pa, pb)
+				for j in rp.size() - 1:
+					seglen += (rp[j] as Vector2).distance_to(rp[j + 1])
 				if traveled <= acc + seglen \
 						or i == path.size() - 2:
 					train = {"mode": "leg",
