@@ -291,6 +291,7 @@ func _run() -> void:
 	_test_train_routing_246()
 	_test_train_walkout_247()
 	_test_train_skip_removed_248()
+	_test_world_place_249()
 	_print_results()
 	quit()
 
@@ -21565,11 +21566,21 @@ func _test_smash_cooldown_honesty_188() -> void:
 	var holder := Node3D.new()
 	root.add_child(holder)
 	current_scene = holder
-	# The totem drives look the dungeon group up — it must find
-	# nothing here (stale incumbents from earlier sections are
-	# displaced, the matrix section's own pattern).
+	# The totem drives look a placement receiver up — dungeon,
+	# else the world root (issue #249 F1: the spend happens
+	# only when a receiver exists). Stale dungeon incumbents
+	# from earlier sections are displaced (the matrix section's
+	# own pattern), and the fixture provides a world root so
+	# the activation lands and the multiplier math below pins.
 	for n in get_nodes_in_group("dungeon"):
 		n.remove_from_group("dungeon")
+	var DungeonScript188: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	var saved_ctx188: String = DungeonScript188.act2_context
+	DungeonScript188.act2_context = ""
+	var WorldRootScript188: GDScript = load("res://scripts/world/world_root.gd")
+	var wr188: Node = WorldRootScript188.new()
+	wr188.set("_started", true)
+	holder.add_child(wr188)
 	# Architect + Forge Hammer + the sigil's multiplier live.
 	var arch = PlayerScene.instantiate()
 	arch.class_id = "architect"
@@ -21623,6 +21634,7 @@ func _test_smash_cooldown_honesty_188() -> void:
 		"188(F2): Doom Totem keeps the sigil's multiplier (90.0 x 0.85 = 76.5)")
 	arch.free()
 	war.free()
+	DungeonScript188.act2_context = saved_ctx188
 	current_scene = null
 	holder.free()
 	print("[Playtest] Smash cooldown honesty (F1) done")
@@ -31330,8 +31342,8 @@ func _test_deep_tree_b3_210() -> void:
 		"210B3: Warlord's Tempo reads in the atk_spd chain")
 	var tsrc := FileAccess.get_file_as_string(
 		"res://scripts/player/player.gd")
-	_assert(tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, point, int(multiplayer.get_unique_id()), ability_rank())\n\t_tree_note_totem_placed()")
-			and tsrc.contains("dungeon.rpc(\"place_totem\", totem_id, point, int(multiplayer.get_unique_id()), 1)\n\t_tree_note_totem_placed()"),
+	_assert(tsrc.contains("receiver.rpc(\"place_totem\", totem_id, point, int(multiplayer.get_unique_id()), ability_rank())\n\t_tree_note_totem_placed()")
+			and tsrc.contains("receiver.rpc(\"place_totem\", totem_id, point, int(multiplayer.get_unique_id()), 1)\n\t_tree_note_totem_placed()"),
 		"210B3: both placement paths call the tempo hook")
 	# Reciprocity: mend_pct scales the heal; Thorn
 	# Mirror slows enemies on the tick (the SE's adopted
@@ -34288,3 +34300,121 @@ func _test_train_skip_removed_248() -> void:
 	InteriorScript.passenger_classes = saved_pc
 	InteriorScript.passenger_steam_ids = saved_psi
 	print("[Playtest] Train skip removed (issue #248 C2) done.")
+
+
+func _test_world_place_249() -> void:
+	print("[Playtest] World placement (issue #249 F1)...")
+	var WG: GDScript = load("res://scripts/world/world_gen.gd")
+	var StreamerScript: GDScript = load("res://scripts/world/world_streamer.gd")
+	var WorldRootScript: GDScript = load("res://scripts/world/world_root.gd")
+	var DungeonScript: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	# The world root's _ready reads Dungeon statics (entry arm) —
+	# keep the arm on its no-op branch and restore after.
+	var saved_ctx: String = DungeonScript.act2_context
+	var saved_tstate: Dictionary = DungeonScript.train_state
+	var saved_cities: Array = DungeonScript.act2_train_cities
+	DungeonScript.act2_context = ""
+	# Real terrain: chunk (7,-3), the steepest in the #249 sweep.
+	# Quad 4,9 center (932, -308): surface 8.067, analytic 9.081
+	# (a 1.01 m gap — the "not height_at" discriminator).
+	# Quad 3,8 center (924, -316): surface 4.924.
+	var streamer: Node = StreamerScript.new()
+	root.add_child(streamer)
+	var data: RefCounted = WG.generate_chunk(7, -3, WG.WORLD_SEED)
+	streamer.call("_assemble_chunk", 7, -3, data)
+	# World root with _begin suppressed (the pins are about
+	# placement, not entry) — _ready still registers "world_root".
+	var wr: Node = WorldRootScript.new()
+	wr.set("_started", true)
+	root.add_child(wr)
+	_assert(wr.is_in_group("world_root"),
+		"249: world root registers its group")
+	# A real player. current_scene is the holder: the totem /
+	# structure _ready plays a positional sfx, and positional
+	# sfx needs a current scene (the -s suite has none).
+	var prev_scene: Node = current_scene
+	var PlayerScene: PackedScene = load("res://scenes/player/player.tscn")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	current_scene = holder
+	var player: Node = PlayerScene.instantiate()
+	player.class_id = "warrior"
+	holder.add_child(player)
+	player.global_position = Vector3(932, 10, -308)
+	wr.set("_local_player", player)
+	# The collision surface at the pin points, read by an
+	# independent raycast (the #249 probe proved hit == the
+	# triangle surface to 0.04 mm, so this IS the collision Y).
+	var space = root.get_world_3d().direct_space_state
+	var q1 := PhysicsRayQueryParameters3D.create(
+		Vector3(932, 200, -308), Vector3(932, -200, -308), 1)
+	var hit1: Dictionary = space.intersect_ray(q1)
+	_assert(not hit1.is_empty(),
+		"249: the fixture raycast hits the terrain at the totem point")
+	var surf1: float = -999.0
+	if not hit1.is_empty():
+		surf1 = (hit1["position"] as Vector3).y
+	# --- Leg (i): a totem placed in the world spawns, grounded
+	# on the collision surface, NOT on height_at. ---
+	player.set("totem_charges", 3)
+	var before_totems: int = get_nodes_in_group("totems").size()
+	player.call("_place_totem_at", "reciprocity",
+		Vector3(932, 10, -308))
+	var totems: Array = get_nodes_in_group("totems")
+	_assert(totems.size() == before_totems + 1,
+		"249(i): a totem placed in the world spawns")
+	var totem: Node = null
+	if totems.size() > before_totems:
+		totem = totems[totems.size() - 1]
+	if totem != null:
+		_assert(absf(totem.global_position.y - (surf1 + 0.05)) < 0.01,
+			"249(i): the totem sits on the collision surface (+0.05)")
+		_assert(absf(totem.global_position.y
+				- (WG.height_at(WG.WORLD_SEED, 932, -308) + 0.05)) > 0.5,
+			"249(i): the totem is NOT grounded on analytic height_at")
+	# --- Leg (ii): the charge is spent only when the placement lands. ---
+	_assert(int(player.get("totem_charges")) == 2,
+		"249(ii): the totem charge is spent exactly once on a landed placement")
+	# --- Leg (i) again: a structure placed in the world spawns, grounded. ---
+	var q2 := PhysicsRayQueryParameters3D.create(
+		Vector3(924, 200, -316), Vector3(924, -200, -316), 1)
+	var hit2: Dictionary = space.intersect_ray(q2)
+	_assert(not hit2.is_empty(),
+		"249: the fixture raycast hits the terrain at the turret point")
+	var surf2: float = -999.0
+	if not hit2.is_empty():
+		surf2 = (hit2["position"] as Vector3).y
+	var before_structs: int = get_nodes_in_group("structures").size()
+	player.call("_place_structure_at", "sentry_turret",
+		Vector3(924, 10, -316))
+	var structs: Array = get_nodes_in_group("structures")
+	_assert(structs.size() == before_structs + 1,
+		"249(i): a turret placed in the world spawns")
+	var turret: Node = null
+	if structs.size() > before_structs:
+		turret = structs[structs.size() - 1]
+	if turret != null:
+		_assert(absf(turret.global_position.y - (surf2 + 0.05)) < 0.01,
+			"249(i): the turret sits on the collision surface (+0.05)")
+	_assert(float((player.get("ability_cds") as Dictionary).get("sentry_turret", 0.0)) > 0.0,
+		"249(ii): the turret cooldown is set on a landed placement")
+	# --- Leg (ii) again: with NO receiver anywhere, nothing is spent. ---
+	# Count-based, not absolute-empty: an earlier section leaves
+	# a totem in the group (proved by the red-before run, where
+	# this section spawned nothing yet the group was non-empty).
+	wr.free()
+	var totems_before_norecv: int = get_nodes_in_group("totems").size()
+	player.set("totem_charges", 3)
+	player.call("_place_totem_at", "reciprocity",
+		Vector3(932, 10, -308))
+	_assert(int(player.get("totem_charges")) == 3,
+		"249(ii): with no receiver, the totem charge is NOT consumed")
+	_assert(get_nodes_in_group("totems").size() == totems_before_norecv,
+		"249(ii): with no receiver, no totem spawns")
+	holder.free()
+	streamer.free()
+	current_scene = prev_scene
+	DungeonScript.act2_context = saved_ctx
+	DungeonScript.train_state = saved_tstate
+	DungeonScript.act2_train_cities = saved_cities
+	print("[Playtest] World placement (issue #249 F1) done.")

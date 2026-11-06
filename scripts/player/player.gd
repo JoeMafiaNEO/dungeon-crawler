@@ -2905,6 +2905,18 @@ func _totem_gate(totem_id: String) -> bool:
 ## Issue #232: the body takes the placement point —
 ## the warrior's feet for the legacy instant path,
 ## the confirmed aim point from the aim phase.
+## Issue #249 F1: where a totem/structure lands — the dungeon node
+## in the dungeon scene, the world root in the proc-gen world
+## (there is no dungeon node there), null when neither exists.
+## The spend (charge/cooldown) happens only after a receiver is
+## found, so a placement with nowhere to land costs nothing.
+func _place_receiver() -> Node:
+	var dungeon := get_tree().get_first_node_in_group("dungeon")
+	if dungeon != null:
+		return dungeon
+	return get_tree().get_first_node_in_group("world_root")
+
+
 func _place_totem_at(totem_id: String, point: Vector3) -> void:
 	if totem_id == "":
 		totem_id = "reciprocity"
@@ -2914,10 +2926,11 @@ func _place_totem_at(totem_id: String, point: Vector3) -> void:
 		return
 	if not _totem_gate(totem_id):
 		return
+	var receiver := _place_receiver()
+	if receiver == null:
+		return
 	totem_charges -= 1
-	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
-	if dungeon != null:
-		dungeon.rpc("place_totem", totem_id, point, int(multiplayer.get_unique_id()), ability_rank())
+	receiver.rpc("place_totem", totem_id, point, int(multiplayer.get_unique_id()), ability_rank())
 	_tree_note_totem_placed()
 	if hud != null:
 		hud.refresh_abilities(self)
@@ -3521,12 +3534,13 @@ func _activate_signature_totem_at(totem_id: String, point: Vector3) -> void:
 	var cd := 120.0 if totem_id == "sanctuary_totem" else 90.0
 	if not _totem_gate(totem_id):
 		return
+	var receiver := _place_receiver()
+	if receiver == null:
+		return
 	totem_charges -= 1
 	ability_cds[cd_key] = (cd) * cooldown_mult() \
 		* _tree_skill_mod(cd_key, "cd_mult", 1.0)
-	var dungeon := get_tree().get_first_node_in_group("dungeon") as Dungeon
-	if dungeon != null:
-		dungeon.rpc("place_totem", totem_id, point, int(multiplayer.get_unique_id()), 1)
+	receiver.rpc("place_totem", totem_id, point, int(multiplayer.get_unique_id()), 1)
 	_tree_note_totem_placed()
 	AudioManager.sfx("milestone")
 	if hud != null:
@@ -4705,14 +4719,15 @@ func _place_structure_at(structure_id: String, point: Vector3) -> void:
 	var cd: float = cds.get(structure_id, 10.0)
 	if not _structure_gate(structure_id):
 		return
+	var receiver := _place_receiver()
+	if receiver == null:
+		return
 	var me := int(multiplayer.get_unique_id())
 	ability_cds[structure_id] = (cd) * cooldown_mult() \
 		* _tree_skill_mod(structure_id, "cd_mult", 1.0)
 	_structure_seq += 1
 	var uid := "%d_%d" % [me, _structure_seq]
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon != null:
-		dungeon.rpc("place_structure", structure_id, point, me, ability_rank(), uid)
+	receiver.rpc("place_structure", structure_id, point, me, ability_rank(), uid)
 	if hud != null:
 		hud.refresh_abilities(self)
 

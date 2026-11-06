@@ -489,6 +489,135 @@ func _make_player(pid: int, class_id: String, pos: Vector3) -> Player:
 	return p
 
 
+## Issue #249 F1: the world-scene placement receiver — totems and
+## Architect structures in proc-gen. The dungeon's place_totem /
+## place_structure stay dungeon-scene (dungeon.gd untouched); this
+## mirrors them, except the ground Y comes from a downward physics
+## raycast against the terrain body (the collision surface, exact
+## to 0.04 mm per the #249 probe) instead of the dungeon's
+## bilinear ground_height_at. Before this, totems/structures could
+## not be placed in the world at all — the player spent the charge
+## / cooldown and nothing spawned (no Dungeon node in this scene).
+@rpc("any_peer", "call_local")
+func place_totem(totem_id: String, pos: Vector3, owner: int, rank: int = 1) -> void:
+	var totem := Totem.new()
+	totem.setup(totem_id, owner, rank)
+	add_child(totem)
+	totem.global_position = Vector3(pos.x, _world_ground_y(pos) + 0.05, pos.z)
+
+
+## Places an architect structure on all peers. Caps are enforced
+## deterministically on every peer (same reliable RPC order => same outcome).
+## Mirrors Dungeon.place_structure, grounded on _world_ground_y.
+@rpc("any_peer", "call_local")
+func place_structure(structure_id: String, pos: Vector3, owner: int, rank: int, uid: String) -> void:
+	var mine: Array = []
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.owner_peer == owner and not s.is_queued_for_deletion():
+			mine.append(s)
+	# Per-type caps: 3 traps; keystones replace (a 2nd keystone despawns the first).
+	var same := 0
+	for s in mine:
+		if (s as Structure).structure_id == structure_id:
+			same += 1
+	if structure_id == "spike_trap" and same >= 3:
+		return
+	if structure_id == "keystone":
+		for s in mine.duplicate():
+			if (s as Structure).structure_id == "keystone":
+				(s as Structure).queue_free()
+				mine.erase(s)
+	# Global cap: evict the oldest non-keystone structure.
+	if mine.size() >= Structure.STRUCTURE_CAP:
+		var evicted := false
+		for s in mine:
+			var st := s as Structure
+			if st.structure_id != "keystone":
+				st.queue_free()
+				evicted = true
+				break
+		if not evicted:
+			return
+	# Keystone buff: +50% max HP when placed within 6m of a keystone.
+	var hp_mult := 1.0
+	if Structure.keystone_near(get_tree(), Vector3(pos.x, 0.0, pos.z), owner):
+		hp_mult = 1.5
+	# Issue #210 (slice B4): hp_pct and life_add join at
+	# the placement, read from the owner's aggregates on
+	# this peer's copy (the design's sync keeps them
+	# current); life_add reaches setup, which applies
+	# it only where life > 0.
+	var owner_p := _world_player(owner) as Player
+	var life_add := 0.0
+	if owner_p != null:
+		hp_mult *= 1.0 + owner_p.tree_structure_mod(
+			structure_id, "hp_pct", 0.0)
+		life_add = owner_p.tree_structure_mod(structure_id,
+			"life_add", 0.0)
+	var st := Structure.new()
+	st.setup(structure_id, owner, rank, hp_mult, uid,
+		life_add)
+	add_child(st)
+	st.global_position = Vector3(pos.x, _world_ground_y(pos) + 0.05, pos.z)
+	# Issue #210 (Overbuilt): placing a structure repairs
+	# the owner's OTHER structures (server-side; the new
+	# values ride structure_repaired like the wrench's).
+	if multiplayer.is_server() and owner_p != null:
+		var ob: float = owner_p.tree_structure_behavior(
+			"overbuilt")
+		if ob > 0.0:
+			for n in get_tree().get_nodes_in_group(
+					"structures"):
+				var ss := n as Structure
+				if ss == null or ss == st or ss.owner_peer \
+						!= owner or ss.is_queued_for_deletion():
+					continue
+				var nh: float = minf(ss.max_hp,
+					ss.hp + ss.max_hp * ob / 100.0)
+				if nh > ss.hp:
+					ss.hp = nh
+					rpc("structure_repaired", ss.uid, nh)
+
+
+## A structure was repaired (Overbuilt placement or the wrench):
+## set its HP by uid on every peer. Mirrors
+## Dungeon.structure_repaired for the world scene.
+@rpc("any_peer", "call_local")
+func structure_repaired(uid: String, new_hp: float) -> void:
+	for n in get_tree().get_nodes_in_group("structures"):
+		var s := n as Structure
+		if s != null and s.uid == uid and not s.is_queued_for_deletion():
+			s.hp = new_hp
+			Effects.burst(s.get_parent(), s.global_position + Vector3(0, 0.9, 0), Color(0.55, 0.95, 0.6), 6, 2.5)
+			AudioManager.sfx("repair_complete" if new_hp >= s.max_hp else "wrench_turn",
+				s.global_position)
+			return
+
+
+## Ground Y under `pos` in the world: a downward raycast against
+## the terrain body (layer 1); the analytic WorldGen.height_at
+## when the ray finds nothing (a placement beyond the streamed
+## chunks). The raycast reads the collision surface — the same
+## surface the aim raycasts already read, exact to 0.04 mm.
+func _world_ground_y(pos: Vector3) -> float:
+	var from := Vector3(pos.x, 200.0, pos.z)
+	var to := Vector3(pos.x, -200.0, pos.z)
+	var query := PhysicsRayQueryParameters3D.create(from, to, 1)
+	var hit: Dictionary = get_world_3d().direct_space_state.intersect_ray(query)
+	if not hit.is_empty():
+		return (hit["position"] as Vector3).y
+	return WorldGen.height_at(WorldGen.WORLD_SEED, pos.x, pos.z)
+
+
+## The owner's Player node in the world: the local player, or a
+## remote peer from the presence map. Null when not present.
+func _world_player(owner: int) -> Player:
+	if owner == multiplayer.get_unique_id():
+		return _local_player
+	return _presence.get(owner) as Player
+
+
 ## Presence: peers in the world together see each other's
 ## class bodies. Deliberately light (P4): hellos carry the
 ## peer's class; full cross-scene state replication is later
