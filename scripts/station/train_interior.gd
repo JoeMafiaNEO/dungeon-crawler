@@ -60,6 +60,11 @@ const DOOR_W := 2.2
 
 const PlayerScene := preload("res://scenes/player/player.tscn")
 const HudScene := preload("res://scenes/ui/hud.tscn")
+# Issue #247 C1 (Amendment 1, spec §4.5): the walk-out
+# landing derives from the train network (the exit point
+# is train_position + the caboose rear offset).
+const TN := preload("res://scripts/world/train_network.gd")
+const WG := preload("res://scripts/world/world_gen.gd")
 
 ## Per-theme car dressing (issue #3 Phase 4): lamp tints reuse the annex
 ## palette (Station.DRESSING_LAMPS); wall/seat colors are car-specific.
@@ -100,6 +105,12 @@ var _scenery_mats: Array = []
 var _platform_root: Node3D = null
 var _door_blocker: StaticBody3D = null
 var _disembark_area: Area3D = null
+# Issue #247 C1: the caboose exit zone — a dedicated rear
+# exit zone alongside the station exit zone (same doorway,
+# its own Area3D + handler). Live only while riding a
+# world ride; the arrival beat and the station wait own
+# every other window.
+var _walkout_area: Area3D = null
 var _skip_lever: Node3D = null
 
 
@@ -147,6 +158,7 @@ func _ready() -> void:
 	_build_skip_lever()
 	_build_gps_terminal()
 	_build_disembark_zone()
+	_build_walkout_zone()
 	_spawn_passengers()
 	if _local_hud != null:
 		_local_hud.fade_in(1.5)
@@ -407,6 +419,11 @@ func _apply_arrival() -> void:
 		_door_blocker.queue_free()
 	_door_blocker = null
 	_disembark_area.monitoring = true
+	# Issue #247 C1: the arrival beat owns this window —
+	# the caboose door goes dark so the station exit
+	# governs (spec §4.5 gating).
+	if _walkout_area != null:
+		_walkout_area.monitoring = false
 	# Disembark is local and voluntary (issue #92): every peer walks
 	# through the open door on its own schedule and hops via
 	# do_disembark() directly — the dungeon scene was background-loaded
@@ -434,6 +451,12 @@ func apply_world_departure(dest_label: String,
 	ride_seconds = seconds_left
 	_apply_ride_started()
 	_ride_left = seconds_left
+	# Issue #247 C1: the caboose door goes live with the
+	# ride — a rider may walk out mid-leg (spec §4.5).
+	# World rides only; the hub car's rear door is the
+	# annex exit and never a walk-out.
+	if world_ride and _walkout_area != null:
+		_walkout_area.monitoring = true
 
 
 ## A world skip: the server's clamped remainder.
@@ -511,6 +534,84 @@ func do_world_disembark(station_key: String) -> void:
 	else:
 		get_tree().call_deferred("change_scene_to_file",
 			Dungeon.WORLD_SCENE)
+
+
+## Mid-ride walk-out (issue #247 C1, Amendment 1, spec
+## §4.5): a rider walks out the open caboose mid-leg. The
+## do_world_disembark shape, but the placement flag is a
+## world point beside the track at the train's CURRENT
+## parametric position — never a station platform. The
+## train never halts: the server drops us from the roster
+## and the ride continues with whoever remains aboard.
+func do_world_walkout() -> void:
+	if _disembarked_local:
+		return
+	_disembarked_local = true
+	if _walkout_area != null:
+		_walkout_area.monitoring = false
+	# The door exception, stated in §4.5: the rear zone
+	# frees the DoorBlocker and unlocks the doors — the
+	# one carve-out in the ride's door rule. The station
+	# exit zone's behavior is unchanged (its blocker still
+	# frees only at arrival).
+	if _door_blocker != null and is_instance_valid(_door_blocker):
+		_door_blocker.queue_free()
+	_door_blocker = null
+	doors_locked = false
+	open_doors()
+	# The exit point is computed at exit time, before the
+	# roster leave — from the same elapsed stamp the
+	# world consist's motion reads, so the landing sits
+	# beside the train where the rider left it.
+	var hb: Dictionary = Dungeon.home_building()
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var wp := TN.walkout_point(WG.WORLD_SEED,
+		Dungeon.act2_train_cities, hc, hs,
+		Dungeon.train_state,
+		NetworkManager.train_local_elapsed_msec())
+	NetworkManager.train_leave()
+	var me := _my_player()
+	if me != null:
+		Dungeon.saved_player_state = me.get_state()
+	Dungeon.train_walkout_point = Vector3(wp.x, 0.0, wp.y)
+	world_ride = false
+	var ps: PackedScene = ResourceLoader.load_threaded_get(
+		Dungeon.WORLD_SCENE) as PackedScene
+	if ps != null and ps.can_instantiate():
+		get_tree().call_deferred("change_scene_to_packed", ps)
+	else:
+		get_tree().call_deferred("change_scene_to_file",
+			Dungeon.WORLD_SCENE)
+
+
+## The §4.5 gating, as its own function so the pins drive
+## it directly: the rear zone fires only while riding a
+## world ride — never during the arrival beat (the
+## platform disembark owns that window), never while a
+## skip is being applied (the skip rewrites
+## duration_msec; an exit in that window races the
+## arrival deadline), never after the rider already left,
+## and never at an intermediate stop (status "stopped":
+## the train stands at a station and the station exit
+## governs, not the caboose door).
+func _walkout_allowed() -> bool:
+	return world_ride and _riding and not _arrived \
+		and not _skipping and not _disembarked_local \
+		and str(Dungeon.train_state.get("status", "")) \
+			!= "stopped"
+
+
+func _on_walkout_body_entered(body: Node3D) -> void:
+	if not _walkout_allowed():
+		return
+	if not body.is_in_group("players"):
+		return
+	if int(body.get_multiplayer_authority()) != multiplayer.get_unique_id():
+		return
+	do_world_walkout()
 
 
 ## The world-mode voluntary exit (issue #244 T3): waiting
@@ -1194,3 +1295,24 @@ func _build_disembark_zone() -> void:
 	_disembark_area.monitorable = false
 	_disembark_area.body_entered.connect(_on_disembark_body_entered)
 	add_child(_disembark_area)
+
+
+## Caboose exit zone (issue #247 C1): its own Area3D in
+## the rear doorway, alongside the station exit zone —
+## same position and shape, so a rider walking to the
+## rear door enters it before the DoorBlocker. Monitoring
+## stays off until the ride starts (apply_world_departure
+## arms it); the arrival beat disarms it.
+func _build_walkout_zone() -> void:
+	_walkout_area = Area3D.new()
+	_walkout_area.name = "WalkoutZone"
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(1.6, 2.6, 2.6)
+	cs.shape = box
+	_walkout_area.add_child(cs)
+	_walkout_area.position = Vector3(-8.2, 1.3, 0.0)
+	_walkout_area.monitoring = false
+	_walkout_area.monitorable = false
+	_walkout_area.body_entered.connect(_on_walkout_body_entered)
+	add_child(_walkout_area)

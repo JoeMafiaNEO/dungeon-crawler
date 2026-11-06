@@ -329,7 +329,31 @@ func _begin() -> void:
 		Dungeon.world_time = WorldClock.ENTRY_TIME
 	if multiplayer.is_server():
 		NetworkManager.train_ensure_state()
-	if Dungeon.train_disembark_station != "":
+	if Dungeon.train_walkout_point != Vector3.ZERO:
+		# Issue #247 C1 (Amendment 1, spec §4.5): a
+		# mid-ride walk-out lands beside the track at the
+		# train's parametric position at exit time — checked
+		# BEFORE the disembark-station branch, so a
+		# walk-out never falls through to a platform.
+		# The point is validated by the #246 fix-2
+		# backstop, and Y is re-sampled from the terrain
+		# function at the validated XZ — never carried
+		# from the rail grade.
+		var wp := Dungeon.train_walkout_point
+		Dungeon.train_walkout_point = Vector3.ZERO
+		var hb1: Dictionary = Dungeon.home_building()
+		var hc1 := Vector2((hb1["origin"] as Vector3).x,
+			(hb1["origin"] as Vector3).z)
+		var hs1 := Vector2((hb1["doorstep"] as Vector3).x,
+			(hb1["doorstep"] as Vector3).z)
+		var sp1 := Vector2(wp.x, wp.z)
+		var fixed1 := TrainNetwork.clear_spawn_point(
+			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
+			hc1, hs1, sp1)
+		_spawn_point = Vector3(fixed1.x,
+			WorldGen.height_at(WorldGen.WORLD_SEED,
+				fixed1.x, fixed1.y) + 0.55, fixed1.y)
+	elif Dungeon.train_disembark_station != "":
 		# Issue #244 T3: a train arrival's disembark places
 		# the rider on the destination station's platform —
 		# its own placement flag, ahead of (and instead of)
@@ -888,7 +912,8 @@ func _build_consist() -> void:
 		mi.position = local
 		_consist.add_child(mi)
 		if str(box["kind"]) == "loco" \
-				or str(box["kind"]) == "car":
+				or str(box["kind"]) == "car" \
+				or str(box["kind"]) == "caboose":
 			var cs := CollisionShape3D.new()
 			var shape := BoxShape3D.new()
 			shape.size = box["size"]

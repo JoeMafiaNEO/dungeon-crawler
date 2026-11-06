@@ -1088,6 +1088,36 @@ static func grade_height(seed: int, a: Vector2, b: Vector2,
 ## box, frames/roofs/chimney included. The streamer builds
 ## the boxes whose center lies in its chunk; T3 takes the
 ## train over from here.
+## Issue #247 C1: the consist's rearmost point, in metres
+## behind the train's reference point (the station point /
+## path point train_position reports) — the caboose
+## platform deck's rear face (-16.2 centre, 1.2 long).
+## The walk-out landing derives from this one constant,
+## so the box geometry and the exit math cannot drift.
+const CABOOSE_REAR_OFFSET := 16.8
+
+
+## The mid-ride walk-out landing (issue #247 C1, spec
+## §4.5): the caboose's rear, then ~3 m perpendicular
+## from the track centerline, beside the track — from the
+## train's CURRENT parametric position + direction at exit
+## time. Pure (seed, discovered, state, elapsed); the
+## caller validates it through clear_spawn_point and
+## re-samples Y — never carried from the rail grade.
+static func walkout_point(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		state: Dictionary, elapsed_msec: int) -> Vector2:
+	var tp := train_position(seed, discovered, home_center,
+		home_station, state, elapsed_msec)
+	var pos2 := Vector2((tp["pos"] as Vector3).x,
+		(tp["pos"] as Vector3).z)
+	var yaw := float(tp["yaw"])
+	var fwd := Vector2(sin(yaw), cos(yaw))
+	var perp := Vector2(-fwd.y, fwd.x)
+	var rear := pos2 - fwd * CABOOSE_REAR_OFFSET
+	return rear + perp * 3.0
+
+
 static func consist_boxes(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2) -> Array:
 	var graph := derive_graph(seed, discovered, home_center)
@@ -1124,6 +1154,21 @@ static func consist_boxes(seed: int, discovered: Array,
 			Color(0.42, 0.20, 0.13)],
 		["car_roof", -5.0, Vector3(2.6, 0.3, 8.6), 3.05,
 			Color(0.25, 0.13, 0.09)],
+		# Issue #247 C1 (Amendment 1, open caboose): a rear
+		# car behind the passenger car — same cross-section,
+		# shorter, with an open rear platform deck (no rear
+		# wall) so riders can walk out the back mid-ride.
+		# Centers: caboose body -12.6 (spans -15.6..-9.6,
+		# flush against the car's rear face at -9.6);
+		# platform deck -16.2 (spans -16.8..-15.6).
+		["caboose_frame", -12.6, Vector3(2.6, 0.5, 6.0), 0.25,
+			Color(0.07, 0.07, 0.08)],
+		["caboose", -12.6, Vector3(2.9, 2.4, 6.0), 1.7,
+			Color(0.30, 0.16, 0.10)],
+		["caboose_roof", -12.6, Vector3(2.6, 0.3, 6.0), 3.05,
+			Color(0.20, 0.11, 0.08)],
+		["caboose_platform", -16.2, Vector3(2.6, 0.3, 1.2),
+			0.15, Color(0.20, 0.14, 0.10)],
 	]
 	for p in parts:
 		var at: Vector2 = home_station + dir * float(p[1])

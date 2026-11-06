@@ -250,6 +250,14 @@ static var act2_train_cities: Array = []
 static var train_state: Dictionary = {}
 static var train_local_departed_msec := 0
 static var train_disembark_station := ""
+## Issue #247 C1 (Amendment 1, spec §4.5): the one-shot
+## placement flag a mid-ride walk-out sets for WorldRoot
+## (the train_disembark_station pattern, but a world XZ
+## point instead of a station key). Vector3.ZERO = unset;
+## Y is never carried — WorldRoot re-samples it from
+## height_at at the validated XZ. Never saved, never
+## synced; consumed (cleared) on the next world entry.
+static var train_walkout_point := Vector3.ZERO
 ## Issue #244 T4 (§7): the course under edit at the GPS
 ## terminal — a shared draft, last editor wins. Holds
 ## DESTINATION keys only; the train's current node is the

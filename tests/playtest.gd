@@ -289,6 +289,7 @@ func _run() -> void:
 	_test_boot_icon_245()
 	_test_train_multistop_244()
 	_test_train_routing_246()
+	_test_train_walkout_247()
 	_print_results()
 	quit()
 
@@ -33932,3 +33933,309 @@ func _test_train_routing_246() -> void:
 	holder.free()
 	D.home_anchor = saved_anchor
 	print("[Playtest] Train routing 246 done.")
+
+
+func _test_train_walkout_247() -> void:
+	print("[Playtest] Train walk-out (issue #247 C1)...")
+	var TN := load("res://scripts/world/train_network.gd")
+	var WG := load("res://scripts/world/world_gen.gd")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var NM: Node = root.get_node("NetworkManager")
+	var seed: int = WG.WORLD_SEED
+	var set1: Array = ["0,-2", "0,2"]
+	var saved_anchor: Dictionary = DungeonScript.home_anchor
+	var saved_cities: Array = DungeonScript.act2_train_cities
+	var saved_tstate: Dictionary = DungeonScript.train_state
+	var saved_walkout: Vector3 = DungeonScript.train_walkout_point
+	var saved_disembark: String = DungeonScript.train_disembark_station
+	var saved_sps: Dictionary = DungeonScript.saved_player_state
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	var saved_wr: bool = InteriorScript.world_ride
+	var saved_pc: Dictionary = InteriorScript.passenger_classes
+	var saved_psi: Dictionary = InteriorScript.passenger_steam_ids
+	DungeonScript.home_anchor = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.act2_train_cities = set1.duplicate()
+	DungeonScript.train_walkout_point = Vector3.ZERO
+	DungeonScript.train_disembark_station = ""
+	InteriorScript.world_ride = true
+	var hb: Dictionary = DungeonScript.home_building()
+	var rhc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var rhs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var rp: Dictionary = TN.route_path(seed, set1, rhc, rhs,
+		["home", "0,-2"])
+	var dur: int = TN.duration_msec_for(float(rp["length"]))
+	# --- Leg A: the caboose in the consist -------------
+	var boxes: Array = TN.consist_boxes(seed, set1, rhc, rhs)
+	var kinds: Array = []
+	for b in boxes:
+		kinds.append(str(b["kind"]))
+	_assert(kinds.has("caboose")
+			and kinds.has("caboose_platform"),
+		"247(A): consist_boxes gains the caboose + the open rear platform deck")
+	var yaw0 := float(boxes[0]["yaw"])
+	var fwd0 := Vector2(sin(yaw0), cos(yaw0))
+	var plat_rear := -1.0
+	var car_along := 0.0
+	var cab_along := 0.0
+	for b in boxes:
+		var along: float = ((b["at"] as Vector2) - rhs).dot(fwd0)
+		if str(b["kind"]) == "caboose_platform":
+			# The rear face is BEHIND the centre (along is
+			# negative down the consist), so it is centre
+			# minus half the length.
+			plat_rear = along - float((b["size"] as Vector3).z) * 0.5
+		if str(b["kind"]) == "car":
+			car_along = along
+		if str(b["kind"]) == "caboose":
+			cab_along = along
+	_assert(absf(plat_rear + TN.CABOOSE_REAR_OFFSET) < 0.01,
+		"247(A): the platform deck's rear face is the walk-out rear offset (16.8 m)")
+	_assert(cab_along < car_along,
+		"247(A): the caboose sits behind the passenger car")
+	# --- Leg B (pin i): the riding-state exit ----------
+	# A real car in the tree in world mode, riding
+	# home -> 0,-2 with two riders aboard.
+	var st := {"status": "moving", "at": "home",
+		"course": ["home", "0,-2"], "path": ["home", "0,-2"],
+		"duration_msec": dur,
+		"riders": {1: ["warrior", 111], 7: ["mage", 777]},
+		"empty_run": false}
+	DungeonScript.train_state = {"status": "idle",
+		"at": "home", "course": [], "path": [],
+		"duration_msec": 0, "riders": {1: ["warrior", 111],
+			7: ["mage", 777]}, "empty_run": false}
+	InteriorScript.passenger_classes = {1: "warrior",
+		7: "mage"}
+	InteriorScript.passenger_steam_ids = {1: 111, 7: 777}
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var car: Node = InteriorScript.new()
+	holder.add_child(car)
+	NM.call("train_apply_state", st, 30000)
+	_assert(bool(car.get("_riding"))
+			and bool(car.get("_walkout_area").get("monitoring")),
+		"247(B): the departure beat starts the ride and arms the caboose door")
+	# Measure the exit-time geometry BEFORE the walk-out:
+	# the leave's broadcast echoes locally and re-stamps
+	# the local elapsed (the server clock the pin never
+	# started), so a post-handler read is a different
+	# clock. The interior reads the same stamp the pin
+	# reads here, microseconds apart.
+	var el: int = int(NM.call("train_local_elapsed_msec"))
+	var tp: Dictionary = TN.train_position(seed, set1,
+		rhc, rhs, st, el)
+	var tpos := Vector2((tp["pos"] as Vector3).x,
+		(tp["pos"] as Vector3).z)
+	var tyaw := float(tp["yaw"])
+	var tfwd := Vector2(sin(tyaw), cos(tyaw))
+	var raw: Vector2 = TN.walkout_point(seed, set1, rhc,
+		rhs, st, el)
+	var body := car.get_node("Player_1")
+	car.call("_on_walkout_body_entered", body)
+	var wp3: Vector3 = DungeonScript.train_walkout_point
+	_assert(wp3 != Vector3.ZERO,
+		"247(B): the walk-out sets the placement flag")
+	var wp := Vector2(wp3.x, wp3.z)
+	_assert(wp.distance_to(tpos)
+			<= TN.CABOOSE_REAR_OFFSET + 3.0 + 12.0 + 1.0,
+		"247(B): the landing sits within the clear ring of the train's position at exit time")
+	var tperp := Vector2(-tfwd.y, tfwd.x)
+	_assert((wp - tpos).dot(tfwd) < 6.0
+			and absf((wp - tpos).dot(tperp)) <= 15.5,
+		"247(B): the landing is behind the train, beside the track (caboose rear + 3 m off the centerline)")
+	_assert(wp.distance_to(raw) <= 12.01,
+		"247(B): the validated landing stays within the backstop's ring of the computed exit point")
+	_assert(TN.clear_spawn_point(seed, set1, rhc, rhs, wp)
+			== wp,
+		"247(B): the landed point is already clear (the backstop is idempotent on its own output)")
+	_assert(not (DungeonScript.train_state["riders"]
+				as Dictionary).has(1)
+			and (DungeonScript.train_state["riders"]
+				as Dictionary).has(7),
+		"247(B): the roster drops the walker and keeps the remaining rider")
+	_assert(car.get("_door_blocker") == null
+			and not bool(car.get("doors_locked")),
+		"247(B): the walk-out frees the DoorBlocker and unlocks the doors (the §4.5 carve-out)")
+	# The remaining rider's car: the walker's body
+	# disappears, the ride and its clock are untouched.
+	# (do_world_walkout flips the shared world_ride
+	# static false for the leaver — re-arm it, or the
+	# next car's beats run as a hub car. Each leg below
+	# re-arms it the same way.)
+	InteriorScript.world_ride = true
+	InteriorScript.passenger_classes = {1: "warrior",
+		7: "mage"}
+	var holder2 := Node3D.new()
+	root.add_child(holder2)
+	var car2: Node = InteriorScript.new()
+	holder2.add_child(car2)
+	car2.call("apply_world_departure", "0,-2", 25.0)
+	var left_before: float = float(car2.get("_ride_left"))
+	car2.call("apply_world_riders", {7: ["mage", 777]})
+	# queue_free is deferred — the node is gone at the
+	# frame's end, so synchronously it reads as queued.
+	var gone1: Node = car2.get_node_or_null("Player_1")
+	_assert(gone1 == null or gone1.is_queued_for_deletion(),
+		"247(B): the walker's body disappears from the remaining rider's car")
+	_assert(bool(car2.get("_riding"))
+			and absf(float(car2.get("_ride_left"))
+				- left_before) < 0.01,
+		"247(B): the remaining rider keeps riding with the clock unperturbed")
+	holder.free()
+	holder2.free()
+	# --- Leg C (pin ii): arrives on schedule -----------
+	# The train's state still carries the leg after the
+	# walk-out (rider-count-independent); the arrival
+	# beat settles it at the destination. The expansion
+	# beat grows the discovered set here, so save/restore
+	# around it to keep later legs on the fixture set.
+	var saved_cities_c: Array = DungeonScript.act2_train_cities
+	NM.call("train_arrive_server")
+	_assert(str(DungeonScript.train_state.get("status", ""))
+				== "idle"
+			and str(DungeonScript.train_state.get("at", ""))
+				== "0,-2"
+			and (DungeonScript.train_state.get("path", [])
+				as Array).is_empty(),
+		"247(C): the train arrives on schedule after a walk-out")
+	DungeonScript.train_state = st.duplicate(true)
+	DungeonScript.train_state["riders"] = {7: ["mage", 777]}
+	DungeonScript.act2_train_cities = saved_cities_c
+	# --- Leg D (pin iii): refusals ---------------------
+	# During the arrival beat the platform disembark
+	# owns the window; during a skip the duration is
+	# being rewritten. Both refuse the caboose door.
+	var idle_st := {"status": "idle", "at": "home",
+		"course": [], "path": [], "duration_msec": 0,
+		"riders": {1: ["warrior", 111]}, "empty_run": false}
+	DungeonScript.train_state = idle_st.duplicate(true)
+	DungeonScript.train_walkout_point = Vector3.ZERO
+	InteriorScript.world_ride = true
+	InteriorScript.passenger_classes = {1: "warrior"}
+	InteriorScript.passenger_steam_ids = {1: 111}
+	var holder3 := Node3D.new()
+	root.add_child(holder3)
+	var car3: Node = InteriorScript.new()
+	holder3.add_child(car3)
+	car3.call("apply_world_departure", "0,-2", 25.0)
+	car3.call("apply_world_arrival")
+	_assert(not bool(car3.call("_walkout_allowed")),
+		"247(D): the gate refuses during the arrival beat")
+	car3.call("_on_walkout_body_entered",
+		car3.get_node("Player_1"))
+	_assert(DungeonScript.train_walkout_point
+				== Vector3.ZERO
+			and not bool(car3.get("_disembarked_local")),
+		"247(D): an exit attempt during the arrival beat leaves the rider aboard")
+	holder3.free()
+	InteriorScript.world_ride = true
+	var holder4 := Node3D.new()
+	root.add_child(holder4)
+	var car4: Node = InteriorScript.new()
+	holder4.add_child(car4)
+	car4.call("apply_world_departure", "0,-2", 25.0)
+	car4.call("apply_world_skip", 2.0)
+	_assert(not bool(car4.call("_walkout_allowed")),
+		"247(D): the gate refuses while a skip is being applied")
+	car4.call("_on_walkout_body_entered",
+		car4.get_node("Player_1"))
+	_assert(DungeonScript.train_walkout_point
+				== Vector3.ZERO
+			and not bool(car4.get("_disembarked_local")),
+		"247(D): an exit attempt during skip application leaves the rider aboard")
+	holder4.free()
+	# --- Leg E (pin iv): intermediate stop -------------
+	# At a stop the train stands at a station: the
+	# caboose door refuses and the station exit governs.
+	DungeonScript.train_state = {"status": "stopped",
+		"at": "0,-2", "course": ["home", "0,-2"],
+		"path": ["home", "0,-2"], "duration_msec": dur,
+		"riders": {1: ["warrior", 111]}, "empty_run": false}
+	DungeonScript.train_walkout_point = Vector3.ZERO
+	DungeonScript.train_disembark_station = ""
+	InteriorScript.world_ride = true
+	var holder5 := Node3D.new()
+	root.add_child(holder5)
+	var car5: Node = InteriorScript.new()
+	holder5.add_child(car5)
+	car5.call("apply_world_departure", "0,-2", 25.0)
+	car5.call("apply_world_arrival")
+	_assert(not bool(car5.call("_walkout_allowed")),
+		"247(E): the gate refuses at an intermediate stop (status stopped)")
+	car5.call("_on_walkout_body_entered",
+		car5.get_node("Player_1"))
+	_assert(DungeonScript.train_walkout_point
+				== Vector3.ZERO,
+		"247(E): the caboose door does not fire at a stop")
+	car5.call("_on_disembark_body_entered",
+		car5.get_node("Player_1"))
+	_assert(str(DungeonScript.train_disembark_station)
+			== "0,-2",
+		"247(E): at a stop the station exit governs — the rider disembarks to the platform")
+	holder5.free()
+	DungeonScript.train_disembark_station = ""
+	# --- Leg F (pin v): last rider out -----------------
+	var st_last := {"status": "moving", "at": "home",
+		"course": ["home", "0,-2"], "path": ["home", "0,-2"],
+		"duration_msec": dur,
+		"riders": {1: ["warrior", 111]}, "empty_run": false}
+	DungeonScript.train_state = idle_st.duplicate(true)
+	DungeonScript.train_walkout_point = Vector3.ZERO
+	InteriorScript.world_ride = true
+	var holder6 := Node3D.new()
+	root.add_child(holder6)
+	var car6: Node = InteriorScript.new()
+	holder6.add_child(car6)
+	NM.call("train_apply_state", st_last, 30000)
+	car6.call("_on_walkout_body_entered",
+		car6.get_node("Player_1"))
+	_assert((DungeonScript.train_state["riders"]
+				as Dictionary).is_empty(),
+		"247(F): the last rider's walk-out empties the roster")
+	var saved_cities_f: Array = DungeonScript.act2_train_cities
+	NM.call("train_arrive_server")
+	_assert(str(DungeonScript.train_state.get("status", ""))
+				== "idle"
+			and str(DungeonScript.train_state.get("at", ""))
+				== "0,-2",
+		"247(F): the train continues empty, arrives, and idles")
+	DungeonScript.act2_train_cities = saved_cities_f
+	holder6.free()
+	# --- Leg G (pin vi): landing steps clear -----------
+	# The #246 characterization's intruding plain point
+	# (0,2's platform sat inside a footprint at 0.0 m):
+	# the backstop the WorldRoot branch uses steps it
+	# clear. And the normal mid-leg raw landing is
+	# already clear.
+	var plain02 := Vector2(151.9, 2548.4)
+	var stepped: Vector2 = TN.clear_spawn_point(seed,
+		set1, rhc, rhs, plain02)
+	_assert(stepped != plain02
+			and TN.clear_spawn_point(seed, set1, rhc,
+				rhs, stepped) == stepped,
+		"247(G): a landing beside a footprint steps clear via clear_spawn_point")
+	var raw_mid: Vector2 = TN.walkout_point(seed, set1,
+		rhc, rhs, st, dur / 2)
+	_assert(TN.clear_spawn_point(seed, set1, rhc, rhs,
+			raw_mid) == raw_mid,
+		"247(G): the normal mid-leg landing is already clear of footprints")
+	var wr_src := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	var begin_body := _bughunt_body(wr_src, "_begin")
+	_assert(begin_body.find("train_walkout_point") != -1
+			and begin_body.find("train_walkout_point")
+				< begin_body.find("train_disembark_station")
+			and begin_body.contains("height_at"),
+		"247(G): WorldRoot checks the walk-out flag before the disembark flag and re-samples Y")
+	DungeonScript.home_anchor = saved_anchor
+	DungeonScript.act2_train_cities = saved_cities
+	DungeonScript.train_state = saved_tstate
+	DungeonScript.train_walkout_point = saved_walkout
+	DungeonScript.train_disembark_station = saved_disembark
+	DungeonScript.saved_player_state = saved_sps
+	InteriorScript.world_ride = saved_wr
+	InteriorScript.passenger_classes = saved_pc
+	InteriorScript.passenger_steam_ids = saved_psi
+	print("[Playtest] Train walk-out (issue #247 C1) done.")
