@@ -7,7 +7,7 @@ extends Node3D
 ## Phase 2: boarding is over when the scene loads (doors_locked) — the
 ## dungeon's ALL ABOARD flow drove per-player boarding first.
 ## Phase 3: the real ride — 25s server-authoritative timer, scrolling window
-## scenery (procedural, seeded), chug/rumble loop, E-interact skip lever,
+## scenery (procedural, seeded), chug/rumble loop,
 ## background load of the next dungeon, arrival (brake screech, platform
 ## visible through the windows, doors open + unlock), then disembark through
 ## the car door into the next dungeon's annex (a late-loading peer recovers
@@ -49,7 +49,9 @@ static var world_dest_key := ""
 ## the train soundscape later.
 const USE_SYNTH_TRAIN_CUES := false
 
-## Full ride length. The skip lever fast-forwards to ~2s remaining.
+## Full ride length. Rides run their full length (Amendment 2,
+## Jesse's order 2026-11-06); the only way out mid-ride is the
+## caboose walk-out (§4.5).
 const RIDE_SECONDS := 25.0
 const DUNGEON_SCENE := "res://scenes/dungeon/dungeon.tscn"
 
@@ -94,7 +96,6 @@ var _seat_mat: StandardMaterial3D = null
 # --- Ride state (issue #3 Phase 3) ---
 var _riding := false
 var _arrived := false
-var _skipping := false
 var _ride_left := 0.0
 var _ride_dest := ""
 var _last_ride_sec := -1
@@ -111,27 +112,6 @@ var _disembark_area: Area3D = null
 # world ride; the arrival beat and the station wait own
 # every other window.
 var _walkout_area: Area3D = null
-var _skip_lever: Node3D = null
-
-
-## E-interact skip lever (issue #3 Phase 3). The player's
-## _nearest_interact_node picks it up via the "skip_lever" group; it is only
-## visible (hence interactable) while the train is riding.
-class SkipLever extends Node3D:
-	var interior: TrainInterior = null
-
-	func prompt_text() -> String:
-		return "Pull the skip lever"
-
-	func interact(_player: Player) -> void:
-		if interior != null and interior.is_riding():
-			if TrainInterior.world_ride:
-				# World rides: the skip goes through the
-				# server's train state (spec §4.5/F5), so
-				# the world consist agrees.
-				NetworkManager.train_skip()
-			else:
-				interior.rpc("request_skip_ride")
 
 
 ## Issue #244 T4 (spec §5): the in-train GPS terminal —
@@ -155,7 +135,6 @@ func _ready() -> void:
 	_build_dressing()
 	_build_scenery()
 	_build_platform()
-	_build_skip_lever()
 	_build_gps_terminal()
 	_build_disembark_zone()
 	_build_walkout_zone()
@@ -196,7 +175,7 @@ func is_riding() -> bool:
 
 
 ## Server drives the ride clock; every peer ticks its own copy in _process
-## (scenery easing + HUD). Skip shortens the clock; arrival is an RPC.
+## (scenery easing + HUD). Arrival is an RPC.
 func _run_ride() -> void:
 	ride_active = true
 	ride_dest_name = _dest_display_name()
@@ -235,7 +214,6 @@ func _apply_ride_started() -> void:
 	_last_ride_sec = -1
 	_chug_timer = 0.0
 	_scenery_root.visible = true
-	_skip_lever.visible = true
 	if USE_SYNTH_TRAIN_CUES:
 		AudioManager.sfx("train_chug")
 	# Jesse's inside-old-train field recording: interior ambient beds under the
@@ -280,38 +258,7 @@ func _show_ride_hud() -> void:
 	if hud == null or not hud.has_method("show_ride_status"):
 		return
 	var title := "RIDING TO " + _ride_dest.to_upper()
-	if _skipping:
-		title = "SKIPPING AHEAD"
 	hud.show_ride_status(title, _ride_left)
-
-
-## Skip lever pulled (server): fast-forward to ~2s remaining, tell peers.
-@rpc("any_peer", "call_local")
-func request_skip_ride() -> void:
-	if not multiplayer.is_server():
-		return
-	var sender := multiplayer.get_remote_sender_id()
-	if sender == 0:
-		sender = multiplayer.get_unique_id()
-	if not is_riding():
-		return
-	_apply_skip()
-	rpc("ride_skip_notice")
-
-
-## Pure skip (testable): the clock jumps to ~2s, never backwards past arrival.
-func _apply_skip() -> void:
-	_ride_left = minf(_ride_left, 2.0)
-
-
-@rpc("any_peer", "call_local")
-func ride_skip_notice() -> void:
-	var sender := multiplayer.get_remote_sender_id()
-	if sender != 0 and sender != NetworkManager.server_peer_id:
-		return
-	_apply_skip()
-	_skipping = true
-	_show_ride_hud()
 
 
 ## Issue #135: ride-state pull. A client whose car finished loading
@@ -412,7 +359,6 @@ func _apply_arrival() -> void:
 			_local_hud.hide_station_timer()
 	_scenery_root.visible = false
 	_platform_root.visible = true
-	_skip_lever.visible = false
 	doors_locked = false
 	open_doors()
 	if _door_blocker != null and is_instance_valid(_door_blocker):
@@ -457,15 +403,6 @@ func apply_world_departure(dest_label: String,
 	# annex exit and never a walk-out.
 	if world_ride and _walkout_area != null:
 		_walkout_area.monitoring = true
-
-
-## A world skip: the server's clamped remainder.
-func apply_world_skip(seconds_left: float) -> void:
-	if not is_riding():
-		return
-	_ride_left = minf(_ride_left, seconds_left)
-	_skipping = true
-	_show_ride_hud()
 
 
 ## The world arrival beat: the shipped arrival, verbatim.
@@ -590,16 +527,13 @@ func do_world_walkout() -> void:
 ## The §4.5 gating, as its own function so the pins drive
 ## it directly: the rear zone fires only while riding a
 ## world ride — never during the arrival beat (the
-## platform disembark owns that window), never while a
-## skip is being applied (the skip rewrites
-## duration_msec; an exit in that window races the
-## arrival deadline), never after the rider already left,
-## and never at an intermediate stop (status "stopped":
-## the train stands at a station and the station exit
-## governs, not the caboose door).
+## platform disembark owns that window), never after the
+## rider already left, and never at an intermediate stop
+## (status "stopped": the train stands at a station and
+## the station exit governs, not the caboose door).
 func _walkout_allowed() -> bool:
 	return world_ride and _riding and not _arrived \
-		and not _skipping and not _disembarked_local \
+		and not _disembarked_local \
 		and str(Dungeon.train_state.get("status", "")) \
 			!= "stopped"
 
@@ -1196,12 +1130,10 @@ func _build_platform() -> void:
 	_platform_root.visible = false
 
 
-## Skip lever (issue #3 Phase 3): E-interact prop near the rear door.
-## Hidden (hence uninteractable) until the ride starts.
 ## The GPS terminal prop (issue #244 T4): a pedestal +
-## tilted glowing screen at the car's front end, opposite
-## the skip lever. Invisible (hence uninteractable) on
-## hub rides — the network exists only in the world.
+## tilted glowing screen at the car's front end.
+## Invisible (hence uninteractable) on hub rides — the
+## network exists only in the world.
 func _build_gps_terminal() -> void:
 	var gps := TrainGPS.new()
 	gps.interior = self
@@ -1234,49 +1166,6 @@ func _build_gps_terminal() -> void:
 	tag.position = Vector3(0, 1.85, 0)
 	gps.add_child(tag)
 	add_child(gps)
-
-
-func _build_skip_lever() -> void:
-	var lever := SkipLever.new()
-	lever.interior = self
-	lever.name = "SkipLever"
-	lever.add_to_group("skip_lever")
-	lever.position = Vector3(-6.5, 0.0, 1.5)
-	var brass := _mat(Color(0.72, 0.55, 0.25))
-	var dark := _mat(Color(0.10, 0.09, 0.11))
-	var red := _mat(Color(0.70, 0.12, 0.12), Color(0.70, 0.12, 0.12), 0.8)
-	var base := MeshInstance3D.new()
-	var bbm := BoxMesh.new()
-	bbm.size = Vector3(0.4, 0.9, 0.4)
-	bbm.material = dark
-	base.mesh = bbm
-	base.position = Vector3(0, 0.45, 0)
-	lever.add_child(base)
-	var handle := MeshInstance3D.new()
-	var hbm := BoxMesh.new()
-	hbm.size = Vector3(0.12, 1.1, 0.12)
-	hbm.material = brass
-	handle.mesh = hbm
-	handle.position = Vector3(0, 1.2, 0.25)
-	handle.rotation.x = -0.5
-	lever.add_child(handle)
-	var knob := MeshInstance3D.new()
-	var kbm := BoxMesh.new()
-	kbm.size = Vector3(0.22, 0.22, 0.22)
-	kbm.material = red
-	knob.mesh = kbm
-	knob.position = Vector3(0, 1.68, 0.5)
-	lever.add_child(knob)
-	var tag := Label3D.new()
-	tag.text = "PULL TO SKIP"
-	tag.font_size = 48
-	tag.pixel_size = 0.008
-	tag.position = Vector3(0, 2.1, 0)
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	lever.add_child(tag)
-	lever.visible = false
-	add_child(lever)
-	_skip_lever = lever
 
 
 ## Disembark zone (issue #3 Phase 3): Area3D in the rear doorway. Monitoring

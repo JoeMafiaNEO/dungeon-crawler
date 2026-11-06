@@ -290,6 +290,7 @@ func _run() -> void:
 	_test_train_multistop_244()
 	_test_train_routing_246()
 	_test_train_walkout_247()
+	_test_train_skip_removed_248()
 	_print_results()
 	quit()
 
@@ -9020,7 +9021,7 @@ func _test_train_interior() -> void:
 
 
 func _test_train_ride() -> void:
-	print("[Playtest] Train ride phase 3 (25s ride, skip, arrival, disembark)...")
+	print("[Playtest] Train ride phase 3 (25s ride, arrival, disembark)...")
 	var InteriorScript := load("res://scripts/station/train_interior.gd")
 	_assert(InteriorScript.RIDE_SECONDS == 25.0, "ride: 25s ride length")
 
@@ -9028,7 +9029,6 @@ func _test_train_ride() -> void:
 	car._build_car()
 	car._build_scenery()
 	car._build_platform()
-	car._build_skip_lever()
 	car._build_disembark_zone()
 
 	# Scenery: two unshaded scrolling planes, hidden until the ride starts.
@@ -9059,19 +9059,17 @@ func _test_train_ride() -> void:
 	_assert(smat.uv1_offset.x == 0.0, "ride: no scroll once settled")
 	car._riding = false
 
-	# Skip lever: pure clock jump, never past arrival.
+	# Amendment 2 (issue #248 C2): the skip lever is gone —
+	# the ride clock ticks down by exactly the elapsed
+	# time, and no skip input exists in the car.
+	car._riding = true
 	car._ride_left = 20.0
-	car._apply_skip()
-	_assert(car._ride_left == 2.0, "ride: skip jumps clock to 2s")
-	car._ride_left = 1.0
-	car._apply_skip()
-	_assert(car._ride_left == 1.0, "ride: skip never pushes past arrival")
-
-	# Skip lever prop: E-interact group, prompt, hidden until riding.
-	var lever = car.get_node_or_null("SkipLever")
-	_assert(lever != null and lever.is_in_group("skip_lever"), "ride: skip lever in interact group")
-	_assert(lever.prompt_text() == "Pull the skip lever", "ride: skip lever prompt")
-	_assert(not lever.visible, "ride: skip lever hidden until ride start")
+	car._process(1.0)
+	_assert(car._ride_left == 19.0,
+		"ride: the clock ticks down by exactly the elapsed time (no skip jump)")
+	car._riding = false
+	_assert(car.get_node_or_null("SkipLever") == null,
+		"ride: no skip lever exists in the car")
 
 	# Arrival platform: hidden, destination sign names the theme.
 	_assert(car._platform_root != null, "ride: platform built")
@@ -9104,7 +9102,15 @@ func _test_train_ride() -> void:
 	_assert(dblock.contains("Dungeon.arrived_by_train = true"), "ride: disembark flags train arrival")
 	_assert(dblock.contains("load_threaded_get(DUNGEON_SCENE)"), "ride: disembark uses preloaded scene")
 	_assert(dblock.contains("change_scene_to_packed"), "ride: disembark swaps to packed scene")
-	_assert(isrc.contains("func request_skip_ride"), "ride: skip lever RPC exists")
+	# Amendment 2 (issue #248 C2): no skip surface remains
+	# in the interior's source — no lever class, no label,
+	# no skip RPC, no skipping state.
+	_assert(not isrc.contains("SkipLever"), "ride: SkipLever class gone")
+	_assert(not isrc.contains("PULL TO SKIP"), "ride: skip label gone")
+	_assert(not isrc.contains("func request_skip_ride"), "ride: skip RPC gone")
+	_assert(not isrc.contains("_skipping"), "ride: skipping state gone")
+	_assert(not isrc.contains("func _build_skip_lever"), "ride: lever build gone")
+	_assert(not isrc.contains("func apply_world_skip"), "ride: world skip applier gone")
 	_assert(not isrc.contains("func _run_disembark_window"), "ride: server sweep removed (voluntary disembark)")
 
 	# Dungeon side (source): annex spawn + single arrival beat.
@@ -9138,7 +9144,6 @@ func _test_train_ride_state_sync() -> void:
 	car._build_car()
 	car._build_scenery()
 	car._build_platform()
-	car._build_skip_lever()
 	car._build_disembark_zone()
 	_assert(not car._arrived and not car._doors_open, "135: late car starts sealed")
 	_assert(not car._disembark_area.monitoring, "135: late car zone dormant")
@@ -9165,7 +9170,6 @@ func _test_train_ride_state_sync() -> void:
 	car2._build_dressing()
 	car2._build_scenery()
 	car2._build_platform()
-	car2._build_skip_lever()
 	car2._build_disembark_zone()
 	car2._apply_ride_state(false, true, "Dungeon Depths", 7.5)
 	_assert(car2._riding, "135: sync (riding) starts the ride locally")
@@ -25928,13 +25932,17 @@ func _test_train_ride_244() -> void:
 			and not bool(NM.call("train_board_server", 5,
 				"rogue", 555)),
 		"244T3(D): mid-ride the course is locked — no confirm, no summon, no boarding")
-	_assert(not bool(NM.call("train_skip_server", 9)),
-		"244T3(D): skip refuses a non-rider")
-	_assert(bool(NM.call("train_skip_server", 7)),
-		"244T3(D): a rider's skip shortens the ride (F5)")
-	_assert(int(DungeonScript.train_state["duration_msec"])
-			<= 2100,
-		"244T3(D): the skip clamps the leg to ~2 s remaining, same destination")
+	# Amendment 2 (issue #248 C2): skip is gone — the
+	# server has no skip path at all, and the leg's
+	# duration is never rewritten mid-ride; the arrival
+	# beat is driven directly.
+	_assert(not NM.has_method("train_skip_server"),
+		"244T3(D): the server skip path is deleted")
+	_assert(absf(int(DungeonScript.train_state[
+				"duration_msec"])
+			- TN.duration_msec_for(float(rrp["length"])))
+			<= 1.0,
+		"244T3(D): the duration is never rewritten mid-ride")
 	NM.call("train_arrive_server")
 	_assert(str(DungeonScript.train_state["status"]) == "idle"
 			and str(DungeonScript.train_state["at"])
@@ -33305,8 +33313,8 @@ func _test_train_expansion_244() -> void:
 	_assert(bool(NM5.call("train_confirm_server", 1,
 			["home", "7,0"])),
 		"244T5(A): the ride out confirms")
-	_assert(bool(NM5.call("train_skip_server", 1)),
-		"244T5(A): skip arms the arrival")
+	# Amendment 2 (issue #248 C2): skip is gone — the
+	# arrival beat is driven directly.
 	NM5.call("train_arrive_server")
 	_assert(String(D.train_state.get("at", "")) == "7,0",
 		"244T5(A): the train stands at the arrival city")
@@ -33320,7 +33328,6 @@ func _test_train_expansion_244() -> void:
 	# (expansion is append-only and idempotent), and a
 	# course being ridden never changes underway.
 	NM5.call("train_confirm_server", 1, ["7,0", "home"])
-	NM5.call("train_skip_server", 1)
 	NM5.call("train_arrive_server")
 	_assert(bool(NM5.call("train_confirm_server", 1,
 			["home", "7,0"])),
@@ -33330,7 +33337,6 @@ func _test_train_expansion_244() -> void:
 	D.apply_train_discovered(["0,2"])
 	_assert((D.train_state["path"] as Array) == underway,
 		"244T5(B): discovery never rewrites a course underway")
-	NM5.call("train_skip_server", 1)
 	NM5.call("train_arrive_server")
 	_assert((D.act2_train_cities as Array).size()
 			== grown_expect.size() + 1,
@@ -33543,7 +33549,7 @@ func _test_train_multistop_244() -> void:
 		"244T6(A): the full course is retained")
 	# (B) Arrival at 7,0 is a STOP: the beat fires
 	# (expansion discovers 7,1), the course survives.
-	NM6.call("train_skip_server", 1)
+	# (Amendment 2: the arrival beat is driven directly.)
 	NM6.call("train_arrive_server")
 	_assert(String(D.train_state.get("status", ""))
 			== "stopped",
@@ -33571,8 +33577,8 @@ func _test_train_multistop_244() -> void:
 		"244T6(C): a stopped train is not summonable")
 	_assert(not bool(NM6.call("train_continue_server", 77)),
 		"244T6(C): a non-rider cannot confirm departure")
-	_assert(not bool(NM6.call("train_skip_server", 77)),
-		"244T6(C): a non-rider's skip cannot depart the stop")
+	_assert(not NM6.has_method("train_skip_server"),
+		"244T6(C): the server skip path is deleted — the chart's Confirm is the sole continuation")
 	NM6.set("_train_stopped_msec", 0)
 	NM6.call("_train_tick")
 	_assert(String(D.train_state.get("status", ""))
@@ -33585,19 +33591,19 @@ func _test_train_multistop_244() -> void:
 	_assert(String((D.train_state["path"] as Array).back())
 			== "9,1",
 		"244T6(D): the second leg ends at 9,1")
-	NM6.call("train_skip_server", 1)
 	NM6.call("train_arrive_server")
 	_assert(String(D.train_state.get("status", ""))
 			== "stopped"
 			and String(D.train_state.get("at", "")) == "9,1",
 		"244T6(D): the train stops at the second plotted node")
 	# (E) The final leg settles idle, exactly as before.
-	_assert(bool(NM6.call("train_skip_server", 1)),
-		"244T6(E): skip at a stop departs the final leg")
+	# (Amendment 2: the chart's Confirm/Depart is the
+	# sole continuation from a stop now.)
+	_assert(bool(NM6.call("train_continue_server", 1)),
+		"244T6(E): a rider's confirm departs the final leg")
 	_assert(String(D.train_state.get("status", ""))
 			== "moving",
-		"244T6(E): the final leg is moving after the skip")
-	NM6.call("train_skip_server", 1)
+		"244T6(E): the final leg is moving after the confirm")
 	NM6.call("train_arrive_server")
 	_assert(String(D.train_state.get("status", ""))
 			== "idle"
@@ -33627,7 +33633,6 @@ func _test_train_multistop_244() -> void:
 		_assert(bool(NM6.call("train_confirm_server", 1,
 				["home", dest_f])),
 			"244T6(F): the pass-through course confirms")
-		NM6.call("train_skip_server", 1)
 		NM6.call("train_arrive_server")
 		_assert(String(D.train_state.get("status", ""))
 				== "idle"
@@ -34105,8 +34110,9 @@ func _test_train_walkout_247() -> void:
 	DungeonScript.act2_train_cities = saved_cities_c
 	# --- Leg D (pin iii): refusals ---------------------
 	# During the arrival beat the platform disembark
-	# owns the window; during a skip the duration is
-	# being rewritten. Both refuse the caboose door.
+	# owns the window; the caboose door refuses.
+	# (Amendment 2: the skip-application refusal half is
+	# gone with skip; the arrival-beat refusal stays.)
 	var idle_st := {"status": "idle", "at": "home",
 		"course": [], "path": [], "duration_msec": 0,
 		"riders": {1: ["warrior", 111]}, "empty_run": false}
@@ -34130,22 +34136,6 @@ func _test_train_walkout_247() -> void:
 			and not bool(car3.get("_disembarked_local")),
 		"247(D): an exit attempt during the arrival beat leaves the rider aboard")
 	holder3.free()
-	InteriorScript.world_ride = true
-	var holder4 := Node3D.new()
-	root.add_child(holder4)
-	var car4: Node = InteriorScript.new()
-	holder4.add_child(car4)
-	car4.call("apply_world_departure", "0,-2", 25.0)
-	car4.call("apply_world_skip", 2.0)
-	_assert(not bool(car4.call("_walkout_allowed")),
-		"247(D): the gate refuses while a skip is being applied")
-	car4.call("_on_walkout_body_entered",
-		car4.get_node("Player_1"))
-	_assert(DungeonScript.train_walkout_point
-				== Vector3.ZERO
-			and not bool(car4.get("_disembarked_local")),
-		"247(D): an exit attempt during skip application leaves the rider aboard")
-	holder4.free()
 	# --- Leg E (pin iv): intermediate stop -------------
 	# At a stop the train stands at a station: the
 	# caboose door refuses and the station exit governs.
@@ -34239,3 +34229,62 @@ func _test_train_walkout_247() -> void:
 	InteriorScript.passenger_classes = saved_pc
 	InteriorScript.passenger_steam_ids = saved_psi
 	print("[Playtest] Train walk-out (issue #247 C1) done.")
+
+
+func _test_train_skip_removed_248() -> void:
+	print("[Playtest] Train skip removed (issue #248 C2)...")
+	var NM: Node = root.get_node("NetworkManager")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var InteriorScript := load("res://scripts/station/train_interior.gd")
+	var saved_tstate: Dictionary = DungeonScript.train_state
+	var saved_wr: bool = InteriorScript.world_ride
+	var saved_pc: Dictionary = InteriorScript.passenger_classes
+	var saved_psi: Dictionary = InteriorScript.passenger_steam_ids
+	# A real car in the tree, riding a world leg: the
+	# state where the lever used to live.
+	DungeonScript.train_state = {"status": "idle",
+		"at": "home", "course": [], "path": [],
+		"duration_msec": 0, "riders": {1: ["warrior", 111]},
+		"empty_run": false}
+	InteriorScript.world_ride = true
+	InteriorScript.passenger_classes = {1: "warrior"}
+	InteriorScript.passenger_steam_ids = {1: 111}
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var car: Node = InteriorScript.new()
+	holder.add_child(car)
+	var st := {"status": "moving", "at": "home",
+		"course": ["home", "0,-2"], "path": ["home", "0,-2"],
+		"duration_msec": 55000,
+		"riders": {1: ["warrior", 111]}, "empty_run": false}
+	NM.call("train_apply_state", st, 30000)
+	_assert(bool(car.get("_riding")),
+		"248(i): the fixture car is riding")
+	_assert(car.get_node_or_null("SkipLever") == null,
+		"248(i): no skip lever exists in the car while riding")
+	_assert(not NM.has_method("train_skip_server"),
+		"248(i): the server skip path is deleted")
+	_assert(not car.has_method("apply_world_skip"),
+		"248(i): the world skip applier is deleted")
+	_assert(not car.has_method("request_skip_ride"),
+		"248(i): the local skip RPC is deleted")
+	holder.free()
+	# (iv) Grep-level: the word "skip" appears nowhere
+	# in either touched file, in any case. The elevator
+	# cab keeps its own skip machinery (out of scope) and
+	# the player's interact list keeps the shared
+	# "skip_lever" group name for the cab's button — those
+	# live in other files and are not covered here.
+	var isrc := FileAccess.get_file_as_string(
+		"res://scripts/station/train_interior.gd")
+	var nmsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(not isrc.to_lower().contains("skip"),
+		"248(iv): no 'skip' remains in train_interior.gd")
+	_assert(not nmsrc.to_lower().contains("skip"),
+		"248(iv): no 'skip' remains in network_manager.gd")
+	DungeonScript.train_state = saved_tstate
+	InteriorScript.world_ride = saved_wr
+	InteriorScript.passenger_classes = saved_pc
+	InteriorScript.passenger_steam_ids = saved_psi
+	print("[Playtest] Train skip removed (issue #248 C2) done.")

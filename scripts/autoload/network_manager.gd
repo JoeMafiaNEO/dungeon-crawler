@@ -143,7 +143,7 @@ func _ready() -> void:
 	# contained zero disconnect-handling lines).
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	if transport == Transport.LAN:
-		# LAN mode: skip Steam lobby signals.
+		# LAN mode: bypass Steam lobby signals.
 		return
 	if SteamManager.initialized:
 		_connect_steam_signals()
@@ -692,7 +692,6 @@ func _train_broadcast() -> void:
 ## through the interior's own machinery).
 func train_apply_state(state: Dictionary, elapsed_msec: int) -> void:
 	var prev := str(Dungeon.train_state.get("status", "idle"))
-	var prev_dur := int(Dungeon.train_state.get("duration_msec", 0))
 	Dungeon.train_state = state.duplicate(true)
 	if str(state.get("status", "")) == "moving":
 		Dungeon.train_local_departed_msec = \
@@ -705,11 +704,6 @@ func train_apply_state(state: Dictionary, elapsed_msec: int) -> void:
 			car.call("apply_world_departure",
 				_train_dest_label(state),
 				maxf((int(state.get("duration_msec", 0))
-					- elapsed_msec) / 1000.0, 0.0))
-		elif now_status == "moving" and prev == "moving" \
-				and int(state.get("duration_msec", 0)) != prev_dur:
-			car.call("apply_world_skip", maxf(
-				(int(state.get("duration_msec", 0))
 					- elapsed_msec) / 1000.0, 0.0))
 		elif (now_status == "idle" or now_status == "stopped") \
 				and prev == "moving":
@@ -935,30 +929,6 @@ func train_continue_server(peer: int) -> bool:
 	return _train_depart_leg()
 
 
-## Skip (F5): the ride's only interruption — same
-## destination, ~2 s left, through the server so the world
-## consist and every interior agree.
-func train_skip_server(peer: int) -> bool:
-	if not multiplayer.is_server():
-		return false
-	var st := Dungeon.train_state
-	if str(st.get("status", "")) == "stopped":
-		# At an intermediate stop the lever departs the
-		# next leg now (T6: the dwell ruling's confirm
-		# semantics, rider-gated inside continue).
-		return train_continue_server(peer)
-	if str(st.get("status", "")) != "moving":
-		return false
-	if not (st.get("riders", {}) as Dictionary).has(peer):
-		return false
-	var elapsed := train_elapsed_msec()
-	if elapsed + 2000 >= int(st.get("duration_msec", 0)):
-		return false
-	st["duration_msec"] = elapsed + 2000
-	_train_broadcast()
-	return true
-
-
 ## A rider leaves the car (disembark or voluntary exit).
 func train_leave_server(peer: int) -> void:
 	if not multiplayer.is_server():
@@ -1077,8 +1047,9 @@ func train_summon_request(station: String) -> void:
 
 
 ## Continue from an intermediate stop (issue #244 T6):
-## the chart's Confirm while stopped and the skip lever
-## both land here — a rider's confirm departs the leg.
+## the chart's Confirm while stopped lands here — a
+## rider's confirm departs the leg. (Amendment 2: the
+## chart is now the sole continuation path.)
 func train_continue() -> void:
 	if multiplayer.is_server():
 		train_continue_server(multiplayer.get_unique_id())
@@ -1092,19 +1063,6 @@ func train_continue_request() -> void:
 	if multiplayer.is_server():
 		train_continue_server(
 			multiplayer.get_remote_sender_id())
-
-
-func train_skip() -> void:
-	if multiplayer.is_server():
-		train_skip_server(multiplayer.get_unique_id())
-	else:
-		rpc_id(NetworkManager.server_peer_id, "train_skip_request")
-
-
-@rpc("any_peer", "call_remote", "reliable")
-func train_skip_request() -> void:
-	if multiplayer.is_server():
-		train_skip_server(multiplayer.get_remote_sender_id())
 
 
 func train_leave() -> void:
