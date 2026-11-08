@@ -292,6 +292,7 @@ func _run() -> void:
 	_test_train_walkout_247()
 	_test_train_skip_removed_248()
 	_test_world_place_249()
+	_test_rts_build_complete_251()
 	_print_results()
 	quit()
 
@@ -34418,3 +34419,189 @@ func _test_world_place_249() -> void:
 	DungeonScript.train_state = saved_tstate
 	DungeonScript.act2_train_cities = saved_cities
 	print("[Playtest] World placement (issue #249 F1) done.")
+
+## Issue #251: a client-built RTS building completed on the
+## host but stayed a 55%-alpha shadow on the client — its
+## copy never completed, because construction work is
+## server-only behind TWO gates (unit.gd rpc_order_build
+## returns early off-server; the villager channel block in
+## _physics_process never runs off-server) and nothing
+## replicates completion. Fix, both legs: (1) the server's
+## building broadcasts its finished state when
+## add_build_work reaches 1.0; (2) D9 — sync_rts_state
+## sends each replayed building's actual state right after
+## its spawn rpc, so a late joiner does not receive a
+## completed building as a stuck dim shadow. Red-before:
+## the broadcast and the replay state do not exist, so the
+## source pins + has_method pins fail while the setup and
+## control legs pass.
+func _test_rts_build_complete_251() -> void:
+	print("[Playtest] RTS build completion broadcast (issue #251)...")
+	var BuildingScript: GDScript = load("res://scripts/rts/building.gd")
+	var DungeonScript: GDScript = load("res://scripts/dungeon/dungeon.gd")
+	# Fixture hygiene (mirror _test_rts_command_part_a_165):
+	# earlier sections boot real dungeons whose nodes can
+	# shadow first-in-group lookups — displace the
+	# incumbents, restored at the end.
+	var displaced_dungeons: Array = []
+	for n in get_nodes_in_group("dungeon"):
+		displaced_dungeons.append(n)
+		n.remove_from_group("dungeon")
+	var displaced_mgrs: Array = []
+	for n in get_nodes_in_group("rts_manager"):
+		displaced_mgrs.append(n)
+		n.remove_from_group("rts_manager")
+	var prev_scene: Node = current_scene
+	var holder := Node3D.new()
+	holder.name = "RTS251Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var mgr = load("res://scripts/rts/rts_manager.gd").new()
+	holder.add_child(mgr)
+	# The construction dim, read the way the #251 probe read
+	# it: the first Body mesh's material alpha + transparency.
+	var dim_of := func(b: Node) -> Dictionary:
+		var body := b.get_node_or_null("Body")
+		if body == null:
+			return {"alpha": -1.0, "transp": -1}
+		var stack: Array = [body]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			if n is MeshInstance3D:
+				var mat := (n as MeshInstance3D).material_override as StandardMaterial3D
+				if mat != null:
+					return {"alpha": mat.albedo_color.a,
+						"transp": int(mat.transparency)}
+			for c in n.get_children():
+				stack.append(c)
+		return {"alpha": -1.0, "transp": -1}
+	# setup() BEFORE add_child (the visuals build in _ready);
+	# start_construction() AFTER add_child (Body must exist
+	# for the dim to land) — the #251 probe's composition
+	# order, verified first-hand.
+	var mk_building := func(id: int, btype: String, pos: Vector3) -> Node:
+		var b = BuildingScript.new()
+		b.name = "RTSBuilding_%d" % id
+		b.setup(0, btype, null)
+		b.building_id = id
+		holder.add_child(b)
+		b.position = pos
+		return b
+	var bldg_src := FileAccess.get_file_as_string("res://scripts/rts/building.gd")
+	# --- Leg 1: the server's completion broadcast. ---
+	# (1a) Source: the completion branch of add_build_work
+	# rpcs the finished state to all peers.
+	var comp_body := _bughunt_body(bldg_src, "add_build_work")
+	_assert(comp_body.contains("sync_build_complete"),
+		"251(1a): add_build_work broadcasts the finished state on completion")
+	# (1b) Behavioral: a dim client-side building completes
+	# when the broadcast arrives. The direct call is the
+	# rpc's local application (sender 0, the server-origin
+	# path — the same stated cost as the 165B sync pins).
+	var client_copy = mk_building.call(301, "barracks", Vector3(400, 0, 430))
+	client_copy.call("start_construction")
+	_assert(bool(client_copy.get("under_construction"))
+			and float(client_copy.get("build_progress")) == 0.0
+			and float(client_copy.get("hp"))
+				== float(client_copy.get("max_hp")) * 0.1,
+		"251(1b): the client copy starts under construction at 10% HP, progress 0")
+	var d0: Dictionary = dim_of.call(client_copy)
+	_assert(absf(float(d0["alpha"]) - 0.55) < 0.01 and int(d0["transp"]) == 1,
+		"251(1b): the client copy starts dimmed (alpha 0.55, transparency on)")
+	_assert(client_copy.has_method("sync_build_complete"),
+		"251(1b): the building carries the completion broadcast rpc")
+	var bc_body := _body_of(bldg_src, "func sync_build_complete")
+	_assert(bc_body.contains("get_remote_sender_id")
+			and bc_body.contains("server_peer_id"),
+		"251(1b): the completion broadcast carries the server-origin guard")
+	if client_copy.has_method("sync_build_complete"):
+		client_copy.call("sync_build_complete")
+		_assert(float(client_copy.get("build_progress")) == 1.0
+				and not bool(client_copy.get("under_construction"))
+				and float(client_copy.get("hp"))
+					== float(client_copy.get("max_hp")),
+			"251(1b): the broadcast completes the client copy (progress 1.0, hp max)")
+		var d1: Dictionary = dim_of.call(client_copy)
+		_assert(absf(float(d1["alpha"]) - 1.0) < 0.01 and int(d1["transp"]) == 0,
+			"251(1b): the broadcast undims the client copy (alpha 1.0, transparency off)")
+	# (1c) Control: the server-side trigger — a full
+	# build-time of work completes a building locally.
+	# Passes on both trees; the branch itself is unchanged.
+	var server_copy = mk_building.call(302, "barracks", Vector3(420, 0, 430))
+	server_copy.call("start_construction")
+	server_copy.call("add_build_work", 20.0)
+	_assert(float(server_copy.get("build_progress")) == 1.0
+			and not bool(server_copy.get("under_construction")),
+		"251(1c): a full build-time of work completes the building locally")
+	var d2: Dictionary = dim_of.call(server_copy)
+	_assert(absf(float(d2["alpha"]) - 1.0) < 0.01 and int(d2["transp"]) == 0,
+		"251(1c): the locally completed building is opaque")
+	# --- Leg 2 (D9): late-join replay sends the real state. ---
+	# (2a) Source: the sync_rts_state building loop sends
+	# the state rpc right after the spawn rpc.
+	var dsrc := FileAccess.get_file_as_string("res://scripts/dungeon/dungeon.gd")
+	var sync_body := _bughunt_body(dsrc, "sync_rts_state")
+	_assert(sync_body.contains("client_sync_building_state"),
+		"251(2a): sync_rts_state sends each replayed building's actual state")
+	# Bare real Dungeon (the #165 scaffold): its own RTS
+	# child, the shared manager, no scene boot.
+	var dgn = DungeonScript.new()
+	dgn.name = "Dungeon251"
+	holder.add_child(dgn)
+	dgn.add_to_group("dungeon")
+	var rts_holder := Node3D.new()
+	rts_holder.name = "RTS"
+	dgn.add_child(rts_holder)
+	dgn.set("_rts_manager", mgr)
+	# (2b) A completed building, replayed: it must arrive
+	# completed, not as a stuck dim shadow.
+	var replayed = dgn.call("_spawn_building_local",
+		0, "barracks", Vector3(440, 0, 430), "iron_vanguard", 303)
+	_assert(bool(replayed.get("under_construction"))
+			and float(replayed.get("build_progress")) == 0.0,
+		"251(2b): the replay spawn starts under construction (live path unchanged)")
+	_assert(dgn.has_method("client_sync_building_state"),
+		"251(2b): the Dungeon carries the replay state handler")
+	var cs_body := _body_of(dsrc, "func client_sync_building_state")
+	_assert(cs_body.contains("get_remote_sender_id")
+			and cs_body.contains("server_peer_id"),
+		"251(2b): the replay state handler carries the server-origin guard")
+	if dgn.has_method("client_sync_building_state"):
+		dgn.call("client_sync_building_state", 303,
+			float(replayed.get("max_hp")), 1.0, false)
+		_assert(float(replayed.get("build_progress")) == 1.0
+				and not bool(replayed.get("under_construction"))
+				and float(replayed.get("hp"))
+					== float(replayed.get("max_hp")),
+			"251(2b): the replayed completed building arrives completed, not dim")
+		var d3: Dictionary = dim_of.call(replayed)
+		_assert(absf(float(d3["alpha"]) - 1.0) < 0.01 and int(d3["transp"]) == 0,
+			"251(2b): the replayed completed building is opaque")
+	# (2c) A mid-construction building, replayed: its real
+	# progress and HP, still dimmed.
+	var mid = dgn.call("_spawn_building_local",
+		0, "barracks", Vector3(460, 0, 430), "iron_vanguard", 304)
+	if dgn.has_method("client_sync_building_state"):
+		dgn.call("client_sync_building_state", 304,
+			float(mid.get("max_hp")) * 0.55, 0.5, true)
+		_assert(absf(float(mid.get("build_progress")) - 0.5) < 0.001
+				and bool(mid.get("under_construction"))
+				and absf(float(mid.get("hp"))
+					- float(mid.get("max_hp")) * 0.55) < 0.01,
+			"251(2c): the replayed mid-build building keeps its real progress and HP")
+		var d4: Dictionary = dim_of.call(mid)
+		_assert(absf(float(d4["alpha"]) - 0.55) < 0.01 and int(d4["transp"]) == 1,
+			"251(2c): the replayed mid-build building stays dimmed")
+	# (2d) Missing building: the handler no-ops instead of
+	# erroring (a stale id in the replay stream).
+	if dgn.has_method("client_sync_building_state"):
+		dgn.call("client_sync_building_state", 999, 6000.0, 1.0, false)
+		_assert(true,
+			"251(2d): the state handler tolerates an unknown building id")
+	holder.free()
+	current_scene = prev_scene
+	for n in displaced_dungeons:
+		n.add_to_group("dungeon")
+	for n in displaced_mgrs:
+		n.add_to_group("rts_manager")
+	print("[Playtest] RTS build completion broadcast (issue #251) done.")

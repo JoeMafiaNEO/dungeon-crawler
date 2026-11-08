@@ -1748,6 +1748,16 @@ func sync_rts_state(target_peer: int) -> void:
 			int(b.get("faction")), str(b.get("building_type")),
 			b.global_position, bciv.civ_id if bciv else "iron_vanguard",
 			int(b.get("building_id")))
+		# Issue #251 (D9): the replay spawns every building
+		# under construction (start_construction), so a
+		# completed building arrived as a stuck dim shadow.
+		# Send its actual state right after the spawn rpc
+		# (same peer, reliable channel: the spawn lands
+		# first), so the late joiner sees the real building.
+		rpc_id(target_peer, "client_sync_building_state",
+			int(b.get("building_id")), float(b.get("hp")),
+			float(b.get("build_progress")),
+			bool(b.get("under_construction")))
 
 
 @rpc("any_peer", "call_local")
@@ -2744,6 +2754,30 @@ func client_spawn_building(faction_id: int, btype: String, pos: Vector3, civ_id:
 	if multiplayer.is_server():
 		return
 	_spawn_building_local(faction_id, btype, pos, civ_id, building_id)
+
+
+## Issue #251 (D9): the late-join replay state for one
+## building, sent by sync_rts_state right after its spawn
+## rpc. Applies the building's actual HP / progress /
+## under-construction flag — a completed building arrives
+## completed, a mid-build one keeps its real progress.
+@rpc("any_peer")
+func client_sync_building_state(building_id: int, new_hp: float, new_progress: float, new_under: bool) -> void:
+	# Same D7 server-origin rule as the building's sync_hp:
+	# only the server (or the local path, sender 0) may set
+	# a building's state; anything else is a forged write.
+	# No is_server early-return here (unlike
+	# client_spawn_building): the state applies idempotently
+	# wherever it lands, and the suite drives the handler
+	# directly on a host-side instance.
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		push_warning("[D7] refused forged building state for %d from peer %d" % [building_id, sender])
+		return
+	var b := get_node_or_null("RTS/RTSBuilding_%d" % building_id) as RTSBuilding
+	if b == null:
+		return
+	b.apply_build_state(new_hp, new_progress, new_under)
 
 
 func _spawn_building_local(faction_id: int, btype: String, pos: Vector3, civ_id: String, building_id: int) -> RTSBuilding:

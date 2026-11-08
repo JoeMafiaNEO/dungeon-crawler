@@ -843,6 +843,34 @@ func start_construction() -> void:
 	_set_construction_dim(true)
 
 
+## Apply an authoritative build state (server broadcast on
+## completion, Issue #251; late-join replay, D9). Sets the
+## progress / HP / under-construction flag together and
+## dims or undims the meshes to match.
+func apply_build_state(new_hp: float, new_progress: float, new_under: bool) -> void:
+	build_progress = clampf(new_progress, 0.0, 1.0)
+	under_construction = new_under
+	hp = new_hp
+	_set_construction_dim(new_under)
+	_update_hp_bar()
+
+
+## The server's completion broadcast: when the server's
+## building finishes (add_build_work reaches 1.0), every
+## peer applies the finished state — this is what heals
+## the client's stuck dim copy (Issue #251).
+@rpc("any_peer", "call_local")
+func sync_build_complete() -> void:
+	# Same D7 server-origin rule as sync_hp: only the
+	# server (or the local path, sender 0) may complete a
+	# building; anything else is a forged write.
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != NetworkManager.server_peer_id:
+		push_warning("[D7] refused forged build-complete on building %s from peer %d" % [name, sender])
+		return
+	apply_build_state(max_hp, 1.0, false)
+
+
 ## Villager work tick: advance construction.
 func add_build_work(amount: float) -> void:
 	if not under_construction or destroyed:
@@ -854,6 +882,11 @@ func add_build_work(amount: float) -> void:
 		under_construction = false
 		_set_construction_dim(false)
 		rpc("build_complete_fx")
+		# Issue #251: the FX rpc alone told the client
+		# nothing about the state — its copy stayed at
+		# progress 0, 10% HP, dimmed, forever. Broadcast
+		# the finished state with it.
+		rpc("sync_build_complete")
 
 
 # Original albedo colors, for restoring after construction completes.
