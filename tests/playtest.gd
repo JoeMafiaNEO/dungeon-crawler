@@ -107,6 +107,7 @@ func _run() -> void:
 	_test_elevator_cab_201()
 	_test_sky_dome_202()
 	_test_reveal_203()
+	_test_reveal_ring_203()
 	_test_world_204()
 	_test_scatter_207()
 	_test_facades_208()
@@ -6549,6 +6550,48 @@ func _test_reveal_203() -> void:
 	DungeonScript.set("buildings_cleared", saved_cleared)
 	DungeonScript.set("home_anchor", saved_anchor)
 	print("[Playtest] Reveal test done.")
+
+
+## Issue #203 / #219 regression: the reveal ready-gate must ask for
+## the ring the streamer is actually configured to build. At the
+## radius-1 default that is 9 chunks; the old hardcoded 5x5 (25)
+## could never be satisfied, so the gate always waited out its
+## 3-second bound and dropped the walls on a 3x3 island.
+func _test_reveal_ring_203() -> void:
+	print("[Playtest] Reveal ready-gate radius (issue #203/#219)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var StreamerRes := load("res://scripts/world/world_streamer.gd")
+	var SM = root.get_node("SaveManager")
+	var saved_anchor: Dictionary = (DungeonScript.get("home_anchor") as Dictionary).duplicate()
+	# Radius 1 is the default and the floor (Jesse 2026-10-26).
+	SM.call("set_setting", "world", "load_radius", 1)
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var st = StreamerRes.new()
+	holder.add_child(st)
+	st.call("set_target_position", Vector3(0, 0, 0))
+	var guard := 0
+	while st.call("active_chunks").size() < 9 and guard < 400:
+		st.call("update_streaming")
+		guard += 1
+	_assert(int(st.get("load_radius")) == 1,
+		"203: the reveal streamer reads the radius-1 setting")
+	var n: int = st.call("active_chunks").size()
+	_assert(n == 9,
+		"203: radius 1 yields the 9-chunk 3x3 ring (got %d)" % n)
+	DungeonScript.set("home_anchor", {"anchor_x": 0.0, "anchor_z": 0.0})
+	var d = DungeonScript.new()
+	d.set("_vista_streamer", st)
+	_assert(bool(d.call("_reveal_ring_ready")),
+		"203: the reveal gate accepts the streamer's own 9-chunk ring (no pinned 5x5)")
+	d.free()
+	DungeonScript.set("home_anchor", saved_anchor)
+	st.queue_free()
+	holder.queue_free()
+	(SM.get("_settings") as ConfigFile).erase_section_key("world",
+		"load_radius")
+	SM.call("save_settings")
+	print("[Playtest] Reveal ready-gate radius test done.")
 
 
 func _test_scatter_207() -> void:

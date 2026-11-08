@@ -3949,8 +3949,12 @@ func _build_reveal_vista() -> void:
 	_build_reveal_shaft()
 
 
-## Is the inner ring (the 5x5 chunks around the anchor chunk)
-## built? The predicate behind the bounded wait.
+## Is the ring the streamer is actually configured to build
+## (2 x load_radius + 1 chunks per side) built? The predicate
+## behind the bounded wait. Derived, never pinned: at the
+## radius-1 default the ring is 9 chunks, so a hardcoded 5x5
+## (25) gate could never be satisfied and always burned the
+## full bound before dropping the walls on a 3x3 island.
 func _reveal_ring_ready() -> bool:
 	if _vista_streamer == null:
 		return true
@@ -3958,9 +3962,10 @@ func _reveal_ring_ready() -> bool:
 		/ RevealWorldGen.CHUNK_SIZE))
 	var acz := int(floor(float(home_anchor.get("anchor_z", 0.0)) \
 		/ RevealWorldGen.CHUNK_SIZE))
+	var r := maxi(1, int(_vista_streamer.get("load_radius")))
 	var active: Array = _vista_streamer.call("active_chunks")
-	for dx in range(-2, 3):
-		for dz in range(-2, 3):
+	for dx in range(-r, r + 1):
+		for dz in range(-r, r + 1):
 			if not active.has(Vector2i(acx + dx, acz + dz)):
 				return false
 	return true
