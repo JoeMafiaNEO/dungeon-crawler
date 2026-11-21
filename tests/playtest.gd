@@ -112,6 +112,7 @@ func _run() -> void:
 	_test_reveal_ring_203()
 	_test_vista_follow_250()
 	_test_vista_rail_252()
+	_test_cache_warmer_253()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -7223,6 +7224,166 @@ func _test_vista_rail_252() -> void:
 		"load_radius")
 	SM.call("save_settings")
 	print("[Playtest] Vista railway (issue #252) done.")
+
+
+# Issue #253 (Act 1 cache warming, Jesse's ruling
+# 2026-11-21): the warmer pre-generates the starting
+# railway's chunks into the local WorldCache during
+# Act 1. The fixture drives the driver's own functions
+# against a scratch cache state (the whole cache dir is
+# byte-snapshotted, emptied, and restored at cleanup —
+# the vista sections' hygiene). Statics are set for the
+# fixture and restored; the driver's stop condition reads
+# the revealed static exactly as production wires it.
+func _test_cache_warmer_253() -> void:
+	print("[Playtest] Act 1 cache warmer (issue #253)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var TrainRes := load("res://scripts/world/train_network.gd")
+	var CacheRes := load("res://scripts/world/world_cache.gd")
+	var WarmerRes = load("res://scripts/world/cache_warmer.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get("home_anchor") as Dictionary).duplicate()
+	var saved_cities: Array = (DungeonScript.get("act2_train_cities") as Array).duplicate()
+	var saved_revealed: bool = bool(DungeonScript.get("revealed"))
+	var cache_dir := "user://world_cache"
+	var cache_snap := {}
+	var cda := DirAccess.open(cache_dir)
+	if cda != null:
+		for fn in cda.get_files():
+			var rp := cache_dir + "/" + fn
+			var rf := FileAccess.open(rp, FileAccess.READ)
+			cache_snap[fn] = rf.get_buffer(rf.get_length())
+			rf.close()
+		for fn in cda.get_files():
+			cda.remove(fn)
+	var a1: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	var center := Vector2(float(a1["anchor_x"]), float(a1["anchor_z"]))
+	var rect := Rect2(float(a1["rect_x"]), float(a1["rect_z"]),
+		float(a1["rect_w"]), float(a1["rect_d"]))
+	DungeonScript.set("home_anchor", a1)
+	DungeonScript.set("act2_train_cities", [])
+	DungeonScript.set("revealed", false)
+	var cs: float = WorldGenRes.CHUNK_SIZE
+	var home_chunk := Vector2i(int(floor(center.x / cs)),
+		int(floor(center.y / cs)))
+	# Samples from the game's own functions: both ring
+	# cities' center chunks and each home->city corridor's
+	# mid chunk (routed with the driver's own inputs).
+	var ring: Array = TrainRes.initial_ring(
+		WorldGenRes.WORLD_SEED, center)
+	var city_chunks := {}
+	var corridor_chunks := {}
+	for key in ring:
+		var k := str(key)
+		var cell = TrainRes.key_cell(k)
+		var s: Dictionary = WorldGenRes.settlement_in_cell(
+			WorldGenRes.WORLD_SEED, (cell as Vector2i).x,
+			(cell as Vector2i).y)
+		var cc: Vector2 = s["center"]
+		city_chunks[k] = Vector2i(int(floor(cc.x / cs)),
+			int(floor(cc.y / cs)))
+		var pts: Array = TrainRes.routed_points(
+			WorldGenRes.WORLD_SEED, ring, center, center,
+			center, cc)
+		var total := 0.0
+		for i in range(pts.size() - 1):
+			total += (pts[i] as Vector2).distance_to(pts[i + 1])
+		var mid: Vector2 = pts[pts.size() - 1]
+		var acc := 0.0
+		for i in range(pts.size() - 1):
+			var seg := (pts[i] as Vector2).distance_to(pts[i + 1])
+			if acc + seg >= total * 0.5:
+				mid = (pts[i] as Vector2).lerp(pts[i + 1],
+					(total * 0.5 - acc) / seg)
+				break
+			acc += seg
+		corridor_chunks[k] = Vector2i(int(floor(mid.x / cs)),
+			int(floor(mid.y / cs)))
+
+	_assert(WarmerRes != null,
+		"253: the Act 1 cache warmer exists")
+	var targets: Array = []
+	if WarmerRes != null:
+		targets = WarmerRes.target_chunks(center)
+	# (i) The derived set's membership.
+	_assert(targets.has(home_chunk),
+		"253(i): the set contains the home chunk %s" % str(home_chunk))
+	for k in city_chunks.keys():
+		_assert(targets.has(city_chunks[k]),
+			"253(i): the set contains city %s's center chunk %s" \
+				% [k, str(city_chunks[k])])
+	for k in corridor_chunks.keys():
+		_assert(targets.has(corridor_chunks[k]),
+			"253(i): the set contains a mid-corridor chunk on home->%s (%s)" \
+				% [k, str(corridor_chunks[k])])
+	_assert(not targets.has(Vector2i(40, 40)),
+		"253(i): the set excludes the far control chunk (40,40)")
+
+	if WarmerRes != null:
+		var stop_fn := func() -> bool:
+			return bool(DungeonScript.get("revealed"))
+		var w1 = WarmerRes.new()
+		root.add_child(w1)
+		w1.setup(center, rect, stop_fn)
+		# (iv) With revealed == true the driver no-ops.
+		DungeonScript.set("revealed", true)
+		w1.pump_blocking()
+		_assert(CacheRes.read_payload(home_chunk.x,
+				home_chunk.y).is_empty(),
+			"253(iv): with revealed == true the driver warms nothing")
+		_assert(not w1.is_done(),
+			"253(iv): the stopped driver is not done")
+		DungeonScript.set("revealed", false)
+		# (ii) Warm the whole set against the scratch cache.
+		w1.pump_blocking()
+		_assert(w1.is_done(),
+			"253(ii): the pump warms the whole set (%d chunks)" \
+				% targets.size())
+		var samples: Array = [home_chunk, city_chunks["0,2"],
+			corridor_chunks["0,-2"]]
+		for sample in samples:
+			_assert(CacheRes.read_data(sample.x, sample.y) != null,
+				"253(ii): read_data non-null for %s" % str(sample))
+			_assert(CacheRes.read_scatter(sample.x, sample.y) != null,
+				"253(ii): read_scatter non-null for %s" % str(sample))
+		_assert(not CacheRes.read_payload(home_chunk.x,
+				home_chunk.y).is_empty(),
+			"253(ii): read_payload validates for the home chunk")
+		# (iii) A second pass rewrites nothing.
+		var hpath: String = CacheRes._path_for(home_chunk.x,
+			home_chunk.y)
+		var bytes_before := FileAccess.get_file_as_bytes(hpath)
+		var w2 = WarmerRes.new()
+		root.add_child(w2)
+		w2.setup(center, rect, stop_fn)
+		w2.pump_blocking()
+		_assert(w2.is_done(),
+			"253(iii): the second pass completes (all already warm)")
+		_assert(FileAccess.get_file_as_bytes(hpath) == bytes_before,
+			"253(iii): a cached chunk is not rewritten on a second pass")
+		w2.free()
+		w1.free()
+	# (iv) The driver mutated no run statics.
+	_assert((DungeonScript.get("home_anchor") as Dictionary) == a1,
+		"253(iv): home_anchor is byte-identical after warming")
+	_assert((DungeonScript.get("act2_train_cities") as Array).is_empty(),
+		"253(iv): act2_train_cities is untouched by the driver")
+
+	# Cleanup: restore the cache bytes and the statics.
+	var cda2 := DirAccess.open(cache_dir)
+	if cda2 != null:
+		for fn in cda2.get_files():
+			if not cache_snap.has(fn):
+				cda2.remove(fn)
+		for fn in cache_snap.keys():
+			var wf := FileAccess.open(cache_dir + "/" + fn,
+				FileAccess.WRITE)
+			wf.store_buffer(cache_snap[fn])
+			wf.close()
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("act2_train_cities", saved_cities)
+	DungeonScript.set("revealed", saved_revealed)
+	print("[Playtest] Act 1 cache warmer (issue #253) done.")
 
 
 func _test_scatter_207() -> void:
