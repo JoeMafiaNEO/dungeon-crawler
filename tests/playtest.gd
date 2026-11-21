@@ -111,6 +111,7 @@ func _run() -> void:
 	_test_reveal_203()
 	_test_reveal_ring_203()
 	_test_vista_follow_250()
+	_test_vista_rail_252()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -7079,6 +7080,149 @@ func _test_vista_follow_250() -> void:
 		"load_radius")
 	SM.call("save_settings")
 	print("[Playtest] Vista living edge (issue #250) done.")
+
+
+# Issue #252 (the reveal railway, Jesse's order 2026-11-21):
+# the vista shows the tracks and the train. _build_reveal_vista
+# hands the streamer the run's train network (the
+# WorldRoot._setup_streamer mirror) and sets a visual consist
+# at the home station. The full _play_reveal cannot run
+# synchronously in the suite, so the fixture builds the vista
+# directly — the 203/250 shape. Statics mutated are
+# snapshot/restored; the world cache is byte-snapshotted and
+# restored (the suppress-enabled vista's cached dressing must
+# not poison other sections — the #250 hygiene).
+func _test_vista_rail_252() -> void:
+	print("[Playtest] Vista railway (issue #252)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes := load("res://scripts/world/world_gen.gd")
+	var TrainRes := load("res://scripts/world/train_network.gd")
+	var SM = root.get_node("SaveManager")
+	var saved_anchor: Dictionary = (DungeonScript.get("home_anchor") as Dictionary).duplicate()
+	var saved_cities: Array = (DungeonScript.get("act2_train_cities") as Array).duplicate()
+	SM.call("set_setting", "world", "load_radius", 1)
+	var cache_dir := "user://world_cache"
+	var cache_snap := {}
+	var cda := DirAccess.open(cache_dir)
+	if cda != null:
+		for fn in cda.get_files():
+			var rp := cache_dir + "/" + fn
+			var rf := FileAccess.open(rp, FileAccess.READ)
+			cache_snap[fn] = rf.get_buffer(rf.get_length())
+			rf.close()
+	var a1: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.set("home_anchor", a1)
+	var ax := float(a1["anchor_x"])
+	var az := float(a1["anchor_z"])
+	var home: Dictionary = DungeonScript.home_building()
+	_assert(not home.is_empty(),
+		"252: fixture home building derives from the anchor")
+	var door: Vector3 = home["doorstep"]
+	var warlord: Resource = load("res://data/levels/theme_warlord.tres")
+
+	# (i) Empty discovered set: the vista derives the
+	# initial ring exactly as train_init_discovery does.
+	DungeonScript.set("act2_train_cities", [])
+	var d = DungeonScript.new()
+	d.set("theme", warlord)
+	root.add_child(d)
+	d.call("_build_reveal_vista")
+	var st = d.get("_vista_streamer")
+	_assert(st != null, "252: the vista builds")
+	var exp_ring: Array = TrainRes.initial_ring(
+		WorldGenRes.WORLD_SEED, Vector2(ax, az))
+	var got_disc: Array = (st.get("track_discovered") as Array).duplicate()
+	got_disc.sort()
+	var exp_sorted: Array = exp_ring.duplicate()
+	exp_sorted.sort()
+	_assert(got_disc == exp_sorted,
+		"252(i): the vista holds the initial ring for the anchor (got %s)" \
+			% str(got_disc))
+	_assert((st.get("track_home_center") as Vector2).is_equal_approx(
+			Vector2(ax, az)),
+		"252(i): the vista's home center is the anchor")
+	_assert((st.get("track_home_station") as Vector2).is_equal_approx(
+			Vector2(door.x, door.z)),
+		"252(i): the vista's home station is the doorstep XZ")
+
+	# (ii) Pump: a vista chunk gains a Track child.
+	var found_track := false
+	var guard := 0
+	while not found_track and guard < 4000:
+		st.call("update_streaming")
+		guard += 1
+		for ch in st.get_children():
+			if ch.get_node_or_null("Track") != null:
+				found_track = true
+				break
+	_assert(found_track,
+		"252(ii): a vista chunk gains a Track child (pumps %d)" % guard)
+
+	# (iii) The visual consist: one mesh per consist box,
+	# parented to the streamer, at the idle home position.
+	var hc := Vector2(ax, az)
+	var hs := Vector2(door.x, door.z)
+	var exp_boxes: Array = TrainRes.consist_boxes(
+		WorldGenRes.WORLD_SEED, exp_ring, hc, hs)
+	var kinds := {}
+	for b in exp_boxes:
+		kinds[str(b["kind"])] = true
+	_assert(kinds.has("loco") and kinds.has("car") \
+			and kinds.has("caboose"),
+		"252(iii): the network's consist boxes include loco, car, caboose")
+	var consist = st.get_node_or_null("VistaConsist")
+	_assert(consist != null, "252(iii): the vista consist exists")
+	if consist != null:
+		_assert(consist.get_parent() == st,
+			"252(iii): the consist is parented to the vista streamer (vista mapping)")
+		_assert(consist.get_child_count() == exp_boxes.size(),
+			"252(iii): one mesh per consist box (%d)" % exp_boxes.size())
+		var sizes_ok := true
+		for i in exp_boxes.size():
+			var mi = consist.get_child(i) as MeshInstance3D
+			if mi == null or not (mi.mesh is BoxMesh) \
+					or not (mi.mesh as BoxMesh).size.is_equal_approx(
+						exp_boxes[i]["size"] as Vector3):
+				sizes_ok = false
+		_assert(sizes_ok,
+			"252(iii): every consist mesh matches its box size, in order")
+		var idle: Dictionary = TrainRes.train_position(
+			WorldGenRes.WORLD_SEED, exp_ring, hc, hs,
+			TrainRes.initial_state(), 0)
+		_assert(consist.position.is_equal_approx(idle["pos"] as Vector3),
+			"252(iii): the consist sits at the idle home position")
+
+	# (iv) Populated set: handed over verbatim, no
+	# re-derived ring substituted.
+	var grown: Array = ["home", "0,-2", "0,2", "7,0"]
+	DungeonScript.set("act2_train_cities", grown)
+	var d2 = DungeonScript.new()
+	d2.set("theme", warlord)
+	root.add_child(d2)
+	d2.call("_build_reveal_vista")
+	var st2 = d2.get("_vista_streamer")
+	_assert((st2.get("track_discovered") as Array) == grown,
+		"252(iv): a populated discovered set is handed over verbatim")
+	d2.free()
+
+	# Cleanup.
+	d.free()
+	var cda2 := DirAccess.open(cache_dir)
+	if cda2 != null:
+		for fn in cda2.get_files():
+			if not cache_snap.has(fn):
+				cda2.remove(fn)
+		for fn in cache_snap.keys():
+			var wf := FileAccess.open(cache_dir + "/" + fn,
+				FileAccess.WRITE)
+			wf.store_buffer(cache_snap[fn])
+			wf.close()
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("act2_train_cities", saved_cities)
+	(SM.get("_settings") as ConfigFile).erase_section_key("world",
+		"load_radius")
+	SM.call("save_settings")
+	print("[Playtest] Vista railway (issue #252) done.")
 
 
 func _test_scatter_207() -> void:

@@ -4282,9 +4282,71 @@ func _build_reveal_vista() -> void:
 		float(home_anchor.get("rect_d", 0.0))))
 	streamer.set("suppress_enabled", true)
 	add_child(streamer)
+	# Issue #252: hand the streamer the run's train network
+	# (the WorldRoot._setup_streamer mirror) so tracks and
+	# stations dress into the vista chunks, and set a visual
+	# consist at the home station — the reveal view shows
+	# the railway the party is about to enter. With an
+	# empty discovered set the initial ring derives exactly
+	# as train_init_discovery derives it; a populated set
+	# is handed over verbatim. The consist is visual only:
+	# the real one (collision, boarding, NetworkManager
+	# train state) is WorldRoot's, in the world scene.
+	var home := home_building()
+	if not home.is_empty():
+		var ho: Vector3 = home["origin"]
+		var hd: Vector3 = home["doorstep"]
+		var hc := Vector2(ho.x, ho.z)
+		var hs := Vector2(hd.x, hd.z)
+		var discovered: Array = act2_train_cities
+		if discovered.is_empty():
+			discovered = TrainNetwork.initial_ring(
+				RevealWorldGen.WORLD_SEED, hc)
+		streamer.call("set_track_network", discovered, hc, hs)
+		_build_vista_consist(streamer, discovered, hc, hs)
 	streamer.call("set_target_position", Vector3(ax, 0.0, az))
 	_vista_streamer = streamer
 	_build_reveal_shaft()
+
+
+## Issue #252: the vista's visual train — the network's
+## consist boxes as bare meshes, parented to the vista
+## streamer so they render in vista space, placed at the
+## idle home position (train_position over initial_state).
+## No collision, no TrainBoarding, no train state: set
+## dressing for the reveal view.
+func _build_vista_consist(streamer: Node3D, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> void:
+	var boxes := TrainNetwork.consist_boxes(
+		RevealWorldGen.WORLD_SEED, discovered, home_center,
+		home_station)
+	if boxes.is_empty():
+		return
+	var consist := Node3D.new()
+	consist.name = "VistaConsist"
+	streamer.add_child(consist)
+	var yaw0 := float(boxes[0]["yaw"])
+	var fwd := Vector2(sin(yaw0), cos(yaw0))
+	var perp := Vector2(-fwd.y, fwd.x)
+	for box in boxes:
+		var rel: Vector2 = (box["at"] as Vector2) - home_station
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = box["size"]
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = box["color"]
+		bm.material = mat
+		mi.mesh = bm
+		mi.position = Vector3(rel.dot(perp),
+			TrainNetwork.RAIL_TOP + float(box["y_off"]),
+			rel.dot(fwd))
+		consist.add_child(mi)
+	var pos := TrainNetwork.train_position(
+		RevealWorldGen.WORLD_SEED, discovered, home_center,
+		home_station, TrainNetwork.initial_state(), 0)
+	consist.position = pos["pos"]
+	consist.rotation = Vector3(-float(pos["pitch"]),
+		float(pos["yaw"]), 0.0)
 
 
 ## Is the ring the streamer is actually configured to build
