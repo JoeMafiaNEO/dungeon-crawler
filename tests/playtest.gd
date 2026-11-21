@@ -110,6 +110,7 @@ func _run() -> void:
 	_test_sky_dome_202()
 	_test_reveal_203()
 	_test_reveal_ring_203()
+	_test_vista_follow_250()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -6918,6 +6919,166 @@ func _test_reveal_ring_203() -> void:
 		"load_radius")
 	SM.call("save_settings")
 	print("[Playtest] Reveal ready-gate radius test done.")
+
+
+# Issue #250 (the void fix, Jesse's order 2026-11-20): the
+# living edge. After the reveal sequence completes, the vista
+# streamer follows the local player — target = player position
+# + the anchor offset (the vista root sits at (-ax, -az), so
+# the raw dungeon position would be wrong by the full anchor
+# vector). The full _play_reveal cannot run synchronously in
+# the suite (it awaits frames and the wall-sink tween), so the
+# fixture builds the vista directly and drives the completion
+# hook — the same shape the 203 section uses. Statics the
+# section mutates are snapshot/restored.
+func _test_vista_follow_250() -> void:
+	print("[Playtest] Vista living edge (issue #250)...")
+	var DungeonScript := load("res://scripts/dungeon/dungeon.gd")
+	var SM = root.get_node("SaveManager")
+	var saved_anchor: Dictionary = (DungeonScript.get("home_anchor") as Dictionary).duplicate()
+	var saved_revealed: bool = DungeonScript.get("revealed")
+	var saved_cleared: int = DungeonScript.get("buildings_cleared")
+	# Radius 1 is Jesse's setting and the floor (Jesse 2026-10-26).
+	SM.call("set_setting", "world", "load_radius", 1)
+	# Purge leaked players: _my_player() scans the group, and a
+	# leaked authority-1 player would hijack the follow.
+	for n in get_nodes_in_group("players"):
+		n.free()
+	# Snapshot the shared world cache (bytes per file): the
+	# vista streamer is suppress-enabled, so its generated
+	# scatter EXCLUDES the home plot — if those payloads stayed
+	# cached, a later section reading the same chunks (204's
+	# assembled-scatter compare, on the town chunks) would adopt
+	# the suppressed scatter and fail. Restored at cleanup.
+	var cache_dir := "user://world_cache"
+	var cache_snap := {}
+	var cda := DirAccess.open(cache_dir)
+	if cda != null:
+		for fn in cda.get_files():
+			var rp := cache_dir + "/" + fn
+			var rf := FileAccess.open(rp, FileAccess.READ)
+			cache_snap[fn] = rf.get_buffer(rf.get_length())
+			rf.close()
+	# The real anchor (non-zero — the offset pin needs it).
+	var a1: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.set("home_anchor", a1)
+	var ax := float(a1["anchor_x"])
+	var az := float(a1["anchor_z"])
+	_assert(ax != 0.0 or az != 0.0,
+		"250: fixture anchor is non-zero (the offset pin is load-bearing)")
+	var warlord: Resource = load("res://data/levels/theme_warlord.tres")
+	var d = DungeonScript.new()
+	d.set("theme", warlord)
+	root.add_child(d)
+	d.call("_build_reveal_vista")
+	var st = d.get("_vista_streamer")
+	_assert(st != null, "250: the vista builds")
+	# (iii) Reveal wait unchanged: at build the target is the
+	# anchor, and the ring predicate accepts the filled ring.
+	var anchor_pos := Vector3(ax, 0.0, az)
+	_assert((st.get("_target_pos") as Vector3).is_equal_approx(anchor_pos),
+		"250(iii): at build the vista target is the anchor")
+	var guard := 0
+	while not bool(d.call("_reveal_ring_ready")) and guard < 400:
+		st.call("update_streaming")
+		guard += 1
+	_assert(bool(d.call("_reveal_ring_ready")),
+		"250(iii): the ring predicate accepts the streamer's filled ring")
+	var src: String = FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	var play_body := _bughunt_body(src, "_play_reveal")
+	_assert(play_body.contains("_reveal_ring_ready()") \
+			and play_body.contains("REVEAL_RING_BOUND_S"),
+		"250(iii): the reveal bounded wait is intact")
+	# The rooted dungeon spawns its own local player (the
+	# solo spawn) — that IS the player the follow must track.
+	# Move it >= 2 chunks east of the anchor in dungeon
+	# coordinates. (Composing a second player instead would
+	# lose: _my_player() returns the dungeon's own spawn.)
+	var me = d.call("_my_player")
+	_assert(me != null, "250: the fixture dungeon has a local player")
+	me.global_position = Vector3(300, 0, 0)
+	# (i) Vista follows. The drives sit behind has_method
+	# guards: pre-fix the asserts fail (the red) without
+	# aborting the section on a missing-method call.
+	_assert(d.has_method("_begin_vista_follow") \
+			and d.has_method("_update_vista_follow"),
+		"250(i): the dungeon carries the vista follow hook + update")
+	if d.has_method("_update_vista_follow"):
+		d.call("_update_vista_follow")
+	_assert((st.get("_target_pos") as Vector3).is_equal_approx(anchor_pos),
+		"250(i): no follow before the reveal completes (target stays on the anchor)")
+	if d.has_method("_begin_vista_follow"):
+		d.call("_begin_vista_follow")
+	if d.has_method("_update_vista_follow"):
+		d.call("_update_vista_follow")
+	# (ii) Offset correctness: the followed ring centers on
+	# chunk(player + anchor), NOT on chunk(player).
+	var exp_cx := int(floor((300.0 + ax) / 128.0))
+	var exp_cz := int(floor((0.0 + az) / 128.0))
+	var raw_cx := int(floor(300.0 / 128.0))
+	var raw_cz := 0
+	_assert(exp_cx != raw_cx or exp_cz != raw_cz,
+		"250(ii): fixture geometry separates the offset and raw chunks")
+	guard = 0
+	var active: Array = st.call("active_chunks")
+	while guard < 400:
+		var full := true
+		for dx in range(-1, 2):
+			for dz in range(-1, 2):
+				if not active.has(Vector2i(exp_cx + dx, exp_cz + dz)):
+					full = false
+		if full:
+			break
+		st.call("update_streaming")
+		active = st.call("active_chunks")
+		guard += 1
+	var ring_full := true
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			if not active.has(Vector2i(exp_cx + dx, exp_cz + dz)):
+				ring_full = false
+	_assert(ring_full,
+		"250(i): the active ring re-centers on the followed chunk (%d,%d)" \
+			% [exp_cx, exp_cz])
+	_assert(active.has(Vector2i(exp_cx + 1, exp_cz)),
+		"250(i): the followed ring contains chunks the anchor ring never had")
+	var raw_present := 0
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			if active.has(Vector2i(raw_cx + dx, raw_cz + dz)):
+				raw_present += 1
+	_assert(raw_present < 9,
+		"250(ii): the ring does NOT center on the un-offset player chunk")
+	# (iv) Null player: free the player; the update is a no-op.
+	var followed_pos: Vector3 = st.get("_target_pos") as Vector3
+	me.free()
+	if d.has_method("_update_vista_follow"):
+		d.call("_update_vista_follow")
+	_assert((st.get("_target_pos") as Vector3).is_equal_approx(followed_pos),
+		"250(iv): follow update with no local player leaves the target unchanged")
+	# Cleanup.
+	d.free()
+	# Restore the world cache exactly as found (see the
+	# snapshot above): drop payload files the vista created,
+	# rewrite the bytes of any it overwrote.
+	var cda2 := DirAccess.open(cache_dir)
+	if cda2 != null:
+		for fn in cda2.get_files():
+			if not cache_snap.has(fn):
+				cda2.remove(fn)
+		for fn in cache_snap.keys():
+			var wf := FileAccess.open(cache_dir + "/" + fn,
+				FileAccess.WRITE)
+			wf.store_buffer(cache_snap[fn])
+			wf.close()
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("revealed", saved_revealed)
+	DungeonScript.set("buildings_cleared", saved_cleared)
+	(SM.get("_settings") as ConfigFile).erase_section_key("world",
+		"load_radius")
+	SM.call("save_settings")
+	print("[Playtest] Vista living edge (issue #250) done.")
 
 
 func _test_scatter_207() -> void:

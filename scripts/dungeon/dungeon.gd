@@ -2026,6 +2026,9 @@ func _process(delta: float) -> void:
 		if _floor_clock_save_t >= 30.0:
 			_floor_clock_save_t = 0.0
 			save_act2_clock()
+	# Issue #250: the reveal vista follows the local player
+	# once the reveal completes (a no-op until then).
+	_update_vista_follow()
 	_process_pending_buys()
 	# Issue #86 Bug 2: retry the server handshake until the local player
 	# spawns. The first attempt can be lost if the server hasn't finished
@@ -3972,6 +3975,10 @@ func complete_level_objective() -> void:
 
 var _reveal_played := false
 var _vista_streamer: Node3D = null
+## Issue #250: latched when the reveal sequence completes;
+## from then on the vista follows the local player (the
+## living edge) instead of sitting on the anchor island.
+var _vista_follow := false
 
 
 ## Server-only: latch the state, persist it, broadcast. The
@@ -4251,6 +4258,7 @@ func _play_reveal() -> void:
 		if not is_inside_tree():
 			return
 	_create_rooftop_door()
+	_begin_vista_follow()
 
 
 ## The vista: the world streamer rooted so the anchor lands on
@@ -4299,6 +4307,34 @@ func _reveal_ring_ready() -> bool:
 			if not active.has(Vector2i(acx + dx, acz + dz)):
 				return false
 	return true
+
+
+## Issue #250 (Jesse's void fix): the reveal sequence is
+## complete — the vista stops being a fixed island and starts
+## following the local player, so the world edge lives
+## wherever the player walks. Each peer's dungeon follows its
+## OWN local player; generation stays seed-pure and local.
+func _begin_vista_follow() -> void:
+	_vista_follow = true
+
+
+## Per-frame (from _process): point the vista streamer at the
+## local player. The target is the player's position in WORLD
+## coordinates: the vista root is offset by (-anchor_x,
+## -anchor_z), so the anchor offset is added back here —
+## feeding the raw dungeon position (or set_target_node on
+## the player node) would be wrong by the full anchor vector.
+## No local player: leave the target where it is.
+func _update_vista_follow() -> void:
+	if not _vista_follow or _vista_streamer == null:
+		return
+	var p := _my_player()
+	if p == null:
+		return
+	_vista_streamer.call("set_target_position",
+		p.global_position + Vector3(
+			float(home_anchor.get("anchor_x", 0.0)), 0.0,
+			float(home_anchor.get("anchor_z", 0.0))))
 
 
 ## The home building's exterior shaft under the arena slab: six
