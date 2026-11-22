@@ -1078,6 +1078,39 @@ func train_leave_request() -> void:
 		train_leave_server(multiplayer.get_remote_sender_id())
 
 
+## Issue #255: the chart's Refresh — a manual rescan
+## for granted-but-missing cities. Returns the added
+## keys when it runs locally (server/solo); a client's
+## press is a request the server answers through the
+## existing discovery sync, so the client seat returns
+## empty here and its chart updates from the sync.
+func train_refresh() -> Array:
+	if multiplayer.is_server():
+		return train_refresh_server()
+	rpc_id(NetworkManager.server_peer_id,
+		"train_refresh_request")
+	return []
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func train_refresh_request() -> void:
+	if multiplayer.is_server():
+		train_refresh_server()
+
+
+## The server leg: compute + apply the rescan;
+## additions ride the existing discovery sync (the
+## arrival beat's transport). Nothing missing -> no
+## sync is sent; the rescan is a silent no-op.
+func train_refresh_server() -> Array:
+	if not multiplayer.is_server():
+		return []
+	var added: Array = Dungeon.train_rescan_granted()
+	if not added.is_empty():
+		rpc("rpc_train_discovered_sync", added)
+	return added
+
+
 ## The world-mode ride-state pull (#135's pattern, NM
 ## hosted): a late-loading rider asks; the server answers
 ## with the state + its elapsed stamp.

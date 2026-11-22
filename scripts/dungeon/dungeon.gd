@@ -557,6 +557,119 @@ static func train_expand_at(city_key: String) -> Array:
 			city_key))
 
 
+## Issue #255: the chart Refresh — a manual rescan in
+## two legs, both through the same union as every
+## other discovery beat, returning what was added.
+## Restore leg: the cities the discovery rules have
+## ALREADY granted — the initial ring, plus the
+## expansion ring of the city the train currently
+## stands at (that stop's arrival beat) — when they
+## are missing from the live set. NO chaining (rings
+## of cities the restore leg itself restores do not
+## fire). Scout leg (Jesse's amendment): the nearest
+## two unmapped cities to the train's current node.
+## Server/solo authority (the caller routes it
+## there); a no-op outside a revealed world entry.
+static func train_rescan_granted() -> Array:
+	if act2_context != "world" or not revealed:
+		return []
+	var home := home_building()
+	if home.is_empty():
+		return []
+	var origin: Vector3 = home["origin"]
+	var granted: Array = TrainNetwork.initial_ring(
+		RevealWorldGen.WORLD_SEED,
+		Vector2(origin.x, origin.z))
+	var at := str(train_state.get("at", ""))
+	if at != "" and at != TrainNetwork.HOME_KEY \
+			and str(train_state.get("status", "idle")) \
+				!= "moving":
+		for k in TrainNetwork.expansion_ring(
+				RevealWorldGen.WORLD_SEED, at):
+			if not granted.has(str(k)):
+				granted.append(str(k))
+	var added := apply_train_discovered(granted)
+	# Scout leg (the amendment, Jesse's ruling: "it will
+	# also check for the nearest two unmapped cities"):
+	# the nearest two cities the set does not hold yet,
+	# measured from the train's current node — "at", or
+	# the current leg's origin while underway, or home
+	# when neither resolves. Unmapped is evaluated
+	# against the set the restore leg just landed. The
+	# scan is an expanding lattice walk over
+	# settlement_in_cell — pure in (seed, anchor, set),
+	# so every client derives the same pair; it stops
+	# as soon as the second-nearest is provably unbeaten
+	# by any unscanned cell, and the generous bound
+	# only guards a city-less desert (hitting it means
+	# fewer or no additions, never an error). No radius
+	# cap: nearest is nearest.
+	var seed: int = RevealWorldGen.WORLD_SEED
+	var anchor_key := at
+	if str(train_state.get("status", "idle")) == "moving":
+		var path: Array = train_state.get("path", [])
+		if not path.is_empty():
+			anchor_key = str(path[0])
+	var anchor := Vector2(origin.x, origin.z)
+	if anchor_key != "" and anchor_key \
+			!= TrainNetwork.HOME_KEY:
+		var acell = TrainNetwork.key_cell(anchor_key)
+		if acell != null:
+			var asett: Dictionary = \
+				RevealWorldGen.settlement_in_cell(seed,
+					(acell as Vector2i).x,
+					(acell as Vector2i).y)
+			if str(asett.get("kind", "")) == "city":
+				anchor = asett["center"]
+	var cell_m := float(RevealWorldGen.CELL_CHUNKS) \
+		* RevealWorldGen.CHUNK_SIZE
+	var anchor_cell := Vector2i(
+		int(floor(anchor.x / cell_m)),
+		int(floor(anchor.y / cell_m)))
+	var cands: Array = []  # [distance, key]
+	var ring_r := 0
+	while ring_r <= 64:
+		for gx in range(anchor_cell.x - ring_r,
+				anchor_cell.x + ring_r + 1):
+			for gz in range(anchor_cell.y - ring_r,
+					anchor_cell.y + ring_r + 1):
+				if maxi(absi(gx - anchor_cell.x),
+						absi(gz - anchor_cell.y)) != ring_r:
+					continue
+				var s: Dictionary = \
+					RevealWorldGen.settlement_in_cell(
+						seed, gx, gz)
+				if str(s.get("kind", "")) != "city":
+					continue
+				var key := TrainNetwork.city_key(gx, gz)
+				if act2_train_cities.has(key):
+					continue
+				cands.append([anchor.distance_to(
+					s["center"]), key])
+		if cands.size() >= 2 and ring_r >= 1:
+			cands.sort_custom(func(a: Array, b: Array) -> bool:
+				if a[0] != b[0]:
+					return a[0] < b[0]
+				return str(a[1]) < str(b[1]))
+			# Every unscanned center lies in a cell at
+			# Chebyshev distance > ring_r, so it is at
+			# least ring_r cells from the anchor's cell:
+			# once the second-best beats that floor,
+			# the pair is final.
+			if float(cands[1][0]) < float(ring_r) * cell_m:
+				break
+		ring_r += 1
+	cands.sort_custom(func(a: Array, b: Array) -> bool:
+		if a[0] != b[0]:
+			return a[0] < b[0]
+		return str(a[1]) < str(b[1]))
+	var scout: Array = []
+	for i in range(0, mini(2, cands.size())):
+		scout.append(str(cands[i][1]))
+	added.append_array(apply_train_discovered(scout))
+	return added
+
+
 static func restore_act2_state(run: Dictionary) -> void:
 	var a: Dictionary = run.get("act2", {})
 	act2_context = str(a.get("context", ""))

@@ -114,6 +114,7 @@ func _run() -> void:
 	_test_vista_rail_252()
 	_test_cache_warmer_253()
 	_test_gps_chart_fixes_254()
+	_test_chart_refresh_255()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -7519,6 +7520,219 @@ func _test_gps_chart_fixes_254() -> void:
 	DungeonScript.set("world_time", saved_wtime)
 	holder.free()
 	print("[Playtest] GPS chart fixes (issue #254) done.")
+
+
+## Issue #255: the GPS chart's Refresh button — a manual
+## rescan in two legs. Restore leg: the cities the
+## discovery rules have already granted (the initial
+## ring, plus the expansion ring of the city the train
+## stands at) when they are missing from the live
+## discovered set, no chaining. Scout leg (Jesse's
+## amendment): the nearest two unmapped cities to the
+## train's current node. Additions apply through the
+## server-owned union and ride the existing discovery
+## sync; the WorldRoot watcher reroutes the tracks
+## from the grown set. Fixture geography below was
+## probed at the shipped seed from the fixture anchor:
+## ring 0,-2 (1551 m) / 0,2 (2190 m), then -3,-3
+## (4252 m), 1,4 (4636 m), -5,2 (4735 m), 4,1 (4814 m).
+func _test_chart_refresh_255() -> void:
+	print("[Playtest] Chart Refresh rescan (issue #255)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var TN = load("res://scripts/world/train_network.gd")
+	var WG = load("res://scripts/world/world_gen.gd")
+	var nm = root.get_node("NetworkManager")
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	for n in get_nodes_in_group("train_chart"):
+		(n as Node).free()
+	for n in get_nodes_in_group("world_root"):
+		(n as Node).free()
+	var holder := Node3D.new()
+	holder.name = "Chart255Holder"
+	root.add_child(holder)
+	current_scene = holder
+	var saved_revealed: bool = DungeonScript.get("revealed")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var saved_wtime: float = DungeonScript.get("world_time")
+	var saved_tstate: Dictionary = (DungeonScript.get(
+		"train_state") as Dictionary).duplicate(true)
+	var saved_draft: Array = (DungeonScript.get(
+		"train_draft") as Array).duplicate()
+	var has_rescan: bool = DungeonScript.has_method(
+		"train_rescan_granted")
+	var rescan = func() -> Array:
+		if has_rescan:
+			return DungeonScript.train_rescan_granted()
+		return []
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	DungeonScript.set("act2_context", "world")
+	DungeonScript.set("train_state", TN.initial_state())
+	var home_b: Dictionary = DungeonScript.home_building()
+	var center := Vector2((home_b["origin"] as Vector3).x,
+		(home_b["origin"] as Vector3).z)
+	var ring: Array = TN.initial_ring(WG.WORLD_SEED, center)
+	var w = load("res://scenes/world/world.tscn").instantiate()
+	root.add_child(w)
+	current_scene = w
+	_assert((DungeonScript.get("act2_train_cities")
+			as Array) == ring,
+		"255 premise: the arm seeded the ring at entry")
+	# (a) A set missing a ring city: the rescan restores
+	# the ring PLUS exactly the two nearest unmapped
+	# cities to the anchor (the train at home) — and no
+	# third scouted city.
+	DungeonScript.set("act2_train_cities", ["0,-2"])
+	var added_a: Array = rescan.call()
+	_assert(added_a == ["0,2", "-3,-3", "1,4"],
+		"255(a): the rescan restores the missing ring "
+		+ "city and scouts exactly the two nearest "
+		+ "unmapped")
+	var set_a: Array = (DungeonScript.get(
+		"act2_train_cities") as Array).duplicate()
+	set_a.sort()
+	_assert(set_a == ["-3,-3", "0,-2", "0,2", "1,4"],
+		"255(a): the set is the ring + the scouted pair "
+		+ "afterwards (no third scouted city)")
+	# (c) A complete granted set: a press adds exactly
+	# the two nearest unmapped (the transport wrapper
+	# returns what the server leg synced), and a second
+	# press adds the NEXT two nearest — two-per-press
+	# progression, distinct cities. The NM server leg
+	# still sends no sync for an empty add.
+	DungeonScript.set("act2_train_cities",
+		ring.duplicate())
+	var added_c: Array = rescan.call()
+	_assert(added_c == ["-3,-3", "1,4"],
+		"255(c): a complete set's press scouts exactly "
+		+ "the two nearest unmapped")
+	var nm_added: Array = []
+	if nm.has_method("train_refresh"):
+		nm_added = nm.train_refresh()
+	_assert(nm_added == ["-5,2", "4,1"],
+		"255(c): a second press adds the NEXT two "
+		+ "nearest")
+	var nmsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	var srv_body := _bughunt_body(nmsrc,
+		"train_refresh_server")
+	_assert(srv_body.contains("if not added.is_empty():")
+			and srv_body.contains(
+				"rpc(\"rpc_train_discovered_sync\", added)"),
+		"255(c): the server leg syncs only a non-empty add "
+		+ "(idempotent, silent no-op otherwise)")
+	# (b) Stopped at a non-home city whose expansion is
+	# missing: the rescan adds exactly that expansion.
+	var set_b: Array = ring.duplicate()
+	set_b.append("7,0")
+	DungeonScript.set("act2_train_cities", set_b)
+	var st_b: Dictionary = TN.initial_state()
+	st_b["at"] = "7,0"
+	DungeonScript.set("train_state", st_b)
+	var added_b: Array = rescan.call()
+	_assert(added_b.size() == 5,
+		"255(b): the press adds the expansion (3) + the "
+		+ "scouted pair (2), nothing more")
+	var restore_b := added_b.slice(0, 3)
+	restore_b.sort()
+	_assert(restore_b == ["6,1", "7,1", "9,1"],
+		"255(b): the restore leg adds exactly the "
+		+ "stopped-at city's expansion ring")
+	var set_b_final: Array = (DungeonScript.get(
+		"act2_train_cities") as Array).duplicate()
+	set_b_final.sort()
+	_assert(set_b_final == ["0,-2", "0,2", "5,-2",
+			"6,1", "7,-3", "7,0", "7,1", "9,1"],
+		"255(b): the set is the ring + the stop + its "
+		+ "expansion + the pair scouted from the stop "
+		+ "(5,-2 and 7,-3, probed nearest to 7,0)")
+	DungeonScript.set("train_state", TN.initial_state())
+	# (d) The REAL chart: Refresh button in the chrome,
+	# its own signal drives the rescan end-to-end.
+	DungeonScript.set("act2_train_cities", ["0,-2"])
+	current_scene = w
+	var saved_mode := Input.mouse_mode
+	var ChartRes = load("res://scripts/ui/train_chart.gd")
+	ChartRes.open_chart("station", "home")
+	var chart_nodes := get_nodes_in_group("train_chart")
+	_assert(chart_nodes.size() == 1,
+		"255(d): the real chart opened over the world")
+	var chart = chart_nodes[0]
+	var rbtn = chart.get("_refresh_btn")
+	_assert(rbtn != null and str(rbtn.get("text")) == "Refresh",
+		"255(d): the chart's chrome carries a Refresh button")
+	if rbtn != null:
+		rbtn.emit_signal("pressed")
+	var set_d: Array = (DungeonScript.get(
+		"act2_train_cities") as Array).duplicate()
+	set_d.sort()
+	_assert(set_d == ["-3,-3", "0,-2", "0,2", "1,4"],
+		"255(d): pressing Refresh restored the set and "
+		+ "scouted the pair")
+	var model_d: Dictionary = chart.call("_model")
+	_assert((model_d.get("nodes", {}) as Dictionary).size()
+			== 5,
+		"255(d): the chart's model shows the ring + the "
+		+ "scouted cities")
+	_assert(str((chart.get("_status_lbl") as Label).text)
+			== "Network refreshed — 3 new cities mapped",
+		"255(d): the status line reports the combined "
+		+ "outcome")
+	Input.mouse_mode = saved_mode
+	# (e) The reroute leg: after a rescan grows the set
+	# in this live world, the watcher hands the grown
+	# set to the streamer (_track_applied catches up).
+	DungeonScript.set("act2_train_cities", ["0,-2"])
+	w.call("_process", 0.016)
+	_assert((w.get("_track_applied") as Array) == ["0,-2"],
+		"255(e): premise — the watcher tracked the "
+		+ "shrunken set")
+	var added_e: Array = rescan.call()
+	_assert(added_e == ["0,2", "-3,-3", "1,4"],
+		"255(e): the rescan grows the set in the live world")
+	w.call("_process", 0.016)
+	_assert((w.get("_track_applied") as Array)
+			== ["0,-2", "0,2", "-3,-3", "1,4"],
+		"255(e): the watcher handed the grown set on "
+		+ "(_track_applied caught up)")
+	var streamer = w.get("_streamer")
+	_assert(streamer != null and (streamer.get(
+			"track_discovered") as Array)
+			== ["0,-2", "0,2", "-3,-3", "1,4"],
+		"255(e): the streamer received the grown set "
+		+ "(tracks reroute)")
+	# (f) Determinism: the scout leg is a pure function
+	# of (seed, anchor, set) — two identical staged
+	# states yield identical scouted pairs.
+	DungeonScript.set("train_state", TN.initial_state())
+	DungeonScript.set("act2_train_cities",
+		ring.duplicate())
+	var pair1: Array = rescan.call()
+	DungeonScript.set("act2_train_cities",
+		ring.duplicate())
+	var pair2: Array = rescan.call()
+	_assert(pair1 == ["-3,-3", "1,4"],
+		"255(f): the scouted pair is the probed nearest "
+		+ "two")
+	_assert(pair2 == pair1,
+		"255(f): an identical staged state scouts the "
+		+ "identical pair")
+	# Cleanup.
+	current_scene = holder
+	root.remove_child(w)
+	w.free()
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", saved_revealed)
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("world_time", saved_wtime)
+	DungeonScript.set("train_state", saved_tstate)
+	DungeonScript.set("train_draft", saved_draft)
+	holder.free()
+	print("[Playtest] Chart Refresh rescan (issue #255) done.")
 
 
 func _test_scatter_207() -> void:

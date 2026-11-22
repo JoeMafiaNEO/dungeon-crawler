@@ -45,6 +45,10 @@ var _estimate_lbl: Label
 var _confirm_btn: Button
 var _summon_btn: Button
 var _clear_btn: Button
+var _refresh_btn: Button
+## Issue #255: the last Refresh press's outcome, held
+## in the status line until the next chart action.
+var _refresh_note := ""
 
 
 ## Opens the chart over the current scene (or focuses the
@@ -202,6 +206,10 @@ func _build_chrome() -> void:
 	_confirm_btn.text = "Confirm — depart"
 	_confirm_btn.pressed.connect(_on_confirm)
 	brow.add_child(_confirm_btn)
+	_refresh_btn = Button.new()
+	_refresh_btn.text = "Refresh"
+	_refresh_btn.pressed.connect(_on_refresh)
+	brow.add_child(_refresh_btn)
 	var close_btn := Button.new()
 	close_btn.text = "Close"
 	close_btn.pressed.connect(_close)
@@ -354,6 +362,8 @@ func _update_chrome() -> void:
 			String(st.get("at", "home")),
 			"plot a course" if _face == "car"
 			else "plot a course, or summon"]
+	if _refresh_note != "":
+		_status_lbl.text = _refresh_note
 	var draft: Array = Dungeon.train_draft
 	var stopped := String(st.get("status", "idle")) \
 		== "stopped"
@@ -398,6 +408,7 @@ func _update_chrome() -> void:
 func _on_clear() -> void:
 	if _moving():
 		return
+	_refresh_note = ""
 	NetworkManager.train_publish_draft([])
 	_refresh(false)
 
@@ -405,6 +416,7 @@ func _on_clear() -> void:
 func _on_confirm() -> void:
 	if _moving():
 		return
+	_refresh_note = ""
 	# Issue #244 T6: while stopped mid-course, Confirm
 	# is the dwell ruling's departure — a rider confirms
 	# and the next leg departs (no re-plot; the server
@@ -425,7 +437,29 @@ func _on_confirm() -> void:
 func _on_summon() -> void:
 	if _moving() or _face != "station":
 		return
+	_refresh_note = ""
 	NetworkManager.train_summon(_station_key)
+	_refresh(false)
+
+
+## Issue #255: Refresh — a repair action, not a course
+## edit, so it stays available while the chart is open,
+## moving or not (the rescan restores only what the
+## discovery rules already granted). The rescan is
+## server-owned: locally it returns the added keys; a
+## client's press is a request the server answers
+## through the discovery sync, and this chart's model
+## grows when the sync lands.
+func _on_refresh() -> void:
+	var added: Array = NetworkManager.train_refresh()
+	if not added.is_empty():
+		_refresh_note = "Network refreshed — %d new %s mapped" % [
+			added.size(),
+			"city" if added.size() == 1 else "cities"]
+	elif multiplayer.is_server():
+		_refresh_note = "Network up to date"
+	else:
+		_refresh_note = "Network refresh requested"
 	_refresh(false)
 
 
