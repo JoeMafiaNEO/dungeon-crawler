@@ -375,7 +375,6 @@ static func save_act2_clock() -> void:
 
 const WORLD_SCENE := "res://scenes/world/world.tscn"
 const TrainNetwork := preload("res://scripts/world/train_network.gd")
-const CacheWarmer := preload("res://scripts/world/cache_warmer.gd")
 const Act2BuildingGen := preload("res://scripts/world/building_gen.gd")
 const Act2WorldClock := preload("res://scripts/world/world_clock.gd")
 const Act2FloorGen := preload("res://scripts/world/floor_gen.gd")
@@ -2143,9 +2142,6 @@ func _process(delta: float) -> void:
 	# Issue #250: the reveal vista follows the local player
 	# once the reveal completes (a no-op until then).
 	_update_vista_follow()
-	# Issue #253: warm the starting railway's chunks into
-	# the local WorldCache during Act 1.
-	_update_cache_warmer()
 	_process_pending_buys()
 	# Issue #86 Bug 2: retry the server handshake until the local player
 	# spawns. The first attempt can be lost if the server hasn't finished
@@ -4096,10 +4092,6 @@ var _vista_streamer: Node3D = null
 ## from then on the vista follows the local player (the
 ## living edge) instead of sitting on the anchor island.
 var _vista_follow := false
-## Issue #253: the Act 1 cache warmer, created lazily on
-## the first frame of a run in Act 1 (see
-## _update_cache_warmer).
-var _cache_warmer: Node = null
 
 
 ## Server-only: latch the state, persist it, broadcast. The
@@ -4518,45 +4510,6 @@ func _update_vista_follow() -> void:
 		p.global_position + Vector3(
 			float(home_anchor.get("anchor_x", 0.0)), 0.0,
 			float(home_anchor.get("anchor_z", 0.0))))
-
-
-## Issue #253: whether the Act 1 cache warmer should
-## stop — it warms only until the reveal fires.
-func _cache_warmer_stopped() -> bool:
-	return revealed
-
-
-## Issue #253: the Act 1 cache warmer — created lazily
-## on the first frame of a run in Act 1 and pumped once
-## per frame while the party climbs. It pre-generates
-## the starting railway's chunks into the local
-## WorldCache so world entry and the first train rides
-## run warm. The anchor derives from the seed exactly
-## as the reveal derives it (the center is
-## footprint-independent; the rect mirrors the reveal's
-## footprint for the current party size — the warlord
-## grid at the theme's 2 m cell size), and the warmer
-## mutates no run statics.
-func _update_cache_warmer() -> void:
-	if revealed:
-		return
-	if _cache_warmer == null:
-		var anchor := compute_home_anchor(
-			float(_warlord_grid_size()) * 2.0)
-		if anchor.is_empty():
-			return
-		_cache_warmer = CacheWarmer.new()
-		_cache_warmer.name = "CacheWarmer"
-		add_child(_cache_warmer)
-		_cache_warmer.call("setup",
-			Vector2(float(anchor["anchor_x"]),
-				float(anchor["anchor_z"])),
-			Rect2(float(anchor["rect_x"]),
-				float(anchor["rect_z"]),
-				float(anchor["rect_w"]),
-				float(anchor["rect_d"])),
-			Callable(self, "_cache_warmer_stopped"))
-	_cache_warmer.call("pump_step")
 
 
 ## The home building's exterior shaft under the arena slab: six

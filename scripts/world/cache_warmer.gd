@@ -38,6 +38,7 @@ var _scatter_job := {}
 var _home_rect := Rect2()
 var _stop_check: Callable
 var _is_setup := false
+var _total := 0
 
 
 ## The deterministic warm set for a home center: chunks
@@ -175,7 +176,24 @@ func setup(home_center: Vector2, home_rect: Rect2,
 	_home_rect = home_rect
 	_stop_check = stop_check
 	_pending = target_chunks(home_center)
+	_total = _pending.size()
 	_is_setup = true
+
+
+## Issue #256: read-only progress for the boot loading
+## screen (the pump's behavior is unchanged). Done
+## counts every chunk the set no longer owes: written,
+## in a stage, or skipped as already warm.
+func progress_total() -> int:
+	return _total
+
+
+func progress_done() -> int:
+	var owed := _pending.size() + _inflight.size() \
+		+ _ready.size()
+	if not _scatter_job.is_empty():
+		owed += 1
+	return _total - owed
 
 
 func is_done() -> bool:

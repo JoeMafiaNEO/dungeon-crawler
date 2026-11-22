@@ -115,6 +115,7 @@ func _run() -> void:
 	_test_cache_warmer_253()
 	_test_gps_chart_fixes_254()
 	_test_chart_refresh_255()
+	_test_boot_warmer_256()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -7733,6 +7734,166 @@ func _test_chart_refresh_255() -> void:
 	DungeonScript.set("train_draft", saved_draft)
 	holder.free()
 	print("[Playtest] Chart Refresh rescan (issue #255) done.")
+
+
+## Issue #256: the boot loading screen — the #253 cache
+## warmer moved to boot. The project main scene is the
+## boot scene; a cold boot drives the real warmer to
+## completion and hands off to the main menu; a warm
+## boot generates nothing and still hands off; the
+## dungeon scene no longer carries a warmer driver;
+## and a stalled boot can never trap the player.
+func _test_boot_warmer_256() -> void:
+	print("[Playtest] Boot loading screen (issue #256)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var cache_dir := "user://world_cache"
+	# Byte snapshot of the cache dir (the #253 hygiene):
+	# this section empties and refills it wholesale.
+	var cache_snap := {}
+	var cda := DirAccess.open(cache_dir)
+	if cda != null:
+		for fn in cda.get_files():
+			var rf := FileAccess.open(cache_dir + "/" + fn,
+				FileAccess.READ)
+			cache_snap[fn] = rf.get_buffer(rf.get_length())
+			rf.close()
+	var empty_cache = func() -> void:
+		var d := DirAccess.open(cache_dir)
+		if d != null:
+			for fn in d.get_files():
+				d.remove(fn)
+	var boot_scene = load("res://scenes/ui/boot.tscn")
+	var mk_boot = func() -> Node:
+		if boot_scene == null:
+			return null
+		var b = boot_scene.instantiate()
+		root.add_child(b)
+		return b
+	var drive = func(b: Node, cap: int) -> int:
+		var n := 0
+		while n < cap and b != null \
+				and not bool(b.get("_handed_off")):
+			b.call("_process", 0.016)
+			n += 1
+		return n
+	var progress_of = func(b: Node) -> Vector2i:
+		if b != null and b.has_method("warm_progress"):
+			return b.warm_progress()
+		return Vector2i.ZERO
+	# (a) The project main scene IS the boot scene.
+	_assert(ProjectSettings.get_setting(
+			"application/run/main_scene")
+			== "res://scenes/ui/boot.tscn",
+		"256(a): the project's main scene is the boot scene")
+	# (a)+(e) Cold boot: the real warmer runs to
+	# completion and the screen hands off; its own
+	# progress path moves 0 -> the full set.
+	empty_cache.call()
+	var boot = mk_boot.call()
+	_assert(boot != null
+			and boot.get_node_or_null("CacheWarmer") != null,
+		"256(a): a cold boot creates the warmer")
+	_assert(progress_of.call(boot) == Vector2i(0, 266),
+		"256(e): the boot's progress starts at 0 of the "
+		+ "full set")
+	drive.call(boot, 400000)
+	_assert(boot != null and bool(boot.get("_handed_off")),
+		"256(a): the cold boot drives the warmer to "
+		+ "completion and hands off to the menu")
+	_assert(progress_of.call(boot) == Vector2i(266, 266),
+		"256(e): the boot's progress ends at the full set")
+	if boot != null:
+		root.remove_child(boot)
+		boot.free()
+	# (b) Warm boot: the set already validates, so the
+	# boot generates zero chunks (no cache file is
+	# rewritten), finishes in a few steps, still hands
+	# off — the fast repeat-launch path.
+	var mtimes := {}
+	var cdb := DirAccess.open(cache_dir)
+	if cdb != null:
+		for fn in cdb.get_files():
+			mtimes[fn] = FileAccess.get_modified_time(
+				cache_dir + "/" + fn)
+	var boot2 = mk_boot.call()
+	var steps2: int = drive.call(boot2, 400)
+	_assert(boot2 != null and bool(boot2.get("_handed_off")),
+		"256(b): the warm boot still hands off")
+	_assert(steps2 <= 200,
+		"256(b): the warm boot finishes in a few steps "
+		+ "(no generation waits)")
+	var mtimes_ok := mtimes.size() == 266
+	if mtimes_ok:
+		for fn in mtimes:
+			if FileAccess.get_modified_time(
+					cache_dir + "/" + fn) != mtimes[fn]:
+				mtimes_ok = false
+	_assert(mtimes_ok,
+		"256(b): the warm boot rewrote no cache file "
+		+ "(zero generations)")
+	if boot2 != null:
+		root.remove_child(boot2)
+		boot2.free()
+	# (d) Never traps: a boot whose pump cannot make
+	# progress (staged: frozen done count, a progress
+	# stamp from long before the bound) hands off via
+	# the watchdog anyway. The first pump cannot change
+	# the done count — harvest precedes dispatch in the
+	# warmer — so the staging is exact.
+	empty_cache.call()
+	var boot3 = mk_boot.call()
+	if boot3 != null:
+		boot3.set("_last_done", progress_of.call(boot3).x)
+		boot3.set("_last_progress_msec", 0)
+		boot3.call("_process", 0.016)
+	_assert(boot3 != null and bool(boot3.get("_handed_off")),
+		"256(d): a stalled boot hands off anyway "
+		+ "(the watchdog)")
+	if boot3 != null:
+		root.remove_child(boot3)
+		boot3.free()
+	var bsrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/boot.gd")
+	_assert(bsrc.contains("BOOT_FOOTPRINT := 192.0")
+			and bsrc.contains("anchor.is_empty()"),
+		"256(d): the boot derives its anchor at the "
+		+ "largest footprint (192.0) and proceeds on an "
+		+ "empty anchor")
+	# (c) The move is real: dungeon.gd carries no warmer
+	# driver, and a staged Act 1 dungeon grows no
+	# CacheWarmer child (the boot path above did).
+	var dsrc := FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	_assert(dsrc.to_lower().count("cache_warmer") == 0,
+		"256(c): dungeon.gd carries no warmer driver "
+		+ "anymore")
+	var dung = DungeonScript.new()
+	root.add_child(dung)
+	for i in range(3):
+		dung.call("_process", 0.016)
+	var warmer_child: Node = null
+	for ch in dung.get_children():
+		var sc = ch.get_script()
+		if sc != null and str((sc as Script).resource_path) \
+				== "res://scripts/world/cache_warmer.gd":
+			warmer_child = ch
+	_assert(warmer_child == null
+			and dung.get_node_or_null("CacheWarmer") == null,
+		"256(c): no CacheWarmer child appears across a "
+		+ "staged Act 1 climb")
+	root.remove_child(dung)
+	dung.free()
+	# Cleanup: restore the cache dir byte-exact.
+	empty_cache.call()
+	for fn in cache_snap:
+		var wf := FileAccess.open(cache_dir + "/" + fn,
+			FileAccess.WRITE)
+		wf.store_buffer(cache_snap[fn])
+		wf.close()
+	DungeonScript.set("home_anchor", saved_anchor)
+	print("[Playtest] Boot loading screen (issue #256) done.")
 
 
 func _test_scatter_207() -> void:
