@@ -113,6 +113,7 @@ func _run() -> void:
 	_test_vista_follow_250()
 	_test_vista_rail_252()
 	_test_cache_warmer_253()
+	_test_gps_chart_fixes_254()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -7384,6 +7385,140 @@ func _test_cache_warmer_253() -> void:
 	DungeonScript.set("act2_train_cities", saved_cities)
 	DungeonScript.set("revealed", saved_revealed)
 	print("[Playtest] Act 1 cache warmer (issue #253) done.")
+
+
+## Issue #254: Jesse's live GPS report — (1) the train
+## chart's first click was swallowed by the player's #65
+## mouse re-capture (the chart is a standalone UI, not
+## HUD-owned, and was not in the don't-steal guard list);
+## (2) the chart showed only the home node because the
+## discovered set was empty at chart time — discovery
+## rides the world entry arm and a miss there was silent
+## for the whole session. The fixes: the chart joins the
+## don't-steal conditions via its group, and WorldRoot
+## ._begin re-runs discovery at the consumption point
+## when a revealed world entry arrives with an empty
+## set, warning loudly if it is still empty after.
+func _test_gps_chart_fixes_254() -> void:
+	print("[Playtest] GPS chart fixes (issue #254)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var TN = load("res://scripts/world/train_network.gd")
+	var WG = load("res://scripts/world/world_gen.gd")
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	for n in get_nodes_in_group("train_chart"):
+		(n as Node).free()
+	for n in get_nodes_in_group("world_root"):
+		(n as Node).free()
+	var holder := Node3D.new()
+	holder.name = "Chart254Holder"
+	root.add_child(holder)
+	current_scene = holder
+	# --- Bug 1: the chart owns its clicks -------------------
+	# Source pins (the #144 precedent): Input.mouse_mode
+	# cannot be read back as CAPTURED under the headless
+	# display server — the setter is a no-op there, so
+	# even the baseline #65 re-capture never flips the
+	# readable mode in this suite (proven by probe). The
+	# behavioral pair was driven under Xvfb instead:
+	# baseline chart-open click -> CAPTURED (the bug);
+	# fixed -> stays VISIBLE, no-chart -> still CAPTURED
+	# (logs probe254-xvfb-baseline.log / probe254-xvfb.log
+	# in the build record).
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	var input_body := _bughunt_body(psrc, "_input")
+	_assert(input_body.contains("chart_open")
+			and input_body.contains("\"train_chart\""),
+		"254(1a): _input consults the train_chart group "
+		+ "for its don't-steal guard")
+	var guard_i := input_body.find("if not chart_open")
+	var capture_i := input_body.find(
+		"Input.mouse_mode = Input.MOUSE_MODE_CAPTURED")
+	_assert(guard_i >= 0 and capture_i > guard_i,
+		"254(1b): the chart guard dominates the #65 "
+		+ "re-capture assignment in _input")
+	# --- Bug 2: the _begin discovery heal -------------------
+	var nm = root.get_node("NetworkManager")
+	var saved_revealed: bool = DungeonScript.get("revealed")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var saved_wtime: float = DungeonScript.get("world_time")
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	var home_b: Dictionary = DungeonScript.home_building()
+	var center := Vector2((home_b["origin"] as Vector3).x,
+		(home_b["origin"] as Vector3).z)
+	var station := Vector2((home_b["doorstep"] as Vector3).x,
+		(home_b["doorstep"] as Vector3).z)
+	var expected_ring: Array = TN.initial_ring(
+		WG.WORLD_SEED, center)
+	DungeonScript.set("act2_context", "world")
+	var w = load("res://scenes/world/world.tscn").instantiate()
+	root.add_child(w)
+	current_scene = w
+	_assert(str(w.get("_entry_arm_outcome")) == "already",
+		"254(2a): the canonical entry takes the arm's Case A")
+	_assert((DungeonScript.get("act2_train_cities")
+			as Array) == expected_ring,
+		"254(2a): the arm seeded the ring (premise)")
+	# The miss, staged at the consumption point: the set
+	# is empty when _begin runs again — a direct _begin
+	# entry; the arm is not re-run.
+	DungeonScript.set("act2_train_cities", [])
+	w.set("_started", false)
+	w.call("_begin")
+	_assert((DungeonScript.get("act2_train_cities")
+			as Array) == expected_ring,
+		"254(2b): a direct _begin with an empty discovered "
+		+ "set heals it — the ring is seeded")
+	var model: Dictionary = TN.chart_model(WG.WORLD_SEED,
+		DungeonScript.get("act2_train_cities"), center,
+		station, TN.initial_state(), 0)
+	_assert((model.get("nodes", {}) as Dictionary).size() == 3,
+		"254(2c): the chart model shows home + both ring "
+		+ "cities (3 nodes)")
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	var begin_body := _bughunt_body(wsrc, "_begin")
+	_assert(begin_body.contains("train_init_discovery")
+			and begin_body.contains("push_warning"),
+		"254(2d): _begin carries the discovery heal and "
+		+ "the still-empty warning")
+	# --- Amendment (e): populated at begin, wiped after,
+	# healed at chart open — Jesse's actual shape (his
+	# tracks ran out from home, so the set WAS populated
+	# at begin; the chart still showed home alone).
+	DungeonScript.set("act2_train_cities", [])
+	current_scene = w
+	var saved_mode := Input.mouse_mode
+	var ChartRes = load("res://scripts/ui/train_chart.gd")
+	ChartRes.open_chart("world", "home")
+	var chart_nodes := get_nodes_in_group("train_chart")
+	_assert(chart_nodes.size() == 1,
+		"254(3a): the real chart opened over the world")
+	var opened_model: Dictionary = chart_nodes[0].call(
+		"_model")
+	_assert((DungeonScript.get("act2_train_cities")
+			as Array) == expected_ring,
+		"254(3b): opening the chart healed the wiped set")
+	_assert((opened_model.get("nodes", {})
+			as Dictionary).size() == 3,
+		"254(3c): the opened chart models home + both "
+		+ "ring cities")
+	Input.mouse_mode = saved_mode
+	# Cleanup.
+	current_scene = holder
+	root.remove_child(w)
+	w.free()
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", saved_revealed)
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("world_time", saved_wtime)
+	holder.free()
+	print("[Playtest] GPS chart fixes (issue #254) done.")
 
 
 func _test_scatter_207() -> void:
@@ -26033,7 +26168,8 @@ func _test_train_network_244() -> void:
 		"244(D): the discovery sync is a call_local rpc applying the same union (spec section 7)")
 	var wsrc := FileAccess.get_file_as_string(
 		"res://scripts/world/world_root.gd")
-	_assert(wsrc.count("train_init_discovery()") == 2,
+	_assert(_bughunt_body(wsrc, "_arm_act2_entry")
+			.count("train_init_discovery()") == 2,
 		"244(D): the entry arm calls the discovery init at both its beats (Case A + Case B)")
 	var nmsrc := FileAccess.get_file_as_string(
 		"res://scripts/autoload/network_manager.gd")

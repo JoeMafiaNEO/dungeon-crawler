@@ -1731,7 +1731,12 @@ func _input(event: InputEvent) -> void:
 		if is_mouse and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			# Issue #65: don't steal the mouse back while the destination
 			# popup is open — clicks on popup rows must stay in UI mode.
-			if hud == null or (not hud.is_paused and not hud.inventory_open and not hud.cipher_popup_open and not hud.dest_popup_open and _reading_board == null):
+			# Issue #254: the GPS train chart is a standalone UI, not
+			# HUD-owned — while a chart is open (the same group lookup
+			# open_chart uses to find one), its clicks belong to it.
+			var chart_open: bool = not get_tree().get_nodes_in_group(
+				"train_chart").is_empty()
+			if not chart_open and (hud == null or (not hud.is_paused and not hud.inventory_open and not hud.cipher_popup_open and not hud.dest_popup_open and _reading_board == null)):
 				# Don't steal the mouse back while in RTS command view.
 				var rts_cam := get_tree().get_first_node_in_group("rts_camera")
 				if rts_cam == null or not bool(rts_cam.get("active")):

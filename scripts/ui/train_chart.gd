@@ -237,6 +237,18 @@ func _unhandled_key_input(event: InputEvent) -> void:
 ## --- State ---
 
 func _model() -> Dictionary:
+	# Issue #254 (amendment): heal at the chart's own
+	# consumption point. Jesse's session had the set
+	# populated at world begin — tracks ran out from
+	# home — yet empty by chart-open time, and the
+	# chart showed home alone. Whenever a revealed
+	# world entry finds the set empty, re-derive the
+	# ring before modeling; train_init_discovery is
+	# idempotent and pure, so this costs a guard test
+	# in the normal case.
+	if Dungeon.revealed and Dungeon.act2_context == "world" \
+			and Dungeon.act2_train_cities.is_empty():
+		Dungeon.train_init_discovery()
 	var hb: Dictionary = Dungeon.home_building()
 	var hc := Vector2((hb["origin"] as Vector3).x,
 		(hb["origin"] as Vector3).z)

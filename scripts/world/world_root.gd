@@ -327,6 +327,30 @@ func _begin() -> void:
 	_gate_deadline = Time.get_ticks_msec() / 1000.0 + GATE_BOUND_S
 	if Dungeon.world_time <= 0.0:
 		Dungeon.world_time = WorldClock.ENTRY_TIME
+	# Issue #254: discovery heal at the consumption point.
+	# train_init_discovery rides the entry arm, but a miss
+	# there is silent — Jesse's session shipped a trackless
+	# world under an empty chart. An entry that reaches
+	# _begin on the server/solo leg with a revealed world
+	# context and an empty discovered set re-runs it here,
+	# before the walk-out / disembark / streamer / consist
+	# stages below read the set. Still empty afterwards
+	# means the heal could not run (no home building):
+	# warn loudly, so the next report carries the state
+	# instead of another silent empty network.
+	if Dungeon.revealed and Dungeon.act2_context == "world" \
+			and Dungeon.act2_train_cities.is_empty() \
+			and (multiplayer.multiplayer_peer == null \
+				or multiplayer.is_server()):
+		Dungeon.train_init_discovery()
+		if Dungeon.act2_train_cities.is_empty():
+			push_warning("[WorldRoot] #254: act2_train_cities "
+				+ "still empty at world begin (context=%s, "
+				+ "revealed=%s, home_anchor=%s) — this "
+				+ "session's world has no train network."
+				% [Dungeon.act2_context,
+					str(Dungeon.revealed),
+					str(Dungeon.home_anchor)])
 	if multiplayer.is_server():
 		NetworkManager.train_ensure_state()
 	if Dungeon.train_walkout_point != Vector3.ZERO:
