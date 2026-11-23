@@ -115,6 +115,7 @@ func _run() -> void:
 	_test_cache_warmer_253()
 	_test_gps_chart_fixes_254()
 	_test_door_panels_260()
+	_test_station_sign_262()
 	_test_chart_refresh_255()
 	_test_boot_warmer_256()
 	_test_walkoff_entry_257()
@@ -7553,6 +7554,121 @@ func _test_gps_chart_fixes_254() -> void:
 ## fixed 0 (logs probe260-xvfb-baseline.log /
 ## probe260-xvfb.log in the build record). This section
 ## pins the mechanism's shape (d), the cleanup guarantee
+## Issue #262: the station sign text is FIXED to the
+## sign board — never billboarded (Jesse, playtesting
+## the 50f6b763 staging: the text floated in front of
+## the board at the camera's angle, half off the
+## board). (a) source pins on the one construction in
+## _track_append_station; (b/c) behavioral legs dress
+## the home station and one city station through that
+## construction (the T2 bare-streamer drive) and read
+## the built labels: billboard off, facing = the
+## board's platform-facing normal, text axis along
+## the board's width, position flush on the face
+## (sign point + face normal x 0.105), and the pixel
+## size scaled so the measured string fits the
+## 2.2 x 0.7 face. The rendered frames (Xvfb probe262)
+## are the visual leg, in the build report.
+func _test_station_sign_262() -> void:
+	print("[Playtest] Station sign text (issue #262)...")
+	var TN := load("res://scripts/world/train_network.gd")
+	var WG := load("res://scripts/world/world_gen.gd")
+	var Streamer = load(
+		"res://scripts/world/world_streamer.gd")
+	var seed: int = WG.WORLD_SEED
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_streamer.gd")
+	var body := _bughunt_body(wsrc,
+		"_track_append_station")
+	_assert(not body.contains("BILLBOARD_ENABLED"),
+		"262(a1): the station sign label is built without billboard")
+	_assert(body.contains(
+		"label.rotation.y = yaw - eff_side * PI * 0.5"),
+		"262(a2): the label's rotation derives from the board frame (yaw turned toward the platform side)")
+	_assert(body.contains("face * 0.105"),
+		"262(a3): the label is offset along the face normal (half-thickness plus epsilon)")
+	_assert(body.contains("get_string_size")
+		and body.contains("label.pixel_size = minf"),
+		"262(a4): the pixel size scales to the measured string so the text stays on the face")
+	var hc := Vector2.ZERO
+	var hs := Vector2(124, 44)
+	var ring: Array = TN.initial_ring(seed, hc)
+	_assert(ring.size() >= 1,
+		"262: the fixture ring names at least one city")
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var st = Streamer.new()
+	holder.add_child(st)
+	st.call("set_track_network", ring, hc, hs)
+	var pts: Dictionary = TN.station_points(
+		seed, ring, hc, hs)
+	var edges: Array = TN.edge_segments(
+		seed, ring, hc, hs)
+	var font := ThemeDB.fallback_font
+	for key in ["home", str(ring[0])]:
+		var pt: Vector2 = pts[key]
+		var ccx := int(floor(pt.x / 128.0))
+		var ccz := int(floor(pt.y / 128.0))
+		st.call("_build_chunk", ccx, ccz)
+		var rec: Dictionary = (st.get("_active")
+			as Dictionary)["%d,%d" % [ccx, ccz]]
+		st.call("_make_track", rec)
+		var lab: Label3D = null
+		for ch in (rec["track"] as Node).get_children():
+			if ch is Label3D:
+				lab = ch as Label3D
+		_assert(lab != null and lab.text == (
+			"HOME" if key == "home" else key),
+			"262(c): the %s sign dresses through the one construction" % key)
+		if lab == null:
+			continue
+		_assert(lab.billboard
+			== BaseMaterial3D.BILLBOARD_DISABLED,
+			"262(b): the %s sign label is not billboarded" % key)
+		var other := Vector2.ZERO
+		for seg in edges:
+			if seg[0] == pt:
+				other = seg[1]
+				break
+			if seg[1] == pt:
+				other = seg[0]
+				break
+		var dir := (other - pt).normalized()
+		var perp := Vector2(-dir.y, dir.x)
+		var plat: Vector2 = TN.platform_center(
+			seed, ring, hc, hs, key)
+		var eff_side := 1.0
+		if (plat - pt).dot(perp) < 0.0:
+			eff_side = -1.0
+		var face3 := Vector3(perp.x, 0, perp.y) \
+			* eff_side
+		var gb := lab.global_transform.basis
+		_assert(gb.z.normalized().dot(face3) > 0.999,
+			"262(b): the %s label faces along the board's platform-facing normal" % key)
+		_assert(gb.x.normalized().dot(
+			Vector3(dir.x, 0, dir.y)) * eff_side > 0.999,
+			"262(b): the %s text runs along the board's width, reading from the platform side (axis = dir x eff_side)" % key)
+		var signp := plat + dir * 6.5 \
+			- perp * (eff_side * 1.2)
+		var want := signp + Vector2(face3.x, face3.z) \
+			* 0.105
+		var got := Vector2(lab.global_position.x,
+			lab.global_position.z)
+		_assert(got.distance_to(want) < 0.02,
+			"262(b): the %s label sits flush on the face (sign point + normal x 0.105)" % key)
+		var ts := font.get_string_size(lab.text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 128)
+		_assert(lab.pixel_size < 0.005
+			and ts.x * lab.pixel_size <= 2.001
+			and ts.y * lab.pixel_size <= 0.561,
+			"262(b): the %s text is contained on the 2.2 x 0.7 face (pixel_size %.4f, rendered %.2f x %.2f m)" % [
+				key, lab.pixel_size,
+				ts.x * lab.pixel_size,
+				ts.y * lab.pixel_size])
+	holder.free()
+	print("[Playtest] Station sign text done.")
+
+
 ## (c) and the stairs boundary (e) in-suite.
 func _test_door_panels_260() -> void:
 	print("[Playtest] Door panels ui_menu_open (issue #260)...")

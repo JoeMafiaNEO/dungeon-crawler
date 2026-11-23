@@ -1609,10 +1609,34 @@ func _track_append_station(job: Dictionary,
 	var label := Label3D.new()
 	label.text = "HOME" if key == TrainNetwork.HOME_KEY \
 		else key
-	label.position = sign3 + Vector3(0, 1.78, 0)
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.font_size = 128
 	label.modulate = Color(0.15, 0.12, 0.08)
+	# Issue #262: the text is FIXED to the sign, never
+	# billboarded. The board's width runs along dir and
+	# its faces look along ±perp; the label lies on the
+	# platform-facing face — the board's frame turned a
+	# quarter turn toward the platform side (eff_side) —
+	# offset along the face normal by the board's
+	# half-thickness plus an epsilon so it never
+	# z-fights the board. Its pixel size is scaled to
+	# the measured string so the text stays contained
+	# on the 2.2 x 0.7 face: at the default pixel size
+	# the 128px text measures ~0.88 m tall, taller than
+	# the board itself.
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var face := Vector3(perp.x, 0.0, perp.y) * eff_side
+	label.rotation.y = yaw - eff_side * PI * 0.5
+	label.position = sign3 + Vector3(0, 1.75, 0) \
+		+ face * 0.105
+	var fnt := label.get_font()
+	if fnt == null:
+		fnt = ThemeDB.fallback_font
+	var tsize := fnt.get_string_size(label.text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size)
+	if tsize.x > 0.0 and tsize.y > 0.0:
+		label.pixel_size = minf(label.pixel_size,
+			minf(2.0 / tsize.x, 0.56 / tsize.y))
 	(job["tnode"] as Node).add_child(label)
 	var term := plat + dir * 6.8
 	var term3 := Vector3(term.x - ox, base + 0.35,
