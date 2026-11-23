@@ -380,13 +380,41 @@ static func station_points(seed: int, discovered: Array,
 		home_station)["points"] as Dictionary).duplicate()
 
 
+## Issue #259: the home station point, derived from
+## the caller-supplied doorstep. Jesse: the first
+## station starts further from the main (Act 1)
+## building — the station used to BE the doorstep, on
+## the footprint's wall line. The doorstep stands on
+## the footprint edge; the station moves out along
+## that edge's outward normal by HOME_STATION_OFFSET.
+## The anchor rect is square and centered on
+## home_center, so the normal is the dominant axis of
+## (doorstep - home_center) — exact for any wall, and
+## for a corner either adjacent axis gives the same
+## point-to-rect distance. A formula change, not a
+## save change: every consumer keeps passing the
+## doorstep and derives this point, so existing saves
+## pick the move up automatically and nothing forks.
+static func home_station_point(home_center: Vector2,
+		doorstep: Vector2) -> Vector2:
+	var rel := doorstep - home_center
+	var n := Vector2(1, 0)
+	if absf(rel.y) > absf(rel.x):
+		n = Vector2(0, signf(rel.y) if rel.y != 0.0
+			else 1.0)
+	elif rel.x != 0.0:
+		n = Vector2(signf(rel.x), 0)
+	return doorstep + n * HOME_STATION_OFFSET
+
+
 static func _points_for_graph(graph: Dictionary, seed: int,
-		home_station: Vector2) -> Dictionary:
+		home_center: Vector2, home_station: Vector2) -> Dictionary:
 	var nodes: Dictionary = graph["nodes"]
 	var out := {}
 	for key in graph["order"]:
 		if key == HOME_KEY:
-			out[key] = home_station
+			out[key] = home_station_point(home_center,
+				home_station)
 		else:
 			out[key] = WorldGen.station_point_for(
 				seed, nodes[key])
@@ -418,12 +446,31 @@ static func edge_segments(seed: int, discovered: Array,
 ## builds, and every peer derives the identical bend.
 
 ## Footprints are inflated by this much for the search
-## simplifications (bed half-width + margin).
-const ROUTE_INFLATE := 3.5
+## simplifications. Issue #259: the pull's visibility
+## model now carries the track clearance itself, so a
+## pulled path keeps the adopted clearance at corners,
+## not just along straights.
+const ROUTE_INFLATE := 6.0
 ## The verification floor: no final segment may come
-## closer than this to a raw footprint (the bed's half
-## width — what the consist sweeps).
-const ROUTE_BED_CLEAR := 2.2
+## closer than this to a raw footprint. Issue #259
+## (Jesse: the train runs too close to buildings):
+## raised from the bed's half width (2.2) to the
+## adopted track clearance — every routed segment
+## keeps TRACK_CLEAR from every generated footprint,
+## by bending where bending can, else by the deletion
+## derivation below.
+const ROUTE_BED_CLEAR := 6.0
+## Issue #259: the adopted clearances (Jesse's
+## feel-test values, proposed by the Co-founder).
+## TRACK_CLEAR: routed centerline to footprint edge.
+## STATION_CLEAR: platform slab edge to footprint
+## edge. HOME_STATION_OFFSET: the home station
+## center's distance out from the Act 1 building's
+## footprint edge (the station used to sit ON the
+## doorstep, at distance 0.0 from the wall line).
+const TRACK_CLEAR := 6.0
+const STATION_CLEAR := 5.0
+const HOME_STATION_OFFSET := 40.0
 ## The search corridor's half width (perpendicular to
 ## the straight edge); failures widen it x2, twice.
 const ROUTE_BAND := 64.0
@@ -462,7 +509,7 @@ static var route_failures: Array = []
 ## CACHE_VERSION discipline), and persisted bundles
 ## from an older version are rejected and re-derived,
 ## never trusted.
-const DERIVATION_VERSION := 1
+const DERIVATION_VERSION := 2
 const BUNDLE_FILE := "user://world_cache/train_network.bin"
 ## Signatures kept, in memory and on disk. The values
 ## are pure, so eviction is invisible: a dropped entry
@@ -614,11 +661,13 @@ static func _persist_entry_valid(entry: Variant,
 		return false
 	return e.get("points", null) is Dictionary \
 		and e.get("straight", null) is Array \
-		and e.get("routed", null) is Dictionary
+		and e.get("routed", null) is Dictionary \
+		and e.get("deleted", null) is Array
 
 
 ## The bundle for a set: {graph, points, straight,
-## routed (pair key -> polyline), segments}. Cache
+## routed (pair key -> polyline), segments, deleted
+## (issue #259's removed-building anchor lots)}. Cache
 ## first, then the persisted record, then the one
 ## derivation — after which the bundle is persisted
 ## alongside the chunk cache for the next session.
@@ -637,6 +686,7 @@ static func _bundle(seed: int, discovered: Array,
 			"points": e["points"],
 			"straight": e["straight"],
 			"routed": e["routed"],
+			"deleted": e["deleted"],
 			"segments": _routed_segments(e["graph"],
 				e["points"], e["routed"])}
 		_graph_cache[_graph_sig(seed, discovered,
@@ -644,8 +694,20 @@ static func _bundle(seed: int, discovered: Array,
 		_bundle_cache[sig] = adopted
 		return adopted
 	var g := _graph(seed, discovered, home_center)
-	var pts := _points_for_graph(g, seed, home_station)
+	var pts := _points_for_graph(g, seed, home_center,
+		home_station)
 	var straight := _straight_segments(g, pts)
+	# Issue #259: the deletion derivation runs BEFORE
+	# the final routing — routing first (each edge is
+	# probed against the standing world), deletion
+	# only where no compliant route exists, then the
+	# served polylines are routed against the
+	# deletion-aware field.
+	var deleted := _derive_deleted(seed, g, pts, straight,
+		home_center)
+	var del_map := {}
+	for v in deleted:
+		del_map[v] = true
 	var routed := {}
 	for e2 in g["edges"]:
 		var pa: Vector2 = pts[e2[0]]
@@ -659,21 +721,114 @@ static func _bundle(seed: int, discovered: Array,
 		if pb.x < pa.x or (pb.x == pa.x and pb.y < pa.y):
 			ca = pb
 			cb = pa
-		routed[_pair_key(pa, pb)] = _routed_points_canonical(
-			seed, discovered, home_center, home_station,
-			ca, cb)
+		routed[_pair_key(pa, pb)] = (_route_compute(seed,
+			straight, home_center, ca, cb, del_map) as Dictionary)["pts"]
 	bundle_builds += 1
 	var built := {"graph": g, "points": pts,
 		"straight": straight, "routed": routed,
-		"segments": _routed_segments(g, pts, routed)}
+		"segments": _routed_segments(g, pts, routed),
+		"deleted": deleted}
 	if _bundle_cache.size() >= BUNDLE_KEEP:
 		_bundle_cache.clear()
 	_bundle_cache[sig] = built
 	_persist_put(sig, {"seed": seed,
 		"set": _sorted_keys(discovered), "graph": g,
 		"points": pts, "straight": straight,
-		"routed": routed})
+		"routed": routed, "deleted": deleted})
 	return built
+
+
+## Issue #259: the set's deleted buildings, as the
+## sorted anchor-lot list (Vector2i world lots). Part
+## of the bundle: generation applies exactly this
+## list (WorldGen.building_at reads it from the
+## caller's stash), so the derived world and the
+## generated world are the same world.
+static func deleted_buildings(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> Array:
+	return (_bundle(seed, discovered, home_center,
+		home_station)["deleted"] as Array).duplicate()
+
+
+static func _deleted_map(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> Dictionary:
+	var out := {}
+	for v in _bundle(seed, discovered, home_center,
+			home_station)["deleted"]:
+		out[v] = true
+	return out
+
+
+## Issue #259: the deletion derivation — Jesse's
+## ruling relaxes #246's "never remove" for this
+## purpose only: clearance by routing first, deletion
+## where routing can't meet it. Two tiers, both pure
+## functions of (seed, graph, points):
+##   Tier A (tracks): every edge is probed against
+##   the standing world (no deletions). An edge with
+##   no compliant route contributes every building
+##   whose footprint comes within TRACK_CLEAR of its
+##   straight segment — after those are gone the
+##   straight segment itself clears by construction,
+##   so the final routing of that edge cannot fail.
+##   Tier B (stations): a station whose platform
+##   search finds no STATION_CLEAR candidate (against
+##   the world tier A leaves) contributes every
+##   building within STATION_CLEAR of its plain
+##   platform slab — after those are gone the plain
+##   slab itself validates.
+## Nothing else is ever deleted: a building outside
+## every failed corridor and every failed platform
+## stands. The result is sorted, so the list is
+## identical on every peer.
+static func _derive_deleted(seed: int, graph: Dictionary,
+		pts: Dictionary, straight: Array,
+		home_center: Vector2) -> Array:
+	var deleted := {}
+	for e in graph["edges"]:
+		var a: Vector2 = pts[e[0]]
+		var b: Vector2 = pts[e[1]]
+		var probe := _route_compute(seed, straight,
+			home_center, a, b, {}, true)
+		if bool(probe["ok"]):
+			continue
+		var rects := _route_field(seed, straight,
+			home_center, a, b, 88.0)
+		for r in rects:
+			if _seg_rect_dist(a, b, [r]) < TRACK_CLEAR:
+				deleted[_rect_anchor(r)] = true
+	for key in graph["order"]:
+		var f := _frame_for(graph, pts, str(key),
+			pts.get(HOME_KEY, Vector2.ZERO))
+		var res := _platform_search(seed, straight,
+			home_center, f, deleted)
+		if bool(res["found"]):
+			continue
+		var pt: Vector2 = f["pt"]
+		var dir: Vector2 = f["dir"]
+		var perp: Vector2 = f["perp"]
+		var plain: Vector2 = res["center"]
+		var rects := _route_field(seed, straight,
+			home_center, pt - dir * 72.0,
+			pt + dir * 72.0, 40.0, deleted)
+		for r in rects:
+			if _obb_aabb_dist(plain, dir, perp, 8.0, 1.8,
+					r) < STATION_CLEAR:
+				deleted[_rect_anchor(r)] = true
+	var out: Array = deleted.keys()
+	out.sort_custom(func(x: Vector2i, y: Vector2i) -> bool:
+		if x.x != y.x:
+			return x.x < y.x
+		return x.y < y.y)
+	return out
+
+
+## A footprint rect's anchor lot (rects in the field
+## are lot-aligned by construction).
+static func _rect_anchor(r: Rect2) -> Vector2i:
+	return Vector2i(int(floor(r.position.x
+		/ WorldGen.LOT_SIZE)), int(floor(r.position.y
+		/ WorldGen.LOT_SIZE)))
 
 
 ## The routed polyline for one graph edge, station
@@ -726,7 +881,17 @@ static func _routed_points_canonical(seed: int,
 	# from the bundle's own build path).
 	var g := _graph(seed, discovered, home_center)
 	var straight := _straight_segments(g,
-		_points_for_graph(g, seed, home_station))
+		_points_for_graph(g, seed, home_center,
+			home_station))
+	# Issue #259: the route also depends on the set's
+	# deletion derivation (the field is built under
+	# it). The bundle owns that derivation; this
+	# fallthrough path (non-edge pairs) reads it from
+	# there — the bundle's own build never comes
+	# through here, it routes via _route_compute
+	# directly.
+	var del_map := _deleted_map(seed, discovered,
+		home_center, home_station)
 	# The memo key names what the route actually depends
 	# on: this edge plus the straight segments that come
 	# within the widest possible field of it (they alone
@@ -750,12 +915,17 @@ static func _routed_points_canonical(seed: int,
 		if d <= 300.0:
 			near.append("%f,%f,%f,%f" % [p.x, p.y, q.x, q.y])
 	near.sort()
-	var key := "%d|%f,%f|%f,%f|%s" % [seed, a.x, a.y,
-		b.x, b.y, ",".join(near)]
+	var del_keys: Array = []
+	for v in del_map.keys():
+		del_keys.append("%d,%d" % [(v as Vector2i).x,
+			(v as Vector2i).y])
+	del_keys.sort()
+	var key := "%d|%f,%f|%f,%f|%s|%s" % [seed, a.x, a.y,
+		b.x, b.y, ",".join(near), ",".join(del_keys)]
 	if _route_memo.has(key):
 		return (_route_memo[key] as Array).duplicate()
-	var out := _route_compute(seed, straight, home_center,
-		a, b)
+	var out: Array = (_route_compute(seed, straight,
+		home_center, a, b, del_map) as Dictionary)["pts"]
 	_route_memo[key] = out.duplicate()
 	return out
 
@@ -772,16 +942,28 @@ static func routed_edge_segments(seed: int,
 		home_station)["segments"] as Array).duplicate()
 
 
+## One edge's routing, as {pts, ok}: ok is false when
+## no candidate kept ROUTE_BED_CLEAR from the field —
+## the caller (the deletion derivation) treats that as
+## "no compliant route exists". `deleted` is the
+## active deletion set ({Vector2i anchor lot: true});
+## the field is built under it, so a deleted building
+## neither blocks nor is measured. `quiet` probes (the
+## derivation's routing-first pass) do not record
+## failures; the final routing does.
 static func _route_compute(seed: int, straight: Array,
-		home_center: Vector2, a: Vector2, b: Vector2) -> Array:
+		home_center: Vector2, a: Vector2, b: Vector2,
+		deleted: Dictionary = {},
+		quiet: bool = false) -> Dictionary:
 	if a.distance_to(b) < 1.0:
-		return [a, b]
+		return {"pts": [a, b], "ok": true}
 	var band := ROUTE_BAND
 	for attempt in 3:
 		var rects := _route_field(seed, straight,
-			home_center, a, b, band + ROUTE_FIELD_PAD)
+			home_center, a, b, band + ROUTE_FIELD_PAD,
+			deleted)
 		if _seg_rect_dist(a, b, rects) >= ROUTE_BED_CLEAR:
-			return [a, b]  # the straight edge already clears
+			return {"pts": [a, b], "ok": true}
 		var raw := _route_astar(a, b, band,
 			_route_blocked(rects))
 		if raw.is_empty():
@@ -794,16 +976,17 @@ static func _route_compute(seed: int, straight: Array,
 		var smoothed := _route_smooth(pulled, rects)
 		var decimated := _route_decimate(smoothed, rects)
 		if _route_verify(decimated, rects):
-			return decimated
+			return {"pts": decimated, "ok": true}
 		if _route_verify(smoothed, rects):
-			return smoothed
+			return {"pts": smoothed, "ok": true}
 		if _route_verify(pulled, rects):
-			return pulled
+			return {"pts": pulled, "ok": true}
 		band *= 2.0
-	route_failures.append([a, b])
-	push_error("[TrainNetwork] no routed path for edge ",
-		a, " -> ", b, "; straight segment kept")
-	return [a, b]
+	if not quiet:
+		route_failures.append([a, b])
+		push_error("[TrainNetwork] no routed path for edge ",
+			a, " -> ", b, "; straight segment kept")
+	return {"pts": [a, b], "ok": false}
 
 
 ## The obstacle field near one edge: derived building
@@ -814,7 +997,7 @@ static func _route_compute(seed: int, straight: Array,
 ## field IS the built world.
 static func _route_field(seed: int, straight: Array,
 		home_center: Vector2, a: Vector2, b: Vector2,
-		pad: float) -> Array:
+		pad: float, deleted: Dictionary = {}) -> Array:
 	var suppress := Rect2(home_center - Vector2(48, 48),
 		Vector2(96, 96))
 	var out: Array = []
@@ -834,9 +1017,16 @@ static func _route_field(seed: int, straight: Array,
 			var ccz := lz >> 4
 			var ckey := "%d,%d" % [ccx, ccz]
 			if not caches.has(ckey):
-				caches[ckey] = {"__track_segs":
+				var cache := {"__track_segs":
 					filter_segments_for_chunk(straight,
 						ccx, ccz)}
+				if not deleted.is_empty():
+					# Issue #259: the field IS the
+					# generated world, deletions
+					# included — generation reads
+					# the same stash.
+					cache["__deleted"] = deleted
+				caches[ckey] = cache
 			var bb: Dictionary = WorldGen.building_at(seed,
 				lx, lz, {}, caches[ckey])
 			if bb.is_empty():
@@ -1522,7 +1712,13 @@ static func station_frame(seed: int, discovered: Array,
 	var g := _graph(seed, discovered, home_center)
 	var pts: Dictionary = _bundle(seed, discovered,
 		home_center, home_station)["points"]
-	var pt: Vector2 = pts.get(key, home_station)
+	return _frame_for(g, pts, key, home_station_point(
+		home_center, home_station))
+
+
+static func _frame_for(g: Dictionary, pts: Dictionary,
+		key: String, fallback: Vector2) -> Dictionary:
+	var pt: Vector2 = pts.get(key, fallback)
 	var dir := Vector2(0, 1)
 	for e in g["edges"]:
 		var a := str(e[0])
@@ -1550,25 +1746,50 @@ static func station_frame(seed: int, discovered: Array,
 ## footprints: the frame side first, then the flipped
 ## side, then deterministic shifts along the track; the
 ## first candidate whose slab rect (3.6 x 16, the built
-## size) keeps 0.6 m from every footprint wins. When no
-## candidate clears, the plain offset stands and the
-## WorldRoot disembark backstop is the last line.
+## size) keeps STATION_CLEAR from every footprint
+## wins. When no candidate clears, the plain offset
+## stands and the WorldRoot disembark backstop is the
+## last line — and since issue #259 the deletion
+## derivation (tier B) removes the plain slab's
+## blockers for exactly the stations whose search
+## fails, so a served platform validates by
+## construction.
 static func platform_center(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		key: String) -> Vector2:
 	var f := station_frame(seed, discovered, home_center,
 		home_station, key)
+	var straight := edge_segments(seed, discovered,
+		home_center, home_station)
+	var res := _platform_search(seed, straight,
+		home_center, f, _deleted_map(seed, discovered,
+			home_center, home_station))
+	return res["center"]
+
+
+## The platform search (issue #246 fix 2's candidate
+## walk, issue #259's clearance): the frame side
+## first, then the flipped side, then deterministic
+## shifts along the track; the first candidate whose
+## slab keeps STATION_CLEAR from every footprint in
+## the (deletion-aware) field wins. Returns
+## {center, found} — found is false when no candidate
+## clears, in which case center is the plain offset
+## and the deletion derivation (tier B) treats this
+## station as blocked. An empty field validates the
+## plain offset at once.
+static func _platform_search(seed: int, straight: Array,
+		home_center: Vector2, f: Dictionary,
+		deleted: Dictionary) -> Dictionary:
 	var pt: Vector2 = f["pt"]
 	var dir: Vector2 = f["dir"]
 	var perp: Vector2 = f["perp"]
 	var side := float(f["side"])
 	var plain := pt + perp * (side * (BED_WIDTH * 0.5 + 1.9))
-	var straight := edge_segments(seed, discovered,
-		home_center, home_station)
 	var rects := _route_field(seed, straight, home_center,
-		pt - dir * 72.0, pt + dir * 72.0, 40.0)
+		pt - dir * 72.0, pt + dir * 72.0, 40.0, deleted)
 	if rects.is_empty():
-		return plain
+		return {"center": plain, "found": true}
 	for shift in [0.0, 8.0, -8.0, 16.0, -16.0, 24.0, -24.0,
 			28.0, -28.0, 32.0, -32.0, 40.0, -40.0, 48.0,
 			-48.0, 56.0, -56.0, 64.0, -64.0]:
@@ -1576,17 +1797,18 @@ static func platform_center(seed: int, discovered: Array,
 			var c: Vector2 = pt + perp * (s * (BED_WIDTH * 0.5 + 1.9)) \
 				+ dir * shift
 			if _plat_clear(c, dir, perp, rects):
-				return c
-	return plain
+				return {"center": c, "found": true}
+	return {"center": plain, "found": false}
 
 
 ## A platform candidate's clearance: the slab rect
 ## (half extents 8.0 along dir, 1.8 along perp — the
-## built 16.0 x 3.6) keeps >= 0.6 m from every footprint.
+## built 16.0 x 3.6) keeps >= STATION_CLEAR m from
+## every footprint (issue #259; #246's floor was 0.6).
 static func _plat_clear(c: Vector2, dir: Vector2,
 		perp: Vector2, rects: Array) -> bool:
 	for r in rects:
-		if _obb_aabb_dist(c, dir, perp, 8.0, 1.8, r) < 0.6:
+		if _obb_aabb_dist(c, dir, perp, 8.0, 1.8, r) < STATION_CLEAR:
 			return false
 	return true
 
@@ -1654,7 +1876,9 @@ static func clear_spawn_point(seed: int, discovered: Array,
 	var straight := edge_segments(seed, discovered,
 		home_center, home_station)
 	var rects := _route_field(seed, straight, home_center,
-		p, p + Vector2(0.01, 0.0), 20.0)
+		p, p + Vector2(0.01, 0.0), 20.0,
+		_deleted_map(seed, discovered, home_center,
+			home_station))
 	if _point_clear(p, rects):
 		return p
 	for ring in [2.0, 4.0, 6.0, 8.0, 10.0, 12.0]:

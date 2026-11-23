@@ -118,6 +118,7 @@ func _run() -> void:
 	_test_boot_warmer_256()
 	_test_walkoff_entry_257()
 	_test_train_bundle_258()
+	_test_train_clearance_259()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -7797,14 +7798,18 @@ func _test_boot_warmer_256() -> void:
 	_assert(boot != null
 			and boot.get_node_or_null("CacheWarmer") != null,
 		"256(a): a cold boot creates the warmer")
-	_assert(progress_of.call(boot) == Vector2i(0, 266),
+	# Issue #259: the target set is 265 chunks — the
+	# moved home station and the deletion-cleared
+	# corridors shifted one corridor chunk out of the
+	# derived set (the derivation itself is unchanged).
+	_assert(progress_of.call(boot) == Vector2i(0, 265),
 		"256(e): the boot's progress starts at 0 of the "
 		+ "full set")
 	drive.call(boot, 400000)
 	_assert(boot != null and bool(boot.get("_handed_off")),
 		"256(a): the cold boot drives the warmer to "
 		+ "completion and hands off to the menu")
-	_assert(progress_of.call(boot) == Vector2i(266, 266),
+	_assert(progress_of.call(boot) == Vector2i(265, 265),
 		"256(e): the boot's progress ends at the full set")
 	if boot != null:
 		root.remove_child(boot)
@@ -7826,7 +7831,7 @@ func _test_boot_warmer_256() -> void:
 	_assert(steps2 <= 200,
 		"256(b): the warm boot finishes in a few steps "
 		+ "(no generation waits)")
-	var mtimes_ok := mtimes.size() == 266
+	var mtimes_ok := mtimes.size() == 265
 	if mtimes_ok:
 		for fn in mtimes:
 			if FileAccess.get_modified_time(
@@ -8177,7 +8182,7 @@ func _test_train_bundle_258() -> void:
 		+ "re-derivation")
 	var fg: Dictionary = TrainRes.derive_graph(seed, set_b, hc)
 	var fpts: Dictionary = TrainRes._points_for_graph(fg,
-		seed, hs)
+		seed, hc, hs)
 	var fstraight: Array = []
 	for e in fg["edges"]:
 		fstraight.append([fpts[e[0]], fpts[e[1]]])
@@ -8296,6 +8301,292 @@ func _test_train_bundle_258() -> void:
 	DungeonScript.set("home_anchor", saved_anchor)
 	clear_caches.call()
 	print("[Playtest] Train network bundle (issue #258) done.")
+
+
+## Issue #259: Jesse — the train runs too close to
+## buildings; add clearance, delete buildings in the
+## way if necessary, and start the first (home)
+## station further from the main building. The adopted
+## values (Co-founder's proposals for Jesse's
+## feel-test): routed centerline >= 6.0 m from every
+## footprint, platform slab >= 5.0 m, home station
+## center ~40 m out from the Act 1 footprint edge
+## (it sat ON the doorstep, at distance 0.0). The
+## mechanism: routing first at the new floor; a
+## building is deleted only where no compliant route
+## exists (its footprint inside a failed edge's
+## straight corridor) or where a station's platform
+## search finds no compliant candidate (its footprint
+## inside the plain slab's clearance) — a pure
+## derivation of (seed, set), carried in the bundle
+## and applied by generation itself.
+func _test_train_clearance_259() -> void:
+	print("[Playtest] Train clearance + home station (issue #259)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes = load("res://scripts/world/world_gen.gd")
+	var TrainRes = load("res://scripts/world/train_network.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var seed: int = WorldGenRes.WORLD_SEED
+	var a96: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.set("home_anchor", a96)
+	var hc := Vector2(float(a96["anchor_x"]),
+		float(a96["anchor_z"]))
+	var hb: Dictionary = DungeonScript.home_building()
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var hrect := Rect2(float(a96["rect_x"]),
+		float(a96["rect_z"]), float(a96["rect_w"]),
+		float(a96["rect_d"]))
+	var ring: Array = TrainRes.initial_ring(seed, hc)
+	var grown: Array = ring.duplicate()
+	grown.append("7,0")
+	for k in TrainRes.expansion_ring(seed, "7,0"):
+		if not grown.has(k):
+			grown.append(k)
+	# Null-safe reads of the new surface: at the
+	# pre-change baseline none of it exists, and a
+	# direct call would abort the section (the hollow
+	# trap) — every leg below then fails on values.
+	var tc_v = TrainRes.get("TRACK_CLEAR")
+	var sc_v = TrainRes.get("STATION_CLEAR")
+	var track_clear: float = float(tc_v) if tc_v is float else -1.0
+	var station_clear: float = float(sc_v) if sc_v is float else -1.0
+	var has_api: bool = tc_v is float \
+		and Callable(TrainRes, "deleted_buildings").is_valid()
+	var get_deleted = func(s: Array) -> Array:
+		if not has_api:
+			return []
+		var v = TrainRes.call("deleted_buildings", seed,
+			s, hc, hs)
+		return (v as Array).duplicate() if v is Array else []
+	_assert(int(TrainRes.get("DERIVATION_VERSION")) == 2,
+		"259: the derivation version is bumped (bundle "
+		+ "payloads from the old derivation are refused)")
+	_assert(track_clear == 6.0 and station_clear == 5.0,
+		"259: the adopted clearances are the shipped "
+		+ "constants (track 6.0, station 5.0)")
+	# The pin's own footprint field (an independent
+	# census, not the router's): every footprint the
+	# generation rules derive near a segment, with the
+	# deletion list stashed exactly as generation
+	# carries it, and the home plot suppressed as the
+	# router suppresses it.
+	var field_of = func(a2: Vector2, b2: Vector2,
+			pad: float, straight: Array,
+			del_map: Dictionary) -> Array:
+		var suppress := Rect2(hc - Vector2(48, 48),
+			Vector2(96, 96))
+		var out: Array = []
+		var caches := {}
+		var mn := a2.min(b2) - Vector2(pad + 16.0, pad + 16.0)
+		var mx := a2.max(b2) + Vector2(pad + 16.0, pad + 16.0)
+		for lz in range(int(floor(mn.y / 8.0)),
+				int(floor(mx.y / 8.0)) + 1):
+			for lx in range(int(floor(mn.x / 8.0)),
+					int(floor(mx.x / 8.0)) + 1):
+				var ctr := Vector2((float(lx) + 0.5) * 8.0,
+					(float(lz) + 0.5) * 8.0)
+				if WorldGenRes._dist_to_segment(ctr, a2,
+						b2) > pad + 12.0:
+					continue
+				var ckey := "%d,%d" % [lx >> 4, lz >> 4]
+				if not caches.has(ckey):
+					caches[ckey] = {"__track_segs":
+						TrainRes.filter_segments_for_chunk(
+							straight, lx >> 4, lz >> 4),
+						"__deleted": del_map}
+				var bb: Dictionary = WorldGenRes.building_at(
+					seed, lx, lz, {}, caches[ckey])
+				if bb.is_empty():
+					continue
+				var rr := Rect2(Vector2(lx, lz) * 8.0,
+					Vector2(int(bb["span_x"]),
+						int(bb["span_z"])) * 8.0)
+				if suppress.intersects(rr):
+					continue
+				out.append(rr)
+		return out
+	# (a) The clearance invariant, measured on the
+	# actual derived segments and platforms against
+	# the actual generated footprints (the
+	# deletion-aware field IS the generated world).
+	for s in [ring, grown]:
+		var set: Array = s
+		TrainRes.set("route_failures", [])
+		var del_map := {}
+		for v in get_deleted.call(set):
+			del_map[v] = true
+		var g: Dictionary = TrainRes.derive_graph(seed,
+			set, hc)
+		var pts: Dictionary = TrainRes.station_points(
+			seed, set, hc, hs)
+		var straight: Array = TrainRes.edge_segments(
+			seed, set, hc, hs)
+		var worst := 1.0e9
+		for e in g["edges"]:
+			var a2: Vector2 = pts[e[0]]
+			var b2: Vector2 = pts[e[1]]
+			var poly: Array = TrainRes.routed_points(
+				seed, set, hc, hs, a2, b2)
+			var rects: Array = field_of.call(a2, b2, 88.0,
+				straight, del_map)
+			for i in poly.size() - 1:
+				worst = minf(worst,
+					TrainRes._seg_rect_dist(poly[i],
+						poly[i + 1], rects))
+		_assert(worst >= 6.0 - 0.001,
+			"259(a): every routed segment keeps the "
+			+ "track clearance (worst %.2f)" % worst)
+		var pw := 1.0e9
+		for key in g["order"]:
+			var f: Dictionary = TrainRes.station_frame(
+				seed, set, hc, hs, str(key))
+			var pc: Vector2 = TrainRes.platform_center(
+				seed, set, hc, hs, str(key))
+			var prects: Array = field_of.call(
+				(f["pt"] as Vector2) - (f["dir"] as Vector2) * 72.0,
+				(f["pt"] as Vector2) + (f["dir"] as Vector2) * 72.0,
+				40.0, straight, del_map)
+			for r in prects:
+				pw = minf(pw, TrainRes._obb_aabb_dist(pc,
+					f["dir"], f["perp"], 8.0, 1.8, r))
+		_assert(pw >= 5.0 - 0.001,
+			"259(a): every station platform keeps the "
+			+ "station clearance (worst %.2f)" % pw)
+		_assert((TrainRes.get("route_failures") as Array).is_empty(),
+			"259(a): no route failures on either network")
+	# (b) Deletion determinism + targeting (ring set).
+	var del1: Array = get_deleted.call(ring)
+	TrainRes.set("_bundle_cache", {})
+	TrainRes.set("_graph_cache", {})
+	TrainRes.set("_route_memo", {})
+	var del2: Array = get_deleted.call(ring)
+	_assert(del1 == del2 and not del1.is_empty(),
+		"259(b): the deletion set is identical across "
+		+ "independent derivations (%d buildings)"
+		% del1.size())
+	_assert(del1.has(Vector2i(18, 313)),
+		"259(b): the known in-corridor building at "
+		+ "(18,313) is deleted")
+	var pts_r: Dictionary = TrainRes.station_points(seed,
+		ring, hc, hs)
+	var straight_r: Array = TrainRes.edge_segments(seed,
+		ring, hc, hs)
+	var g_r: Dictionary = TrainRes.derive_graph(seed,
+		ring, hc)
+	var plains := {}
+	for key in g_r["order"]:
+		var f2: Dictionary = TrainRes.station_frame(seed,
+			ring, hc, hs, str(key))
+		plains[key] = {"c": (f2["pt"] as Vector2)
+			+ (f2["perp"] as Vector2) * (float(f2["side"])
+				* (TrainRes.BED_WIDTH * 0.5 + 1.9)),
+			"dir": f2["dir"], "perp": f2["perp"]}
+	var violations := 0
+	for v in del1:
+		var lot := v as Vector2i
+		var cache := {"__track_segs":
+			TrainRes.filter_segments_for_chunk(straight_r,
+				lot.x >> 4, lot.y >> 4)}
+		var bb: Dictionary = WorldGenRes.building_at(seed,
+			lot.x, lot.y, {}, cache)
+		if bb.is_empty():
+			violations += 1
+			continue
+		var rr := Rect2(Vector2(lot.x, lot.y) * 8.0,
+			Vector2(int(bb["span_x"]),
+				int(bb["span_z"])) * 8.0)
+		var justified := false
+		for e in g_r["edges"]:
+			if TrainRes._seg_rect_dist(pts_r[e[0]],
+					pts_r[e[1]], [rr]) < track_clear:
+				justified = true
+				break
+		if not justified:
+			for key in plains:
+				var pl: Dictionary = plains[key]
+				if TrainRes._obb_aabb_dist(pl["c"],
+						pl["dir"], pl["perp"], 8.0, 1.8,
+						rr) < station_clear:
+					justified = true
+					break
+		if not justified:
+			violations += 1
+	_assert(violations == 0,
+		"259(b): every deleted building stood in a "
+		+ "failed corridor or a blocked platform's "
+		+ "clearance — nothing out-of-corridor removed")
+	# Generation itself applies the list: a deleted
+	# anchor that generates without the list is absent
+	# with it.
+	var witness := Vector2i(999999, 999999)
+	for v in del1:
+		var lot2 := v as Vector2i
+		var cc := Vector2i(lot2.x >> 4, lot2.y >> 4)
+		var segs_c: Array = TrainRes.filter_segments_for_chunk(
+			straight_r, cc.x, cc.y)
+		var d0 = WorldGenRes.generate_chunk(cc.x, cc.y,
+			seed, segs_c)
+		var present := false
+		for b in d0.get("buildings"):
+			# ChunkData stores CHUNK-LOCAL lot coords.
+			if int(b[0]) == lot2.x - cc.x * 16 \
+					and int(b[1]) == lot2.y - cc.y * 16:
+				present = true
+				break
+		if present:
+			witness = lot2
+			break
+	_assert(witness.x != 999999,
+		"259(b): a deleted anchor generates when the "
+		+ "list is not applied (witness %s)" % str(witness))
+	if witness.x != 999999:
+		var cc2 := Vector2i(witness.x >> 4, witness.y >> 4)
+		var segs2: Array = TrainRes.filter_segments_for_chunk(
+			straight_r, cc2.x, cc2.y)
+		var gone := false
+		if has_api:
+			var d1 = WorldGenRes.generate_chunk(cc2.x,
+				cc2.y, seed, segs2, del1)
+			gone = true
+			for b in d1.get("buildings"):
+				if int(b[0]) == witness.x - cc2.x * 16 \
+						and int(b[1]) == witness.y - cc2.y * 16:
+					gone = false
+		_assert(gone,
+			"259(b): generation with the list removes "
+			+ "the witness building")
+	# (c) The home station: the derived center sits
+	# the adopted offset out from the footprint.
+	var moved: Vector2 = pts_r["home"]
+	var rel := hs - hc
+	var n := Vector2(1, 0)
+	if absf(rel.y) > absf(rel.x):
+		n = Vector2(0, signf(rel.y) if rel.y != 0.0 else 1.0)
+	elif rel.x != 0.0:
+		n = Vector2(signf(rel.x), 0)
+	_assert(moved == hs + n * 40.0 and moved != hs,
+		"259(c): the home station derives from the "
+		+ "doorstep, 40 m out along the wall normal")
+	var hdist: float = TrainRes._point_rect_dist(moved, hrect)
+	_assert(hdist >= 39.0 and hdist <= 41.0,
+		("259(c): the home station center is ~40 m from "
+		+ "the footprint edge (%.2f; the doorstep "
+		+ "measured 0.0)") % hdist)
+	# (d) The consists sit at the moved station: the
+	# idle train position IS the station point (the
+	# vista consist mirrors train_position — #252(iii)
+	# pins that identity — so both follow).
+	var idle: Dictionary = TrainRes.train_position(seed,
+		ring, hc, hs, TrainRes.initial_state(), 0)
+	_assert(Vector2((idle["pos"] as Vector3).x,
+			(idle["pos"] as Vector3).z).is_equal_approx(moved),
+		"259(d): the idle consist sits at the moved "
+		+ "home station")
+	# Cleanup.
+	DungeonScript.set("home_anchor", saved_anchor)
+	print("[Playtest] Train clearance + home station (issue #259) done.")
 
 
 func _test_scatter_207() -> void:
@@ -26975,13 +27266,18 @@ func _test_train_world_244() -> void:
 	var WorldCache := load("res://scripts/world/world_cache.gd")
 	var seed: int = WG.WORLD_SEED
 	var hc := Vector2.ZERO
-	var hs := Vector2(124.0, 44.0)
+	# Issue #259: the supplied point is the DOORSTEP;
+	# the home station point derives 40 m out along
+	# the dominant axis of (doorstep - center). The
+	# doorstep (84,44) derives the censused station
+	# point (124,44) this section was built on.
+	var hs := Vector2(84.0, 44.0)
 	var set1: Array = ["0,-2", "0,2"]
 
 	# ----- A: segments are the graph, station to station --
 	var pts: Dictionary = TN.station_points(seed, set1, hc, hs)
-	_assert(pts["home"] == hs,
-		"244T2(A): the home station point is the supplied doorstep point")
+	_assert(pts["home"] == Vector2(124.0, 44.0),
+		"244T2(A): the home station point is the doorstep point derived 40 m out (issue #259)")
 	_assert(pts["0,-2"] == Vector2(348.0, -1084.0)
 			and pts["0,2"] == Vector2(156.0, 2548.0),
 		"244T2(A): city station points match the independently probed lot snaps ((348,-1084) / (156,2548))")
@@ -27001,8 +27297,8 @@ func _test_train_world_244() -> void:
 		"244T2(A): a far chunk's query returns nothing")
 	var mid_seg: Array = []
 	for s in segs:
-		if (s[0] == hs and s[1] == pts["0,-2"]) \
-				or (s[1] == hs and s[0] == pts["0,-2"]):
+		if (s[0] == pts["home"] and s[1] == pts["0,-2"]) \
+				or (s[1] == pts["home"] and s[0] == pts["0,-2"]):
 			mid_seg = s
 	var midp := (Vector2(mid_seg[0]) + Vector2(mid_seg[1])) * 0.5
 	var mc := Vector2i(int(floor(midp.x / 128.0)),
@@ -27215,7 +27511,9 @@ func _test_train_ride_244() -> void:
 	var NM: Node = root.get_node("NetworkManager")
 	var seed: int = WG.WORLD_SEED
 	var hc := Vector2.ZERO
-	var hs := Vector2(124.0, 44.0)
+	# Issue #259: doorstep (84,44) — derives the
+	# censused home station point (124,44), as in T2.
+	var hs := Vector2(84.0, 44.0)
 	var set1: Array = ["0,-2", "0,2"]
 	# --- Leg A: routing a course + real duration ---------
 	var rp: Dictionary = TN.route_path(seed, set1, hc, hs,
@@ -35122,10 +35420,16 @@ func _test_train_routing_246() -> void:
 		grown, hc, hs)
 	_assert(TN.route_failures.is_empty(),
 		"246(A): no route failures on the real networks")
-	_assert(routed_init.size() > straight_init.size(),
-		"246(A): routed dressing has more segments than the straight graph (bends exist)")
-	_assert(routed_grown.size() > 20,
-		"246(A): the grown network routes to sub-segments")
+	# Issue #259 amended this leg: at the 6.0 m
+	# clearance the ring's corridors are cleared by
+	# the deletion derivation, so the served polylines
+	# ARE the straights (their clearance is measured
+	# in the #259 section) — the invariant kept here
+	# is coverage: every edge serves a routed polyline.
+	_assert(routed_init.size() >= straight_init.size(),
+		"246(A): routed dressing covers every edge of the straight graph")
+	_assert(routed_grown.size() >= 9,
+		"246(A): the grown network routes every edge")
 	# (B) Purity: the same edge routes identically warm
 	# (memo) and cold (memo cleared) — the bend is a pure
 	# function of (seed, discovered set, endpoints).
@@ -35142,8 +35446,11 @@ func _test_train_routing_246() -> void:
 		hc, hs, ea, eb)
 	_assert(r1 == r3,
 		"246(B): routed points are identical cold (purity)")
-	_assert(r1.size() > 2,
-		"246(B): the home -> 0,2 edge bends (interior points)")
+	# Issue #259 amended: the home -> 0,2 corridor is
+	# one of the deletion-cleared ones, so the served
+	# polyline is the straight itself.
+	_assert(r1.size() == 2 and r1[0] == ea and r1[1] == eb,
+		"246(B): the home -> 0,2 edge serves its straight (deletion-cleared, issue #259)")
 	# Direction-canonical: the reverse ask returns the
 	# reverse polyline (dressing walks graph direction,
 	# motion walks course direction — one bend or the
@@ -35165,6 +35472,12 @@ func _test_train_routing_246() -> void:
 		Vector2(96, 96))
 	var graph_init: Dictionary = TN.derive_graph(seed,
 		init_disc, hc)
+	# Issue #259: the census measures the world AS
+	# GENERATED — the deletion derivation's lots are
+	# stashed exactly as generation carries them.
+	var del_map_c := {}
+	for v in TN.deleted_buildings(seed, init_disc, hc, hs):
+		del_map_c[v] = true
 	for e in graph_init["edges"]:
 		var a2: Vector2 = pts_init[e[0]]
 		var b2: Vector2 = pts_init[e[1]]
@@ -35199,7 +35512,8 @@ func _test_train_routing_246() -> void:
 				if not caches.has(ckey):
 					caches[ckey] = {"__track_segs":
 						TN.filter_segments_for_chunk(
-							straight_init, ccx, ccz)}
+							straight_init, ccx, ccz),
+						"__deleted": del_map_c}
 				var bb: Dictionary = WG.building_at(seed,
 					lx, lz, {}, caches[ckey])
 				if bb.is_empty():
@@ -35225,15 +35539,22 @@ func _test_train_routing_246() -> void:
 		Vector2i(40, -128), Vector2i(17, 305),
 		Vector2i(43, -121), Vector2i(18, 316)]
 	var derived_n := 0
+	var deleted_n := 0
 	var anchor_worst := 1.0e9
 	var all_rp: Array = []
 	for e in graph_init["edges"]:
 		all_rp.append(TN.routed_points(seed, init_disc,
 			hc, hs, pts_init[e[0]], pts_init[e[1]]))
 	for an in anchors:
+		# Issue #259: measured against the generated
+		# world (deletions stashed) — a deleted anchor
+		# derives nothing, a surviving one must clear.
+		if del_map_c.has(an):
+			deleted_n += 1
 		var cache := {"__track_segs":
 			TN.filter_segments_for_chunk(straight_init,
-				an.x >> 4, an.y >> 4)}
+				an.x >> 4, an.y >> 4),
+			"__deleted": del_map_c}
 		var bb2: Dictionary = WG.building_at(seed, an.x,
 			an.y, {}, cache)
 		if bb2.is_empty():
@@ -35247,11 +35568,14 @@ func _test_train_routing_246() -> void:
 				anchor_worst = minf(anchor_worst,
 					TN._seg_rect_dist(rp2[i], rp2[i + 1],
 						[rr2]))
-	_assert(derived_n >= 4,
-		"246(D): the characterized anchors reproduce (%d/8)"
-			% derived_n)
+	# Issue #259 amended: the characterized intrusions
+	# are now mostly DELETED (the stronger outcome);
+	# the survivors must clear at the new floor.
+	_assert(deleted_n >= 4,
+		"246(D): the characterized intrusions are deleted (%d/8)"
+			% deleted_n)
 	_assert(anchor_worst >= TN.ROUTE_BED_CLEAR - 0.001,
-		"246(D): every characterized intrusion clears the routed path (worst %.2f)"
+		"246(D): every surviving characterized anchor clears the routed path (worst %.2f)"
 			% anchor_worst)
 	# (E) Plausibility: no edge on either network turns
 	# sharper than 45 degrees at any vertex.
@@ -35268,7 +35592,8 @@ func _test_train_routing_246() -> void:
 	# (F) Platforms (fix 2): "0,2" and "0,-2" validate
 	# clear of every footprint (the characterization had
 	# their plain points at 0.0 / 0.03 m); home's
-	# platform is unmoved (suppressed plot).
+	# platform is unmoved — since issue #259 it stands
+	# at the moved home station.
 	for key in ["0,2", "0,-2"]:
 		var f: Dictionary = TN.station_frame(seed,
 			init_disc, hc, hs, key)
@@ -35281,12 +35606,17 @@ func _test_train_routing_246() -> void:
 			straight_init, hc,
 			(f["pt"] as Vector2) - (f["dir"] as Vector2) * 72.0,
 			(f["pt"] as Vector2) + (f["dir"] as Vector2) * 72.0,
-			40.0)
+			40.0, del_map_c)
+		# Issue #259: _plat_clear's floor is now
+		# STATION_CLEAR (5.0), and the field is the
+		# generated (deletion-aware) one. Whether the
+		# chosen center still shifts off plain is no
+		# longer the invariant — 0,2's plain validates
+		# once its corridor blockers are deleted, while
+		# 0,-2's search still shifts it; clearance is.
 		_assert(TN._plat_clear(pc, f["dir"], f["perp"],
 				rects2),
 			"246(F): platform %s validates clear" % key)
-		_assert(pc != plain,
-			"246(F): platform %s MOVED off its intruding plain point" % key)
 		# The backstop: the old plain point steps clear,
 		# and a validated point is returned unchanged.
 		var fx: Vector2 = TN.clear_spawn_point(seed,
@@ -35307,7 +35637,7 @@ func _test_train_routing_246() -> void:
 			* (TN.BED_WIDTH * 0.5 + 1.9))
 	_assert(TN.platform_center(seed, init_disc, hc, hs,
 			"home") == plain_h,
-		"246(F): the home platform is unmoved")
+		"246(F): the home platform is unmoved (at the moved station, issue #259)")
 	# (G) The motion wiring rides the bends: route_path's
 	# length is the routed length (>= the straight
 	# station distance), and a mid-ride train_position
@@ -35348,6 +35678,7 @@ func _test_train_routing_246() -> void:
 	stm.call("set_track_network", init_disc, hc, hs)
 	var station_vals: Array = pts_init.values()
 	var bend_found := false
+	var dress_n := 0
 	var data_ok := true
 	var data_n := 0
 	for cz in range(-14, 24):
@@ -35356,6 +35687,7 @@ func _test_train_routing_246() -> void:
 				"_track_stage_inputs", cx, cz)
 			for pair in inputs["segs"]:
 				var seg: Array = pair[0]
+				dress_n += 1
 				if not station_vals.has(seg[0]) \
 						or not station_vals.has(seg[1]):
 					bend_found = true
@@ -35366,8 +35698,18 @@ func _test_train_routing_246() -> void:
 				if not station_vals.has(seg2[0]) \
 						or not station_vals.has(seg2[1]):
 					data_ok = false
-	_assert(bend_found,
-		"246(H): the dressed track contains bend vertices")
+	# Issue #259 amended: on this network the deletion
+	# derivation cleared every corridor, so the routed
+	# dressing IS the straight graph — no bend vertices
+	# exist here to find. The dressing still comes
+	# from the routed derivation (source-pinned), which
+	# is what carries bends on fields where they occur.
+	_assert(dress_n > 0 and not bend_found,
+		"246(H): the dressed track is the routed derivation (straight on this cleared network, issue #259)")
+	_assert(FileAccess.get_file_as_string(
+			"res://scripts/world/world_streamer.gd").contains(
+			"routed_edge_segments"),
+		"246(H): the streamer sources its dressing from the routed segments")
 	_assert(data_ok and data_n > 0,
 		"246(H): the data derivation still sees straight segments only")
 	holder.free()
@@ -35629,12 +35971,52 @@ func _test_train_walkout_247() -> void:
 	DungeonScript.act2_train_cities = saved_cities_f
 	holder6.free()
 	# --- Leg G (pin vi): landing steps clear -----------
-	# The #246 characterization's intruding plain point
-	# (0,2's platform sat inside a footprint at 0.0 m):
-	# the backstop the WorldRoot branch uses steps it
-	# clear. And the normal mid-leg raw landing is
-	# already clear.
+	# The backstop the WorldRoot branch uses steps a
+	# landing out of a standing footprint, and the
+	# normal mid-leg raw landing is already clear.
+	# Issue #259 note: the #246 characterization's
+	# intruding point (0,2's old plain platform point,
+	# inside a footprint at 0.0 m) stands in open ground
+	# now — that building is deleted by the clearance
+	# derivation, which is the fix working. The pin
+	# takes its intruding point from a SURVIVING
+	# footprint near the 0,2 station, found in-pin
+	# against this set's generated (deletion-aware)
+	# world.
+	var del_map_g := {}
+	if Callable(TN, "deleted_buildings").is_valid():
+		for v in TN.call("deleted_buildings", seed, set1,
+				rhc, rhs):
+			del_map_g[v] = true
+	var straight_g: Array = TN.edge_segments(seed, set1,
+		rhc, rhs)
+	var pts_g: Dictionary = TN.station_points(seed, set1,
+		rhc, rhs)
+	var ctr_g: Vector2 = pts_g["0,2"]
 	var plain02 := Vector2(151.9, 2548.4)
+	var found_g := false
+	for lz in range(int((ctr_g.y - 64.0) / 8.0),
+			int((ctr_g.y + 64.0) / 8.0) + 1):
+		if found_g:
+			break
+		for lx in range(int((ctr_g.x - 64.0) / 8.0),
+				int((ctr_g.x + 64.0) / 8.0) + 1):
+			var cache_g := {"__track_segs":
+				TN.filter_segments_for_chunk(straight_g,
+					lx >> 4, lz >> 4),
+				"__deleted": del_map_g}
+			var bb_g: Dictionary = WG.building_at(seed,
+				lx, lz, {}, cache_g)
+			# A 1x1 footprint: its center is within the
+			# backstop's 12 m search rings of open ground.
+			if bb_g.is_empty() or int(bb_g["span_x"]) != 1 \
+					or int(bb_g["span_z"]) != 1:
+				continue
+			plain02 = Rect2(Vector2(lx, lz) * 8.0,
+				Vector2(int(bb_g["span_x"]),
+					int(bb_g["span_z"])) * 8.0).get_center()
+			found_g = true
+			break
 	var stepped: Vector2 = TN.clear_spawn_point(seed,
 		set1, rhc, rhs, plain02)
 	_assert(stepped != plain02

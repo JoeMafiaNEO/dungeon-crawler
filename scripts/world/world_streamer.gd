@@ -188,6 +188,10 @@ var _track_edges: Array = [] ## station-point segments
 ## router's obstacle field is defined against it).
 var _track_edges_routed: Array = []
 var _track_points: Dictionary = {} ## node key -> station point
+## Issue #259: the network's deleted anchor lots —
+## generation applies them exactly like the straight
+## segments (a live-set input, never cached).
+var _track_deleted: Array = []
 
 var _track_mat: StandardMaterial3D = null
 
@@ -226,6 +230,7 @@ func set_track_network(discovered: Array,
 		_track_edges = []
 		_track_edges_routed = []
 		_track_points = {}
+		_track_deleted = []
 	else:
 		_track_points = TrainNetwork.station_points(
 			WorldGen.WORLD_SEED, track_discovered,
@@ -234,6 +239,9 @@ func set_track_network(discovered: Array,
 			WorldGen.WORLD_SEED, track_discovered,
 			home_center, home_station)
 		_track_edges_routed = TrainNetwork.routed_edge_segments(
+			WorldGen.WORLD_SEED, track_discovered,
+			home_center, home_station)
+		_track_deleted = TrainNetwork.deleted_buildings(
 			WorldGen.WORLD_SEED, track_discovered,
 			home_center, home_station)
 	# Issue #244 T3: the consist is no longer chunk dressing
@@ -536,10 +544,11 @@ func _dispatch_gen(cx: int, cz: int) -> void:
 	# lambda only reads them — generate_chunk stays a pure
 	# function of its arguments on the worker).
 	var segs := _track_segments_for(cx, cz)
+	var del := _track_deleted
 	var task := WorkerThreadPool.add_task(
 		func() -> void:
 			slot["data"] = WorldGen.generate_chunk(
-				cx, cz, WorldGen.WORLD_SEED, segs),
+				cx, cz, WorldGen.WORLD_SEED, segs, del),
 		false, "chunk gen %d,%d" % [cx, cz])
 	slot["task"] = task
 	_pending[_key(cx, cz)] = slot
@@ -1134,7 +1143,8 @@ func _chunk_data_sync(cx: int, cz: int) -> RefCounted:
 	if cached != null:
 		return cached
 	var data := WorldGen.generate_chunk(cx, cz,
-		WorldGen.WORLD_SEED, _track_segments_for(cx, cz))
+		WorldGen.WORLD_SEED, _track_segments_for(cx, cz),
+		_track_deleted)
 	_cache_write(data)
 	return data
 

@@ -329,8 +329,14 @@ static func height_at(seed: int, wx: float, wz: float) -> float:
 ## track corridor lose anchor candidacy via the lot context's
 ## dist_track term; without it (the default, every pre-#244
 ## caller) the output is the seed-pure world, byte-identical.
+## `deleted` (issue #259) is the network's derived
+## removed-buildings list (Vector2i anchor lots): those
+## anchors generate nothing. It rides the same live-set
+## path as track_segs — set-free callers (the cache
+## warmer above all) never pass it, so cached payloads
+## stay the pure generators' own output.
 static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED,
-		track_segs: Array = []) -> RefCounted:
+		track_segs: Array = [], deleted: Array = []) -> RefCounted:
 	var data := ChunkData.new()
 	data.cx = cx
 	data.cz = cz
@@ -353,6 +359,13 @@ static func generate_chunk(cx: int, cz: int, seed: int = WORLD_SEED,
 		# Read by _lot_context / _lot_is_track for span
 		# resolution (the per-lot term below rides the ctx).
 		seg_cache["__track_segs"] = track_segs
+	if not deleted.is_empty():
+		# Issue #259: the network's deleted anchor lots
+		# (Vector2i world lots), read by building_at.
+		var del_map := {}
+		for v in deleted:
+			del_map[v] = true
+		seg_cache["__deleted"] = del_map
 	for lz in LOTS_PER_CHUNK:
 		for lx in LOTS_PER_CHUNK:
 			var wlx := cx * LOTS_PER_CHUNK + lx
@@ -567,6 +580,18 @@ static func _massing_for(seed: int, wlx: int, wlz: int, floors: int) -> int:
 ## massing}. Pure: same lot, same answer, from any caller.
 static func building_at(seed: int, wlx: int, wlz: int,
 		ctx: Dictionary = {}, seg_cache: Dictionary = {}) -> Dictionary:
+	# Issue #259: the caller's deletion stash (the
+	# train network's derived removed-buildings list,
+	# carried exactly like "__track_segs"). A deleted
+	# anchor carries no building — the one place the
+	# #246 "never remove" rule is relaxed, and only
+	# for the lots the network derivation named. No
+	# stash (every track-blind or set-free caller) =
+	# nothing deleted, byte-identical answers.
+	if seg_cache.has("__deleted") \
+			and (seg_cache["__deleted"] as Dictionary).has(
+				Vector2i(wlx, wlz)):
+		return {}
 	var cache := seg_cache
 	var my_ctx := ctx
 	if my_ctx.is_empty():
