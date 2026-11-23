@@ -124,6 +124,7 @@ func _run() -> void:
 	_test_train_clearance_259()
 	_test_additive_tracks_261()
 	_test_threaded_bundle_264()
+	_test_chart_train_live_265()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -9576,6 +9577,88 @@ func _test_threaded_bundle_264() -> void:
 	DungeonScript.set("home_anchor", saved_anchor)
 	clear_record.call()
 	print("[Playtest] Threaded train bundle (issue #264) done.")
+
+
+## Issue #265: while the train is travelling, the GPS
+## chart's marker moves in real time — the chart's poll
+## re-draws on its cadence, gated on the moving state,
+## and _draw re-reads the live parametric position from
+## the model. (The drawn movement itself is Xvfb-proven
+## — probe265x; here the gate and the live position the
+## draw consumes are pinned.)
+func _test_chart_train_live_265() -> void:
+	print("[Playtest] Chart train marker live (issue #265)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var TN = load("res://scripts/world/train_network.gd")
+	var WG = load("res://scripts/world/world_gen.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var saved_tstate: Dictionary = (DungeonScript.get(
+		"train_state") as Dictionary).duplicate(true)
+	var saved_departed: int = DungeonScript.get(
+		"train_local_departed_msec")
+	# (b) Source: the poll's redraw is travelling-gated
+	# and never fires over the plotting state.
+	var chart_src := FileAccess.get_file_as_string(
+		"res://scripts/ui/train_chart.gd")
+	var proc_body := _bughunt_body(chart_src, "_process")
+	_assert(proc_body.contains("_moving()")
+			and proc_body.contains("not _pending")
+			and proc_body.contains("queue_redraw()"),
+		"265(b): the chart poll re-draws while travelling, "
+		+ "gated on the moving state and the published "
+		+ "record")
+	# The live position the draw consumes: stage the
+	# ring and a moving state; the model's leg fraction
+	# tracks the elapsed clock.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	DungeonScript.set("act2_context", "world")
+	var home_b: Dictionary = DungeonScript.home_building()
+	var hc := Vector2((home_b["origin"] as Vector3).x,
+		(home_b["origin"] as Vector3).z)
+	var hs := Vector2((home_b["doorstep"] as Vector3).x,
+		(home_b["doorstep"] as Vector3).z)
+	var ring: Array = TN.initial_ring(WG.WORLD_SEED, hc)
+	DungeonScript.set("act2_train_cities", ring)
+	var st: Dictionary = TN.initial_state()
+	st["status"] = "moving"
+	st["at"] = "home"
+	st["path"] = ["home", "0,2"]
+	st["course"] = ["home", "0,2"]
+	DungeonScript.set("train_state", st)
+	var m1: Dictionary = TN.chart_model(WG.WORLD_SEED,
+		ring, hc, hs, st, 5000)
+	var m2: Dictionary = TN.chart_model(WG.WORLD_SEED,
+		ring, hc, hs, st, 20000)
+	var tr1: Dictionary = m1["train"]
+	var tr2: Dictionary = m2["train"]
+	_assert(String(tr1.get("mode", "")) == "leg"
+			and String(tr1.get("a", "")) == "home"
+			and String(tr1.get("b", "")) == "0,2",
+		"265: the moving model places the marker on the "
+		+ "home -> 0,2 leg")
+	_assert(float(tr2.get("t", 0.0))
+			> float(tr1.get("t", 0.0)) + 0.05,
+		"265: the leg fraction advances with the elapsed "
+		+ "clock (the position _draw re-reads each poll)")
+	# Idle: the marker is at a node, no fraction.
+	var st_idle: Dictionary = TN.initial_state()
+	st_idle["at"] = "0,2"
+	var m3: Dictionary = TN.chart_model(WG.WORLD_SEED,
+		ring, hc, hs, st_idle, 20000)
+	_assert(String((m3["train"] as Dictionary).get(
+			"mode", "")) == "at",
+		"265: the idle model keeps the marker at its node")
+	# Cleanup.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("train_state", saved_tstate)
+	DungeonScript.set("train_local_departed_msec",
+		saved_departed)
+	print("[Playtest] Chart train marker live (issue #265) done.")
 
 
 func _test_scatter_207() -> void:

@@ -343,6 +343,16 @@ func _process(delta: float) -> void:
 		_poll = 0.0
 		if _signature() != _sig:
 			_refresh(false)
+		# Issue #265: while the train is travelling,
+		# the marker is re-drawn on the poll cadence —
+		# _draw re-reads the live parametric position
+		# from the model, so a bare redraw moves the
+		# marker without a model rebuild or a chrome
+		# pass. An idle chart keeps its no-churn
+		# behavior: this fires only while moving, and
+		# never over the plotting state.
+		if _moving() and not _pending:
+			queue_redraw()
 
 
 func _refresh(refit: bool) -> void:
