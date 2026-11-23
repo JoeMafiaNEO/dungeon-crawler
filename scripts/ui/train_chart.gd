@@ -46,6 +46,11 @@ var _confirm_btn: Button
 var _summon_btn: Button
 var _clear_btn: Button
 var _refresh_btn: Button
+## Issue #264: the GPS plotting loading bar — visible
+## while the current set's threaded derivation is
+## unpublished; the chart never derives synchronously.
+var _plot_bar: ProgressBar
+var _pending := false
 ## Issue #255: the last Refresh press's outcome, held
 ## in the status line until the next chart action.
 var _refresh_note := ""
@@ -174,6 +179,20 @@ func _build_chrome() -> void:
 	_status_lbl.add_theme_color_override("font_color",
 		Color(0.85, 0.88, 0.95))
 	trow.add_child(_status_lbl)
+	# Issue #264: the plotting bar, directly under the
+	# title bar; hidden unless a derivation is pending.
+	_plot_bar = ProgressBar.new()
+	_plot_bar.name = "PlotBar"
+	_plot_bar.anchor_left = 0.0
+	_plot_bar.anchor_right = 1.0
+	_plot_bar.anchor_top = 0.0
+	_plot_bar.anchor_bottom = 0.0
+	_plot_bar.offset_left = 12.0
+	_plot_bar.offset_right = -12.0
+	_plot_bar.offset_top = 40.0
+	_plot_bar.offset_bottom = 54.0
+	_plot_bar.visible = false
+	add_child(_plot_bar)
 	var bottom := PanelContainer.new()
 	# Bottom-wide with EXPLICIT offsets: the offsets
 	# preset parks the bar below the viewport's edge
@@ -284,7 +303,41 @@ func _signature() -> String:
 		",".join(Dungeon.train_draft)]
 
 
+## Issue #264: is the current set's record published?
+## While it is not, the chart shows the plotting bar
+## instead of modeling — chart_model's moving-train
+## leg and every route_path read the bundle, and the
+## chart never derives it synchronously. The request
+## is kicked here so publication is on its way.
+func _net_ready() -> bool:
+	var hb: Dictionary = Dungeon.home_building()
+	if hb.is_empty():
+		return true
+	var hc := Vector2((hb["origin"] as Vector3).x,
+		(hb["origin"] as Vector3).z)
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	if TrainNetwork.bundle_ready(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, hc, hs):
+		return true
+	TrainNetwork.request_bundle(WorldGen.WORLD_SEED,
+		Dungeon.act2_train_cities, hc, hs)
+	return false
+
+
 func _process(delta: float) -> void:
+	# Issue #264: the chart pumps the derivation layer
+	# itself (it can be open where no WorldRoot _process
+	# runs — the train car's interior scene).
+	TrainNetwork.pump_bundle()
+	if _pending:
+		var pr := TrainNetwork.bundle_progress()
+		_plot_bar.max_value = maxi(int(pr[1]), 1)
+		_plot_bar.value = int(pr[0])
+		if _net_ready():
+			_pending = false
+			_plot_bar.visible = false
+			_refresh(not _fitted)
 	_poll += delta
 	if _poll >= 0.4:
 		_poll = 0.0
@@ -294,6 +347,21 @@ func _process(delta: float) -> void:
 
 func _refresh(refit: bool) -> void:
 	_sig = _signature()
+	# Issue #264: pending state — bar up, actions
+	# inert, no model work (the model and the estimate
+	# both read the unpublished bundle).
+	if not _net_ready():
+		_pending = true
+		_plot_bar.visible = true
+		_status_lbl.text = "Plotting network…"
+		_estimate_lbl.text = ""
+		_confirm_btn.disabled = true
+		_summon_btn.visible = false
+		_clear_btn.disabled = true
+		queue_redraw()
+		return
+	_pending = false
+	_plot_bar.visible = false
 	if refit or not _fitted:
 		_fit_default()
 		_fitted = size.x > 10.0
@@ -412,7 +480,7 @@ func _update_chrome() -> void:
 ## --- Actions ---
 
 func _on_clear() -> void:
-	if _moving():
+	if _moving() or _pending:
 		return
 	_refresh_note = ""
 	NetworkManager.train_publish_draft([])
@@ -420,7 +488,7 @@ func _on_clear() -> void:
 
 
 func _on_confirm() -> void:
-	if _moving():
+	if _moving() or _pending:
 		return
 	_refresh_note = ""
 	# Issue #244 T6: while stopped mid-course, Confirm
@@ -441,7 +509,7 @@ func _on_confirm() -> void:
 
 
 func _on_summon() -> void:
-	if _moving() or _face != "station":
+	if _moving() or _pending or _face != "station":
 		return
 	_refresh_note = ""
 	NetworkManager.train_summon(_station_key)
@@ -541,6 +609,10 @@ func _tap(screen: Vector2) -> void:
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size),
 		Color(0.03, 0.04, 0.07))
+	# Issue #264: while the derivation is pending the
+	# chart draws its chrome and the plotting bar only.
+	if _pending:
+		return
 	var m := _model()
 	var nodes: Dictionary = m["nodes"]
 	var font := get_theme_default_font()

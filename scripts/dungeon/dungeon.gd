@@ -517,6 +517,23 @@ static func act2_my_position() -> Array:
 ## the keys that were actually new. This is the one
 ## applier every discovery path runs: the entry init,
 ## the arrival expansion, and the discovery rpc.
+## Issue #264: a discovery event kicks the threaded
+## derivation for the set it just produced, at the
+## moment of discovery (in whatever scene the session
+## is in) — consumers then publish-wait on a derivation
+## that started when the set changed, not when they
+## first demanded the record. No-op without a home.
+static func _kick_train_derivation() -> void:
+	var home := home_building()
+	if home.is_empty() or act2_train_cities.is_empty():
+		return
+	var origin: Vector3 = home["origin"]
+	var doorstep: Vector3 = home["doorstep"]
+	TrainNetwork.request_bundle(RevealWorldGen.WORLD_SEED,
+		act2_train_cities, Vector2(origin.x, origin.z),
+		Vector2(doorstep.x, doorstep.z))
+
+
 static func apply_train_discovered(new_keys: Array) -> Array:
 	var added: Array = []
 	for e in new_keys:
@@ -529,6 +546,7 @@ static func apply_train_discovered(new_keys: Array) -> Array:
 		added.append(k)
 	if not added.is_empty():
 		act2_train_set_version += 1
+		_kick_train_derivation()
 	return added
 
 
@@ -557,6 +575,7 @@ static func train_init_discovery() -> bool:
 		RevealWorldGen.WORLD_SEED,
 		Vector2(origin.x, origin.z))
 	act2_train_set_version += 1
+	_kick_train_derivation()
 	return true
 
 
@@ -704,6 +723,7 @@ static func restore_act2_state(run: Dictionary) -> void:
 					and not act2_train_cities.has(str(e)):
 				act2_train_cities.append(str(e))
 	act2_train_set_version += 1
+	_kick_train_derivation()
 	act2_anchor_building = str(a.get("anchor_building", ""))
 	var ds: Array = a.get("anchor_doorstep", [])
 	act2_anchor_doorstep = Vector3(float(ds[0]), float(ds[1]),

@@ -245,11 +245,13 @@ static func _universe_near(seed: int, pt: Vector2,
 ## backbone that keeps every discovered set
 ## connected.
 static func _parent_of(seed: int, key: String,
-		home_center: Vector2) -> String:
+		home_center: Vector2, st: Dictionary = {}) -> String:
+	if st.is_empty():
+		st = _live_state()
 	var ck := "%d|%s|%f,%f" % [seed, key,
 		home_center.x, home_center.y]
-	if _parent_cache.has(ck):
-		return str(_parent_cache[ck])
+	if (st["parents"] as Dictionary).has(ck):
+		return str((st["parents"] as Dictionary)[ck])
 	var ctr := _universe_center(seed, key, home_center)
 	var dh := ctr.distance_to(home_center)
 	# Every candidate's center lies within dh of the
@@ -272,7 +274,7 @@ static func _parent_of(seed: int, key: String,
 			"gx": sc.x, "gz": sc.y})
 	_rank_cands(cands)
 	var parent := str(cands[0]["key"])
-	_parent_cache[ck] = parent
+	(st["parents"] as Dictionary)[ck] = parent
 	return parent
 
 
@@ -280,13 +282,15 @@ static func _parent_of(seed: int, key: String,
 ## grandparent, ..., home] (the city itself
 ## excluded).
 static func _chain(seed: int, key: String,
-		home_center: Vector2) -> Array:
+		home_center: Vector2, st: Dictionary = {}) -> Array:
+	if st.is_empty():
+		st = _live_state()
 	var out: Array = []
 	var cur := key
 	var guard := 0
 	while cur != HOME_KEY and guard < 256:
 		guard += 1
-		cur = _parent_of(seed, cur, home_center)
+		cur = _parent_of(seed, cur, home_center, st)
 		out.append(cur)
 	return out
 
@@ -303,15 +307,18 @@ static func _chain(seed: int, key: String,
 ## while 3 restores the ring's triangle and keeps
 ## every growth step monotone.)
 static func _links_of(seed: int, key: String,
-		home_center: Vector2) -> Array:
+		home_center: Vector2, st: Dictionary = {}) -> Array:
+	if st.is_empty():
+		st = _live_state()
 	var ck := "%d|%s|%f,%f" % [seed, key,
 		home_center.x, home_center.y]
-	if _link_cache.has(ck):
-		return (_link_cache[ck] as Array).duplicate()
+	if (st["links"] as Dictionary).has(ck):
+		return ((st["links"] as Dictionary)[ck]
+			as Array).duplicate()
 	var ctr := _universe_center(seed, key, home_center)
 	var out := _universe_near(seed, ctr, home_center,
 		3, key)
-	_link_cache[ck] = out.duplicate()
+	(st["links"] as Dictionary)[ck] = out.duplicate()
 	return out
 
 
@@ -322,7 +329,21 @@ static func _links_of(seed: int, key: String,
 ## B in node order, the list sorted by node order.
 static func derive_graph(seed: int, discovered: Array,
 		home_center: Vector2) -> Dictionary:
-	derive_count += 1  # Issue #258: observable derivation.
+	return _derive_graph_st(seed, discovered,
+		home_center, _live_state())
+
+
+static func _derive_graph_st(seed: int, discovered: Array,
+		home_center: Vector2, st: Dictionary = {}) -> Dictionary:
+	if st.is_empty():
+		st = _live_state()
+	# Issue #264: the counters observe MAIN-THREAD
+	# derivation only — a threaded derivation is
+	# observed via bundle_pending/bundle_progress, so
+	# a demand path can pin that it derived nothing.
+	if OS.get_thread_caller_id() \
+			== OS.get_main_thread_id():
+		derive_count += 1
 	# The node set: home plus every discovered key that
 	# resolves to a city, deduplicated.
 	var centers := {HOME_KEY: home_center}
@@ -358,7 +379,7 @@ static func derive_graph(seed: int, discovered: Array,
 	for key in order:
 		if key == HOME_KEY:
 			continue
-		var par := _parent_of(seed, key, home_center)
+		var par := _parent_of(seed, key, home_center, st)
 		if centers.has(par):
 			_add_edge(edge_set, rank, key, par,
 				centers)
@@ -366,9 +387,9 @@ static func derive_graph(seed: int, discovered: Array,
 			centers)
 	# Link edges (decision point 2): two discovered
 	# nodes link when either names the other among
-	# its 2 nearest universe nodes.
+	# its 3 nearest universe nodes.
 	for key in order:
-		for other in _links_of(seed, key, home_center):
+		for other in _links_of(seed, key, home_center, st):
 			if centers.has(other):
 				_add_edge(edge_set, rank, key,
 					str(other), centers)
@@ -669,7 +690,7 @@ static var _persist: Dictionary = {}
 ## of the smallest context that determines it:
 ##   * the GRAPH is built from pair-local rules over
 ##     the seed-fixed lattice (descent-parent chains +
-##     2-nearest lattice links), never from rankings
+##     3-nearest lattice links), never from rankings
 ##     inside the discovered set — a set ranking is
 ##     exactly what used to delete edges on growth
 ##     (the pre-#261 derivation lost 0,-2|0,2 and
@@ -696,6 +717,33 @@ static var _platforms_rec: Dictionary = {}
 static var _parent_cache: Dictionary = {}
 static var _link_cache: Dictionary = {}
 static var _record_dirty := false
+
+
+## Issue #264: the derivation's working state, passed
+## explicitly through the internal helpers. A state is
+## {entries, platforms, parents, links, failures} —
+## the record dictionaries and memo caches the pure
+## derivation reads and extends. The synchronous path
+## works on the LIVE state (the statics above, by
+## reference); a WorkerThreadPool derivation works on
+## a detached snapshot and publishes by merging its
+## state back on the main thread. The math never
+## branches on which state it holds, so the threaded
+## record is the synchronous record, byte for byte.
+static func _live_state() -> Dictionary:
+	return {"entries": _entries,
+		"platforms": _platforms_rec,
+		"parents": _parent_cache,
+		"links": _link_cache,
+		"failures": route_failures}
+
+
+## Every state-threaded helper takes `st` with a live
+## default (an empty dictionary resolves to _live_state
+## above): internal callers pass their state explicitly
+## — the worker passes its detached snapshot — while
+## outside callers (the suite's pins among them) keep
+## the pre-#264 call shape and read the live record.
 
 
 static func _sorted_keys(discovered: Array) -> Array:
@@ -819,6 +867,18 @@ static func _persist_save() -> void:
 	if not _record_dirty:
 		return
 	_record_dirty = false
+	_persist_write(_entries, _platforms_rec)
+
+
+## The record file's write, over explicit dictionaries
+## (issue #264: a threaded derivation writes the file
+## from its own snapshot-merged record, on the worker;
+## the synchronous path writes the live record). Every
+## write carries a monotone superset of the record as
+## its writer knew it, and publication merges before
+## any later write, so last-writer-wins loses nothing.
+static func _persist_write(entries: Dictionary,
+		platforms: Dictionary) -> void:
 	var d := DirAccess.open("user://")
 	if d != null and not d.dir_exists("world_cache"):
 		d.make_dir("world_cache")
@@ -826,8 +886,8 @@ static func _persist_save() -> void:
 	if f == null:
 		return
 	f.store_buffer(var_to_bytes(
-		{"v": DERIVATION_VERSION, "entries": _entries,
-		"platforms": _platforms_rec}))
+		{"v": DERIVATION_VERSION, "entries": entries,
+		"platforms": platforms}))
 
 
 ## One edge geometry entry (issue #261, decision
@@ -848,21 +908,22 @@ static func _persist_save() -> void:
 ## derived one — the invariant holds in the world
 ## as generated, and the entry never moves.
 static func _entry(seed: int, pa: Vector2, pb: Vector2,
-		home_center: Vector2) -> Dictionary:
+		home_center: Vector2, st: Dictionary = {}) -> Dictionary:
+	if st.is_empty():
+		st = _live_state()
 	var key := _pair_key(pa, pb)
-	if _entries.has(key):
-		return _entries[key]
-	_persist_ensure()
-	if _entries.has(key):
-		return _entries[key]
+	if (st["entries"] as Dictionary).has(key):
+		return (st["entries"] as Dictionary)[key]
 	var ca := pa
 	var cb := pb
 	if pb.x < pa.x or (pb.x == pa.x and pb.y < pa.y):
 		ca = pb
 		cb = pa
-	geometry_derivations += 1
+	if OS.get_thread_caller_id() \
+			== OS.get_main_thread_id():
+		geometry_derivations += 1
 	var probe := _route_compute(seed, [], home_center,
-		ca, cb, {}, true)
+		ca, cb, {}, true, st)
 	var deleted: Array = []
 	var pts: Array
 	if bool(probe["ok"]):
@@ -880,9 +941,9 @@ static func _entry(seed: int, pa: Vector2, pb: Vector2,
 				return x.x < y.x
 			return x.y < y.y)
 		pts = (_route_compute(seed, [], home_center,
-			ca, cb, del_map) as Dictionary)["pts"]
+			ca, cb, del_map, false, st) as Dictionary)["pts"]
 	var entry := {"pts": pts, "deleted": deleted}
-	_entries[key] = entry
+	(st["entries"] as Dictionary)[key] = entry
 	_record_dirty = true
 	return entry
 
@@ -901,21 +962,23 @@ static func _entry(seed: int, pa: Vector2, pb: Vector2,
 ## one leg; its geometry is the hops'.
 static func _edge_polyline(seed: int, graph: Dictionary,
 		pts: Dictionary, a: String, b: String,
-		home_center: Vector2) -> Array:
+		home_center: Vector2, st: Dictionary = {}) -> Array:
+	if st.is_empty():
+		st = _live_state()
 	var deep := ""
 	if b == HOME_KEY and a != HOME_KEY \
-			and _parent_of(seed, a, home_center) != HOME_KEY:
+			and _parent_of(seed, a, home_center, st) != HOME_KEY:
 		deep = a
 	elif a == HOME_KEY and b != HOME_KEY \
-			and _parent_of(seed, b, home_center) != HOME_KEY:
+			and _parent_of(seed, b, home_center, st) != HOME_KEY:
 		deep = b
 	if deep == "":
 		return (_entry(seed, pts[a], pts[b],
-			home_center)["pts"] as Array).duplicate()
+			home_center, st)["pts"] as Array).duplicate()
 	var chain_pts: Array = [pts[deep]]
 	var cur := deep
 	while cur != HOME_KEY:
-		cur = _parent_of(seed, cur, home_center)
+		cur = _parent_of(seed, cur, home_center, st)
 		if cur == HOME_KEY:
 			chain_pts.append(pts[HOME_KEY])
 		else:
@@ -926,7 +989,7 @@ static func _edge_polyline(seed: int, graph: Dictionary,
 	for i in chain_pts.size() - 1:
 		var hop: Array = (_entry(seed, chain_pts[i],
 			chain_pts[i + 1],
-			home_center)["pts"] as Array).duplicate()
+			home_center, st)["pts"] as Array).duplicate()
 		if chain_pts[i + 1].x < chain_pts[i].x \
 				or (chain_pts[i + 1].x == chain_pts[i].x \
 				and chain_pts[i + 1].y < chain_pts[i].y):
@@ -952,17 +1015,20 @@ static func _edge_polyline(seed: int, graph: Dictionary,
 ## search again against the field minus exactly
 ## those.
 static func _frame_pure(seed: int, key: String,
-		home_center: Vector2, home_station: Vector2) -> Dictionary:
+		home_center: Vector2, home_station: Vector2,
+		st: Dictionary = {}) -> Dictionary:
+	if st.is_empty():
+		st = _live_state()
 	var pt := _universe_point(seed, key, home_center,
 		home_station)
 	var toward: Vector2
 	if key == HOME_KEY:
-		var links := _links_of(seed, key, home_center)
+		var links := _links_of(seed, key, home_center, st)
 		toward = _universe_point(seed, str(links[0]),
 			home_center, home_station) if not links.is_empty() else pt + Vector2(0, 1)
 	else:
 		toward = _universe_point(seed,
-			_parent_of(seed, key, home_center),
+			_parent_of(seed, key, home_center, st),
 			home_center, home_station)
 	var dir := Vector2(0, 1)
 	if toward != pt:
@@ -978,17 +1044,19 @@ static func _frame_pure(seed: int, key: String,
 
 
 static func _station_platform(seed: int, key: String,
-		home_center: Vector2, home_station: Vector2) -> Dictionary:
+		home_center: Vector2, home_station: Vector2,
+		st: Dictionary = {}) -> Dictionary:
+	if st.is_empty():
+		st = _live_state()
 	var hpt := home_station_point(home_center, home_station)
 	var ck := "%d|%s|%f,%f" % [seed, key, hpt.x, hpt.y]
-	if _platforms_rec.has(ck):
-		return _platforms_rec[ck]
-	_persist_ensure()
-	if _platforms_rec.has(ck):
-		return _platforms_rec[ck]
-	geometry_derivations += 1
+	if (st["platforms"] as Dictionary).has(ck):
+		return (st["platforms"] as Dictionary)[ck]
+	if OS.get_thread_caller_id() \
+			== OS.get_main_thread_id():
+		geometry_derivations += 1
 	var f := _frame_pure(seed, key, home_center,
-		home_station)
+		home_station, st)
 	var res := _platform_search(seed, [], home_center,
 		f, {})
 	var deleted: Array = []
@@ -1013,7 +1081,7 @@ static func _station_platform(seed: int, key: String,
 			f, del_map)
 	var rec := {"center": res["center"],
 		"deleted": deleted}
-	_platforms_rec[ck] = rec
+	(st["platforms"] as Dictionary)[ck] = rec
 	_record_dirty = true
 	return rec
 
@@ -1027,6 +1095,36 @@ static func _bundle(seed: int, discovered: Array,
 		return _bundle_cache[sig]
 	_persist_ensure()
 	var g := _graph(seed, discovered, home_center)
+	var built := _bundle_compute(seed, discovered,
+		home_center, home_station, _live_state(),
+		[0, 0], g)
+	if _bundle_cache.size() >= BUNDLE_KEEP:
+		_bundle_cache.clear()
+	_bundle_cache[sig] = built
+	_persist_save()
+	return built
+
+
+## Issue #264: the bundle computation itself, over an
+## explicit derivation state (see _live_state). The
+## synchronous path above calls it with the live state
+## and its memoized graph; a WorkerThreadPool
+## derivation calls it with a detached snapshot state
+## and derives its own graph. Same inputs, same state
+## contents, same record — the threading changes WHEN
+## it computes, never WHAT. `progress` is a [done,
+## total] box the loops advance (edges + stations);
+## the live path passes a throwaway.
+static func _bundle_compute(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2,
+		st: Dictionary, progress: Array,
+		graph: Dictionary = {}) -> Dictionary:
+	var g := graph
+	if g.is_empty():
+		g = _derive_graph_st(seed, discovered,
+			home_center, st)
+	progress[1] = (g["edges"] as Array).size() \
+		+ (g["order"] as Array).size()
 	var pts := _points_for_graph(g, seed, home_center,
 		home_station)
 	var straight := _straight_segments(g, pts)
@@ -1036,7 +1134,8 @@ static func _bundle(seed: int, discovered: Array,
 		var a := str(e2[0])
 		var b := str(e2[1])
 		var poly := _edge_polyline(seed, g, pts, a, b,
-			home_center)
+			home_center, st)
+		progress[0] += 1
 		# Stored in the canonical direction the pair
 		# key names (routed_points' rule), so lookups
 		# reverse exactly when the caller asks the
@@ -1060,12 +1159,12 @@ static func _bundle(seed: int, discovered: Array,
 		var guard := 0
 		while cur != HOME_KEY and guard < 256:
 			guard += 1
-			var par := _parent_of(seed, cur, home_center)
+			var par := _parent_of(seed, cur, home_center, st)
 			var pe := _entry(seed,
 				_universe_point(seed, cur, home_center,
 					home_station),
 				_universe_point(seed, par, home_center,
-					home_station), home_center)
+					home_station), home_center, st)
 			for v in pe["deleted"]:
 				deleted[v] = true
 			cur = par
@@ -1075,19 +1174,20 @@ static func _bundle(seed: int, discovered: Array,
 		if a2 == HOME_KEY or b2 == HOME_KEY:
 			continue  # Skips: their hops are part 1.
 		if a2 != HOME_KEY and _parent_of(seed, a2,
-				home_center) == b2:
+				home_center, st) == b2:
 			continue  # A chain hop: part 1.
 		if b2 != HOME_KEY and _parent_of(seed, b2,
-				home_center) == a2:
+				home_center, st) == a2:
 			continue
 		var le := _entry(seed, pts[a2], pts[b2],
-			home_center)
+			home_center, st)
 		for v in le["deleted"]:
 			deleted[v] = true
 	# Part 2: every station's tier-B record.
 	for key in g["order"]:
 		var pr := _station_platform(seed, str(key),
-			home_center, home_station)
+			home_center, home_station, st)
+		progress[0] += 1
 		for v in pr["deleted"]:
 			deleted[v] = true
 	var del_list: Array = deleted.keys()
@@ -1095,16 +1195,171 @@ static func _bundle(seed: int, discovered: Array,
 		if x.x != y.x:
 			return x.x < y.x
 		return x.y < y.y)
-	bundle_builds += 1
-	var built := {"graph": g, "points": pts,
+	if OS.get_thread_caller_id() \
+			== OS.get_main_thread_id():
+		bundle_builds += 1
+	return {"graph": g, "points": pts,
 		"straight": straight, "routed": routed,
 		"segments": _routed_segments(g, pts, routed),
 		"deleted": del_list}
-	if _bundle_cache.size() >= BUNDLE_KEEP:
-		_bundle_cache.clear()
-	_bundle_cache[sig] = built
-	_persist_save()
-	return built
+
+
+## --- Issue #264: the threaded derivation layer.
+## Jesse's ruling: the heavy operations (the train
+## network derivation is his named example) run as
+## threaded tasks behind a loading UI; terrain chunk
+## streaming is explicitly out of scope. The layer is
+## demand-driven: a consumer calls request_bundle for
+## its set; the derivation runs on the WorkerThreadPool
+## over a detached snapshot of the record state; a
+## per-frame pump (WorldRoot / TrainChart /
+## NetworkManager _process) reaps the finished task
+## and PUBLISHES — merges the snapshot state into the
+## live record and caches the bundle — on the main
+## thread. No demand path ever waits for the task or
+## derives inline: while a signature is unpublished,
+## bundle_ready is false and each consumer follows its
+## documented pending behavior (see the build report's
+## per-consumer table). One derivation in flight at a
+## time; a newer demand is remembered and kicked when
+## the current one publishes (derivations are monotone
+## in the set, so an older in-flight result is never
+## wasted — its entries serve the newer set too).
+const Deriver := preload(
+	"res://scripts/world/train_deriver.gd")
+## The loading UI's stall discipline (the #256 boot
+## screen's pattern): past this, consumers proceed
+## without the record rather than trapping the player;
+## publication still lands whenever the task finishes.
+const ASYNC_STALL_MSEC := 30000
+
+static var _async_task := -1
+static var _async_sig := ""
+static var _async_args: Dictionary = {}
+static var _async_deriver: RefCounted = null
+static var _async_started_msec := 0
+static var _async_wanted: Dictionary = {}
+
+
+static func bundle_ready(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> bool:
+	return _bundle_cache.has(_bundle_sig(seed,
+		discovered, home_center, home_station))
+
+
+static func bundle_pending() -> bool:
+	return _async_task != -1
+
+
+static func bundle_stalled() -> bool:
+	return _async_task != -1 \
+		and Time.get_ticks_msec() - _async_started_msec \
+			> ASYNC_STALL_MSEC
+
+
+## [done, total] of the in-flight derivation, or
+## [0, 0] when none runs.
+static func bundle_progress() -> Array:
+	if _async_deriver == null:
+		return [0, 0]
+	return (_async_deriver.get("progress") as Array) \
+		.duplicate()
+
+
+static func request_bundle(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) -> void:
+	if bundle_ready(seed, discovered, home_center,
+			home_station):
+		return
+	_async_wanted = {"seed": seed,
+		"discovered": discovered.duplicate(),
+		"hc": home_center, "hs": home_station}
+	if _async_task != -1:
+		return
+	_persist_ensure()
+	var st := {"entries": _entries.duplicate(),
+		"platforms": _platforms_rec.duplicate(),
+		"parents": _parent_cache.duplicate(),
+		"links": _link_cache.duplicate(),
+		"failures": []}
+	var d: RefCounted = Deriver.new()
+	d.set("seed", seed)
+	d.set("discovered", discovered.duplicate())
+	d.set("home_center", home_center)
+	d.set("home_station", home_station)
+	d.set("st", st)
+	_async_deriver = d
+	_async_sig = _bundle_sig(seed, discovered,
+		home_center, home_station)
+	_async_args = {"seed": seed,
+		"discovered": discovered.duplicate(),
+		"hc": home_center, "hs": home_station}
+	_async_started_msec = Time.get_ticks_msec()
+	_async_task = WorkerThreadPool.add_task(
+		Callable(d, "work"), false,
+		"train network derivation")
+
+
+## Reap and publish a finished derivation (main thread
+## only). The reap follows the #253 discipline: query
+## is_task_completed FIRST and wait in the same breath;
+## the task ID is never touched again afterwards.
+static func pump_bundle() -> void:
+	if _async_task == -1:
+		_kick_wanted()
+		return
+	if not WorkerThreadPool.is_task_completed(_async_task):
+		return
+	WorkerThreadPool.wait_for_task_completion(_async_task)
+	_async_task = -1
+	var res: Dictionary = _async_deriver.get("result")
+	_async_deriver = null
+	if not res.is_empty():
+		var st: Dictionary = res["st"]
+		for k in (st["entries"] as Dictionary).keys():
+			_entries[k] = (st["entries"] as Dictionary)[k]
+		for k in (st["platforms"] as Dictionary).keys():
+			_platforms_rec[k] = \
+				(st["platforms"] as Dictionary)[k]
+		for k in (st["parents"] as Dictionary).keys():
+			_parent_cache[k] = \
+				(st["parents"] as Dictionary)[k]
+		for k in (st["links"] as Dictionary).keys():
+			_link_cache[k] = (st["links"] as Dictionary)[k]
+		for f in (st["failures"] as Array):
+			route_failures.append(f)
+		var bundle: Dictionary = res["bundle"]
+		if _bundle_cache.size() >= BUNDLE_KEEP:
+			_bundle_cache.clear()
+		_bundle_cache[_async_sig] = bundle
+		# Seed the graph memo for the published set.
+		if _graph_cache.size() >= BUNDLE_KEEP:
+			_graph_cache.clear()
+		_graph_cache[_graph_sig(int(_async_args["seed"]),
+			_async_args["discovered"],
+			_async_args["hc"])] = bundle["graph"]
+		_async_sig = ""
+		_async_args = {}
+		# A synchronous derivation may have dirtied the
+		# live record while the task ran; its corrective
+		# save carries the merged record.
+		_persist_save()
+	_kick_wanted()
+
+
+static func _kick_wanted() -> void:
+	if _async_wanted.is_empty() or _async_task != -1:
+		return
+	if bundle_ready(int(_async_wanted["seed"]),
+			_async_wanted["discovered"],
+			_async_wanted["hc"],
+			_async_wanted["hs"]):
+		_async_wanted = {}
+		return
+	var w := _async_wanted
+	_async_wanted = {}
+	request_bundle(int(w["seed"]), w["discovered"],
+		w["hc"], w["hs"])
 
 
 ## Issue #259: the set's deleted buildings, as the
@@ -1187,7 +1442,8 @@ static func _routed_points_canonical(seed: int,
 	# canonical direction from routed_points; the
 	# entry stores exactly that direction.
 	return (_entry(seed, a, b,
-		home_center)["pts"] as Array).duplicate()
+		home_center, _live_state())["pts"]
+		as Array).duplicate()
 
 
 ## Every graph edge as routed sub-segments — the track
@@ -1214,7 +1470,8 @@ static func routed_edge_segments(seed: int,
 static func _route_compute(seed: int, straight: Array,
 		home_center: Vector2, a: Vector2, b: Vector2,
 		deleted: Dictionary = {},
-		quiet: bool = false) -> Dictionary:
+		quiet: bool = false,
+		st: Dictionary = {}) -> Dictionary:
 	if a.distance_to(b) < 1.0:
 		return {"pts": [a, b], "ok": true}
 	var band := ROUTE_BAND
@@ -1243,7 +1500,14 @@ static func _route_compute(seed: int, straight: Array,
 			return {"pts": pulled, "ok": true}
 		band *= 2.0
 	if not quiet:
-		route_failures.append([a, b])
+		# Issue #264: failures land in the computing
+		# state's list — the live list on the synchronous
+		# path (st IS _live_state() there), the worker's
+		# own list on the threaded path, merged back at
+		# publication.
+		var fl: Array = st.get("failures",
+			route_failures)
+		fl.append([a, b])
 		push_error("[TrainNetwork] no routed path for edge ",
 			a, " -> ", b, "; straight segment kept")
 	return {"pts": [a, b], "ok": false}
@@ -1975,7 +2239,7 @@ static func station_frame(seed: int, discovered: Array,
 	# never move when the set grows. The discovered
 	# argument is kept for signature compatibility.
 	return _frame_pure(seed, key, home_center,
-		home_station)
+		home_station, _live_state())
 
 
 static func _frame_for(g: Dictionary, pts: Dictionary,
@@ -2023,8 +2287,9 @@ static func platform_center(seed: int, discovered: Array,
 	# record — a pure function of (seed, the station),
 	# frozen at first derivation. The discovered
 	# argument is kept for signature compatibility.
+	_persist_ensure()
 	return _station_platform(seed, key, home_center,
-		home_station)["center"]
+		home_station, _live_state())["center"]
 
 
 ## The platform search (issue #246 fix 2's candidate

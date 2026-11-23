@@ -52,6 +52,11 @@ var _spawn_point := Vector3.ZERO
 var _track_applied: Array = []
 var _track_home_center := Vector2.ZERO
 var _track_home_station := Vector2.ZERO
+## Issue #264: the train-network loading element —
+## shown while the current set's threaded derivation
+## is unpublished (world entry, discovery events).
+var _net_layer: CanvasLayer = null
+var _net_bar: ProgressBar = null
 var _presence := {} # peer_id -> Player (remote world peers)
 var _clock_t := 0.0
 var _sync_t := 0.0
@@ -79,6 +84,7 @@ func _ready() -> void:
 	_build_environment()
 	_streamer = get_node_or_null("WorldStreamer")
 	_build_fade()
+	_build_net_loading()
 	# Issue #241: the entry arm runs HERE — after the
 	# group registration above (the act2_record funnel's
 	# sampling gate; before it, the funnel samples
@@ -371,9 +377,15 @@ func _begin() -> void:
 		var hs1 := Vector2((hb1["doorstep"] as Vector3).x,
 			(hb1["doorstep"] as Vector3).z)
 		var sp1 := Vector2(wp.x, wp.z)
-		var fixed1 := TrainNetwork.clear_spawn_point(
-			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
-			hc1, hs1, sp1)
+		# Issue #264: the backstop reads the set's
+		# bundle; while the threaded derivation is
+		# unpublished the raw walk-out point stands
+		# (it is the train's own trackside position).
+		var fixed1 := sp1
+		if _net_ready():
+			fixed1 = TrainNetwork.clear_spawn_point(
+				WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities, hc1, hs1, sp1)
 		_spawn_point = Vector3(fixed1.x,
 			WorldGen.height_at(WorldGen.WORLD_SEED,
 				fixed1.x, fixed1.y) + 0.55, fixed1.y)
@@ -393,9 +405,14 @@ func _begin() -> void:
 		var hs3 := Vector2((hb3["doorstep"] as Vector3).x,
 			(hb3["doorstep"] as Vector3).z)
 		var sp3 := Vector2(wp3.x, wp3.z)
-		var fixed3 := TrainNetwork.clear_spawn_point(
-			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
-			hc3, hs3, sp3)
+		# Issue #264: as the walk-out branch — the raw
+		# landing point stands while the set's record
+		# is unpublished.
+		var fixed3 := sp3
+		if _net_ready():
+			fixed3 = TrainNetwork.clear_spawn_point(
+				WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities, hc3, hs3, sp3)
 		_spawn_point = Vector3(fixed3.x,
 			WorldGen.height_at(WorldGen.WORLD_SEED,
 				fixed3.x, fixed3.y) + 0.55, fixed3.y)
@@ -421,9 +438,17 @@ func _begin() -> void:
 		# if the point still sits inside a footprint's
 		# margin, step to the first clear point nearby.
 		var sp2 := Vector2(_spawn_point.x, _spawn_point.z)
-		var fixed2 := TrainNetwork.clear_spawn_point(
-			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
-			hc2, hs2, sp2)
+		# Issue #264: the platform point above is the
+		# station's own record (served per-station);
+		# the backstop reads the set's bundle, so it
+		# runs only once that record is published —
+		# the platform validates by construction in
+		# the meantime.
+		var fixed2 := sp2
+		if _net_ready():
+			fixed2 = TrainNetwork.clear_spawn_point(
+				WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities, hc2, hs2, sp2)
 		if fixed2 != sp2:
 			_spawn_point = Vector3(fixed2.x,
 				WorldGen.height_at(WorldGen.WORLD_SEED,
@@ -488,8 +513,15 @@ func _setup_streamer() -> void:
 		var hd: Vector3 = home["doorstep"]
 		_track_home_center = Vector2(ho.x, ho.z)
 		_track_home_station = Vector2(hd.x, hd.z)
-		_track_applied = Dungeon.act2_train_cities.duplicate()
-		_streamer.call("set_track_network",
+		# Issue #264: the network derivation is a
+		# threaded task now — kick it and let the
+		# _process publish hook hand the set to the
+		# streamer when the record lands. Until then
+		# the streamer dresses a trackless world
+		# (its initial state); _track_applied stays
+		# empty, which is what the hook compares.
+		_track_applied = []
+		TrainNetwork.request_bundle(WorldGen.WORLD_SEED,
 			Dungeon.act2_train_cities,
 			_track_home_center, _track_home_station)
 	_streamer.call("set_target_position", _spawn_point)
@@ -983,17 +1015,53 @@ func _process(delta: float) -> void:
 		_clock_t = 0.0
 		_apply_clock()
 	_update_consist()
-	# Issue #244 T5: the discovered set grew mid-session
-	# (the arrival beat's expansion, applied locally or
-	# via rpc_train_discovered) — hand the streamer the
-	# new set; it re-dresses the built chunks the new
-	# network changes.
+	# Issue #264: reap and publish any finished network
+	# derivation, then apply the CURRENT set to the
+	# streamer once its record is published. Issue
+	# #244 T5's set-growth case (the arrival beat's
+	# expansion, applied locally or via
+	# rpc_train_discovered) flows through the same
+	# hook: the grown set kicks a derivation, the
+	# loading element shows while it runs, and the
+	# streamer re-dresses on publication — the
+	# published network it already shows never moves
+	# in the meantime (derivations are monotone).
+	TrainNetwork.pump_bundle()
 	if _streamer != null \
 			and Dungeon.act2_train_cities != _track_applied:
-		_track_applied = Dungeon.act2_train_cities.duplicate()
-		_streamer.call("set_track_network",
-			Dungeon.act2_train_cities,
-			_track_home_center, _track_home_station)
+		if TrainNetwork.bundle_ready(WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities,
+				_track_home_center, _track_home_station):
+			_track_applied = \
+				Dungeon.act2_train_cities.duplicate()
+			_streamer.call("set_track_network",
+				Dungeon.act2_train_cities,
+				_track_home_center, _track_home_station)
+			if _consist == null:
+				_build_consist()
+		else:
+			TrainNetwork.request_bundle(
+				WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities,
+				_track_home_center, _track_home_station)
+	# The loading element: visible while the current
+	# set's record is unpublished and the derivation
+	# has not stalled (past the stall limit the world
+	# proceeds without it; publication still applies
+	# whenever it lands).
+	if _net_layer != null:
+		var show := _track_home_center != Vector2.ZERO \
+			and not Dungeon.act2_train_cities.is_empty() \
+			and not TrainNetwork.bundle_ready(
+				WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities,
+				_track_home_center, _track_home_station) \
+			and not TrainNetwork.bundle_stalled()
+		_net_layer.visible = show
+		if show:
+			var pr := TrainNetwork.bundle_progress()
+			_net_bar.max_value = maxi(int(pr[1]), 1)
+			_net_bar.value = int(pr[0])
 	# The ready-gate.
 	if _started and not _gate_open:
 		if _entry_ring_ready() or Time.get_ticks_msec() \
@@ -1058,6 +1126,17 @@ func _build_consist() -> void:
 		(hb["origin"] as Vector3).z)
 	_train_hs = Vector2((hb["doorstep"] as Vector3).x,
 		(hb["doorstep"] as Vector3).z)
+	# Issue #264: the consist template reads the
+	# set's bundle; while the threaded derivation is
+	# unpublished there is no consist yet — the
+	# _process publish hook builds it on publication.
+	if not TrainNetwork.bundle_ready(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, _train_hc,
+			_train_hs):
+		TrainNetwork.request_bundle(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, _train_hc,
+			_train_hs)
+		return
 	var boxes := TrainNetwork.consist_boxes(WorldGen.WORLD_SEED,
 		Dungeon.act2_train_cities, _train_hc, _train_hs)
 	if boxes.is_empty():
@@ -1115,8 +1194,16 @@ func _update_consist() -> void:
 	if st.is_empty():
 		_consist.visible = false
 		return
+	# Issue #264: position reads the last PUBLISHED
+	# set's bundle — while a grown set's derivation is
+	# in flight the consist keeps the published network
+	# (an idle train's station point is identical in
+	# both; a moving train's set cannot grow mid-leg).
+	var pos_set: Array = _track_applied \
+		if not _track_applied.is_empty() \
+		else Dungeon.act2_train_cities
 	var pos := TrainNetwork.train_position(WorldGen.WORLD_SEED,
-		Dungeon.act2_train_cities, _train_hc, _train_hs, st,
+		pos_set, _train_hc, _train_hs, st,
 		NetworkManager.train_local_elapsed_msec())
 	_consist.visible = true
 	_consist.position = pos["pos"]
@@ -1146,6 +1233,63 @@ func _build_fade() -> void:
 	_fade.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_fade)
+
+
+## Issue #264: the train-network loading element. A
+## small bottom-center panel with a progress bar,
+## visible only while the current discovered set's
+## threaded derivation is unpublished and unstalled;
+## it never takes input and never blocks the player —
+## past the stall limit it hides and the world simply
+## carries on without tracks until publication lands.
+func _build_net_loading() -> void:
+	_net_layer = CanvasLayer.new()
+	_net_layer.name = "NetLoading"
+	_net_layer.layer = 70
+	add_child(_net_layer)
+	var panel := PanelContainer.new()
+	panel.name = "NetPanel"
+	panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	panel.position = Vector2(-170, -86)
+	panel.size = Vector2(340, 64)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_net_layer.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(vb)
+	var lbl := Label.new()
+	lbl.text = "Plotting train network…"
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(lbl)
+	_net_bar = ProgressBar.new()
+	_net_bar.name = "NetBar"
+	_net_bar.custom_minimum_size = Vector2(300, 14)
+	_net_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_net_bar)
+	_net_layer.visible = false
+
+
+## Issue #264: is the CURRENT discovered set's record
+## published? Consumers that would otherwise demand
+## the bundle synchronously consult this first; while
+## it is false they follow their pending behavior and
+## the derivation is kicked (request_bundle is
+## idempotent) so publication is on its way.
+func _net_ready() -> bool:
+	var home := Dungeon.home_building()
+	if home.is_empty():
+		return true
+	var hc := Vector2((home["origin"] as Vector3).x,
+		(home["origin"] as Vector3).z)
+	var hs := Vector2((home["doorstep"] as Vector3).x,
+		(home["doorstep"] as Vector3).z)
+	if TrainNetwork.bundle_ready(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, hc, hs):
+		return true
+	TrainNetwork.request_bundle(WorldGen.WORLD_SEED,
+		Dungeon.act2_train_cities, hc, hs)
+	return false
 
 
 func _build_environment() -> void:

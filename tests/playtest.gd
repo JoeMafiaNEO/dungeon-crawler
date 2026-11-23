@@ -123,6 +123,7 @@ func _run() -> void:
 	_test_train_bundle_258()
 	_test_train_clearance_259()
 	_test_additive_tracks_261()
+	_test_threaded_bundle_264()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -8143,6 +8144,25 @@ func _test_chart_refresh_255() -> void:
 		"255(d): the chart's chrome carries a Refresh button")
 	if rbtn != null:
 		rbtn.emit_signal("pressed")
+	# Issue #264 amendment: the rescan's growth kicked
+	# a threaded derivation at the discovery seam, and
+	# the chart holds its plotting state until the
+	# record publishes. Drive the pump the frame loop
+	# would run, then re-run the chart's refresh so the
+	# chrome asserts below read the published state.
+	if TN.has_method("bundle_ready"):
+		var door255 := Vector2(
+			(home_b["doorstep"] as Vector3).x,
+			(home_b["doorstep"] as Vector3).z)
+		var t255 := Time.get_ticks_msec()
+		while not bool(TN.call("bundle_ready",
+				WG.WORLD_SEED, DungeonScript.get(
+					"act2_train_cities"), center,
+				door255)) \
+				and Time.get_ticks_msec() - t255 < 300000:
+			TN.call("pump_bundle")
+			OS.delay_msec(2)
+		chart.call("_refresh", false)
 	var set_d: Array = (DungeonScript.get(
 		"act2_train_cities") as Array).duplicate()
 	set_d.sort()
@@ -8163,14 +8183,25 @@ func _test_chart_refresh_255() -> void:
 	# in this live world, the watcher hands the grown
 	# set to the streamer (_track_applied catches up).
 	DungeonScript.set("act2_train_cities", ["0,-2"])
-	w.call("_process", 0.016)
+	# Issue #264 amendment: the watcher applies a set
+	# once its threaded record publishes (each world
+	# frame pumps the derivation), so these legs drive
+	# frames until the application lands instead of
+	# asserting after a single synchronous frame.
+	var drive_world = func(target: Array) -> void:
+		var tw := Time.get_ticks_msec()
+		while (w.get("_track_applied") as Array) != target \
+				and Time.get_ticks_msec() - tw < 300000:
+			w.call("_process", 0.016)
+			OS.delay_msec(2)
+	drive_world.call(["0,-2"])
 	_assert((w.get("_track_applied") as Array) == ["0,-2"],
 		"255(e): premise — the watcher tracked the "
 		+ "shrunken set")
 	var added_e: Array = rescan.call()
 	_assert(added_e == ["0,2", "-3,-3", "1,4"],
 		"255(e): the rescan grows the set in the live world")
-	w.call("_process", 0.016)
+	drive_world.call(["0,-2", "0,2", "-3,-3", "1,4"])
 	_assert((w.get("_track_applied") as Array)
 			== ["0,-2", "0,2", "-3,-3", "1,4"],
 		"255(e): the watcher handed the grown set on "
@@ -8197,6 +8228,20 @@ func _test_chart_refresh_255() -> void:
 	_assert(pair2 == pair1,
 		"255(f): an identical staged state scouts the "
 		+ "identical pair")
+	# Issue #264: reap any derivation the rescans above
+	# kicked, so no threaded task outlives the section.
+	if TN.has_method("pump_bundle"):
+		var door255f := Vector2(
+			(home_b["doorstep"] as Vector3).x,
+			(home_b["doorstep"] as Vector3).z)
+		TN.call("request_bundle", WG.WORLD_SEED,
+			DungeonScript.get("act2_train_cities"), center,
+			door255f)
+		var t255f := Time.get_ticks_msec()
+		while bool(TN.call("bundle_pending")) \
+				and Time.get_ticks_msec() - t255f < 300000:
+			TN.call("pump_bundle")
+			OS.delay_msec(2)
 	# Cleanup.
 	current_scene = holder
 	root.remove_child(w)
@@ -9317,6 +9362,220 @@ func _test_additive_tracks_261() -> void:
 	DungeonScript.set("home_anchor", saved_anchor)
 	clear_record.call()
 	print("[Playtest] Additive tracks (issue #261) done.")
+
+
+func _test_threaded_bundle_264() -> void:
+	print("[Playtest] Threaded train bundle (issue #264)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes = load("res://scripts/world/world_gen.gd")
+	var TrainRes = load("res://scripts/world/train_network.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var seed: int = WorldGenRes.WORLD_SEED
+	var a96: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.set("home_anchor", a96)
+	var hc := Vector2(float(a96["anchor_x"]),
+		float(a96["anchor_z"]))
+	var hb: Dictionary = DungeonScript.home_building()
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var ring: Array = TrainRes.initial_ring(seed, hc)
+	var grown: Array = ring.duplicate()
+	grown.append("7,0")
+	for k in TrainRes.expansion_ring(seed, "7,0"):
+		if not grown.has(k):
+			grown.append(k)
+	var scouts1: Array = grown.duplicate()
+	for extra in ["-3,-3", "1,4"]:
+		if not scouts1.has(extra):
+			scouts1.append(extra)
+	var scouts2: Array = scouts1.duplicate()
+	for extra in ["-5,2", "4,1"]:
+		if not scouts2.has(extra):
+			scouts2.append(extra)
+	var sets: Array = [ring, grown, scouts1, scouts2]
+	var cnt = func(name: String) -> int:
+		var v = TrainRes.get(name)
+		return int(v) if v is int else -1
+	var rec_size = func(name: String) -> int:
+		var v = TrainRes.get(name)
+		return (v as Dictionary).size() if v is Dictionary \
+			else -1
+	var clear_record = func() -> void:
+		TrainRes.set("_entries", {})
+		TrainRes.set("_platforms_rec", {})
+		TrainRes.set("_parent_cache", {})
+		TrainRes.set("_link_cache", {})
+		TrainRes.set("_graph_cache", {})
+		TrainRes.set("_bundle_cache", {})
+		TrainRes.set("_persist_loaded", false)
+		TrainRes.set("_persist", {})
+		TrainRes.set("_record_dirty", false)
+		var wcd := DirAccess.open("user://world_cache")
+		if wcd != null and wcd.file_exists(
+				"train_network.bin"):
+			wcd.remove("train_network.bin")
+	var ekey = func(a: String, b: String) -> String:
+		return a + "|" + b if a < b else b + "|" + a
+	var snapshot = func(s: Array) -> Dictionary:
+		var g: Dictionary = TrainRes.derive_graph(seed, s, hc)
+		var pts: Dictionary = TrainRes.station_points(
+			seed, s, hc, hs)
+		var edges := {}
+		for e in g["edges"]:
+			edges[ekey.call(str(e[0]), str(e[1]))] = \
+				TrainRes.routed_points(seed, s, hc, hs,
+					pts[e[0]], pts[e[1]])
+		var del_s: Array = []
+		for v in TrainRes.deleted_buildings(seed, s, hc, hs):
+			del_s.append("%0.1f,%0.1f" % [(v as Vector2).x,
+				(v as Vector2).y])
+		del_s.sort()
+		var segs: Array = TrainRes.edge_segments(seed, s,
+			hc, hs)
+		return {"edges": edges, "pts": pts, "del": del_s,
+			"nseg": segs.size(),
+			"ngraph": (g["edges"] as Array).size()}
+	# The async legs run only when the layer exists, so
+	# the pre-fix baseline fails them as plain asserts
+	# (a direct call to a missing function would abort
+	# the section — the hollow trap).
+	var has_async: bool = TrainRes.has_method(
+		"request_bundle") and TrainRes.has_method(
+		"bundle_ready") and TrainRes.has_method(
+		"pump_bundle") and TrainRes.has_method(
+		"bundle_pending")
+	_assert(has_async,
+		"264: the async layer exists (request/ready/pump/"
+		+ "pending on TrainNetwork)")
+	var refs: Array = []
+	if has_async:
+		# (a) Determinism + (b) non-blocking, per set:
+		# the threaded record is the synchronous record,
+		# and the request itself derives nothing here.
+		for i in sets.size():
+			var s: Array = sets[i]
+			clear_record.call()
+			var ref: Dictionary = snapshot.call(s)
+			refs.append(ref)
+			clear_record.call()
+			var dc0: int = cnt.call("derive_count")
+			var bb0: int = cnt.call("bundle_builds")
+			var gd0: int = cnt.call(
+				"geometry_derivations")
+			TrainRes.request_bundle(seed, s, hc, hs)
+			_assert(TrainRes.bundle_pending(),
+				"264(b): a derivation is in flight after "
+				+ "the request (set %d)" % i)
+			_assert(not TrainRes.bundle_ready(seed, s,
+					hc, hs),
+				"264(b): the record is not ready "
+				+ "synchronously (set %d)" % i)
+			_assert(cnt.call("derive_count") == dc0
+					and cnt.call("bundle_builds") == bb0
+					and cnt.call(
+						"geometry_derivations") == gd0,
+				"264(b): the request derived nothing on "
+				+ "the main thread (set %d)" % i)
+			var t0 := Time.get_ticks_msec()
+			while not TrainRes.bundle_ready(seed, s, hc,
+					hs) and Time.get_ticks_msec() - t0 \
+					< 600000:
+				TrainRes.pump_bundle()
+				OS.delay_msec(2)
+			_assert(TrainRes.bundle_ready(seed, s, hc, hs),
+				"264(a): the threaded derivation "
+				+ "published (set %d)" % i)
+			var got: Dictionary = snapshot.call(s)
+			_assert(got == ref,
+				"264(a): the threaded record is identical "
+				+ "to the synchronous record (set %d)" % i)
+		# (d) Persistence: the worker wrote the record
+		# file; it validates, and the next load serves
+		# the same network from the file alone.
+		var f := FileAccess.open(
+			"user://world_cache/train_network.bin",
+			FileAccess.READ)
+		_assert(f != null,
+			"264(d): the record file exists after the "
+			+ "threaded publication")
+		if f != null:
+			var payload = bytes_to_var(
+				f.get_buffer(f.get_length()))
+			f.close()
+			_assert(payload is Dictionary
+					and int((payload as Dictionary).get(
+						"v", -1)) == 3,
+				"264(d): the persisted record validates "
+				+ "at DERIVATION_VERSION 3")
+			if payload is Dictionary:
+				_assert(((payload as Dictionary)[
+						"entries"] as Dictionary).size()
+						== rec_size.call("_entries")
+					and ((payload as Dictionary)[
+						"platforms"] as Dictionary).size()
+						== rec_size.call("_platforms_rec"),
+					"264(d): the persisted record carries "
+					+ "the full published record")
+		TrainRes.set("_entries", {})
+		TrainRes.set("_platforms_rec", {})
+		TrainRes.set("_parent_cache", {})
+		TrainRes.set("_link_cache", {})
+		TrainRes.set("_graph_cache", {})
+		TrainRes.set("_bundle_cache", {})
+		TrainRes.set("_persist_loaded", false)
+		TrainRes.set("_persist", {})
+		TrainRes.set("_record_dirty", false)
+		var pts_disk: Dictionary = TrainRes.station_points(
+			seed, scouts2, hc, hs)
+		_assert(pts_disk == refs[3]["pts"],
+			"264(d): the next load serves the persisted "
+			+ "record identically")
+		_assert(not TrainRes.bundle_pending()
+				and not TrainRes.bundle_stalled(),
+			"264: no derivation in flight or stalled at "
+			+ "rest")
+		_assert(cnt.call("ASYNC_STALL_MSEC") == 30000,
+			"264: the stall watchdog carries the boot "
+			+ "screen's 30 s discipline")
+	# (c) The consumers' pending behavior, source-pinned
+	# (their runtime legs ride the Xvfb probe).
+	var wr_src := FileAccess.get_file_as_string(
+		"res://scripts/world/world_root.gd")
+	_assert(not _bughunt_body(wr_src,
+			"_setup_streamer").contains("set_track_network"),
+		"264(c): world entry no longer hands the set to "
+		+ "the streamer synchronously")
+	_assert(wr_src.contains("NetBar")
+			and wr_src.contains("request_bundle"),
+		"264(c): the world carries the network loading "
+		+ "element and kicks the derivation")
+	var chart_src := FileAccess.get_file_as_string(
+		"res://scripts/ui/train_chart.gd")
+	_assert(chart_src.contains("PlotBar")
+			and chart_src.contains("bundle_ready"),
+		"264(c): the chart gates on the published record "
+		+ "and carries the plotting bar")
+	var nm_src := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(nm_src.contains("_depart_owed")
+			and nm_src.contains("pump_bundle"),
+		"264(c): departures defer for an unpublished "
+		+ "record and retry on publication")
+	# The carried #261 nit, discharged: the link rule
+	# is 3 nearest, and the comment now says so.
+	var tn_src := FileAccess.get_file_as_string(
+		"res://scripts/world/train_network.gd")
+	_assert(_bughunt_body(tn_src,
+			"_derive_graph_st").contains("3 nearest")
+			and not tn_src.contains("2-nearest lattice"),
+		"264 nit: derive_graph's link comment states "
+		+ "the 3-nearest rule")
+	# Cleanup.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("home_anchor", saved_anchor)
+	clear_record.call()
+	print("[Playtest] Threaded train bundle (issue #264) done.")
 
 
 func _test_scatter_207() -> void:
@@ -35793,6 +36052,23 @@ func _test_train_expansion_244() -> void:
 	D.act2_train_cities = starter.duplicate()
 	NM5.call("train_ensure_state")
 	D.train_state["riders"] = {1: [0, 76561198000000000]}
+	# Issue #264 amendment: departures gate on the
+	# set's threaded record — the discovery seam kicks
+	# the derivation and the frame loop publishes it.
+	# This section runs without frames, so it drives
+	# the pump itself before each departure; the
+	# behavior asserted below is unchanged.
+	var publish264 = func() -> void:
+		if not TN.has_method("bundle_ready"):
+			return
+		TN.call("request_bundle", seed,
+			D.act2_train_cities, hc, hs)
+		var t := Time.get_ticks_msec()
+		while not bool(TN.call("bundle_ready", seed,
+				D.act2_train_cities, hc, hs)) \
+				and Time.get_ticks_msec() - t < 300000:
+			TN.call("pump_bundle")
+			OS.delay_msec(2)
 	# (A) Ride to "7,0"; the arrival beat grows the set
 	# by exactly that city's expansion ring.
 	var ring: Array = TN.expansion_ring(seed, "7,0")
@@ -35802,12 +36078,14 @@ func _test_train_expansion_244() -> void:
 			grown_expect.append(k)
 	_assert(grown_expect.size() > starter.size(),
 		"244T5(A): the fixture city's ring adds cities")
+	publish264.call()
 	_assert(bool(NM5.call("train_confirm_server", 1,
 			["home", "7,0"])),
 		"244T5(A): the ride out confirms")
 	# Amendment 2 (issue #248 C2): skip is gone — the
 	# arrival beat is driven directly.
 	NM5.call("train_arrive_server")
+	publish264.call()
 	_assert(String(D.train_state.get("at", "")) == "7,0",
 		"244T5(A): the train stands at the arrival city")
 	_assert((D.act2_train_cities as Array).size()
@@ -35848,6 +36126,7 @@ func _test_train_expansion_244() -> void:
 			== grown_expect.size() + 2,
 		"244T5(C): chart nodes == home + the discovered set")
 	# (E) Plot onward from the new node, at the server.
+	publish264.call()
 	_assert(bool(NM5.call("train_confirm_server", 1,
 			["7,0", new_key])),
 		"244T5(E): a course onward from the new node confirms")
@@ -36023,7 +36302,23 @@ func _test_train_multistop_244() -> void:
 	NM6.call("train_ensure_state")
 	D.train_state = TN.initial_state()
 	D.train_state["riders"] = {1: [0, 76561198000000000]}
+	# Issue #264 amendment: as in T5 — departures gate
+	# on the set's threaded record, so the section
+	# drives the publication pump before each departure
+	# (each arrival's expansion grows the set again).
+	var publish264 = func() -> void:
+		if not TN.has_method("bundle_ready"):
+			return
+		TN.call("request_bundle", seed,
+			D.act2_train_cities, hc, hs)
+		var t := Time.get_ticks_msec()
+		while not bool(TN.call("bundle_ready", seed,
+				D.act2_train_cities, hc, hs)) \
+				and Time.get_ticks_msec() - t < 300000:
+			TN.call("pump_bundle")
+			OS.delay_msec(2)
 	# (A) A three-stop course departs its FIRST leg only.
+	publish264.call()
 	_assert(bool(NM6.call("train_confirm_server", 1,
 			["home", "7,0", "9,1", "6,1"])),
 		"244T6(A): the multi-stop course confirms")
@@ -36078,6 +36373,7 @@ func _test_train_multistop_244() -> void:
 		"244T6(C): no timed auto-continue, however old the stop")
 	# (D) Continue: the next leg departs; arrival at 9,1
 	# stops again.
+	publish264.call()
 	_assert(bool(NM6.call("train_continue_server", 1)),
 		"244T6(D): a rider's confirm departs the next leg")
 	_assert(String((D.train_state["path"] as Array).back())
@@ -36091,6 +36387,7 @@ func _test_train_multistop_244() -> void:
 	# (E) The final leg settles idle, exactly as before.
 	# (Amendment 2: the chart's Confirm/Depart is the
 	# sole continuation from a stop now.)
+	publish264.call()
 	_assert(bool(NM6.call("train_continue_server", 1)),
 		"244T6(E): a rider's confirm departs the final leg")
 	_assert(String(D.train_state.get("status", ""))

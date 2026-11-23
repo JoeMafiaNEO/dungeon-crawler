@@ -174,6 +174,14 @@ func _process(delta: float) -> void:
 	# Issue #244 T3: the train's arrival beat is the
 	# server's, whichever scene the server's player is in.
 	_train_tick()
+	# Issue #264: reap and publish finished network
+	# derivations (this autoload is present in every
+	# scene), and retry a departure that deferred for
+	# an unpublished record.
+	TrainNetwork.pump_bundle()
+	if _depart_owed and multiplayer.is_server():
+		_depart_owed = false
+		_train_depart_leg()
 
 
 ## Connect the Steam lobby signals (idempotent).
@@ -651,6 +659,11 @@ const TRAIN_SCENE := "res://scenes/station/train_interior.tscn"
 ## The server's own departure tick (its clock only).
 var _train_departed_msec := 0
 
+## Issue #264: a leg departure deferred because the
+## set's threaded derivation was unpublished when it
+## was attempted; _process retries it on publication.
+var _depart_owed := false
+
 ## The server's arrival tick at an intermediate stop
 ## (issue #244 T6): the dwell clock starts here.
 var _train_stopped_msec := 0
@@ -731,10 +744,31 @@ func train_apply_state(state: Dictionary, elapsed_msec: int) -> void:
 			AudioManager.sfx("train_whistle", p0["pos"])
 	elif (now_status == "idle" or now_status == "stopped") \
 			and prev == "moving":
-		var p1 := TrainNetwork.train_position(
-			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
-			hc, hs, state, 0)
-		AudioManager.sfx("train_brake", p1["pos"])
+		# Issue #264: the arrival beat just grew the
+		# set (expansion), so its bundle may still be
+		# deriving. The brake sound's position falls
+		# back to the arrival station's pure frame
+		# point (bundle-free) while unpublished.
+		var brake_pos: Vector3
+		if TrainNetwork.bundle_ready(WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities, hc, hs):
+			var p1 := TrainNetwork.train_position(
+				WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities, hc, hs, state, 0)
+			brake_pos = p1["pos"]
+		else:
+			TrainNetwork.request_bundle(WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities, hc, hs)
+			var fr := TrainNetwork.station_frame(
+				WorldGen.WORLD_SEED,
+				Dungeon.act2_train_cities, hc, hs,
+				str(state.get("at", "home")))
+			var fp: Vector2 = fr["pt"]
+			brake_pos = Vector3(fp.x,
+				WorldGen.height_at(WorldGen.WORLD_SEED,
+					fp.x, fp.y) + TrainNetwork.RAIL_TOP,
+				fp.y)
+		AudioManager.sfx("train_brake", brake_pos)
 
 
 func _train_dest_label(state: Dictionary) -> String:
@@ -870,6 +904,19 @@ func _train_depart(course: Array, empty_run: bool) -> bool:
 		(hb["origin"] as Vector3).z)
 	var hs := Vector2((hb["doorstep"] as Vector3).x,
 		(hb["doorstep"] as Vector3).z)
+	# Issue #264: the course validation reads the
+	# set's bundle; while the threaded derivation is
+	# unpublished the confirm/summon refuses WITHOUT
+	# consuming anything (the draft stands, no course
+	# is locked) — the rider re-confirms once the
+	# chart's plotting bar clears. The leg departure
+	# below additionally defers-and-retries, for the
+	# continuation path that has no draft to protect.
+	if not TrainNetwork.bundle_ready(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, hc, hs):
+		TrainNetwork.request_bundle(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, hc, hs)
+		return false
 	var whole := TrainNetwork.route_path(WorldGen.WORLD_SEED,
 		Dungeon.act2_train_cities, hc, hs, course)
 	if float(whole["length"]) <= 0.0:
@@ -899,6 +946,20 @@ func _train_depart_leg() -> bool:
 		(hb["origin"] as Vector3).z)
 	var hs := Vector2((hb["doorstep"] as Vector3).x,
 		(hb["doorstep"] as Vector3).z)
+	# Issue #264: the leg's route reads the set's
+	# bundle; while the threaded derivation is
+	# unpublished the departure DEFERS — course and
+	# legs stand — and _process retries it on
+	# publication. (The chart's own pending state
+	# means a rider normally never reaches this gate;
+	# the train physically cannot leave before its
+	# track record exists.)
+	if not TrainNetwork.bundle_ready(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, hc, hs):
+		TrainNetwork.request_bundle(WorldGen.WORLD_SEED,
+			Dungeon.act2_train_cities, hc, hs)
+		_depart_owed = true
+		return false
 	var rp := TrainNetwork.route_path(WorldGen.WORLD_SEED,
 		Dungeon.act2_train_cities, hc, hs,
 		[str(st.get("at", "home")), str(legs[0])])
