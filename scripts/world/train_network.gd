@@ -142,6 +142,179 @@ static func expansion_ring(seed: int, arrived_key: String) -> Array:
 		EXPANSION_RADIUS_CHUNKS)
 
 
+## --- Issue #261: the seed-fixed node universe and
+## its canonical rankings. Every rule below ranks
+## candidates by (distance, gx, gz, key) — the road
+## network's sort — so every choice the construction
+## makes is settled by the math, never by iteration
+## order (Amendment 1: the addition rule is
+## definitive). Rankings run on settlement CENTERS
+## (home's is home_center): the structure layer then
+## depends only on (seed, home_center), exactly as
+## the pre-#261 graph did; station points enter at
+## the geometry layer, which has always taken the
+## doorstep.
+
+## A universe node's station point (home's is the
+## #259 derived point; a city's is its seed-pure
+## station point).
+static func _universe_point(seed: int, key: String,
+		home_center: Vector2, home_station: Vector2) -> Vector2:
+	if key == HOME_KEY:
+		return home_station_point(home_center, home_station)
+	var cell = key_cell(key)
+	if cell == null:
+		return Vector2.ZERO
+	var s := WorldGen.settlement_in_cell(seed,
+		(cell as Vector2i).x, (cell as Vector2i).y)
+	return WorldGen.station_point_for(seed, s["center"])
+
+
+## A universe node's center (home's is home_center;
+## a city's is its settlement center).
+static func _universe_center(seed: int, key: String,
+		home_center: Vector2) -> Vector2:
+	if key == HOME_KEY:
+		return home_center
+	var cell = key_cell(key)
+	if cell == null:
+		return Vector2.ZERO
+	var s := WorldGen.settlement_in_cell(seed,
+		(cell as Vector2i).x, (cell as Vector2i).y)
+	return s["center"]
+
+
+## The canonical candidate sort: (distance, gx, gz,
+## key) — shared by every ranking below.
+static func _rank_cands(cands: Array) -> void:
+	cands.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if float(a["d"]) != float(b["d"]):
+			return float(a["d"]) < float(b["d"])
+		if int(a["gx"]) != int(b["gx"]):
+			return int(a["gx"]) < int(b["gx"])
+		if int(a["gz"]) != int(b["gz"]):
+			return int(a["gz"]) < int(b["gz"])
+		return str(a["key"]) < str(b["key"]))
+
+
+## The `want` nearest universe nodes to a center,
+## ranked canonically. The scan radius grows until
+## it provably covers the `want`-th candidate (any
+## unscanned node is farther than the radius, and
+## ranking is distance-first), so the result is
+## exact, not sampled.
+static func _universe_near(seed: int, pt: Vector2,
+		home_center: Vector2, want: int,
+		exclude: String) -> Array:
+	var found: Array = []
+	var radius_chunks := 8
+	while radius_chunks <= 128:
+		var cands := {}
+		for k in cities_within(seed, pt, radius_chunks):
+			if str(k) != exclude:
+				cands[str(k)] = true
+		if exclude != HOME_KEY:
+			cands[HOME_KEY] = true
+		found = []
+		for k in cands:
+			var kc := _universe_center(seed, str(k),
+				home_center)
+			var sc: Vector2i = _sort_cell(seed, str(k),
+				home_center)
+			found.append({"key": str(k),
+				"d": pt.distance_to(kc),
+				"gx": sc.x, "gz": sc.y})
+		_rank_cands(found)
+		if found.size() >= want and float(radius_chunks) \
+				* WorldGen.CHUNK_SIZE \
+				> float(found[want - 1]["d"]):
+			break
+		radius_chunks *= 2
+	var out: Array = []
+	for i in mini(want, found.size()):
+		out.append(str(found[i]["key"]))
+	return out
+
+
+## A city's descent parent (issue #261, decision
+## point 1): among the universe nodes STRICTLY closer
+## to home than the city itself, the nearest to the
+## city, ranked canonically. Walking parents strictly
+## decreases the distance to home over a finite node
+## set, so every chain terminates at home — the
+## backbone that keeps every discovered set
+## connected.
+static func _parent_of(seed: int, key: String,
+		home_center: Vector2) -> String:
+	var ck := "%d|%s|%f,%f" % [seed, key,
+		home_center.x, home_center.y]
+	if _parent_cache.has(ck):
+		return str(_parent_cache[ck])
+	var ctr := _universe_center(seed, key, home_center)
+	var dh := ctr.distance_to(home_center)
+	# Every candidate's center lies within dh of the
+	# home center; one cell of slack covers the scan.
+	var scan := cities_within(seed, home_center,
+		int(ceil((dh + 1024.0) / WorldGen.CHUNK_SIZE)))
+	var hsc: Vector2i = _sort_cell(seed, HOME_KEY,
+		home_center)
+	var cands: Array = [{"key": HOME_KEY, "d": dh,
+		"gx": hsc.x, "gz": hsc.y}]
+	for k in scan:
+		var kc := _universe_center(seed, str(k),
+			home_center)
+		if kc.distance_to(home_center) >= dh - 0.001:
+			continue
+		var sc: Vector2i = _sort_cell(seed, str(k),
+			home_center)
+		cands.append({"key": str(k),
+			"d": ctr.distance_to(kc),
+			"gx": sc.x, "gz": sc.y})
+	_rank_cands(cands)
+	var parent := str(cands[0]["key"])
+	_parent_cache[ck] = parent
+	return parent
+
+
+## The chain from a city to home: [parent,
+## grandparent, ..., home] (the city itself
+## excluded).
+static func _chain(seed: int, key: String,
+		home_center: Vector2) -> Array:
+	var out: Array = []
+	var cur := key
+	var guard := 0
+	while cur != HOME_KEY and guard < 256:
+		guard += 1
+		cur = _parent_of(seed, cur, home_center)
+		out.append(cur)
+	return out
+
+
+## A node's 3 nearest universe nodes (issue #261,
+## decision point 2): the link candidates. An edge
+## exists between two discovered nodes when either
+## names the other in its 3 nearest — a pair-local
+## predicate over the seed-fixed universe, so growth
+## can only add these edges, never remove one. (3,
+## not the old graph's in-set 2: measured on the
+## real geography, 2 leaves the initial ring a tree
+## — the two ring cities lose their direct edge —
+## while 3 restores the ring's triangle and keeps
+## every growth step monotone.)
+static func _links_of(seed: int, key: String,
+		home_center: Vector2) -> Array:
+	var ck := "%d|%s|%f,%f" % [seed, key,
+		home_center.x, home_center.y]
+	if _link_cache.has(ck):
+		return (_link_cache[ck] as Array).duplicate()
+	var ctr := _universe_center(seed, key, home_center)
+	var out := _universe_near(seed, ctr, home_center,
+		3, key)
+	_link_cache[ck] = out.duplicate()
+	return out
+
+
 ## The derived graph for a discovered set:
 ##   {nodes: {key: center}, order: [keys in node order],
 ##    edges: [[keyA, keyB, length], ...] canonical}
@@ -169,76 +342,36 @@ static func derive_graph(seed: int, discovered: Array,
 	var rank := {}
 	for i in order.size():
 		rank[order[i]] = i
-	# Neighbour ranking per node: every other node by
-	# (distance, gx, gz, key) — the road_targets sort.
-	var cells := {}
-	for key in order:
-		cells[key] = _sort_cell(seed, key, home_center)
-	var nearest := {}
-	for key in order:
-		var cands: Array = []
-		for other in order:
-			if other == key:
-				continue
-			var oc: Vector2i = cells[other]
-			cands.append({"key": other,
-				"d": (centers[key] as Vector2).distance_to(
-					centers[other]),
-				"gx": oc.x, "gz": oc.y})
-		cands.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			if float(a["d"]) != float(b["d"]):
-				return float(a["d"]) < float(b["d"])
-			if int(a["gx"]) != int(b["gx"]):
-				return int(a["gx"]) < int(b["gx"])
-			if int(a["gz"]) != int(b["gz"]):
-				return int(a["gz"]) < int(b["gz"])
-			return str(a["key"]) < str(b["key"]))
-		nearest[key] = cands
-	# The 2-nearest edge set.
+	# Issue #261: the edge set is built ONLY from
+	# pair-local rules over the seed-fixed universe —
+	# no ranking inside the discovered set, so growth
+	# can add edges but never remove or alter one.
 	var edge_set := {}
+	# Backbone edges (decision point 3): every city
+	# carries exactly two — to its descent parent
+	# (when discovered) and a home skip (always:
+	# home is a node of every set). Both are
+	# pair-local, so the backbone is monotone; the
+	# home skip keeps every discovered set connected
+	# by construction, and the parent hops give the
+	# network its local grain as chains fill in.
 	for key in order:
-		var cands: Array = nearest[key]
-		for i in mini(2, cands.size()):
-			_add_edge(edge_set, rank, key,
-				str(cands[i]["key"]), centers)
-	# Connectivity completion (section 2.3): nodes in
-	# node order with union-find; a node stranded outside
-	# the main component (the first node's) gains its
-	# single nearest edge into that component; repeat
-	# until one component. Each added edge merges a
-	# component into the main one, so this terminates.
-	var parent := {}
+		if key == HOME_KEY:
+			continue
+		var par := _parent_of(seed, key, home_center)
+		if centers.has(par):
+			_add_edge(edge_set, rank, key, par,
+				centers)
+		_add_edge(edge_set, rank, key, HOME_KEY,
+			centers)
+	# Link edges (decision point 2): two discovered
+	# nodes link when either names the other among
+	# its 2 nearest universe nodes.
 	for key in order:
-		parent[key] = key
-	var find_root := func(x: String) -> String:
-		var r := x
-		while parent[r] != r:
-			r = parent[r]
-		return r
-	for e in edge_set.keys():
-		var pair: Array = e
-		var ra: String = find_root.call(pair[0])
-		var rb: String = find_root.call(pair[1])
-		if ra != rb:
-			parent[rb] = ra
-	var main_root: String = find_root.call(order[0])
-	var guard := 0
-	while guard < order.size():
-		guard += 1
-		var stranded := false
-		for key in order:
-			if find_root.call(key) == main_root:
-				continue
-			stranded = true
-			# The nearest node inside the main component.
-			for cand in nearest[key]:
-				if find_root.call(str(cand["key"])) == main_root:
-					_add_edge(edge_set, rank, key,
-						str(cand["key"]), centers)
-					parent[find_root.call(key)] = main_root
-					break
-		if not stranded:
-			break
+		for other in _links_of(seed, key, home_center):
+			if centers.has(other):
+				_add_edge(edge_set, rank, key,
+					str(other), centers)
 	var edges: Array = []
 	for e in edge_set.keys():
 		var pair: Array = e
@@ -500,16 +633,17 @@ static var route_failures: Array = []
 ## grows with the discovered set, which is exactly the
 ## reported travel-linked lag.
 ##
-## The bundle for a set: the derived graph, the station
-## points, the straight edge segments, and every edge's
-## routed polyline. Consumers read the bundle; the pure
-## functions below remain the one derivation, run once
-## per (seed, set, home) signature. Any change to the
-## derivation itself bumps DERIVATION_VERSION (the
-## CACHE_VERSION discipline), and persisted bundles
-## from an older version are rejected and re-derived,
-## never trusted.
-const DERIVATION_VERSION := 2
+## The bundle for a set: {graph, points, straight,
+## routed (pair key -> polyline), segments, deleted}.
+## Issue #261: the bundle ASSEMBLES from the record —
+## the graph derives as set algebra, and every
+## edge's polyline and every station's platform
+## comes from the per-entry record, deriving only
+## what the set is missing. The set's deletion list
+## is the union over every present edge's entry and
+## every station's tier-B record — monotone in the
+## set by construction.
+const DERIVATION_VERSION := 3
 const BUNDLE_FILE := "user://world_cache/train_network.bin"
 ## Signatures kept, in memory and on disk. The values
 ## are pure, so eviction is invisible: a dropped entry
@@ -527,6 +661,41 @@ static var _graph_cache := {}
 static var _bundle_cache := {}
 static var _persist_loaded := false
 static var _persist: Dictionary = {}
+
+## --- Issue #261: additive track generation. Jesse's
+## ruling: placed tracks never move, discoveries only
+## add — so the network is MONOTONIC in the discovered
+## set, and every piece of geometry is a pure function
+## of the smallest context that determines it:
+##   * the GRAPH is built from pair-local rules over
+##     the seed-fixed lattice (descent-parent chains +
+##     2-nearest lattice links), never from rankings
+##     inside the discovered set — a set ranking is
+##     exactly what used to delete edges on growth
+##     (the pre-#261 derivation lost 0,-2|0,2 and
+##     0,2|6,1 when the scout cities arrived);
+##   * an edge's routed polyline and its building
+##     deletions derive from (seed, its two endpoints)
+##     against the BASE world (the set-free field
+##     generation itself builds), so they are computed
+##     once, when the edge is created, and never move;
+##   * a station's platform derives from (seed, the
+##     station) the same way.
+## The persisted file is now a RECORD of these
+## per-edge / per-station entries (keyed canonically),
+## accumulated monotonically across sets and sessions;
+## a set's bundle ASSEMBLES from the record, deriving
+## only the entries it is missing — a discovery's
+## derivation cost is bounded by its additions.
+## geometry_derivations counts entry derivations (the
+## expensive, field-scanning kind); derive_graph
+## remains set algebra over the lattice.
+static var geometry_derivations := 0
+static var _entries: Dictionary = {}
+static var _platforms_rec: Dictionary = {}
+static var _parent_cache: Dictionary = {}
+static var _link_cache: Dictionary = {}
+static var _record_dirty := false
 
 
 static func _sorted_keys(discovered: Array) -> Array:
@@ -591,24 +760,38 @@ static func _straight_segments(graph: Dictionary,
 static func _routed_segments(graph: Dictionary,
 		pts: Dictionary, routed: Dictionary) -> Array:
 	var out: Array = []
+	# Issue #261: a home skip's polyline runs its
+	# chain's hops, which other edges also serve —
+	# the dressing list carries each distinct
+	# sub-segment once, so no bed is ever built
+	# twice in the same place.
+	var seen := {}
 	for e in graph["edges"]:
 		var poly: Array = routed.get(
 			_pair_key(pts[e[0]], pts[e[1]]), [])
 		for i in poly.size() - 1:
-			out.append([poly[i], poly[i + 1]])
+			var p: Vector2 = poly[i]
+			var q: Vector2 = poly[i + 1]
+			var k := _pair_key(p, q)
+			if seen.has(k):
+				continue
+			seen[k] = true
+			out.append([p, q])
 	return out
 
 
-## The persisted record, loaded once. Validation is
-## the WorldCache discipline: the file must parse, its
-## derivation version must match, and each entry is
-## re-validated against its key on adoption — any
-## mismatch is a miss (re-derive), never an error.
+## The persisted record, loaded once (issue #261:
+## per-entry, replacing #258's whole-set bundles).
+## Validation is the WorldCache discipline: the file
+## must parse and its derivation version must match;
+## entries are keyed canonically and each is a pure
+## function of its key, so an adopted entry needs no
+## further validation — a stale or corrupt record is
+## a miss (re-derive), never an error.
 static func _persist_ensure() -> void:
 	if _persist_loaded:
 		return
 	_persist_loaded = true
-	_persist = {}
 	if not FileAccess.file_exists(BUNDLE_FILE):
 		return
 	var f := FileAccess.open(BUNDLE_FILE, FileAccess.READ)
@@ -620,16 +803,22 @@ static func _persist_ensure() -> void:
 	if int((raw as Dictionary).get("v", -1)) \
 			!= DERIVATION_VERSION:
 		return
-	var b = (raw as Dictionary).get("bundles", {})
-	if b is Dictionary:
-		_persist = b
+	var e = (raw as Dictionary).get("entries", {})
+	if e is Dictionary:
+		_entries = e
+	var p = (raw as Dictionary).get("platforms", {})
+	if p is Dictionary:
+		_platforms_rec = p
 
 
-static func _persist_put(sig: String, entry: Dictionary) -> void:
-	_persist_ensure()
-	_persist[sig] = entry
-	while _persist.size() > BUNDLE_KEEP:
-		_persist.erase(_persist.keys()[0])
+## Persist the record after new derivations. The
+## record only ever grows (monotonic accumulation);
+## a rule change bumps DERIVATION_VERSION and the
+## old file is rejected whole, rebuilding once.
+static func _persist_save() -> void:
+	if not _record_dirty:
+		return
+	_record_dirty = false
 	var d := DirAccess.open("user://")
 	if d != null and not d.dir_exists("world_cache"):
 		d.make_dir("world_cache")
@@ -637,40 +826,198 @@ static func _persist_put(sig: String, entry: Dictionary) -> void:
 	if f == null:
 		return
 	f.store_buffer(var_to_bytes(
-		{"v": DERIVATION_VERSION, "bundles": _persist}))
+		{"v": DERIVATION_VERSION, "entries": _entries,
+		"platforms": _platforms_rec}))
 
 
-## A persisted entry is adoptable only when it names
-## exactly this seed and set and carries the bundle's
-## full shape.
-static func _persist_entry_valid(entry: Variant,
-		seed: int, discovered: Array) -> bool:
-	if not (entry is Dictionary):
-		return false
-	var e: Dictionary = entry
-	if int(e.get("seed", -1)) != seed:
-		return false
-	var s = e.get("set", [])
-	if not (s is Array) or s != _sorted_keys(discovered):
-		return false
-	if not (e.get("graph", null) is Dictionary):
-		return false
-	var g: Dictionary = e["graph"]
-	if not g.has("nodes") or not g.has("order") \
-			or not g.has("edges"):
-		return false
-	return e.get("points", null) is Dictionary \
-		and e.get("straight", null) is Array \
-		and e.get("routed", null) is Dictionary \
-		and e.get("deleted", null) is Array
+## One edge geometry entry (issue #261, decision
+## points 4-5): the routed polyline between two
+## station points and the building deletions the
+## edge's creation forces. Derived ONCE from (seed,
+## endpoints) against the BASE world — the set-free
+## field generate_chunk itself builds (empty
+## track-segment context), home plot suppressed as
+## always. The probe routes at TRACK_CLEAR; only
+## when no compliant route exists does the edge
+## delete (the footprints within TRACK_CLEAR of its
+## straight segment), and the final route runs
+## against the field minus exactly those. In the
+## generated world a SUPERSET of buildings is
+## deleted (every entry's deletions apply), so the
+## served clearance can only be better than the
+## derived one — the invariant holds in the world
+## as generated, and the entry never moves.
+static func _entry(seed: int, pa: Vector2, pb: Vector2,
+		home_center: Vector2) -> Dictionary:
+	var key := _pair_key(pa, pb)
+	if _entries.has(key):
+		return _entries[key]
+	_persist_ensure()
+	if _entries.has(key):
+		return _entries[key]
+	var ca := pa
+	var cb := pb
+	if pb.x < pa.x or (pb.x == pa.x and pb.y < pa.y):
+		ca = pb
+		cb = pa
+	geometry_derivations += 1
+	var probe := _route_compute(seed, [], home_center,
+		ca, cb, {}, true)
+	var deleted: Array = []
+	var pts: Array
+	if bool(probe["ok"]):
+		pts = probe["pts"]
+	else:
+		var rects := _route_field(seed, [], home_center,
+			ca, cb, 88.0)
+		var del_map := {}
+		for r in rects:
+			if _seg_rect_dist(ca, cb, [r]) < TRACK_CLEAR:
+				del_map[_rect_anchor(r)] = true
+		deleted = del_map.keys()
+		deleted.sort_custom(func(x: Vector2i, y: Vector2i) -> bool:
+			if x.x != y.x:
+				return x.x < y.x
+			return x.y < y.y)
+		pts = (_route_compute(seed, [], home_center,
+			ca, cb, del_map) as Dictionary)["pts"]
+	var entry := {"pts": pts, "deleted": deleted}
+	_entries[key] = entry
+	_record_dirty = true
+	return entry
 
 
-## The bundle for a set: {graph, points, straight,
-## routed (pair key -> polyline), segments, deleted
-## (issue #259's removed-building anchor lots)}. Cache
-## first, then the persisted record, then the one
-## derivation — after which the bundle is persisted
-## alongside the chunk cache for the next session.
+## A graph edge's served polyline (issue #261):
+## a parent hop or a link serves its OWN geometry
+## entry, derived once from (seed, its endpoints)
+## and never re-derived. A home skip serves the
+## concatenation of its chain's hop entries — the
+## train physically runs the chain home, so the
+## skip clears no corridor of its own (a direct
+## 6-10 km line would flatten a boulevard of
+## buildings through every city in between; the
+## chain's hops are local and mostly bend). The
+## skip exists as a graph edge so routes read as
+## one leg; its geometry is the hops'.
+static func _edge_polyline(seed: int, graph: Dictionary,
+		pts: Dictionary, a: String, b: String,
+		home_center: Vector2) -> Array:
+	var deep := ""
+	if b == HOME_KEY and a != HOME_KEY \
+			and _parent_of(seed, a, home_center) != HOME_KEY:
+		deep = a
+	elif a == HOME_KEY and b != HOME_KEY \
+			and _parent_of(seed, b, home_center) != HOME_KEY:
+		deep = b
+	if deep == "":
+		return (_entry(seed, pts[a], pts[b],
+			home_center)["pts"] as Array).duplicate()
+	var chain_pts: Array = [pts[deep]]
+	var cur := deep
+	while cur != HOME_KEY:
+		cur = _parent_of(seed, cur, home_center)
+		if cur == HOME_KEY:
+			chain_pts.append(pts[HOME_KEY])
+		else:
+			chain_pts.append(WorldGen.station_point_for(
+				seed, _universe_center(seed, cur,
+					home_center)))
+	var out: Array = []
+	for i in chain_pts.size() - 1:
+		var hop: Array = (_entry(seed, chain_pts[i],
+			chain_pts[i + 1],
+			home_center)["pts"] as Array).duplicate()
+		if chain_pts[i + 1].x < chain_pts[i].x \
+				or (chain_pts[i + 1].x == chain_pts[i].x \
+				and chain_pts[i + 1].y < chain_pts[i].y):
+			hop.reverse()
+		if out.is_empty():
+			out = hop
+		else:
+			hop.remove_at(0)
+			out.append_array(hop)
+	return out
+
+
+## A station's platform record (issue #261, decision
+## point 6): {center, deleted} as a pure function of
+## (seed, the station). The frame's direction is the
+## descent direction — toward the parent's station
+## point (home: toward its first link's station
+## point) — so the frame no longer depends on the
+## discovered set's graph. The search runs against
+## the base world; only when no candidate validates
+## does the station delete (tier B: the footprints
+## within STATION_CLEAR of its plain slab) and
+## search again against the field minus exactly
+## those.
+static func _frame_pure(seed: int, key: String,
+		home_center: Vector2, home_station: Vector2) -> Dictionary:
+	var pt := _universe_point(seed, key, home_center,
+		home_station)
+	var toward: Vector2
+	if key == HOME_KEY:
+		var links := _links_of(seed, key, home_center)
+		toward = _universe_point(seed, str(links[0]),
+			home_center, home_station) if not links.is_empty() else pt + Vector2(0, 1)
+	else:
+		toward = _universe_point(seed,
+			_parent_of(seed, key, home_center),
+			home_center, home_station)
+	var dir := Vector2(0, 1)
+	if toward != pt:
+		dir = (toward - pt).normalized()
+	var perp := Vector2(-dir.y, dir.x)
+	var center2 := _universe_center(seed, key,
+		home_center)
+	var side := 1.0
+	if (center2 - pt).dot(perp) < 0.0:
+		side = -1.0
+	return {"pt": pt, "dir": dir, "perp": perp,
+		"side": side}
+
+
+static func _station_platform(seed: int, key: String,
+		home_center: Vector2, home_station: Vector2) -> Dictionary:
+	var hpt := home_station_point(home_center, home_station)
+	var ck := "%d|%s|%f,%f" % [seed, key, hpt.x, hpt.y]
+	if _platforms_rec.has(ck):
+		return _platforms_rec[ck]
+	_persist_ensure()
+	if _platforms_rec.has(ck):
+		return _platforms_rec[ck]
+	geometry_derivations += 1
+	var f := _frame_pure(seed, key, home_center,
+		home_station)
+	var res := _platform_search(seed, [], home_center,
+		f, {})
+	var deleted: Array = []
+	if not bool(res["found"]):
+		var pt: Vector2 = f["pt"]
+		var dir: Vector2 = f["dir"]
+		var perp: Vector2 = f["perp"]
+		var plain: Vector2 = res["center"]
+		var rects := _route_field(seed, [], home_center,
+			pt - dir * 72.0, pt + dir * 72.0, 40.0)
+		var del_map := {}
+		for r in rects:
+			if _obb_aabb_dist(plain, dir, perp, 8.0,
+					1.8, r) < STATION_CLEAR:
+				del_map[_rect_anchor(r)] = true
+		deleted = del_map.keys()
+		deleted.sort_custom(func(x: Vector2i, y: Vector2i) -> bool:
+			if x.x != y.x:
+				return x.x < y.x
+			return x.y < y.y)
+		res = _platform_search(seed, [], home_center,
+			f, del_map)
+	var rec := {"center": res["center"],
+		"deleted": deleted}
+	_platforms_rec[ck] = rec
+	_record_dirty = true
+	return rec
+
+
 static func _bundle(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2) \
 		-> Dictionary:
@@ -679,62 +1026,84 @@ static func _bundle(seed: int, discovered: Array,
 	if _bundle_cache.has(sig):
 		return _bundle_cache[sig]
 	_persist_ensure()
-	if _persist.has(sig) and _persist_entry_valid(
-			_persist[sig], seed, discovered):
-		var e: Dictionary = _persist[sig]
-		var adopted := {"graph": e["graph"],
-			"points": e["points"],
-			"straight": e["straight"],
-			"routed": e["routed"],
-			"deleted": e["deleted"],
-			"segments": _routed_segments(e["graph"],
-				e["points"], e["routed"])}
-		_graph_cache[_graph_sig(seed, discovered,
-			home_center)] = e["graph"]
-		_bundle_cache[sig] = adopted
-		return adopted
 	var g := _graph(seed, discovered, home_center)
 	var pts := _points_for_graph(g, seed, home_center,
 		home_station)
 	var straight := _straight_segments(g, pts)
-	# Issue #259: the deletion derivation runs BEFORE
-	# the final routing — routing first (each edge is
-	# probed against the standing world), deletion
-	# only where no compliant route exists, then the
-	# served polylines are routed against the
-	# deletion-aware field.
-	var deleted := _derive_deleted(seed, g, pts, straight,
-		home_center)
-	var del_map := {}
-	for v in deleted:
-		del_map[v] = true
+	var deleted := {}
 	var routed := {}
 	for e2 in g["edges"]:
-		var pa: Vector2 = pts[e2[0]]
-		var pb: Vector2 = pts[e2[1]]
+		var a := str(e2[0])
+		var b := str(e2[1])
+		var poly := _edge_polyline(seed, g, pts, a, b,
+			home_center)
 		# Stored in the canonical direction the pair
 		# key names (routed_points' rule), so lookups
 		# reverse exactly when the caller asks the
 		# other way.
-		var ca := pa
-		var cb := pb
-		if pb.x < pa.x or (pb.x == pa.x and pb.y < pa.y):
-			ca = pb
-			cb = pa
-		routed[_pair_key(pa, pb)] = (_route_compute(seed,
-			straight, home_center, ca, cb, del_map) as Dictionary)["pts"]
+		if pts[b].x < pts[a].x or (pts[b].x == pts[a].x
+				and pts[b].y < pts[a].y):
+			poly.reverse()
+		routed[_pair_key(pts[a], pts[b])] = poly
+	# Deletion union, part 1: every hop entry on
+	# every discovered city's chain to home (the home
+	# skips run those hops, so their corridors clear
+	# whether or not the hop's far city is itself
+	# discovered), plus every link edge's own entry.
+	# Parent hops are chain hops and are counted by
+	# the walk. Monotone in the set because chains
+	# and links are.
+	for key in g["order"]:
+		if key == HOME_KEY:
+			continue
+		var cur := str(key)
+		var guard := 0
+		while cur != HOME_KEY and guard < 256:
+			guard += 1
+			var par := _parent_of(seed, cur, home_center)
+			var pe := _entry(seed,
+				_universe_point(seed, cur, home_center,
+					home_station),
+				_universe_point(seed, par, home_center,
+					home_station), home_center)
+			for v in pe["deleted"]:
+				deleted[v] = true
+			cur = par
+	for e2 in g["edges"]:
+		var a2 := str(e2[0])
+		var b2 := str(e2[1])
+		if a2 == HOME_KEY or b2 == HOME_KEY:
+			continue  # Skips: their hops are part 1.
+		if a2 != HOME_KEY and _parent_of(seed, a2,
+				home_center) == b2:
+			continue  # A chain hop: part 1.
+		if b2 != HOME_KEY and _parent_of(seed, b2,
+				home_center) == a2:
+			continue
+		var le := _entry(seed, pts[a2], pts[b2],
+			home_center)
+		for v in le["deleted"]:
+			deleted[v] = true
+	# Part 2: every station's tier-B record.
+	for key in g["order"]:
+		var pr := _station_platform(seed, str(key),
+			home_center, home_station)
+		for v in pr["deleted"]:
+			deleted[v] = true
+	var del_list: Array = deleted.keys()
+	del_list.sort_custom(func(x: Vector2i, y: Vector2i) -> bool:
+		if x.x != y.x:
+			return x.x < y.x
+		return x.y < y.y)
 	bundle_builds += 1
 	var built := {"graph": g, "points": pts,
 		"straight": straight, "routed": routed,
 		"segments": _routed_segments(g, pts, routed),
-		"deleted": deleted}
+		"deleted": del_list}
 	if _bundle_cache.size() >= BUNDLE_KEEP:
 		_bundle_cache.clear()
 	_bundle_cache[sig] = built
-	_persist_put(sig, {"seed": seed,
-		"set": _sorted_keys(discovered), "graph": g,
-		"points": pts, "straight": straight,
-		"routed": routed, "deleted": deleted})
+	_persist_save()
 	return built
 
 
@@ -756,70 +1125,6 @@ static func _deleted_map(seed: int, discovered: Array,
 	for v in _bundle(seed, discovered, home_center,
 			home_station)["deleted"]:
 		out[v] = true
-	return out
-
-
-## Issue #259: the deletion derivation — Jesse's
-## ruling relaxes #246's "never remove" for this
-## purpose only: clearance by routing first, deletion
-## where routing can't meet it. Two tiers, both pure
-## functions of (seed, graph, points):
-##   Tier A (tracks): every edge is probed against
-##   the standing world (no deletions). An edge with
-##   no compliant route contributes every building
-##   whose footprint comes within TRACK_CLEAR of its
-##   straight segment — after those are gone the
-##   straight segment itself clears by construction,
-##   so the final routing of that edge cannot fail.
-##   Tier B (stations): a station whose platform
-##   search finds no STATION_CLEAR candidate (against
-##   the world tier A leaves) contributes every
-##   building within STATION_CLEAR of its plain
-##   platform slab — after those are gone the plain
-##   slab itself validates.
-## Nothing else is ever deleted: a building outside
-## every failed corridor and every failed platform
-## stands. The result is sorted, so the list is
-## identical on every peer.
-static func _derive_deleted(seed: int, graph: Dictionary,
-		pts: Dictionary, straight: Array,
-		home_center: Vector2) -> Array:
-	var deleted := {}
-	for e in graph["edges"]:
-		var a: Vector2 = pts[e[0]]
-		var b: Vector2 = pts[e[1]]
-		var probe := _route_compute(seed, straight,
-			home_center, a, b, {}, true)
-		if bool(probe["ok"]):
-			continue
-		var rects := _route_field(seed, straight,
-			home_center, a, b, 88.0)
-		for r in rects:
-			if _seg_rect_dist(a, b, [r]) < TRACK_CLEAR:
-				deleted[_rect_anchor(r)] = true
-	for key in graph["order"]:
-		var f := _frame_for(graph, pts, str(key),
-			pts.get(HOME_KEY, Vector2.ZERO))
-		var res := _platform_search(seed, straight,
-			home_center, f, deleted)
-		if bool(res["found"]):
-			continue
-		var pt: Vector2 = f["pt"]
-		var dir: Vector2 = f["dir"]
-		var perp: Vector2 = f["perp"]
-		var plain: Vector2 = res["center"]
-		var rects := _route_field(seed, straight,
-			home_center, pt - dir * 72.0,
-			pt + dir * 72.0, 40.0, deleted)
-		for r in rects:
-			if _obb_aabb_dist(plain, dir, perp, 8.0, 1.8,
-					r) < STATION_CLEAR:
-				deleted[_rect_anchor(r)] = true
-	var out: Array = deleted.keys()
-	out.sort_custom(func(x: Vector2i, y: Vector2i) -> bool:
-		if x.x != y.x:
-			return x.x < y.x
-		return x.y < y.y)
 	return out
 
 
@@ -875,59 +1180,14 @@ static func _routed_points_canonical(seed: int,
 		discovered: Array, home_center: Vector2,
 		home_station: Vector2, a: Vector2,
 		b: Vector2) -> Array:
-	# Issue #258: the straight field comes from the
-	# cached graph (identical values; edge_segments
-	# itself is bundle-served and must not be re-entered
-	# from the bundle's own build path).
-	var g := _graph(seed, discovered, home_center)
-	var straight := _straight_segments(g,
-		_points_for_graph(g, seed, home_center,
-			home_station))
-	# Issue #259: the route also depends on the set's
-	# deletion derivation (the field is built under
-	# it). The bundle owns that derivation; this
-	# fallthrough path (non-edge pairs) reads it from
-	# there — the bundle's own build never comes
-	# through here, it routes via _route_compute
-	# directly.
-	var del_map := _deleted_map(seed, discovered,
-		home_center, home_station)
-	# The memo key names what the route actually depends
-	# on: this edge plus the straight segments that come
-	# within the widest possible field of it (they alone
-	# shape its obstacle field). A discovery wave on the
-	# far side of the world therefore does NOT invalidate
-	# this edge's bend — only a nearby change re-routes.
-	var near: Array = []
-	for seg in straight:
-		var p: Vector2 = seg[0]
-		var q: Vector2 = seg[1]
-		var d := 1.0e9
-		if Geometry2D.segment_intersects_segment(
-				a, b, p, q) != null:
-			d = 0.0
-		else:
-			d = minf(minf(
-				WorldGen._dist_to_segment(p, a, b),
-				WorldGen._dist_to_segment(q, a, b)), minf(
-				WorldGen._dist_to_segment(a, p, q),
-				WorldGen._dist_to_segment(b, p, q)))
-		if d <= 300.0:
-			near.append("%f,%f,%f,%f" % [p.x, p.y, q.x, q.y])
-	near.sort()
-	var del_keys: Array = []
-	for v in del_map.keys():
-		del_keys.append("%d,%d" % [(v as Vector2i).x,
-			(v as Vector2i).y])
-	del_keys.sort()
-	var key := "%d|%f,%f|%f,%f|%s|%s" % [seed, a.x, a.y,
-		b.x, b.y, ",".join(near), ",".join(del_keys)]
-	if _route_memo.has(key):
-		return (_route_memo[key] as Array).duplicate()
-	var out: Array = (_route_compute(seed, straight,
-		home_center, a, b, del_map) as Dictionary)["pts"]
-	_route_memo[key] = out.duplicate()
-	return out
+	# Issue #261: a non-edge pair's route IS its
+	# geometry entry — a pure function of (seed, the
+	# pair) against the base world, identical in
+	# every set and session. (a, b) arrive in
+	# canonical direction from routed_points; the
+	# entry stores exactly that direction.
+	return (_entry(seed, a, b,
+		home_center)["pts"] as Array).duplicate()
 
 
 ## Every graph edge as routed sub-segments — the track
@@ -1709,11 +1969,13 @@ static func duration_msec_for(length_m: float) -> int:
 static func station_frame(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		key: String) -> Dictionary:
-	var g := _graph(seed, discovered, home_center)
-	var pts: Dictionary = _bundle(seed, discovered,
-		home_center, home_station)["points"]
-	return _frame_for(g, pts, key, home_station_point(
-		home_center, home_station))
+	# Issue #261: the frame is the station's own pure
+	# frame (descent direction) — it no longer reads
+	# the discovered set's graph, so a platform can
+	# never move when the set grows. The discovered
+	# argument is kept for signature compatibility.
+	return _frame_pure(seed, key, home_center,
+		home_station)
 
 
 static func _frame_for(g: Dictionary, pts: Dictionary,
@@ -1757,14 +2019,12 @@ static func _frame_for(g: Dictionary, pts: Dictionary,
 static func platform_center(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		key: String) -> Vector2:
-	var f := station_frame(seed, discovered, home_center,
-		home_station, key)
-	var straight := edge_segments(seed, discovered,
-		home_center, home_station)
-	var res := _platform_search(seed, straight,
-		home_center, f, _deleted_map(seed, discovered,
-			home_center, home_station))
-	return res["center"]
+	# Issue #261: served from the station's own
+	# record — a pure function of (seed, the station),
+	# frozen at first derivation. The discovered
+	# argument is kept for signature compatibility.
+	return _station_platform(seed, key, home_center,
+		home_station)["center"]
 
 
 ## The platform search (issue #246 fix 2's candidate
@@ -1873,9 +2133,9 @@ static func _point_rect_dist(p: Vector2, r: Rect2) -> float:
 static func clear_spawn_point(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		p: Vector2) -> Vector2:
-	var straight := edge_segments(seed, discovered,
-		home_center, home_station)
-	var rects := _route_field(seed, straight, home_center,
+	# Issue #261: the field is the generated world —
+	# the base field minus the set's deletion union.
+	var rects := _route_field(seed, [], home_center,
 		p, p + Vector2(0.01, 0.0), 20.0,
 		_deleted_map(seed, discovered, home_center,
 			home_station))

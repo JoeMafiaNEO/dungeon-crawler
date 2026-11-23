@@ -192,6 +192,11 @@ var _track_points: Dictionary = {} ## node key -> station point
 ## generation applies them exactly like the straight
 ## segments (a live-set input, never cached).
 var _track_deleted: Array = []
+## Issue #261: the same list as a set — the building
+## stage filters the seed-pure payload's buildings
+## against it (the track layer's deletions are
+## applied at assembly, never baked into the data).
+var _track_deleted_set: Dictionary = {}
 
 var _track_mat: StandardMaterial3D = null
 
@@ -231,6 +236,7 @@ func set_track_network(discovered: Array,
 		_track_edges_routed = []
 		_track_points = {}
 		_track_deleted = []
+		_track_deleted_set = {}
 	else:
 		_track_points = TrainNetwork.station_points(
 			WorldGen.WORLD_SEED, track_discovered,
@@ -244,6 +250,9 @@ func set_track_network(discovered: Array,
 		_track_deleted = TrainNetwork.deleted_buildings(
 			WorldGen.WORLD_SEED, track_discovered,
 			home_center, home_station)
+		_track_deleted_set = {}
+		for v in _track_deleted:
+			_track_deleted_set[v] = true
 	# Issue #244 T3: the consist is no longer chunk dressing
 	# — it moves (WorldRoot owns the live consist node);
 	# track + stations stay baked here.
@@ -269,7 +278,23 @@ func _track_stage_inputs(cx: int, cz: int) -> Dictionary:
 		if rect.has_point(_track_points[key]):
 			stations.append(key)
 	stations.sort()
-	return {"segs": clipped, "stations": stations}
+	# Issue #261: the chunk's deletion subset — when a
+	# set change adds deletions inside an already-built
+	# chunk, its building stage must re-run (the
+	# deleted buildings' meshes come out; nothing else
+	# changes — deletions only ever grow).
+	var dels: Array = []
+	for v in _track_deleted:
+		var lot := v as Vector2i
+		if lot.x >= cx * 16 and lot.x < cx * 16 + 16 \
+				and lot.y >= cz * 16 and lot.y < cz * 16 + 16:
+			dels.append(lot)
+	dels.sort_custom(func(x: Vector2i, y: Vector2i) -> bool:
+		if x.x != y.x:
+			return x.x < y.x
+		return x.y < y.y)
+	return {"segs": clipped, "stations": stations,
+		"deleted": dels}
 
 
 ## The track stage's fresh state (the detail-job
@@ -300,39 +325,81 @@ func _redress_changed_chunks(old_inputs: Dictionary) -> void:
 		var data: RefCounted = rec["data"]
 		var now := _track_stage_inputs(data.cx, data.cz)
 		var was: Dictionary = old_inputs[k]
-		if now["segs"] == was["segs"] \
-				and now["stations"] == was["stations"]:
+		var track_changed: bool = now["segs"] != was["segs"] \
+			or now["stations"] != was["stations"]
+		var del_changed: bool = now["deleted"] != was["deleted"]
+		if not track_changed and not del_changed:
 			continue
 		var dj = rec.get("detail_job")
 		if dj == null and not bool(rec.get("detail_done",
 				false)):
 			continue  # Never detailed: reads the new cache.
-		# Free the built track node (in-flight job's node
-		# and the record's may be the same object).
-		var tnode: Object = null
-		if dj != null:
-			tnode = (dj as Dictionary)["t"].get("tnode")
-		if tnode != null and is_instance_valid(tnode):
-			(tnode as Node).queue_free()
-		if rec.get("track") != null \
-				and rec["track"] != tnode:
-			(rec["track"] as Node).queue_free()
-		rec["track"] = null
+		if track_changed:
+			# Free the built track node (in-flight job's node
+			# and the record's may be the same object).
+			var tnode: Object = null
+			if dj != null:
+				tnode = (dj as Dictionary)["t"].get("tnode")
+			if tnode != null and is_instance_valid(tnode):
+				(tnode as Node).queue_free()
+			if rec.get("track") != null \
+					and rec["track"] != tnode:
+				(rec["track"] as Node).queue_free()
+			rec["track"] = null
+		# Issue #261: a fresh buildings stage state, used
+		# when the chunk's deletion subset grew — the old
+		# Buildings node goes, a new one takes its place
+		# under the chunk, and the stage rebuilds from the
+		# seed-pure payload minus the deleted anchors.
+		var fresh_b = null
+		if del_changed:
+			var bnode: Object = null
+			if dj != null:
+				bnode = (dj as Dictionary)["b"].get("bnode")
+			if bnode == null:
+				bnode = rec.get("buildings")
+			if bnode != null and is_instance_valid(bnode):
+				(bnode as Node).queue_free()
+			if rec.get("buildings") == bnode:
+				rec["buildings"] = null
+			rec["solid_buildings"] = 0
+			fresh_b = {"b_done": false, "cursor": 0,
+				"bnode": null, "buckets": {},
+				"door_xforms": [], "shell_total": 0,
+				"collision_shapes": 0, "playable_doors": 0,
+				"solid_buildings": 0}
+			if not (data.buildings as Array).is_empty():
+				var nb := Node3D.new()
+				nb.name = "Buildings"
+				(rec["node"] as Node).add_child(nb)
+				fresh_b["bnode"] = nb
 		if dj != null:
 			# In flight: reset only a started track
 			# stage; an unstarted one reads the new
 			# cache when it begins.
 			var job: Dictionary = (dj as Dictionary)["t"]
-			if bool(job.get("started", false)):
+			if track_changed and bool(job.get("started",
+					false)):
 				(dj as Dictionary)["t"] = _fresh_track_stage()
+				rec["detail_done"] = false
+			if fresh_b != null:
+				(dj as Dictionary)["b"] = fresh_b
 				rec["detail_done"] = false
 		else:
 			# Completed chunk (its job was discarded):
-			# hand back a job with buildings + scatter
+			# hand back a job with the unchanged stages
 			# already done, so the detail flow re-runs
-			# ONLY the track stage.
+			# ONLY what changed.
+			var t_stage: Dictionary = _fresh_track_stage()
+			if track_changed:
+				pass  # Fresh stage, as before.
+			else:
+				t_stage["t_done"] = true
+				t_stage["started"] = true
+				t_stage["tnode"] = rec.get("track")
 			rec["detail_job"] = {
-				"b": {"b_done": true, "cursor": 0,
+				"b": fresh_b if fresh_b != null else {
+					"b_done": true, "cursor": 0,
 					"bnode": rec.get("buildings"),
 					"buckets": {}, "door_xforms": [],
 					"shell_total": 0, "collision_shapes": 0,
@@ -344,7 +411,7 @@ func _redress_changed_chunks(old_inputs: Dictionary) -> void:
 					"snode": rec.get("scatter"),
 					"type_idx": 0, "item_idx": 0,
 					"mm": null, "total": 0},
-				"t": _fresh_track_stage()}
+				"t": t_stage}
 			rec["detail_done"] = false
 
 
@@ -368,21 +435,22 @@ func _track_segments_routed_for(cx: int, cz: int) -> Array:
 		_track_edges_routed, cx, cz)
 
 
-## Chunk-data cache discipline under a live track network:
-## generate_chunk's output depends on the discovered set
-## via dist_track, so while a set is live the (seed-pure)
-## disk cache is bypassed BOTH ways — a cached payload
-## would plant buildings on corridors, and a set-shaped
-## payload would poison the pure cache.
+## Chunk-data cache discipline (issue #261): chunk
+## data is seed-pure again — base generation takes no
+## track input at all, and the track network dresses
+## chunks as an additive layer from its persisted
+## record (deleted buildings are filtered at the
+## building stage, never baked into the payload).
+## The WorldCache therefore serves reads and writes
+## under a live set exactly as it does without one;
+## the pre-#261 bypass (which existed because
+## generate_chunk's output depended on the set via
+## dist_track) is removed.
 func _cache_read(cx: int, cz: int) -> RefCounted:
-	if not track_discovered.is_empty():
-		return null
 	return WorldCache.read_data(cx, cz)
 
 
 func _cache_write(data: RefCounted) -> void:
-	if not track_discovered.is_empty():
-		return
 	WorldCache.write_data(data)
 
 
@@ -539,16 +607,13 @@ func _ready() -> void:
 ## task complete.
 func _dispatch_gen(cx: int, cz: int) -> void:
 	var slot := {"task": -1, "data": null}
-	# Issue #244 T2: the chunk's track segments ride the
-	# dispatch (computed here on the main thread; the
-	# lambda only reads them — generate_chunk stays a pure
-	# function of its arguments on the worker).
-	var segs := _track_segments_for(cx, cz)
-	var del := _track_deleted
+	# Issue #261: generation is set-free — the payload
+	# is a pure function of (seed, cx, cz), so nothing
+	# rides the dispatch.
 	var task := WorkerThreadPool.add_task(
 		func() -> void:
 			slot["data"] = WorldGen.generate_chunk(
-				cx, cz, WorldGen.WORLD_SEED, segs, del),
+				cx, cz, WorldGen.WORLD_SEED),
 		false, "chunk gen %d,%d" % [cx, cz])
 	slot["task"] = task
 	_pending[_key(cx, cz)] = slot
@@ -1143,8 +1208,7 @@ func _chunk_data_sync(cx: int, cz: int) -> RefCounted:
 	if cached != null:
 		return cached
 	var data := WorldGen.generate_chunk(cx, cz,
-		WorldGen.WORLD_SEED, _track_segments_for(cx, cz),
-		_track_deleted)
+		WorldGen.WORLD_SEED)
 	_cache_write(data)
 	return data
 
@@ -1612,6 +1676,12 @@ func _buildings_job_step(rec: Dictionary, job: Dictionary) -> bool:
 		var massing := int(b[6]) if b.size() > 6 else 0
 		var wlx := cx * 16 + lx
 		var wlz := cz * 16 + lz
+		if _track_deleted_set.has(Vector2i(wlx, wlz)):
+			# Issue #261: this anchor is deleted by the
+			# track layer's derivation — the payload is
+			# seed-pure and still carries it, so the
+			# filter lives here, at assembly.
+			continue
 		if suppress_enabled:
 			# The building's world lot rect vs the reserved plot
 			# (issue #203): an intersecting building never builds.

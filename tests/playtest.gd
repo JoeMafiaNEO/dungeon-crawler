@@ -119,6 +119,7 @@ func _run() -> void:
 	_test_walkoff_entry_257()
 	_test_train_bundle_258()
 	_test_train_clearance_259()
+	_test_additive_tracks_261()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -8108,6 +8109,15 @@ func _test_train_bundle_258() -> void:
 		TrainRes.set("_bundle_cache", {})
 		TrainRes.set("_persist_loaded", false)
 		TrainRes.set("_persist", {})
+		# Issue #261: the persisted state is the
+		# per-entry record; clearing it too makes the
+		# legs below re-adopt from the payload file
+		# (or re-derive when there is none).
+		TrainRes.set("_entries", {})
+		TrainRes.set("_platforms_rec", {})
+		TrainRes.set("_parent_cache", {})
+		TrainRes.set("_link_cache", {})
+		TrainRes.set("_record_dirty", false)
 	var idle_st: Dictionary = TrainRes.initial_state()
 	var move_st: Dictionary = TrainRes.initial_state()
 	move_st["status"] = "moving"
@@ -8180,6 +8190,8 @@ func _test_train_bundle_258() -> void:
 			and cnt.call("bundle_builds") == 1,
 		"258(b): the set change produces exactly one "
 		+ "re-derivation")
+	var segs_b: Array = TrainRes.routed_edge_segments(
+		seed, set_b, hc, hs)
 	var fg: Dictionary = TrainRes.derive_graph(seed, set_b, hc)
 	var fpts: Dictionary = TrainRes._points_for_graph(fg,
 		seed, hc, hs)
@@ -8187,19 +8199,6 @@ func _test_train_bundle_258() -> void:
 	for e in fg["edges"]:
 		fstraight.append([fpts[e[0]], fpts[e[1]]])
 	TrainRes.set("_route_memo", {})
-	var fsegs: Array = []
-	for e in fg["edges"]:
-		var pa: Vector2 = fpts[e[0]]
-		var pb: Vector2 = fpts[e[1]]
-		var ca := pa
-		var cb := pb
-		if pb.x < pa.x or (pb.x == pa.x and pb.y < pa.y):
-			ca = pb
-			cb = pa
-		var poly: Array = TrainRes._routed_points_canonical(
-			seed, set_b, hc, hs, ca, cb)
-		for i in poly.size() - 1:
-			fsegs.append([poly[i], poly[i + 1]])
 	_assert(pts_b == fpts,
 		"258(b): the bundle's station points equal a "
 		+ "fresh derivation")
@@ -8207,35 +8206,53 @@ func _test_train_bundle_258() -> void:
 			== fstraight,
 		"258(b): the bundle's straight segments equal "
 		+ "a fresh derivation")
-	_assert(TrainRes.routed_edge_segments(seed, set_b,
-			hc, hs) == fsegs,
-		"258(b): the bundle's routed segments equal a "
-		+ "fresh derivation")
-	# (c) Persistence round-trip: the built bundle was
-	# persisted in its own payload; with the in-memory
-	# caches cleared it is adopted with zero derivations
-	# and identical contents. A payload whose version,
-	# seed, or set contents mismatch is rejected and
+	# Issue #261 amendment: an edge's served polyline
+	# is its record entry (a home skip serves its
+	# chain's hop entries), which the old per-pair
+	# canonical no longer reproduces — the fresh
+	# comparison is now a FULL cold rebuild: record
+	# and payload wiped, everything re-derived from
+	# the seed alone must equal what the record
+	# served.
+	var wcd2 := DirAccess.open("user://world_cache")
+	if wcd2 != null and wcd2.file_exists(
+			"train_network.bin"):
+		wcd2.remove("train_network.bin")
+	clear_caches.call()
+	_assert(TrainRes.station_points(seed, set_b, hc, hs)
+			== pts_b
+			and TrainRes.routed_edge_segments(seed,
+				set_b, hc, hs) == segs_b,
+		"258(b): a full cold rebuild from the seed "
+		+ "reproduces the record's points and segments "
+		+ "exactly (issue #261)")
+	# (c) Persistence round-trip (issue #261 shape):
+	# the persisted payload is the per-entry RECORD.
+	# With every in-memory cache cleared it is adopted
+	# from the file with zero GEOMETRY derivations
+	# (the expensive kind; the cheap set algebra —
+	# graph + bundle assembly — always re-runs and is
+	# not what this leg counts) and identical served
+	# contents. A payload whose version mismatches,
+	# or whose entries are wiped, is rejected and
 	# re-derived — never trusted, never an error.
 	_assert(FileAccess.file_exists(
 			"user://world_cache/train_network.bin"),
-		"258(c): the bundle persists in its own payload "
-		+ "alongside the chunk cache")
+		"258(c): the record persists in its own "
+		+ "payload alongside the chunk cache")
 	var pts_cap: Dictionary = TrainRes.station_points(seed,
 		set_b, hc, hs)
 	var segs_cap: Array = TrainRes.routed_edge_segments(
 		seed, set_b, hc, hs)
 	clear_caches.call()
-	d0 = cnt.call("derive_count")
-	b0 = cnt.call("bundle_builds")
+	var g0: int = cnt.call("geometry_derivations")
 	_assert(TrainRes.station_points(seed, set_b, hc, hs)
 			== pts_cap
 			and TrainRes.routed_edge_segments(seed, set_b,
 				hc, hs) == segs_cap
-			and cnt.call("derive_count") == d0
-			and cnt.call("bundle_builds") == b0,
-		"258(c): the persisted bundle round-trips "
-		+ "identically with zero derivations")
+			and cnt.call("geometry_derivations") == g0,
+		"258(c): the persisted record round-trips "
+		+ "identically with zero geometry derivations")
 	var mutate_and_reread = func(mode: String) -> Array:
 		var path := "user://world_cache/train_network.bin"
 		if not FileAccess.file_exists(path):
@@ -8249,24 +8266,16 @@ func _test_train_bundle_258() -> void:
 		if mode == "version":
 			root_d["v"] = 999
 		else:
-			var bundles: Dictionary = root_d["bundles"]
-			var k0: String = bundles.keys()[0]
-			var entry: Dictionary = bundles[k0]
-			if mode == "seed":
-				entry["seed"] = seed + 1
-			elif mode == "set":
-				entry["set"] = ["9,9"]
-			bundles[k0] = entry
-			root_d["bundles"] = bundles
+			root_d["entries"] = {}
 		var wf := FileAccess.open(path, FileAccess.WRITE)
 		wf.store_buffer(var_to_bytes(root_d))
 		wf.close()
 		clear_caches.call()
-		var dd: int = cnt.call("derive_count")
+		var gg: int = cnt.call("geometry_derivations")
 		var got: Dictionary = TrainRes.station_points(seed,
 			set_b, hc, hs)
-		return [cnt.call("derive_count") - dd, got]
-	for mode in ["version", "seed", "set"]:
+		return [cnt.call("geometry_derivations") - gg, got]
+	for mode in ["version", "entries"]:
 		var res: Array = mutate_and_reread.call(mode)
 		_assert(int(res[0]) >= 1
 				and (res[1] as Dictionary) == pts_cap,
@@ -8360,9 +8369,10 @@ func _test_train_clearance_259() -> void:
 		var v = TrainRes.call("deleted_buildings", seed,
 			s, hc, hs)
 		return (v as Array).duplicate() if v is Array else []
-	_assert(int(TrainRes.get("DERIVATION_VERSION")) == 2,
-		"259: the derivation version is bumped (bundle "
-		+ "payloads from the old derivation are refused)")
+	_assert(int(TrainRes.get("DERIVATION_VERSION")) == 3,
+		"259: the derivation version is bumped (record "
+		+ "payloads from the old derivation are refused; "
+		+ "issue #261 raised it to 3)")
 	_assert(track_clear == 6.0 and station_clear == 5.0,
 		"259: the adopted clearances are the shipped "
 		+ "constants (track 6.0, station 5.0)")
@@ -8461,6 +8471,19 @@ func _test_train_clearance_259() -> void:
 	TrainRes.set("_bundle_cache", {})
 	TrainRes.set("_graph_cache", {})
 	TrainRes.set("_route_memo", {})
+	# Issue #261: the record caches and the payload go
+	# too — the second derivation rebuilds every entry
+	# from the seed alone.
+	TrainRes.set("_entries", {})
+	TrainRes.set("_platforms_rec", {})
+	TrainRes.set("_parent_cache", {})
+	TrainRes.set("_link_cache", {})
+	TrainRes.set("_persist_loaded", false)
+	TrainRes.set("_persist", {})
+	var wcd9 := DirAccess.open("user://world_cache")
+	if wcd9 != null and wcd9.file_exists(
+			"train_network.bin"):
+		wcd9.remove("train_network.bin")
 	var del2: Array = get_deleted.call(ring)
 	_assert(del1 == del2 and not del1.is_empty(),
 		"259(b): the deletion set is identical across "
@@ -8483,12 +8506,44 @@ func _test_train_clearance_259() -> void:
 			+ (f2["perp"] as Vector2) * (float(f2["side"])
 				* (TrainRes.BED_WIDTH * 0.5 + 1.9)),
 			"dir": f2["dir"], "perp": f2["perp"]}
+	# Issue #261 amendment: deletions are per-entry
+	# now, against the BASE field (no track segments —
+	# generation is seed-pure), so the census is
+	# rebuilt over the construction's own units: every
+	# chain hop of every ring city (the home skips run
+	# them), every link edge's straight, and the
+	# stations' plain slabs under the descent frames.
+	var hop_straights: Array = []
+	var pt_of = func(k: String) -> Vector2:
+		if pts_r.has(k):
+			return pts_r[k]
+		return TrainRes._universe_point(seed, k, hc, hs)
+	for key in g_r["order"]:
+		if str(key) == "home":
+			continue
+		var cur := str(key)
+		var guard := 0
+		while cur != "home" and guard < 256:
+			guard += 1
+			var par: String = TrainRes._parent_of(seed,
+				cur, hc)
+			hop_straights.append([pt_of.call(cur),
+				pt_of.call(par)])
+			cur = par
+	var link_straights: Array = []
+	for e in g_r["edges"]:
+		var ea := str(e[0])
+		var eb := str(e[1])
+		if ea == "home" or eb == "home":
+			continue
+		if TrainRes._parent_of(seed, ea, hc) == eb \
+				or TrainRes._parent_of(seed, eb, hc) == ea:
+			continue
+		link_straights.append([pts_r[ea], pts_r[eb]])
 	var violations := 0
 	for v in del1:
 		var lot := v as Vector2i
-		var cache := {"__track_segs":
-			TrainRes.filter_segments_for_chunk(straight_r,
-				lot.x >> 4, lot.y >> 4)}
+		var cache := {"__track_segs": []}
 		var bb: Dictionary = WorldGenRes.building_at(seed,
 			lot.x, lot.y, {}, cache)
 		if bb.is_empty():
@@ -8498,11 +8553,17 @@ func _test_train_clearance_259() -> void:
 			Vector2(int(bb["span_x"]),
 				int(bb["span_z"])) * 8.0)
 		var justified := false
-		for e in g_r["edges"]:
-			if TrainRes._seg_rect_dist(pts_r[e[0]],
-					pts_r[e[1]], [rr]) < track_clear:
+		for h in hop_straights:
+			if TrainRes._seg_rect_dist(h[0], h[1],
+					[rr]) < track_clear:
 				justified = true
 				break
+		if not justified:
+			for h in link_straights:
+				if TrainRes._seg_rect_dist(h[0], h[1],
+						[rr]) < track_clear:
+					justified = true
+					break
 		if not justified:
 			for key in plains:
 				var pl: Dictionary = plains[key]
@@ -8515,8 +8576,9 @@ func _test_train_clearance_259() -> void:
 			violations += 1
 	_assert(violations == 0,
 		"259(b): every deleted building stood in a "
-		+ "failed corridor or a blocked platform's "
-		+ "clearance — nothing out-of-corridor removed")
+		+ "failed hop/link corridor or a blocked "
+		+ "platform's clearance — nothing "
+		+ "out-of-corridor removed (issue #261 units)")
 	# Generation itself applies the list: a deleted
 	# anchor that generates without the list is absent
 	# with it.
@@ -8587,6 +8649,203 @@ func _test_train_clearance_259() -> void:
 	# Cleanup.
 	DungeonScript.set("home_anchor", saved_anchor)
 	print("[Playtest] Train clearance + home station (issue #259) done.")
+
+
+## Issue #261: Jesse's ruling — placed tracks never
+## move, discoveries only add. The network is
+## monotone (an edge, once derived, is never removed
+## or re-routed by a later discovery), a pure
+## function of (seed, discovered set) independent of
+## discovery order, derived on every client from the
+## seed alone (the server syncs only set keys), and
+## chunk generation is seed-pure again — the
+## WorldCache bypass is removed. The construction:
+## descent-parent chains (nearest strictly-closer
+## universe node, canonical (distance, cell) rank),
+## each city carrying a parent hop (when discovered)
+## and a home skip whose geometry runs the chain's
+## hop entries, plus 3-nearest lattice links; every
+## geometry entry derives once from (seed, its
+## endpoints) against the base world and freezes.
+func _test_additive_tracks_261() -> void:
+	print("[Playtest] Additive tracks (issue #261)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes = load("res://scripts/world/world_gen.gd")
+	var TrainRes = load("res://scripts/world/train_network.gd")
+	var WorldCacheRes = load("res://scripts/world/world_cache.gd")
+	var StreamerRes = load("res://scripts/world/world_streamer.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var seed: int = WorldGenRes.WORLD_SEED
+	var a96: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.set("home_anchor", a96)
+	var hc := Vector2(float(a96["anchor_x"]),
+		float(a96["anchor_z"]))
+	var hb: Dictionary = DungeonScript.home_building()
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var ring: Array = TrainRes.initial_ring(seed, hc)
+	var grown: Array = ring.duplicate()
+	grown.append("7,0")
+	for k in TrainRes.expansion_ring(seed, "7,0"):
+		if not grown.has(k):
+			grown.append(k)
+	var scouts1: Array = grown.duplicate()
+	for extra in ["-3,-3", "1,4"]:
+		if not scouts1.has(extra):
+			scouts1.append(extra)
+	var scouts2: Array = scouts1.duplicate()
+	for extra in ["-5,2", "4,1"]:
+		if not scouts2.has(extra):
+			scouts2.append(extra)
+	var sets: Array = [ring, grown, scouts1, scouts2]
+	var cnt = func(name: String) -> int:
+		var v = TrainRes.get(name)
+		return int(v) if v is int else -1
+	var rec_size = func(name: String) -> int:
+		var v = TrainRes.get(name)
+		return (v as Dictionary).size() if v is Dictionary else 0
+	var clear_record = func() -> void:
+		TrainRes.set("_entries", {})
+		TrainRes.set("_platforms_rec", {})
+		TrainRes.set("_parent_cache", {})
+		TrainRes.set("_link_cache", {})
+		TrainRes.set("_graph_cache", {})
+		TrainRes.set("_bundle_cache", {})
+		TrainRes.set("_persist_loaded", false)
+		TrainRes.set("_persist", {})
+		TrainRes.set("_record_dirty", false)
+		var wcd := DirAccess.open("user://world_cache")
+		if wcd != null and wcd.file_exists(
+				"train_network.bin"):
+			wcd.remove("train_network.bin")
+	var ekey = func(a: String, b: String) -> String:
+		return a + "|" + b if a < b else b + "|" + a
+	var snapshot = func(s: Array) -> Dictionary:
+		var g: Dictionary = TrainRes.derive_graph(seed, s, hc)
+		var pts: Dictionary = TrainRes.station_points(
+			seed, s, hc, hs)
+		var edges := {}
+		for e in g["edges"]:
+			edges[ekey.call(str(e[0]), str(e[1]))] = \
+				TrainRes.routed_points(seed, s, hc, hs,
+					pts[e[0]], pts[e[1]])
+		return {"edges": edges, "pts": pts}
+	# (a) Monotonicity over the growth steps: every
+	# edge of each smaller network appears in the
+	# larger with the identical routed polyline, and
+	# shared nodes keep identical station points.
+	clear_record.call()
+	var snaps: Array = []
+	for s in sets:
+		snaps.append(snapshot.call(s))
+	for i in sets.size() - 1:
+		var small: Dictionary = snaps[i]
+		var big: Dictionary = snaps[i + 1]
+		var viol := 0
+		for k in small["edges"]:
+			if not big["edges"].has(k) \
+					or big["edges"][k] != small["edges"][k]:
+				viol += 1
+		for k in small["pts"]:
+			if big["pts"].get(k) != small["pts"][k]:
+				viol += 1
+		_assert(viol == 0,
+			"261(a): growth step %d is purely additive — no edge moved, vanished, or re-pointed (%d violations)"
+				% [i, viol])
+	# (e) Connectivity: every tested set is one
+	# connected graph from home.
+	for i in sets.size():
+		var g2: Dictionary = TrainRes.derive_graph(seed,
+			sets[i], hc)
+		var adj := {}
+		for e in g2["edges"]:
+			(adj.get_or_add(str(e[0]), []) as Array).append(str(e[1]))
+			(adj.get_or_add(str(e[1]), []) as Array).append(str(e[0]))
+		var seen := {"home": true}
+		var stack: Array = ["home"]
+		while not stack.is_empty():
+			var cur2: String = stack.pop_back()
+			for nb in adj.get(cur2, []):
+				if not seen.has(nb):
+					seen[nb] = true
+					stack.append(nb)
+		_assert(seen.size() == (g2["order"] as Array).size(),
+			"261(e): set %d is one connected graph (%d of %d nodes reached)"
+				% [i, seen.size(), (g2["order"] as Array).size()])
+	# (b) Order independence: the same final set
+	# derived in one shot (cold) equals the one
+	# reached by the growth path (record carried).
+	clear_record.call()
+	var direct: Dictionary = snapshot.call(scouts2)
+	var del_direct: Array = TrainRes.deleted_buildings(
+		seed, scouts2, hc, hs)
+	clear_record.call()
+	var via: Dictionary = {}
+	for s in sets:
+		via = snapshot.call(s)
+	var del_via: Array = TrainRes.deleted_buildings(seed,
+		scouts2, hc, hs)
+	_assert(via["edges"] == direct["edges"]
+			and via["pts"] == direct["pts"]
+			and del_via == del_direct,
+		"261(b): the final network is identical via any discovery order — edges, points, deletions")
+	# (d) Additive cost: a growth step's geometry
+	# derivations are exactly its new record units
+	# (entries + platform records) — never the whole
+	# network again.
+	clear_record.call()
+	snapshot.call(ring)
+	var geo_r: int = cnt.call("geometry_derivations")
+	var ent_r: int = rec_size.call("_entries")
+	var plt_r: int = rec_size.call("_platforms_rec")
+	snapshot.call(grown)
+	var d_geo: int = cnt.call("geometry_derivations") - geo_r
+	var d_units: int = (rec_size.call("_entries") - ent_r) \
+		+ (rec_size.call("_platforms_rec") - plt_r)
+	_assert(d_geo == d_units and d_geo > 0
+			and d_geo < cnt.call("geometry_derivations"),
+		"261(d): the grown step derives only its additions (%d derivations for %d new record units, %d total)"
+			% [d_geo, d_units, cnt.call("geometry_derivations")])
+	# (c) Cache restored: under a live set the
+	# streamer's sync path READS the seed-pure cache
+	# (a hit writes nothing), and the payload served
+	# under one set is the payload served under
+	# another.
+	var holder := Node3D.new()
+	root.add_child(holder)
+	var st = StreamerRes.new()
+	holder.add_child(st)
+	var probe_c := Vector2i(7, -13)
+	var cpath: String = WorldCacheRes._path_for(
+		probe_c.x, probe_c.y)
+	if FileAccess.file_exists(cpath):
+		DirAccess.remove_absolute(cpath)
+	st.call("set_track_network", grown, hc, hs)
+	var data1 = st.call("_chunk_data_sync", probe_c.x,
+		probe_c.y)
+	_assert(FileAccess.file_exists(cpath),
+		"261(c): generation under a live set writes the seed-pure cache again")
+	var bytes1 := FileAccess.get_file_as_string(cpath)
+	var mtime1: int = FileAccess.get_modified_time(cpath)
+	st.call("set_track_network", scouts2, hc, hs)
+	var data2 = st.call("_chunk_data_sync", probe_c.x,
+		probe_c.y)
+	_assert(FileAccess.get_modified_time(cpath) == mtime1
+			and FileAccess.get_file_as_string(cpath) == bytes1,
+		"261(c): a second live set is served from the cache — the payload is not rewritten")
+	_assert(data2 != null and data1 != null
+			and (data2.buildings as Array)
+				== (data1.buildings as Array)
+			and (data2.lots as PackedByteArray)
+				== (data1.lots as PackedByteArray),
+		"261(c): a chunk's base payload is identical under different live sets")
+	holder.free()
+	# Cleanup.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("home_anchor", saved_anchor)
+	clear_record.call()
+	print("[Playtest] Additive tracks (issue #261) done.")
 
 
 func _test_scatter_207() -> void:
@@ -26950,8 +27209,16 @@ func _test_train_network_244() -> void:
 	_assert(raw_pairs.size() == 8,
 		"244(A): the reference 2-nearest set on the two-triangle fixture has 8 edges (premise)")
 	var p2: Dictionary = pair_set.call(g_a["edges"])
-	_assert(p2.size() == 9 and p2.has("7,1|11,8"),
-		"244(A): completion adds exactly one edge — the stranded triple's nearest cross edge (7,1|11,8)")
+	# Issue #261 amendment: there is no completion
+	# step anymore — connectivity comes from the home
+	# skips (every city carries one), the grain from
+	# parent hops and 3-nearest links. The fixture's
+	# derived set, measured: 6 home skips + the hops
+	# 11,8|12,6, 6,1|7,1, 7,0|7,1 + the links
+	# 11,8|12,7, 12,6|12,7, 6,1|7,0.
+	_assert(p2.size() == 12 and p2.has("home|12,7")
+			and p2.has("11,8|12,6"),
+		"244(A): the #261 construction derives 12 edges on the two-triangle fixture — home skips, parent hops, links; no completion step")
 	var adj := {}
 	for e in g_a["edges"]:
 		(adj.get_or_add(str(e[0]), []) as Array).append(str(e[1]))
@@ -26967,15 +27234,15 @@ func _test_train_network_244() -> void:
 	_assert(seen.size() == (g_a["order"] as Array).size(),
 		"244(A): the derived graph is connected — every node reachable from home")
 	var r1: Array = TN.route(seed, big, home0, "home", "12,7")
-	_assert(r1 == ["home", "7,1", "11,8", "12,7"],
-		"244(A): routing crosses the completion edge on the shortest path")
+	_assert(r1 == ["home", "12,7"],
+		"244(A): routing takes the home skip — one leg whose geometry runs the descent chain (issue #261)")
 	var r1_len := 0.0
 	for i in range(1, r1.size()):
 		var pk := (str(r1[i - 1]) + "|" + str(r1[i])) \
 			if p2.has(str(r1[i - 1]) + "|" + str(r1[i])) \
 			else (str(r1[i]) + "|" + str(r1[i - 1]))
 		r1_len += float(p2[pk])
-	_assert(absf(r1_len - 18016.5) < 4.0,
+	_assert(absf(r1_len - 14974.9) < 4.0,
 		"244(A): the routed length is the Dijkstra sum over the derived edges")
 	_assert(TN.route(seed, ["0,-2", "0,2"], home0, "0,-2", "0,2")
 			== ["0,-2", "0,2"],
@@ -27436,12 +27703,22 @@ func _test_train_world_244() -> void:
 	var st = Streamer.new()
 	holder.add_child(st)
 	st.call("set_track_network", set1, hc, hs)
-	# Cache discipline: a live set bypasses the pure cache.
+	# Cache discipline (issue #261): generation is
+	# seed-pure again — a live set no longer bypasses
+	# the cache; the payload written under a live set
+	# IS the set-free payload.
 	var probe_c := Vector2i(7, -13)
 	st.call("_chunk_data_sync", probe_c.x, probe_c.y)
-	_assert((WorldCache.read_payload(probe_c.x,
-			probe_c.y) as Dictionary).is_empty(),
-		"244T2(E): with a live set, generation writes nothing to the seed-pure cache")
+	var payload_e: Dictionary = WorldCache.read_payload(
+		probe_c.x, probe_c.y)
+	var fresh_e = WG.generate_chunk(probe_c.x, probe_c.y,
+		seed)
+	_assert(not payload_e.is_empty()
+			and (payload_e["buildings"] as Array)
+				== (fresh_e.buildings as Array)
+			and (payload_e["lots"] as PackedByteArray)
+				== (fresh_e.lots as PackedByteArray),
+		"244T2(E): with a live set, the cache holds the seed-pure payload — the bypass is removed (issue #261)")
 	# The home chunk: track + station + the resting consist.
 	st.call("_build_chunk", 0, 0)
 	var active: Dictionary = st.get("_active")
@@ -35345,24 +35622,29 @@ func _test_train_multistop_244() -> void:
 	_assert((D.train_state.get("legs", []) as Array).is_empty()
 			and (D.train_state["course"] as Array).is_empty(),
 		"244T6(E): the settled state is the pre-T6 shape")
-	# (F) Pass-through: a course whose route crosses an
-	# unplotted interchange never stops there — its one
-	# leg ends at the plotted destination.
+	# (F) Pass-through: a course never stops at an
+	# unplotted station it passes. Issue #261
+	# amendment: every home course is one leg now (the
+	# home skip), but the leg's GEOMETRY runs the
+	# descent chain — the train physically passes the
+	# intermediate stations without stopping, which is
+	# the pass-through this leg pins.
 	D.train_state = TN.initial_state()
 	D.train_state["riders"] = {1: [0, 76561198000000000]}
 	var dest_f := ""
-	for cand in ["9,1", "6,1", "7,0", "7,1"]:
-		if not (D.act2_train_cities as Array).has(cand):
-			continue
-		var rp0: Dictionary = TN.route_path(seed,
-			D.act2_train_cities, hc, hs,
-			["home", String(cand)])
-		if (rp0["nodes"] as Array).size() > 2:
-			dest_f = String(cand)
-			break
+	if (D.act2_train_cities as Array).has("9,1"):
+		dest_f = "9,1"
 	_assert(dest_f != "",
-		"244T6(F): the fixture offers a route across an interchange")
+		"244T6(F): the fixture offers a home leg passing intermediate stations")
 	if dest_f != "":
+		var pts_f: Dictionary = TN.station_points(seed,
+			D.act2_train_cities, hc, hs)
+		var leg_poly: Array = TN.routed_points(seed,
+			D.act2_train_cities, hc, hs, pts_f["home"],
+			pts_f[dest_f])
+		_assert(leg_poly.has(pts_f["7,0"])
+				and leg_poly.has(pts_f["6,1"]),
+			"244T6(F): the home leg's geometry passes the chain's intermediate stations (7,0 and 6,1)")
 		_assert(bool(NM6.call("train_confirm_server", 1,
 				["home", dest_f])),
 			"244T6(F): the pass-through course confirms")
@@ -35371,7 +35653,7 @@ func _test_train_multistop_244() -> void:
 				== "idle"
 				and String(D.train_state.get("at", ""))
 					== dest_f,
-			"244T6(F): the interchange was passed without stopping")
+			"244T6(F): the intermediate stations were passed without stopping")
 	# (G) Surfaces (source).
 	var nsrc := FileAccess.get_file_as_string(
 		"res://scripts/autoload/network_manager.gd")
@@ -35577,8 +35859,14 @@ func _test_train_routing_246() -> void:
 	_assert(anchor_worst >= TN.ROUTE_BED_CLEAR - 0.001,
 		"246(D): every surviving characterized anchor clears the routed path (worst %.2f)"
 			% anchor_worst)
-	# (E) Plausibility: no edge on either network turns
-	# sharper than 45 degrees at any vertex.
+	# (E) Plausibility: no PRIMITIVE geometry — a
+	# parent hop or a link entry — turns sharper than
+	# 45 degrees at any vertex. Issue #261 amendment:
+	# a home skip's polyline is its chain's hop
+	# entries concatenated; the joins are station
+	# passes, not bends, so a skip pins differently —
+	# its polyline must pass every chain station's
+	# point.
 	for disc in [init_disc, grown]:
 		var gm: Dictionary = TN.derive_graph(seed, disc, hc)
 		var pm: Dictionary = TN.station_points(seed, disc,
@@ -35586,9 +35874,31 @@ func _test_train_routing_246() -> void:
 		for e in gm["edges"]:
 			var rp3: Array = TN.routed_points(seed, disc,
 				hc, hs, pm[e[0]], pm[e[1]])
-			_assert(TN._route_max_turn(rp3) <= 45.0,
-				"246(E): edge %s -> %s turns plausibly (%.0f deg)"
-					% [e[0], e[1], TN._route_max_turn(rp3)])
+			var ea3 := str(e[0])
+			var eb3 := str(e[1])
+			var other := ""
+			if ea3 == "home" and eb3 != "home" \
+					and TN._parent_of(seed, eb3, hc) != "home":
+				other = eb3
+			elif eb3 == "home" and ea3 != "home" \
+					and TN._parent_of(seed, ea3, hc) != "home":
+				other = ea3
+			if other == "":
+				_assert(TN._route_max_turn(rp3) <= 45.0,
+					"246(E): edge %s -> %s turns plausibly (%.0f deg)"
+						% [e[0], e[1], TN._route_max_turn(rp3)])
+			else:
+				var via_ok := true
+				for node in TN._chain(seed, other, hc):
+					var sp: Vector2 = pm[node] \
+						if pm.has(node) else \
+						TN._universe_point(seed, str(node),
+							hc, hs)
+					if not rp3.has(sp):
+						via_ok = false
+				_assert(via_ok,
+					"246(E): home skip %s -> %s runs via its chain stations"
+						% [e[0], e[1]])
 	# (F) Platforms (fix 2): "0,2" and "0,-2" validate
 	# clear of every footprint (the characterization had
 	# their plain points at 0.0 / 0.03 m); home's

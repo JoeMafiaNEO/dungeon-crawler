@@ -18,7 +18,7 @@ extends RefCounted
 ## All file I/O happens on the caller's thread (the
 ## streamer calls these from its main-thread paths only).
 
-const CACHE_VERSION := 1
+const CACHE_VERSION := 2
 const DIR_PATH := "user://world_cache"
 
 const WorldGen := preload("res://scripts/world/world_gen.gd")
