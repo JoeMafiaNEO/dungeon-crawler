@@ -117,6 +117,7 @@ func _run() -> void:
 	_test_chart_refresh_255()
 	_test_boot_warmer_256()
 	_test_walkoff_entry_257()
+	_test_train_bundle_258()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -8064,6 +8065,237 @@ func _test_walkoff_entry_257() -> void:
 	DungeonScript.set("home_anchor", saved_anchor)
 	DungeonScript.set("world_time", saved_wtime)
 	print("[Playtest] Walk-off world entry (issue #257) done.")
+
+
+## Issue #258: the derived-network bundle — the train
+## network's derivation (graph, station points, straight
+## + routed segments) is computed once per discovered-set
+## version, served from memory, and persisted alongside
+## the WorldCache in its own payload. The pins drive the
+## real consumers (train_position, chart_model, the
+## segment readers) and count derivations, not eyeballs.
+func _test_train_bundle_258() -> void:
+	print("[Playtest] Train network bundle (issue #258)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes = load("res://scripts/world/world_gen.gd")
+	var TrainRes = load("res://scripts/world/train_network.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var seed: int = WorldGenRes.WORLD_SEED
+	var a96: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	DungeonScript.set("home_anchor", a96)
+	var hc := Vector2(float(a96["anchor_x"]),
+		float(a96["anchor_z"]))
+	var hb: Dictionary = DungeonScript.home_building()
+	var hs := Vector2((hb["doorstep"] as Vector3).x,
+		(hb["doorstep"] as Vector3).z)
+	var set_a: Array = TrainRes.initial_ring(seed, hc)
+	var set_b: Array = set_a.duplicate()
+	set_b.append("7,0")
+	# Null-safe counter reads: at the pre-fix baseline
+	# the counters do not exist (a typed read of the
+	# null would abort the section — the hollow trap).
+	var cnt = func(name: String) -> int:
+		var v = TrainRes.get(name)
+		return int(v) if v is int else -1
+	var clear_caches = func() -> void:
+		TrainRes.set("_graph_cache", {})
+		TrainRes.set("_bundle_cache", {})
+		TrainRes.set("_persist_loaded", false)
+		TrainRes.set("_persist", {})
+	var idle_st: Dictionary = TrainRes.initial_state()
+	var move_st: Dictionary = TrainRes.initial_state()
+	move_st["status"] = "moving"
+	move_st["at"] = "home"
+	move_st["path"] = ["home", "0,2"]
+	# (a) The consist path: the first call derives the
+	# bundle exactly once; K further frames (idle +
+	# moving + chart + segment readers) derive nothing.
+	clear_caches.call()
+	# A cold machine for the cold call: earlier sections
+	# (the boot warmer) may already have persisted this
+	# set's bundle — adoption would (correctly) derive
+	# zero times, which is leg (c)'s measurement, not
+	# this one's.
+	var wcd := DirAccess.open("user://world_cache")
+	if wcd != null and wcd.file_exists("train_network.bin"):
+		wcd.remove("train_network.bin")
+	clear_caches.call()
+	TrainRes.set("derive_count", 0)
+	TrainRes.set("bundle_builds", 0)
+	var p1: Dictionary = TrainRes.train_position(seed,
+		set_a, hc, hs, idle_st, 0)
+	_assert(cnt.call("derive_count") == 1
+			and cnt.call("bundle_builds") == 1,
+		"258(a): the first consist call derives the "
+		+ "bundle exactly once")
+	var d0: int = cnt.call("derive_count")
+	var b0: int = cnt.call("bundle_builds")
+	var p2: Dictionary = {}
+	for i in 8:
+		p2 = TrainRes.train_position(seed, set_a, hc, hs,
+			idle_st, i * 16)
+		TrainRes.train_position(seed, set_a, hc, hs,
+			move_st, 60000)
+		TrainRes.chart_model(seed, set_a, hc, hs,
+			idle_st, 0)
+		TrainRes.routed_edge_segments(seed, set_a, hc, hs)
+		TrainRes.station_points(seed, set_a, hc, hs)
+	_assert(cnt.call("derive_count") == d0
+			and cnt.call("bundle_builds") == b0,
+		"258(a): zero derivations across K frames at a "
+		+ "fixed set version")
+	_assert(p2.get("pos") == p1.get("pos"),
+		"258(a): the served position is deterministic")
+	# (b) A set change through the one union funnel:
+	# the version bumps exactly once, and the next
+	# consumer derives the new bundle exactly once —
+	# equal to a fresh pure derivation.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("act2_train_cities", set_a.duplicate())
+	var ver = func() -> int:
+		var v = DungeonScript.get("act2_train_set_version")
+		return int(v) if v is int else -1
+	var v0: int = ver.call()
+	var added: Array = DungeonScript.apply_train_discovered(
+		["7,0"])
+	_assert(added == ["7,0"] and ver.call() == v0 + 1,
+		"258(b): apply_train_discovered bumps the set "
+		+ "version exactly once")
+	var added2: Array = DungeonScript.apply_train_discovered(
+		["7,0"])
+	_assert(added2.is_empty() and ver.call() == v0 + 1,
+		"258(b): a no-op apply does not bump the version")
+	clear_caches.call()
+	TrainRes.set("derive_count", 0)
+	TrainRes.set("bundle_builds", 0)
+	var pts_b: Dictionary = TrainRes.station_points(seed,
+		set_b, hc, hs)
+	_assert(cnt.call("derive_count") == 1
+			and cnt.call("bundle_builds") == 1,
+		"258(b): the set change produces exactly one "
+		+ "re-derivation")
+	var fg: Dictionary = TrainRes.derive_graph(seed, set_b, hc)
+	var fpts: Dictionary = TrainRes._points_for_graph(fg,
+		seed, hs)
+	var fstraight: Array = []
+	for e in fg["edges"]:
+		fstraight.append([fpts[e[0]], fpts[e[1]]])
+	TrainRes.set("_route_memo", {})
+	var fsegs: Array = []
+	for e in fg["edges"]:
+		var pa: Vector2 = fpts[e[0]]
+		var pb: Vector2 = fpts[e[1]]
+		var ca := pa
+		var cb := pb
+		if pb.x < pa.x or (pb.x == pa.x and pb.y < pa.y):
+			ca = pb
+			cb = pa
+		var poly: Array = TrainRes._routed_points_canonical(
+			seed, set_b, hc, hs, ca, cb)
+		for i in poly.size() - 1:
+			fsegs.append([poly[i], poly[i + 1]])
+	_assert(pts_b == fpts,
+		"258(b): the bundle's station points equal a "
+		+ "fresh derivation")
+	_assert(TrainRes.edge_segments(seed, set_b, hc, hs)
+			== fstraight,
+		"258(b): the bundle's straight segments equal "
+		+ "a fresh derivation")
+	_assert(TrainRes.routed_edge_segments(seed, set_b,
+			hc, hs) == fsegs,
+		"258(b): the bundle's routed segments equal a "
+		+ "fresh derivation")
+	# (c) Persistence round-trip: the built bundle was
+	# persisted in its own payload; with the in-memory
+	# caches cleared it is adopted with zero derivations
+	# and identical contents. A payload whose version,
+	# seed, or set contents mismatch is rejected and
+	# re-derived — never trusted, never an error.
+	_assert(FileAccess.file_exists(
+			"user://world_cache/train_network.bin"),
+		"258(c): the bundle persists in its own payload "
+		+ "alongside the chunk cache")
+	var pts_cap: Dictionary = TrainRes.station_points(seed,
+		set_b, hc, hs)
+	var segs_cap: Array = TrainRes.routed_edge_segments(
+		seed, set_b, hc, hs)
+	clear_caches.call()
+	d0 = cnt.call("derive_count")
+	b0 = cnt.call("bundle_builds")
+	_assert(TrainRes.station_points(seed, set_b, hc, hs)
+			== pts_cap
+			and TrainRes.routed_edge_segments(seed, set_b,
+				hc, hs) == segs_cap
+			and cnt.call("derive_count") == d0
+			and cnt.call("bundle_builds") == b0,
+		"258(c): the persisted bundle round-trips "
+		+ "identically with zero derivations")
+	var mutate_and_reread = func(mode: String) -> Array:
+		var path := "user://world_cache/train_network.bin"
+		if not FileAccess.file_exists(path):
+			return [-999, {}]
+		var rf := FileAccess.open(path, FileAccess.READ)
+		if rf == null:
+			return [-999, {}]
+		var raw = bytes_to_var(rf.get_buffer(rf.get_length()))
+		rf.close()
+		var root_d: Dictionary = raw
+		if mode == "version":
+			root_d["v"] = 999
+		else:
+			var bundles: Dictionary = root_d["bundles"]
+			var k0: String = bundles.keys()[0]
+			var entry: Dictionary = bundles[k0]
+			if mode == "seed":
+				entry["seed"] = seed + 1
+			elif mode == "set":
+				entry["set"] = ["9,9"]
+			bundles[k0] = entry
+			root_d["bundles"] = bundles
+		var wf := FileAccess.open(path, FileAccess.WRITE)
+		wf.store_buffer(var_to_bytes(root_d))
+		wf.close()
+		clear_caches.call()
+		var dd: int = cnt.call("derive_count")
+		var got: Dictionary = TrainRes.station_points(seed,
+			set_b, hc, hs)
+		return [cnt.call("derive_count") - dd, got]
+	for mode in ["version", "seed", "set"]:
+		var res: Array = mutate_and_reread.call(mode)
+		_assert(int(res[0]) >= 1
+				and (res[1] as Dictionary) == pts_cap,
+			"258(c): a payload with a mismatched " + mode
+			+ " is rejected and re-derived")
+	# (d) The chart's model is the stored record: built
+	# from the bundle it equals a fresh derivation's
+	# nodes/order/edges, and a redraw at an unchanged
+	# version derives nothing.
+	var fm: Dictionary = TrainRes.derive_graph(seed,
+		set_b, hc)
+	var m1: Dictionary = TrainRes.chart_model(seed, set_b,
+		hc, hs, idle_st, 0)
+	_assert(m1["nodes"] == fm["nodes"]
+			and m1["order"] == fm["order"]
+			and m1["edges"] == fm["edges"],
+		"258(d): the chart model from the record equals "
+		+ "a fresh derivation")
+	d0 = cnt.call("derive_count")
+	b0 = cnt.call("bundle_builds")
+	var m2: Dictionary = TrainRes.chart_model(seed, set_b,
+		hc, hs, move_st, 60000)
+	TrainRes.chart_model(seed, set_b, hc, hs, idle_st, 0)
+	_assert(cnt.call("derive_count") == d0
+			and cnt.call("bundle_builds") == b0
+			and m2["nodes"] == m1["nodes"]
+			and m2["edges"] == m1["edges"],
+		"258(d): a redraw at an unchanged version "
+		+ "performs no derivation")
+	# Cleanup.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("home_anchor", saved_anchor)
+	clear_caches.call()
+	print("[Playtest] Train network bundle (issue #258) done.")
 
 
 func _test_scatter_207() -> void:

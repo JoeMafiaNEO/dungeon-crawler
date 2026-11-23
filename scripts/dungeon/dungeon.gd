@@ -236,6 +236,13 @@ static var act2_cleared: Array = []
 ## save = undiscovered, and the world entry arm
 ## initializes it from the home ring.
 static var act2_train_cities: Array = []
+## Issue #258: the discovered set's version — bumped
+## on EVERY mutation of the set (the apply funnel, the
+## initial-ring assignment, restores and resets). The
+## derived-network bundle is cached and persisted per
+## set version; consumers key on the set's contents,
+## and this counter is the change signal of record.
+static var act2_train_set_version := 0
 ## Issue #244 Phase T3: the Act 2 train's run state,
 ## server-owned (its NetworkManager rpc block carries it):
 ## TrainNetwork.initial_state()'s shape. Session state
@@ -520,6 +527,8 @@ static func apply_train_discovered(new_keys: Array) -> Array:
 			continue
 		act2_train_cities.append(k)
 		added.append(k)
+	if not added.is_empty():
+		act2_train_set_version += 1
 	return added
 
 
@@ -547,6 +556,7 @@ static func train_init_discovery() -> bool:
 	act2_train_cities = TrainNetwork.initial_ring(
 		RevealWorldGen.WORLD_SEED,
 		Vector2(origin.x, origin.z))
+	act2_train_set_version += 1
 	return true
 
 
@@ -693,6 +703,7 @@ static func restore_act2_state(run: Dictionary) -> void:
 					and TrainNetwork.key_cell(str(e)) != null \
 					and not act2_train_cities.has(str(e)):
 				act2_train_cities.append(str(e))
+	act2_train_set_version += 1
 	act2_anchor_building = str(a.get("anchor_building", ""))
 	var ds: Array = a.get("anchor_doorstep", [])
 	act2_anchor_doorstep = Vector3(float(ds[0]), float(ds[1]),
@@ -757,6 +768,7 @@ static func reset_act2_state() -> void:
 	act2_walkoff_point = Vector3.ZERO
 	act2_positions = {}
 	act2_train_cities = []
+	act2_train_set_version += 1
 	train_state = {}
 	train_draft = []
 	floor_key = ""

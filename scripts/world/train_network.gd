@@ -149,6 +149,7 @@ static func expansion_ring(seed: int, arrived_key: String) -> Array:
 ## B in node order, the list sorted by node order.
 static func derive_graph(seed: int, discovered: Array,
 		home_center: Vector2) -> Dictionary:
+	derive_count += 1  # Issue #258: observable derivation.
 	# The node set: home plus every discovered key that
 	# resolves to a city, deduplicated.
 	var centers := {HOME_KEY: home_center}
@@ -269,7 +270,7 @@ static func _add_edge(edge_set: Dictionary, rank: Dictionary,
 static func route(seed: int, discovered: Array,
 		home_center: Vector2, from_key: String,
 		to_key: String) -> Array:
-	var g := derive_graph(seed, discovered, home_center)
+	var g := _graph(seed, discovered, home_center)
 	var nodes: Dictionary = g["nodes"]
 	if not nodes.has(from_key) or not nodes.has(to_key):
 		return []
@@ -374,8 +375,9 @@ const RAIL_TOP := 0.30 ## rail top above grade
 ## center snapped by WorldGen's lot search.
 static func station_points(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2) -> Dictionary:
-	var graph := derive_graph(seed, discovered, home_center)
-	return _points_for_graph(graph, seed, home_station)
+	# Issue #258: served from the derived bundle.
+	return (_bundle(seed, discovered, home_center,
+		home_station)["points"] as Dictionary).duplicate()
 
 
 static func _points_for_graph(graph: Dictionary, seed: int,
@@ -395,12 +397,9 @@ static func _points_for_graph(graph: Dictionary, seed: int,
 ## station point (spec §2.4), in graph edge order.
 static func edge_segments(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2) -> Array:
-	var graph := derive_graph(seed, discovered, home_center)
-	var pts := _points_for_graph(graph, seed, home_station)
-	var out: Array = []
-	for e in graph["edges"]:
-		out.append([pts[e[0]], pts[e[1]]])
-	return out
+	# Issue #258: served from the derived bundle.
+	return (_bundle(seed, discovered, home_center,
+		home_station)["straight"] as Array).duplicate()
 
 
 ## --- Issue #246: building-avoiding routing. Jesse's
@@ -440,12 +439,262 @@ static var _route_memo := {}
 static var route_failures: Array = []
 
 
+## --- Issue #258: the derived-network bundle. Jesse's
+## ruling: the network is persistent and chunk-driven,
+## so its derivation is computed ONCE per discovered-set
+## version and then served as a record — in memory, and
+## persisted alongside the WorldCache in its OWN payload
+## (never inside the seed-pure chunk payloads). Before
+## this, every consumer re-derived from seed + set on
+## every use: the consist's per-frame position paid two
+## graph derivations plus two station-point searches per
+## node, the chart re-derived per redraw, and each
+## discovery re-derived the whole network — a cost that
+## grows with the discovered set, which is exactly the
+## reported travel-linked lag.
+##
+## The bundle for a set: the derived graph, the station
+## points, the straight edge segments, and every edge's
+## routed polyline. Consumers read the bundle; the pure
+## functions below remain the one derivation, run once
+## per (seed, set, home) signature. Any change to the
+## derivation itself bumps DERIVATION_VERSION (the
+## CACHE_VERSION discipline), and persisted bundles
+## from an older version are rejected and re-derived,
+## never trusted.
+const DERIVATION_VERSION := 1
+const BUNDLE_FILE := "user://world_cache/train_network.bin"
+## Signatures kept, in memory and on disk. The values
+## are pure, so eviction is invisible: a dropped entry
+## simply derives (or loads) again.
+const BUNDLE_KEEP := 4
+## Observable derivation counters (the suite pins the
+## consist path performs zero derivations at a fixed
+## set version): derive_count increments on every
+## derive_graph run, bundle_builds on every full
+## bundle build. Loading a persisted bundle is
+## neither — it is a record read.
+static var derive_count := 0
+static var bundle_builds := 0
+static var _graph_cache := {}
+static var _bundle_cache := {}
+static var _persist_loaded := false
+static var _persist: Dictionary = {}
+
+
+static func _sorted_keys(discovered: Array) -> Array:
+	var out: Array = []
+	for k in discovered:
+		out.append(str(k))
+	out.sort()
+	return out
+
+
+static func _graph_sig(seed: int, discovered: Array,
+		home_center: Vector2) -> String:
+	return "%d|%s|%f,%f" % [seed,
+		",".join(_sorted_keys(discovered)),
+		home_center.x, home_center.y]
+
+
+static func _bundle_sig(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) \
+		-> String:
+	return "%s|%f,%f" % [_graph_sig(seed, discovered,
+		home_center), home_station.x, home_station.y]
+
+
+## The canonical endpoint-pair key of an edge's routed
+## polyline: the lexicographically smaller endpoint
+## first (routed_points' direction rule).
+static func _pair_key(a: Vector2, b: Vector2) -> String:
+	if b.x < a.x or (b.x == a.x and b.y < a.y):
+		var tmp := a
+		a = b
+		b = tmp
+	return "%f,%f|%f,%f" % [a.x, a.y, b.x, b.y]
+
+
+## The derived graph for a set, from the cache when the
+## signature is known. The one counted derivation.
+static func _graph(seed: int, discovered: Array,
+		home_center: Vector2) -> Dictionary:
+	var sig := _graph_sig(seed, discovered, home_center)
+	if _graph_cache.has(sig):
+		return _graph_cache[sig]
+	var g := derive_graph(seed, discovered, home_center)
+	if _graph_cache.size() >= BUNDLE_KEEP:
+		_graph_cache.clear()
+	_graph_cache[sig] = g
+	return g
+
+
+## An edge list's straight segments over a point set.
+static func _straight_segments(graph: Dictionary,
+		pts: Dictionary) -> Array:
+	var out: Array = []
+	for e in graph["edges"]:
+		out.append([pts[e[0]], pts[e[1]]])
+	return out
+
+
+## Routed sub-segments assembled from a bundle's
+## per-edge polylines, in graph edge order (segment
+## direction is irrelevant to the dressing).
+static func _routed_segments(graph: Dictionary,
+		pts: Dictionary, routed: Dictionary) -> Array:
+	var out: Array = []
+	for e in graph["edges"]:
+		var poly: Array = routed.get(
+			_pair_key(pts[e[0]], pts[e[1]]), [])
+		for i in poly.size() - 1:
+			out.append([poly[i], poly[i + 1]])
+	return out
+
+
+## The persisted record, loaded once. Validation is
+## the WorldCache discipline: the file must parse, its
+## derivation version must match, and each entry is
+## re-validated against its key on adoption — any
+## mismatch is a miss (re-derive), never an error.
+static func _persist_ensure() -> void:
+	if _persist_loaded:
+		return
+	_persist_loaded = true
+	_persist = {}
+	if not FileAccess.file_exists(BUNDLE_FILE):
+		return
+	var f := FileAccess.open(BUNDLE_FILE, FileAccess.READ)
+	if f == null:
+		return
+	var raw = bytes_to_var(f.get_buffer(f.get_length()))
+	if not (raw is Dictionary):
+		return
+	if int((raw as Dictionary).get("v", -1)) \
+			!= DERIVATION_VERSION:
+		return
+	var b = (raw as Dictionary).get("bundles", {})
+	if b is Dictionary:
+		_persist = b
+
+
+static func _persist_put(sig: String, entry: Dictionary) -> void:
+	_persist_ensure()
+	_persist[sig] = entry
+	while _persist.size() > BUNDLE_KEEP:
+		_persist.erase(_persist.keys()[0])
+	var d := DirAccess.open("user://")
+	if d != null and not d.dir_exists("world_cache"):
+		d.make_dir("world_cache")
+	var f := FileAccess.open(BUNDLE_FILE, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_buffer(var_to_bytes(
+		{"v": DERIVATION_VERSION, "bundles": _persist}))
+
+
+## A persisted entry is adoptable only when it names
+## exactly this seed and set and carries the bundle's
+## full shape.
+static func _persist_entry_valid(entry: Variant,
+		seed: int, discovered: Array) -> bool:
+	if not (entry is Dictionary):
+		return false
+	var e: Dictionary = entry
+	if int(e.get("seed", -1)) != seed:
+		return false
+	var s = e.get("set", [])
+	if not (s is Array) or s != _sorted_keys(discovered):
+		return false
+	if not (e.get("graph", null) is Dictionary):
+		return false
+	var g: Dictionary = e["graph"]
+	if not g.has("nodes") or not g.has("order") \
+			or not g.has("edges"):
+		return false
+	return e.get("points", null) is Dictionary \
+		and e.get("straight", null) is Array \
+		and e.get("routed", null) is Dictionary
+
+
+## The bundle for a set: {graph, points, straight,
+## routed (pair key -> polyline), segments}. Cache
+## first, then the persisted record, then the one
+## derivation — after which the bundle is persisted
+## alongside the chunk cache for the next session.
+static func _bundle(seed: int, discovered: Array,
+		home_center: Vector2, home_station: Vector2) \
+		-> Dictionary:
+	var sig := _bundle_sig(seed, discovered, home_center,
+		home_station)
+	if _bundle_cache.has(sig):
+		return _bundle_cache[sig]
+	_persist_ensure()
+	if _persist.has(sig) and _persist_entry_valid(
+			_persist[sig], seed, discovered):
+		var e: Dictionary = _persist[sig]
+		var adopted := {"graph": e["graph"],
+			"points": e["points"],
+			"straight": e["straight"],
+			"routed": e["routed"],
+			"segments": _routed_segments(e["graph"],
+				e["points"], e["routed"])}
+		_graph_cache[_graph_sig(seed, discovered,
+			home_center)] = e["graph"]
+		_bundle_cache[sig] = adopted
+		return adopted
+	var g := _graph(seed, discovered, home_center)
+	var pts := _points_for_graph(g, seed, home_station)
+	var straight := _straight_segments(g, pts)
+	var routed := {}
+	for e2 in g["edges"]:
+		var pa: Vector2 = pts[e2[0]]
+		var pb: Vector2 = pts[e2[1]]
+		# Stored in the canonical direction the pair
+		# key names (routed_points' rule), so lookups
+		# reverse exactly when the caller asks the
+		# other way.
+		var ca := pa
+		var cb := pb
+		if pb.x < pa.x or (pb.x == pa.x and pb.y < pa.y):
+			ca = pb
+			cb = pa
+		routed[_pair_key(pa, pb)] = _routed_points_canonical(
+			seed, discovered, home_center, home_station,
+			ca, cb)
+	bundle_builds += 1
+	var built := {"graph": g, "points": pts,
+		"straight": straight, "routed": routed,
+		"segments": _routed_segments(g, pts, routed)}
+	if _bundle_cache.size() >= BUNDLE_KEEP:
+		_bundle_cache.clear()
+	_bundle_cache[sig] = built
+	_persist_put(sig, {"seed": seed,
+		"set": _sorted_keys(discovered), "graph": g,
+		"points": pts, "straight": straight,
+		"routed": routed})
+	return built
+
+
 ## The routed polyline for one graph edge, station
 ## point to station point (both included). Memoized;
 ## the value is pure in (seed, discovered, a, b).
 static func routed_points(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		a: Vector2, b: Vector2) -> Array:
+	# Issue #258: a graph edge's polyline is served
+	# from the derived bundle; anything else (a pair
+	# that is not a graph edge) falls through to the
+	# canonical computation below.
+	var bundle := _bundle(seed, discovered, home_center,
+		home_station)
+	var routed: Dictionary = bundle["routed"]
+	var key := _pair_key(a, b)
+	if routed.has(key):
+		var poly: Array = (routed[key] as Array).duplicate()
+		if b.x < a.x or (b.x == a.x and b.y < a.y):
+			poly.reverse()
+		return poly
 	# Direction-canonical (issue #246, caught by the
 	# T2(E) pin): the search is not symmetric, so every
 	# edge is routed in ONE canonical direction —
@@ -471,8 +720,13 @@ static func _routed_points_canonical(seed: int,
 		discovered: Array, home_center: Vector2,
 		home_station: Vector2, a: Vector2,
 		b: Vector2) -> Array:
-	var straight := edge_segments(seed, discovered,
-		home_center, home_station)
+	# Issue #258: the straight field comes from the
+	# cached graph (identical values; edge_segments
+	# itself is bundle-served and must not be re-entered
+	# from the bundle's own build path).
+	var g := _graph(seed, discovered, home_center)
+	var straight := _straight_segments(g,
+		_points_for_graph(g, seed, home_station))
 	# The memo key names what the route actually depends
 	# on: this edge plus the straight segments that come
 	# within the widest possible field of it (they alone
@@ -513,14 +767,9 @@ static func _routed_points_canonical(seed: int,
 static func routed_edge_segments(seed: int,
 		discovered: Array, home_center: Vector2,
 		home_station: Vector2) -> Array:
-	var out: Array = []
-	for seg in edge_segments(seed, discovered,
-			home_center, home_station):
-		var rp := routed_points(seed, discovered,
-			home_center, home_station, seg[0], seg[1])
-		for i in rp.size() - 1:
-			out.append([rp[i], rp[i + 1]])
-	return out
+	# Issue #258: served from the derived bundle.
+	return (_bundle(seed, discovered, home_center,
+		home_station)["segments"] as Array).duplicate()
 
 
 static func _route_compute(seed: int, straight: Array,
@@ -1120,8 +1369,9 @@ static func walkout_point(seed: int, discovered: Array,
 
 static func consist_boxes(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2) -> Array:
-	var graph := derive_graph(seed, discovered, home_center)
-	var pts := _points_for_graph(graph, seed, home_station)
+	var graph := _graph(seed, discovered, home_center)
+	var pts: Dictionary = _bundle(seed, discovered,
+		home_center, home_station)["points"]
 	var other := ""
 	for e in graph["edges"]:
 		if e[0] == HOME_KEY:
@@ -1269,8 +1519,9 @@ static func duration_msec_for(length_m: float) -> int:
 static func station_frame(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		key: String) -> Dictionary:
-	var g := derive_graph(seed, discovered, home_center)
-	var pts := _points_for_graph(g, seed, home_station)
+	var g := _graph(seed, discovered, home_center)
+	var pts: Dictionary = _bundle(seed, discovered,
+		home_center, home_station)["points"]
 	var pt: Vector2 = pts.get(key, home_station)
 	var dir := Vector2(0, 1)
 	for e in g["edges"]:
@@ -1532,7 +1783,7 @@ static func chart_model(seed: int, discovered: Array,
 		home_center: Vector2, home_station: Vector2,
 		train_state: Dictionary, elapsed_msec: int) \
 		-> Dictionary:
-	var g := derive_graph(seed, discovered, home_center)
+	var g := _graph(seed, discovered, home_center)
 	var train: Dictionary = {"mode": "at",
 		"at": String(train_state.get("at", HOME_KEY)),
 		"a": "", "b": "", "t": 0.0}
