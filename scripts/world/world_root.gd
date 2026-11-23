@@ -377,6 +377,28 @@ func _begin() -> void:
 		_spawn_point = Vector3(fixed1.x,
 			WorldGen.height_at(WorldGen.WORLD_SEED,
 				fixed1.x, fixed1.y) + 0.55, fixed1.y)
+	elif Dungeon.act2_walkoff_point != Vector3.ZERO:
+		# Issue #257: a walk-off entry — the player left
+		# the home building on foot after the reveal and
+		# landed in the vista; they spawn where they
+		# landed. The walk-out branch's shape: the point
+		# is validated by the #246 fix-2 backstop, and Y
+		# is re-sampled from the terrain function at the
+		# validated XZ — never carried from the vista.
+		var wp3 := Dungeon.act2_walkoff_point
+		Dungeon.act2_walkoff_point = Vector3.ZERO
+		var hb3: Dictionary = Dungeon.home_building()
+		var hc3 := Vector2((hb3["origin"] as Vector3).x,
+			(hb3["origin"] as Vector3).z)
+		var hs3 := Vector2((hb3["doorstep"] as Vector3).x,
+			(hb3["doorstep"] as Vector3).z)
+		var sp3 := Vector2(wp3.x, wp3.z)
+		var fixed3 := TrainNetwork.clear_spawn_point(
+			WorldGen.WORLD_SEED, Dungeon.act2_train_cities,
+			hc3, hs3, sp3)
+		_spawn_point = Vector3(fixed3.x,
+			WorldGen.height_at(WorldGen.WORLD_SEED,
+				fixed3.x, fixed3.y) + 0.55, fixed3.y)
 	elif Dungeon.train_disembark_station != "":
 		# Issue #244 T3: a train arrival's disembark places
 		# the rider on the destination station's platform —

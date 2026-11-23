@@ -270,6 +270,14 @@ static var act2_last_transition := {}
 ## a rooftop-door transition (arrive at the anchor's doorstep);
 ## "" on a continue (arrive at the last transition point).
 static var act2_spawn_at := ""
+## Issue #257: the walk-off entry's carried landing point
+## (world XZ, Y re-sampled on arrival) — set by the
+## dungeon scene when the local player leaves the home
+## building on foot after the reveal; consumed by
+## WorldRoot's arrival branches ahead of the generic
+## precedence. Vector3.ZERO = no walk-off entry pending
+## (the train_walkout_point sentinel shape).
+static var act2_walkoff_point := Vector3.ZERO
 ## Issue #237: per-player street positions restored from
 ## the record's "positions" key (Steam ID string -> [x, z],
 ## validated per entry at restore). A continue mechanism
@@ -746,6 +754,7 @@ static func reset_act2_state() -> void:
 	act2_anchor_doorstep = Vector3.ZERO
 	act2_last_transition = {}
 	act2_spawn_at = ""
+	act2_walkoff_point = Vector3.ZERO
 	act2_positions = {}
 	act2_train_cities = []
 	train_state = {}
@@ -2142,6 +2151,9 @@ func _process(delta: float) -> void:
 	# Issue #250: the reveal vista follows the local player
 	# once the reveal completes (a no-op until then).
 	_update_vista_follow()
+	# Issue #257: leaving the home building on foot after
+	# the reveal is a world entry where the player lands.
+	_update_walkoff_entry()
 	_process_pending_buys()
 	# Issue #86 Bug 2: retry the server handshake until the local player
 	# spawns. The first attempt can be lost if the server hasn't finished
@@ -4092,6 +4104,9 @@ var _vista_streamer: Node3D = null
 ## from then on the vista follows the local player (the
 ## living edge) instead of sitting on the anchor island.
 var _vista_follow := false
+## Issue #257: latched when this peer's walk-off world
+## entry fires — it fires exactly once per departure.
+var _walkoff_fired := false
 
 
 ## Server-only: latch the state, persist it, broadcast. The
@@ -4510,6 +4525,81 @@ func _update_vista_follow() -> void:
 		p.global_position + Vector3(
 			float(home_anchor.get("anchor_x", 0.0)), 0.0,
 			float(home_anchor.get("anchor_z", 0.0))))
+
+
+## Issue #257: the walk-off world entry (Jesse's ruling:
+## "Walk-off becomes world entry where I land"). The
+## reveal's vista ground is walkable, so a player can
+## leave the roof on foot and land in the vista without
+## ever touching the rooftop door — and until this
+## trigger existed, no Act 2 entry ran for them at all
+## (context stayed "", discovery never armed, every
+## world consumer dark). Per-frame from _process: when
+## the LOCAL player has left the home building's
+## footprint (dungeon coordinates: the anchor rect
+## offset by -anchor) AND dropped below half the reveal
+## shaft AND settled (no longer falling fast, or
+## already at street level), run the door's entry for
+## this peer with the landing point carried instead of
+## the doorstep. The footprint + depth conditions
+## cannot be met from inside the walled arena, on the
+## roof slab at roof level, or on a pre-reveal floor,
+## so the trigger needs no vista-streamer gate.
+func _update_walkoff_entry() -> void:
+	if _walkoff_fired or not revealed:
+		return
+	if act2_context != "" or home_anchor.is_empty():
+		return
+	var p := _my_player()
+	if p == null:
+		return
+	var ax := float(home_anchor.get("anchor_x", 0.0))
+	var az := float(home_anchor.get("anchor_z", 0.0))
+	var rect := Rect2(
+		float(home_anchor.get("rect_x", 0.0)) - ax,
+		float(home_anchor.get("rect_z", 0.0)) - az,
+		float(home_anchor.get("rect_w", 0.0)),
+		float(home_anchor.get("rect_d", 0.0)))
+	var pos := p.global_position
+	if rect.has_point(Vector2(pos.x, pos.z)):
+		return
+	var shaft := reveal_shaft_height()
+	if pos.y > -0.5 * shaft:
+		return
+	if p.velocity.y < -1.0 and pos.y > -shaft + 2.5:
+		return
+	_enter_world_on_foot(p)
+
+
+## The walk-off counterpart of the rooftop door's
+## interact: the same collective transition record and
+## server save (rpc_act2_transition), the same scrub of
+## this peer's body for the party staying behind, the
+## same local stamps — except the arrival: the landing
+## point (converted back to world coordinates) rides
+## act2_walkoff_point, and WorldRoot spawns this peer
+## where they landed, not at the doorstep.
+func _enter_world_on_foot(player: Player) -> void:
+	_walkoff_fired = true
+	var home := home_building()
+	if home.is_empty():
+		return
+	rpc("rpc_act2_transition", str(home["key"]),
+		home["doorstep"] as Vector3)
+	rpc("scrub_departed_player",
+		multiplayer.get_unique_id())
+	saved_player_state = player.get_state()
+	act2_local_class = player.class_id
+	var pos := player.global_position
+	act2_walkoff_point = Vector3(
+		pos.x + float(home_anchor.get("anchor_x", 0.0)),
+		0.0,
+		pos.z + float(home_anchor.get("anchor_z", 0.0)))
+	# Issue #241's posture, mirrored from the door: the
+	# context is this peer's entry fact, set locally.
+	act2_context = "world"
+	get_tree().call_deferred("change_scene_to_file",
+		WORLD_SCENE)
 
 
 ## The home building's exterior shaft under the arena slab: six

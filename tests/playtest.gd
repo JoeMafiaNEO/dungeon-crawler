@@ -116,6 +116,7 @@ func _run() -> void:
 	_test_gps_chart_fixes_254()
 	_test_chart_refresh_255()
 	_test_boot_warmer_256()
+	_test_walkoff_entry_257()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -7894,6 +7895,175 @@ func _test_boot_warmer_256() -> void:
 		wf.close()
 	DungeonScript.set("home_anchor", saved_anchor)
 	print("[Playtest] Boot loading screen (issue #256) done.")
+
+
+## Issue #257: the walk-off world entry — leaving the
+## home building on foot after the reveal runs the Act 2
+## entry where the player lands (the rooftop door was
+## previously the ONLY entry; a vista walk-off kept
+## context "" and every world consumer dark). The
+## trigger itself is driven, not the door's sibling
+## path: footprint exit + below half the shaft +
+## settled, on the dungeon scene's own player.
+func _test_walkoff_entry_257() -> void:
+	print("[Playtest] Walk-off world entry (issue #257)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	var WorldGenRes = load("res://scripts/world/world_gen.gd")
+	var TrainRes = load("res://scripts/world/train_network.gd")
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var saved_revealed: bool = bool(DungeonScript.get("revealed"))
+	var saved_wtime: float = float(DungeonScript.get("world_time"))
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	for n in get_nodes_in_group("world_root"):
+		(n as Node).free()
+	var a96: Dictionary = DungeonScript.compute_home_anchor(96.0)
+	var ax := float(a96["anchor_x"])
+	var az := float(a96["anchor_z"])
+	DungeonScript.set("home_anchor", a96)
+	var home_key := str(DungeonScript.home_building()["key"])
+	var dung = DungeonScript.new()
+	root.add_child(dung)
+	var p = dung.call("_my_player")
+	var pclass := str(p.get("class_id"))
+	var stage = func(pos: Vector3, vel: Vector3) -> void:
+		p.set("global_position", pos)
+		p.set("velocity", vel)
+	# Null-safe walk-off read: at the pre-fix baseline
+	# the static does not exist and a typed read of the
+	# null would abort the section (the hollow trap).
+	var get_wop = func() -> Vector3:
+		var v = DungeonScript.get("act2_walkoff_point")
+		return v if v is Vector3 else Vector3.ZERO
+	# (a) Off the roof, landed on the vista ground east
+	# of the footprint (dungeon (60, -17, 0); street
+	# level is -18 + terrain): the entry fires.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("saved_player_state", {})
+	DungeonScript.set("act2_local_class", "")
+	dung.set("_walkoff_fired", false)
+	stage.call(Vector3(60, -17, 0), Vector3.ZERO)
+	dung.call("_process", 0.016)
+	_assert(str(DungeonScript.get("act2_context")) == "world",
+		"257(a): the walk-off stamps the world context")
+	var wop: Vector3 = get_wop.call()
+	_assert((wop - Vector3(ax + 60.0, 0.0, az)).length()
+			< 0.01,
+		"257(a): the carried spawn is the landing point "
+		+ "in world coordinates")
+	_assert((DungeonScript.get("act2_cleared") as Array)
+			.has(home_key)
+			and str((DungeonScript.get(
+				"act2_last_transition") as Dictionary)
+				.get("building", "")) == home_key,
+		"257(a): the collective transition record ran "
+		+ "(rpc_act2_transition, call_local)")
+	_assert(not (DungeonScript.get("saved_player_state")
+			as Dictionary).is_empty()
+			and str(DungeonScript.get("act2_local_class"))
+				== pclass,
+		"257(a): the local stamps mirror the door "
+		+ "(saved state + class)")
+	_assert(dung.get("_walkoff_fired") == true,
+		"257(a): the entry latches (exactly once per "
+		+ "departure)")
+	var dsrc := FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	var ebody := _bughunt_body(dsrc, "_enter_world_on_foot")
+	_assert(ebody.contains("rpc_act2_transition")
+			and ebody.contains("scrub_departed_player")
+			and ebody.contains("change_scene_to_file")
+			and ebody.contains("WORLD_SCENE"),
+		"257(a): the entry mirrors the door's sequence "
+		+ "and hops to the world scene")
+	# (b) Negatives: on the roof inside the footprint;
+	# outside the footprint but still at roof level; and
+	# below half-shaft but still falling fast.
+	DungeonScript.reset_act2_state()
+	dung.set("_walkoff_fired", false)
+	stage.call(Vector3(0, 0.5, 0), Vector3.ZERO)
+	dung.call("_process", 0.016)
+	_assert(str(DungeonScript.get("act2_context")) == ""
+			and get_wop.call() == Vector3.ZERO,
+		"257(b): roof-roam inside the footprint does "
+		+ "not transition")
+	stage.call(Vector3(60, 0.5, 0), Vector3.ZERO)
+	dung.call("_process", 0.016)
+	_assert(str(DungeonScript.get("act2_context")) == ""
+			and get_wop.call() == Vector3.ZERO,
+		"257(b): outside the footprint at roof level "
+		+ "does not transition")
+	stage.call(Vector3(60, -12, 0), Vector3(0, -20, 0))
+	dung.call("_process", 0.016)
+	_assert(str(DungeonScript.get("act2_context")) == ""
+			and get_wop.call() == Vector3.ZERO,
+		"257(b): mid-fall below half-shaft does not "
+		+ "transition (not yet landed)")
+	# (c) Pre-reveal negative: the same landing before
+	# the reveal.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", false)
+	dung.set("_walkoff_fired", false)
+	stage.call(Vector3(60, -17, 0), Vector3.ZERO)
+	dung.call("_process", 0.016)
+	_assert(str(DungeonScript.get("act2_context")) == ""
+			and get_wop.call() == Vector3.ZERO,
+		"257(c): the same fall before the reveal does "
+		+ "not transition")
+	root.remove_child(dung)
+	dung.free()
+	# (d) Arrival leg: the world scene consuming the
+	# carried point — the entry arm arms discovery, the
+	# point is consumed, and the local player spawns at
+	# the landing XZ with terrain-sampled Y.
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("home_anchor", a96)
+	DungeonScript.set("revealed", true)
+	DungeonScript.set("act2_context", "world")
+	DungeonScript.set("act2_walkoff_point",
+		Vector3(ax + 60.0, 0.0, az))
+	var w = load("res://scenes/world/world.tscn").instantiate()
+	current_scene = w
+	root.add_child(w)
+	var ring: Array = TrainRes.initial_ring(
+		WorldGenRes.WORLD_SEED, Vector2(ax, az))
+	var got_cities: Array = (DungeonScript.get(
+		"act2_train_cities") as Array).duplicate()
+	got_cities.sort()
+	var want_cities := ring.duplicate()
+	want_cities.sort()
+	_assert(got_cities == want_cities,
+		"257(d): the entry arm arms discovery on the "
+		+ "walk-off route (initial ring present)")
+	_assert(get_wop.call() == Vector3.ZERO,
+		"257(d): the carried point is consumed at "
+		+ "arrival")
+	var lp = w.get("_local_player")
+	_assert(lp != null
+			and Vector2((lp as Node3D).global_position.x,
+				(lp as Node3D).global_position.z)
+				.distance_to(Vector2(ax + 60.0, az)) < 0.75,
+		"257(d): the player spawns at the landing XZ, "
+		+ "not the doorstep")
+	_assert(lp != null and absf(
+			(lp as Node3D).global_position.y
+			- (WorldGenRes.height_at(WorldGenRes.WORLD_SEED,
+				ax + 60.0, az) + 0.55)) < 0.75,
+		"257(d): the spawn Y is re-sampled from the "
+		+ "terrain at the landing point")
+	current_scene = null
+	root.remove_child(w)
+	w.free()
+	# Cleanup.
+	DungeonScript.reset_act2_state()
+	DungeonScript.set("revealed", saved_revealed)
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("world_time", saved_wtime)
+	print("[Playtest] Walk-off world entry (issue #257) done.")
 
 
 func _test_scatter_207() -> void:
