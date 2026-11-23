@@ -116,6 +116,7 @@ func _run() -> void:
 	_test_gps_chart_fixes_254()
 	_test_door_panels_260()
 	_test_station_sign_262()
+	_test_scatter_trees_263()
 	_test_chart_refresh_255()
 	_test_boot_warmer_256()
 	_test_walkoff_entry_257()
@@ -7669,6 +7670,202 @@ func _test_station_sign_262() -> void:
 	print("[Playtest] Station sign text done.")
 
 
+## Issue #263: Act 2 nature scatter trees render at
+## 3x (Jesse's ruling). (a) every tree item's s is
+## EXACTLY 3x the baseline derivation's s for the same
+## item — proven two ways: frozen literals (per-type
+## counts and position sums are byte-identical to the
+## baseline walk; tree scale sums are exactly 3x) and
+## a per-item hash leg (each tree item's deciding
+## cell is recovered from its own hashes, and its s
+## equals 3 x (0.85 + 0.45 x SALT_SCALE roll)); non-
+## tree items prove the same identity at 1x. (b) the
+## cache discipline: CACHE_VERSION 3 — a v2 payload
+## (carrying 1x scatter) is rejected wholesale, and a
+## fresh v3 round-trip serves the 3x scales. (c) no
+## keep-out adjustment ships (see the build report's
+## measurements: every overlap category pre-exists at
+## 1x and no existing mechanism can carry a track /
+## platform term without making the generation set-
+## dependent, against the #261 settlement).
+func _test_scatter_trees_263() -> void:
+	print("[Playtest] Scatter trees 3x (issue #263)...")
+	var WG := load("res://scripts/world/world_gen.gd")
+	var SG := load("res://scripts/world/scatter_gen.gd")
+	var WC := load("res://scripts/world/world_cache.gd")
+	var seed: int = WG.WORLD_SEED
+	var cmap: Dictionary = SG.get_script_constant_map()
+	# --- source pins ----------------------------------
+	var ssrc := FileAccess.get_file_as_string(
+		"res://scripts/world/scatter_gen.gd")
+	_assert(ssrc.contains("const TREE_SCALE := 3.0"),
+		"263(a): the tree scale is a named constant, 3.0")
+	_assert(_bughunt_body(ssrc, "scatter_step").contains(
+		"th, TREE_SCALE"),
+		"263(a): the tree append derives with TREE_SCALE")
+	var wsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/world_cache.gd")
+	_assert(wsrc.contains("const CACHE_VERSION := 3"),
+		"263(b): CACHE_VERSION is 3 — v2 payloads (1x scatter) are rejected")
+	# --- (a) frozen literals --------------------------
+	# type: [count, sum x, sum z, sum s at BASELINE]
+	var lit := {
+		Vector2i(1, 19): {
+			"oak": [107, 20511.75, 266127.00, 114.1500],
+			"detailed": [69, 13492.15, 171792.48, 73.2988],
+			"pine": [0, 0.0, 0.0, 0.0],
+			"rock_big": [6, 1078.66, 14945.02, 6.2487],
+			"rock_small": [16, 3246.21, 39546.83, 16.8138],
+			"grass": [456, 85970.80, 1133629.56, 488.4410],
+			"mushroom": [45, 8339.05, 111945.06, 49.7332],
+			"fence": [23, 4626.67, 57336.98, 25.2419]},
+		Vector2i(2, -9): {
+			"oak": [19, 6119.25, -20782.22, 20.9056],
+			"detailed": [11, 3465.62, -12046.23, 11.7858],
+			"pine": [0, 0.0, 0.0, 0.0],
+			"rock_big": [6, 1851.56, -6451.21, 6.7264],
+			"rock_small": [7, 1977.29, -7599.92, 8.0031],
+			"grass": [178, 55536.29, -194398.48, 186.7040],
+			"mushroom": [6, 1901.86, -6608.48, 6.2256],
+			"fence": [22, 6942.30, -24199.95, 24.6623]},
+		Vector2i(20, 20): {
+			"oak": [0, 0.0, 0.0, 0.0],
+			"detailed": [0, 0.0, 0.0, 0.0],
+			"pine": [108, 285502.68, 284752.24, 115.6647],
+			"rock_big": [11, 29140.56, 28884.18, 11.3951],
+			"rock_small": [33, 86509.28, 86411.83, 36.3641],
+			"grass": [313, 828254.28, 825091.11, 335.3010],
+			"mushroom": [24, 63478.82, 63351.84, 26.3754],
+			"fence": [0, 0.0, 0.0, 0.0]},
+	}
+	var tree_kinds := ["oak", "detailed", "pine"]
+	for cc in lit:
+		var data = WG.generate_chunk(cc.x, cc.y, seed)
+		var sc: Dictionary = SG.scatter_for_chunk(
+			seed, cc.x, cc.y, data, [])
+		for t in SG.TYPES:
+			var e: Array = lit[cc][t]
+			var sx := 0.0
+			var sz := 0.0
+			var ss := 0.0
+			for it in sc[t]:
+				sx += (it["p"] as Vector3).x
+				sz += (it["p"] as Vector3).z
+				ss += float(it["s"])
+			var want_ss := float(e[3])
+			if tree_kinds.has(t):
+				want_ss *= 3.0
+			_assert((sc[t] as Array).size() == int(e[0])
+				and absf(sx - float(e[1])) < 0.5
+				and absf(sz - float(e[2])) < 0.5
+				and absf(ss - want_ss) < 0.05,
+				"263(a): chunk %s %s — count and positions identical to baseline, scale sum %s (got n=%d ss=%.4f, want ss=%.4f)" % [
+					str(cc), t,
+					"exactly 3x" if tree_kinds.has(t)
+						else "unchanged",
+					(sc[t] as Array).size(), ss, want_ss])
+	# --- (a) per-item hash legs ------------------------
+	var salt_of := {"oak": int(cmap["SALT_TREE"]),
+		"detailed": int(cmap["SALT_TREE"]),
+		"pine": int(cmap["SALT_TREE"]),
+		"grass": int(cmap["SALT_GRASS"]),
+		"mushroom": int(cmap["SALT_MUSH"]),
+		"rock_big": int(cmap["SALT_ROCK"]),
+		"rock_small": int(cmap["SALT_ROCK"]),
+		"fence": int(cmap["SALT_FENCE"])}
+	var salt_scale := int(cmap["SALT_SCALE"])
+	var salt_rot := int(cmap["SALT_ROT"])
+	var cell_of = func(it: Dictionary, salt: int,
+			factor: float) -> bool:
+		var p: Vector3 = it["p"]
+		var bx := int(floor(p.x / 2.0))
+		var bz := int(floor(p.z / 2.0))
+		for hx in range(bx - 1, bx + 2):
+			for hz in range(bz - 1, bz + 2):
+				if absf(WG.rand01(seed, hx, hz, salt)
+						- float(it["h"])) > 0.00001:
+					continue
+				if absf(WG.rand01(seed, hx, hz, salt_rot)
+						* TAU - float(it["r"])) > 0.001:
+					continue
+				var want: float = factor * (0.85 + 0.45
+					* WG.rand01(seed, hx, hz, salt_scale))
+				if absf(want - float(it["s"])) < 0.001:
+					return true
+		return false
+	for cc in [Vector2i(1, 19), Vector2i(20, 20)]:
+		var data = WG.generate_chunk(cc.x, cc.y, seed)
+		var sc: Dictionary = SG.scatter_for_chunk(
+			seed, cc.x, cc.y, data, [])
+		for t in tree_kinds:
+			var ok := 0
+			for it in sc[t]:
+				if cell_of.call(it, salt_of[t], 3.0):
+					ok += 1
+			_assert(ok == (sc[t] as Array).size(),
+				"263(a): every %s item in chunk %s is a baseline item at exactly 3x (%d/%d hash-verified)" % [
+					t, str(cc), ok, (sc[t] as Array).size()])
+		for t in ["grass", "mushroom", "rock_big",
+				"rock_small", "fence"]:
+			var items: Array = sc[t]
+			var n := mini(12, items.size())
+			var ok := 0
+			for i in n:
+				if cell_of.call(items[i], salt_of[t], 1.0):
+					ok += 1
+			_assert(ok == n,
+				"263(a): sampled %s items in chunk %s are unchanged baseline items at 1x (%d/%d)" % [
+					t, str(cc), ok, n])
+	# --- (b) cache discipline --------------------------
+	var cdir := "user://world_cache"
+	var clear_dir = func(path: String) -> void:
+		var d := DirAccess.open(path)
+		if d == null:
+			return
+		for f in d.get_files():
+			d.remove(f)
+		DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(path))
+	var da := DirAccess.open("user://")
+	clear_dir.call("user://world_cache_bak_263")
+	if da.dir_exists("world_cache"):
+		da.rename("world_cache", "world_cache_bak_263")
+	var cdata = WG.generate_chunk(3, 3, seed)
+	WC.write_data(cdata)
+	_assert(not WC.read_payload(3, 3).is_empty(),
+		"263(b): a fresh v3 payload writes and reads")
+	# Craft the stale v2 payload a pre-#263 client
+	# would have left behind, 1x scatter included.
+	var stale: Dictionary = WC.read_payload(3, 3)
+	stale["v"] = 2
+	stale["scatter"] = {"oak": [{"p": Vector3.ZERO,
+		"s": 1.0, "r": 0.0, "h": 0.5}]}
+	var sf := FileAccess.open(WC._path_for(3, 3),
+		FileAccess.WRITE)
+	sf.store_buffer(var_to_bytes(stale))
+	sf.close()
+	_assert(WC.read_payload(3, 3).is_empty()
+		and WC.read_scatter(3, 3) == null,
+		"263(b): a v2 payload is rejected wholesale — its 1x scatter is never served")
+	WC.write_data(cdata)
+	var csc: Dictionary = SG.scatter_for_chunk(
+		seed, 3, 3, cdata, [])
+	WC.write_scatter(3, 3, csc)
+	var back = WC.read_scatter(3, 3)
+	_assert(back != null
+		and (back["oak"] as Array).size()
+			== (csc["oak"] as Array).size()
+		and ((back["oak"] as Array).is_empty()
+			or float((back["oak"] as Array)[0]["s"])
+				>= 2.55),
+		"263(b): the v3 round-trip serves the new 3x scatter")
+	# Restore the cache dir exactly as found.
+	clear_dir.call(cdir)
+	if da.dir_exists("world_cache_bak_263"):
+		da.rename("world_cache_bak_263", "world_cache")
+	print("[Playtest] Scatter trees 3x done.")
+
+
 ## (c) and the stairs boundary (e) in-suite.
 func _test_door_panels_260() -> void:
 	print("[Playtest] Door panels ui_menu_open (issue #260)...")
@@ -9197,6 +9394,8 @@ func _test_scatter_207() -> void:
 	var rots := {}
 	var s_min := 99.0
 	var s_max := -99.0
+	var ts_min := 99.0
+	var ts_max := -99.0
 	for t in ScatterRes.TYPES:
 		for it in s00[t]:
 			var p: Vector3 = it["p"]
@@ -9207,17 +9406,26 @@ func _test_scatter_207() -> void:
 			fx_min = minf(fx_min, fx)
 			fx_max = maxf(fx_max, fx)
 			rots[float(it["r"])] = true
-			s_min = minf(s_min, float(it["s"]))
-			s_max = maxf(s_max, float(it["s"]))
+			if t == "oak" or t == "detailed" or t == "pine":
+				ts_min = minf(ts_min, float(it["s"]))
+				ts_max = maxf(ts_max, float(it["s"]))
+			else:
+				s_min = minf(s_min, float(it["s"]))
+				s_max = maxf(s_max, float(it["s"]))
 	_assert(centers == 0,
 		"207: no scatter instance stands at a cell center (the lattice is gone)")
 	_assert(fx_min < 0.15 and fx_max > 0.85,
 		"207: jitter spans the full cell")
 	_assert(rots.size() > 40,
 		"207: rotations vary per instance")
+	# Amended by issue #263: trees derive at 3x, so the
+	# scale band is per class — non-trees keep the
+	# original [0.85, 1.30], trees sit in [2.55, 3.90].
 	_assert(s_min >= 0.85 and s_max <= 1.30
-			and s_min < 0.95 and s_max > 1.15,
-		"207: scales vary per instance inside [0.85, 1.30]")
+			and s_min < 0.95 and s_max > 1.15
+			and ts_min >= 2.55 and ts_max <= 3.90
+			and ts_min < 2.85 and ts_max > 3.45,
+		"207: scales vary per instance — non-trees inside [0.85, 1.30], trees inside [2.55, 3.90] (issue #263)")
 
 	# 4. The N4 budget binds exactly across a 5x5 scan —
 	# the field may never push a chunk past any cap.

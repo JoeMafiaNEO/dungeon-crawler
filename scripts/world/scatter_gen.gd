@@ -77,6 +77,13 @@ const MUSH_P := 0.022
 const FENCE_P := 0.010
 const NEAR_DENSITY := 0.35 ## N3's near/far settlement split
 const MAX_SLOPE := 0.55 ## rise over run, for trees + rocks
+## Issue #263 (Jesse's ruling, 2026-11-23): trees render
+## at 3x their original size — the tree kinds' _item
+## base scale. A pure multiplier on the same SALT_SCALE
+## hash stream: positions, rotations, deciding hashes,
+## densities and caps are untouched, so the forest is
+## the same forest on every client, only taller.
+const TREE_SCALE := 3.0
 
 const CAP_TREE := 200
 const CAP_ROCK := 60
@@ -307,7 +314,7 @@ static func scatter_step(state: Dictionary, budget: int) -> bool:
 						hx, hz, SALT_TREE_TYPE) < 0.6 \
 						else "detailed"
 				out[kind].append(_item(seed, hx, hz, wx,
-					wz, th, 1.0))
+					wz, th, TREE_SCALE))
 			var mh := WorldGen.rand01(seed, hx, hz, SALT_MUSH)
 			if mh < MUSH_P * clump:
 				out["mushroom"].append(_item(seed, hx, hz,

@@ -18,7 +18,13 @@ extends RefCounted
 ## All file I/O happens on the caller's thread (the
 ## streamer calls these from its main-thread paths only).
 
-const CACHE_VERSION := 2
+## Version 3 (issue #263): tree scatter scales tripled —
+## a v2 payload's cached scatter carries the old 1x
+## scales and must never be served. The version gates
+## the WHOLE payload, so chunk-data payloads invalidate
+## too and regenerate once (the boot warmer re-warms
+## them); that is the accepted cost of the single gate.
+const CACHE_VERSION := 3
 const DIR_PATH := "user://world_cache"
 
 const WorldGen := preload("res://scripts/world/world_gen.gd")
