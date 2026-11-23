@@ -114,6 +114,7 @@ func _run() -> void:
 	_test_vista_rail_252()
 	_test_cache_warmer_253()
 	_test_gps_chart_fixes_254()
+	_test_door_panels_260()
 	_test_chart_refresh_255()
 	_test_boot_warmer_256()
 	_test_walkoff_entry_257()
@@ -7434,15 +7435,21 @@ func _test_gps_chart_fixes_254() -> void:
 	var psrc := FileAccess.get_file_as_string(
 		"res://scripts/player/player.gd")
 	var input_body := _bughunt_body(psrc, "_input")
-	_assert(input_body.contains("chart_open")
-			and input_body.contains("\"train_chart\""),
-		"254(1a): _input consults the train_chart group "
+	# Amended by #260: the guard's exemption generalized
+	# from the chart-specific train_chart check to the
+	# shared ui_menu_open group (the chart migrated onto
+	# it); the behavioral pair was re-proven under Xvfb
+	# post-migration (probe260 L3, logs in the #260
+	# build record).
+	_assert(input_body.contains("menu_open")
+			and input_body.contains("\"ui_menu_open\""),
+		"254(1a): _input consults the ui_menu_open group "
 		+ "for its don't-steal guard")
-	var guard_i := input_body.find("if not chart_open")
+	var guard_i := input_body.find("if not menu_open")
 	var capture_i := input_body.find(
 		"Input.mouse_mode = Input.MOUSE_MODE_CAPTURED")
 	_assert(guard_i >= 0 and capture_i > guard_i,
-		"254(1b): the chart guard dominates the #65 "
+		"254(1b): the menu guard dominates the #65 "
 		+ "re-capture assignment in _input")
 	# --- Bug 2: the _begin discovery heal -------------------
 	var nm = root.get_node("NetworkManager")
@@ -7525,6 +7532,157 @@ func _test_gps_chart_fixes_254() -> void:
 	DungeonScript.set("world_time", saved_wtime)
 	holder.free()
 	print("[Playtest] GPS chart fixes (issue #254) done.")
+
+
+## Issue #260: the city door popup and the elevator cab
+## panel lost their clicks to the player's mouse
+## re-capture guard — the #254 family, on door-node-owned
+## panels the guard never consulted. Option B (Jesse's
+## commission): ONE shared mechanism — every standalone
+## panel holds membership in the "ui_menu_open" group for
+## exactly its open lifetime (the two door panels join
+## here; the train chart migrated onto it), and the
+## guard's exemption is that one group check plus the
+## HUD flags. The behavioral pairs (panel open + click
+## -> mouse stays VISIBLE and the button receives the
+## click; no menu -> still CAPTURED) cannot run
+## headless — Input.mouse_mode never reads back CAPTURED
+## under the headless display server (the #254 lesson) —
+## and were driven under Xvfb instead: baseline 6
+## failures (both panels re-captured, clicks lost),
+## fixed 0 (logs probe260-xvfb-baseline.log /
+## probe260-xvfb.log in the build record). This section
+## pins the mechanism's shape (d), the cleanup guarantee
+## (c) and the stairs boundary (e) in-suite.
+func _test_door_panels_260() -> void:
+	print("[Playtest] Door panels ui_menu_open (issue #260)...")
+	var DungeonScript = load("res://scripts/dungeon/dungeon.gd")
+	for n in get_nodes_in_group("players"):
+		(n as Node).free()
+	for n in get_nodes_in_group("train_chart"):
+		(n as Node).free()
+	for n in get_nodes_in_group("ui_menu_open"):
+		(n as Node).free()
+	for n in get_nodes_in_group("world_root"):
+		(n as Node).free()
+	var holder := Node3D.new()
+	holder.name = "Door260Holder"
+	root.add_child(holder)
+	var saved_scene := current_scene
+	current_scene = holder
+	var saved_anchor: Dictionary = (DungeonScript.get(
+		"home_anchor") as Dictionary).duplicate(true)
+	var saved_floor_key: String = str(DungeonScript.get(
+		"floor_key"))
+	DungeonScript.set("home_anchor",
+		DungeonScript.compute_home_anchor(96.0))
+	DungeonScript.set("floor_key", "")
+	# --- (d) the guard + the join/leave pairs -----------
+	var psrc := FileAccess.get_file_as_string(
+		"res://scripts/player/player.gd")
+	var input_body := _bughunt_body(psrc, "_input")
+	_assert(input_body.contains("menu_open")
+			and input_body.contains("\"ui_menu_open\""),
+		"260(d): _input's don't-steal guard consults the "
+		+ "shared ui_menu_open group")
+	_assert(not input_body.contains("\"train_chart\""),
+		"260(d): _input no longer consults the "
+		+ "chart-specific group — one mechanism only")
+	var ttsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/transfer_trigger.gd")
+	_assert(_bughunt_body(ttsrc, "_toggle_panel").contains(
+			"add_to_group(\"ui_menu_open\")"),
+		"260(d): the door panel joins ui_menu_open on open")
+	_assert(_bughunt_body(ttsrc, "_close_panel").contains(
+			"remove_from_group(\"ui_menu_open\")"),
+		"260(d): the door panel leaves ui_menu_open on close")
+	var ftsrc := FileAccess.get_file_as_string(
+		"res://scripts/world/floor_transfer.gd")
+	_assert(_bughunt_body(ftsrc, "_toggle_panel").contains(
+			"add_to_group(\"ui_menu_open\")"),
+		"260(d): the cab panel joins ui_menu_open on open")
+	_assert(_bughunt_body(ftsrc, "_close_panel").contains(
+			"remove_from_group(\"ui_menu_open\")"),
+		"260(d): the cab panel leaves ui_menu_open on close")
+	var csrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/train_chart.gd")
+	_assert(_bughunt_body(csrc, "open_chart").contains(
+			"add_to_group(\"ui_menu_open\")"),
+		"260(d): the chart joins ui_menu_open on open")
+	_assert(_bughunt_body(csrc, "_close").contains(
+			"remove_from_group(\"ui_menu_open\")"),
+		"260(d): the chart leaves ui_menu_open on close")
+	# --- (c) the door panel's membership lifecycle ------
+	var TTScript = load(
+		"res://scripts/world/transfer_trigger.gd")
+	var trig = TTScript.new()
+	trig.set("building_key", "-128,42")
+	trig.set("record", {"floors": 2, "kind": "village"})
+	holder.add_child(trig)
+	trig.call("interact", null)
+	var tpanel = trig.get("_panel")
+	_assert(tpanel != null and (tpanel as Node).is_in_group(
+			"ui_menu_open"),
+		"260(c): the open door panel holds the membership")
+	trig.call("_close_panel")
+	_assert(get_nodes_in_group("ui_menu_open").is_empty(),
+		"260(c): closing the door panel releases it")
+	trig.call("interact", null)
+	_assert(trig.get("_panel") != null,
+		"260(c): the door panel reopens")
+	trig.free()
+	_assert(get_nodes_in_group("ui_menu_open").is_empty(),
+		"260(c): freeing the door with its panel open "
+		+ "strands no membership")
+	# --- (c) the cab panel's membership lifecycle -------
+	DungeonScript.set("floor_key", "-128,42")
+	var FTScript = load("res://scripts/world/floor_transfer.gd")
+	var ft = FTScript.new()
+	ft.set("mode", "cab")
+	holder.add_child(ft)
+	ft.call("interact", null)
+	var fpanel = ft.get("_panel")
+	_assert(fpanel != null and (fpanel as Node).is_in_group(
+			"ui_menu_open"),
+		"260(c): the open cab panel holds the membership")
+	ft.call("_close_panel")
+	_assert(get_nodes_in_group("ui_menu_open").is_empty(),
+		"260(c): closing the cab panel releases it")
+	ft.call("interact", null)
+	_assert(ft.get("_panel") != null,
+		"260(c): the cab panel reopens")
+	ft.free()
+	_assert(get_nodes_in_group("ui_menu_open").is_empty(),
+		"260(c): freeing the cab with its panel open "
+		+ "strands no membership")
+	DungeonScript.set("floor_key", "")
+	# --- (c) the chart's membership lifecycle -----------
+	var ChartRes = load("res://scripts/ui/train_chart.gd")
+	ChartRes.open_chart("world", "home")
+	var chart_nodes := get_nodes_in_group("train_chart")
+	_assert(chart_nodes.size() == 1 and (chart_nodes[0]
+			as Node).is_in_group("ui_menu_open"),
+		"260(c): the open chart holds the membership")
+	if chart_nodes.size() == 1:
+		(chart_nodes[0] as Node).call("_close")
+	_assert(get_nodes_in_group("ui_menu_open").is_empty(),
+		"260(c): closing the chart releases it")
+	for n in get_nodes_in_group("train_chart"):
+		(n as Node).free()
+	# --- (e) stairs keep their immediate transfers ------
+	var interact_body := _bughunt_body(ftsrc, "interact")
+	_assert(interact_body.count("_toggle_panel") == 1,
+		"260(e): only the cab branch opens a panel — "
+		+ "stairs and exit never do")
+	_assert(interact_body.contains("load_floor")
+			and interact_body.contains("load_world_from_floor"),
+		"260(e): the stair/exit branches still fire their "
+		+ "immediate transfer RPCs")
+	DungeonScript.set("home_anchor", saved_anchor)
+	DungeonScript.set("floor_key", saved_floor_key)
+	current_scene = saved_scene
+	holder.free()
+	print("[Playtest] Door panels ui_menu_open (issue #260) done.")
 
 
 ## Issue #255: the GPS chart's Refresh button — a manual

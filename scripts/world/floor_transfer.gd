@@ -93,6 +93,11 @@ func _toggle_panel(player: Node) -> void:
 		return
 	_panel = CanvasLayer.new()
 	_panel.layer = 20
+	# Issue #260: while open, the panel holds the shared
+	# ui_menu_open membership the player's re-capture guard
+	# consults — the panel's lifetime IS the membership's
+	# (a freed panel takes its membership with it).
+	_panel.add_to_group("ui_menu_open")
 	add_child(_panel)
 	var dim := ColorRect.new()
 	dim.color = Color(0, 0, 0, 0.45)
@@ -127,6 +132,7 @@ func _toggle_panel(player: Node) -> void:
 
 func _close_panel() -> void:
 	if _panel != null:
+		_panel.remove_from_group("ui_menu_open")
 		_panel.queue_free()
 		_panel = null
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED

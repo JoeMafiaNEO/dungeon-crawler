@@ -66,6 +66,11 @@ static func open_chart(face: String, station_key: String) -> void:
 	var chart: Control = (load(
 		"res://scripts/ui/train_chart.gd") as GDScript).new()
 	chart.add_to_group("train_chart")
+	# Issue #260: the chart also holds the shared
+	# ui_menu_open membership while open — the player's
+	# re-capture guard consults that one group now
+	# (#254's chart-specific check, generalized).
+	chart.add_to_group("ui_menu_open")
 	chart.set("chart_face", face)
 	chart.set("chart_station", station_key)
 	layer.add_child(chart)
@@ -227,6 +232,7 @@ func _bar_style() -> StyleBoxFlat:
 
 
 func _close() -> void:
+	remove_from_group("ui_menu_open")
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	var layer := get_parent() as CanvasLayer
 	if layer != null:
