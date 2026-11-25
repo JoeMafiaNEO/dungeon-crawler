@@ -1041,7 +1041,7 @@ func _warlord_player_count() -> int:
 ## Issue #154: Jesse's curve — 48 (1P) / 72 (2P) / 96 (3P) /
 ## 96 (4P cap): +24 per extra player, counts above 4 clamp to 96.
 func _warlord_grid_size() -> int:
-	return mini(96, 48 + 24 * (maxi(1, _warlord_player_count()) - 1))
+	return WarlordSetup.grid_size_for(_warlord_player_count())
 
 
 ## Issue #138 Phase 2: baked-path selection (spec section 5, as
@@ -1116,6 +1116,9 @@ var _season_manager: Node = null
 ## Issue #10 Phase 2: seasons can be disabled (sim harness baseline).
 var seasons_enabled := true
 var _warlord_setup_pending := false
+## Issue #266: session RNG for the warlord setup (starting clusters +
+## resource scatter via WarlordSetup); created once per _setup_warlord.
+var _warlord_rng: RandomNumberGenerator = null
 ## Issue #106 (M-1): peer_id -> faction_id reclaims that arrived
 ## before _rts_manager existed; flushed at the end of _setup_warlord.
 var _pending_reclaims: Dictionary = {}
@@ -2351,13 +2354,18 @@ func _warlord_expected_players() -> int:
 ## opponents. (Supersedes the 2026-10-10 line, which barred AI only
 ## at 2+ expected players and let a 1-human MP session have one.)
 func _warlord_wants_ai() -> bool:
+	# Issue #266: Jesse's 2026-11-24 ruling 2 — the host decides AI
+	# fill in STANDALONE mode, superseding the 2026-10-17 no-AI-in-MP
+	# rule for that mode only. The dungeon branch below is untouched.
+	if NetworkManager.active_run_mode == "warlord":
+		return NetworkManager.warlord_ai_fill
 	return NetworkManager.active_run_mode == SaveManager.MODE_SOLO
 
 
 ## Map scale factor for the warlord level: keeps area-per-faction constant
 ## so 12 players aren't crowded (Jesse 2026-10-10). 1.0 at 2 factions.
 func _warlord_map_scale() -> float:
-	return sqrt(float(maxi(2, _warlord_expected_players())) / 2.0)
+	return WarlordSetup.map_scale_for(_warlord_expected_players())
 
 
 ## Jesse 2026-10-10: if a slow loader finishes after setup (or anyone joins
@@ -2385,8 +2393,14 @@ func _setup_warlord() -> void:
 	print("[Warlord] Setting up RTS mode...")
 	_rts_manager = RTSManager.new()
 	_rts_manager.name = "RTSManager"
+	# Issue #266: the RTS stack resolves its host through match_host —
+	# the dungeon is its own host here (same object, same methods,
+	# behavior identical); the match controller sets itself instead.
+	_rts_manager.match_host = self
 	add_child(_rts_manager)
 	_rts_manager.winner_declared.connect(_on_warlord_winner)
+	_warlord_rng = RandomNumberGenerator.new()
+	_warlord_rng.randomize()
 
 	# Register player factions.
 	var faction_id := 0
@@ -2437,9 +2451,9 @@ func _setup_warlord() -> void:
 		for p in players:
 			var class_id := str(p.get("class_id"))
 			var peer_id := p.get_multiplayer_authority()
-			_rts_manager.register_faction(faction_id, peer_id, class_id)
+			var spawn_pos := WarlordSetup.register_and_place(_rts_manager, faction_id, peer_id, class_id, _warlord_map_scale())
 			p.set("rts_faction", faction_id)
-			_spawn_faction_base(faction_id, _faction_spawn_pos(faction_id))
+			_spawn_faction_base(faction_id, spawn_pos)
 			faction_id += 1
 
 	# AI warlord opponent(s): solo only (Jesse 2026-10-17: no AI in
@@ -2616,9 +2630,7 @@ func _is_valid_build_spot(pos: Vector3) -> bool:
 func _faction_spawn_pos(faction_id: int) -> Vector3:
 	# Spread factions around the map; radius scales with player count
 	# (Jesse 2026-10-10) so 12 factions aren't crowded.
-	var angle := TAU * float(faction_id) / float(maxi(2, _rts_manager.factions.size()))
-	var radius := RTSTuning.get_float("map", "faction_radius", 30.0) * _warlord_map_scale()
-	return Vector3(cos(angle) * radius, 0, sin(angle) * radius)
+	return WarlordSetup.spawn_pos(_rts_manager, faction_id, _warlord_map_scale())
 
 
 func _spawn_faction_base(faction_id: int, pos: Vector3) -> void:
@@ -2629,16 +2641,10 @@ func _spawn_faction_base(faction_id: int, pos: Vector3) -> void:
 	var villager_ids := [_rts_manager.alloc_unit_id(), _rts_manager.alloc_unit_id(), _rts_manager.alloc_unit_id()]
 	rpc("spawn_rts_base", faction_id, pos, civ.civ_id, town_hall_id, villager_ids)
 	# Guaranteed starting cluster near the town center (tunable via [map]).
-	var cluster := RTSTuning.get_dict("map", "starting_cluster",
-		{"wood": 6, "food": 4, "gold": 3, "stone": 2})
-	for t in cluster:
-		for n in int(cluster[t]):
-			var angle := randf() * TAU
-			var dist := 8.0 + randf() * 6.0
-			var npos := pos + Vector3(cos(angle) * dist, 0, sin(angle) * dist)
-			if is_on_water(npos):
-				npos = pos + Vector3(cos(angle + PI) * dist, 0, sin(angle + PI) * dist)
-			rpc("spawn_rts_node", t, npos, _rts_manager.alloc_node_id())
+	for entry in WarlordSetup.starting_cluster_positions(pos, _warlord_rng, Callable(Dungeon, "is_on_water")):
+		var e: Dictionary = entry
+		var npos: Vector3 = e["pos"]
+		rpc("spawn_rts_node", str(e["type"]), npos, _rts_manager.alloc_node_id())
 
 
 @rpc("any_peer", "call_local")
@@ -2805,19 +2811,10 @@ func schedule_node_respawn(res_type: String) -> void:
 func _spawn_resource_nodes() -> void:
 	var faction_count := maxi(2, _rts_manager.factions.size())
 	var cycle := loop_index_for(level_number)
-	# Nodes per resource per faction, +bonus per cycle so late cycles don't thin out.
-	var per_res: int = RTSTuning.get_int("map", "nodes_per_resource_per_faction", 8) + RTSTuning.get_int("map", "nodes_cycle_bonus", 2) * cycle
-	var types := ["wood", "food", "gold", "stone"]
-	# Resource field scales with the map (Jesse 2026-10-10).
-	var ms := _warlord_map_scale()
-	for fi in _rts_manager.factions:
-		for t in types:
-			for n in per_res:
-				rpc("spawn_rts_node", t, _random_land_pos(14.0 * ms, 42.0 * ms), _rts_manager.alloc_node_id())
-	# Contested center ring: bonus gold/stone to reward map control.
-	for i in RTSTuning.get_int("map", "center_ring_nodes", 12):
-		var t: String = "gold" if i % 2 == 0 else "stone"
-		rpc("spawn_rts_node", t, _random_land_pos(4.0, 12.0), _rts_manager.alloc_node_id())
+	for entry in WarlordSetup.scatter_positions(_warlord_map_scale(), faction_count, cycle, _warlord_rng, Callable(Dungeon, "is_on_water")):
+		var e: Dictionary = entry
+		var npos: Vector3 = e["pos"]
+		rpc("spawn_rts_node", str(e["type"]), npos, _rts_manager.alloc_node_id())
 
 
 ## Random position on land (not river), within a radius band.

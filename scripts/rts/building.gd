@@ -61,6 +61,9 @@ var rally_point := Vector3.ZERO
 var knights_unlocked := false
 var rts_manager: Node = null
 var destroyed := false
+## Issue #266: faction of the last attacker to damage this building
+## (-1 = unknown/unattributed). Read at destruction for kill attribution.
+var last_attacker_faction: int = -1
 # Construction state.
 var under_construction := false
 var build_progress := 1.0
@@ -270,12 +273,49 @@ func _spawn_unit(unit_type: String) -> void:
 	rpc("spawn_fx", rally_point)
 
 
+## Issue #266: the manager for this building — the spawner-set
+## rts_manager when present, else the group lookup.
+func _manager() -> RTSManager:
+	if rts_manager != null and is_instance_valid(rts_manager):
+		return rts_manager as RTSManager
+	return get_tree().get_first_node_in_group("rts_manager") as RTSManager
+
+
+## Issue #266: invert the manager's faction_peers to find the faction
+## a peer plays for (-1 when unknown). Used for kill attribution.
+func _faction_for_peer(peer_id: int) -> int:
+	var m := _manager()
+	if m == null:
+		return -1
+	for fid in m.faction_peers:
+		if int(m.faction_peers[fid]) == peer_id:
+			return int(fid)
+	return -1
+
+
+## Issue #266: read the attacker faction off a damage-dealing node
+## (RTS units carry "faction", player characters "rts_faction").
+func _note_attacker(attacker: Node3D) -> void:
+	if attacker == null:
+		last_attacker_faction = -1
+		return
+	var af = attacker.get("faction")
+	if af != null:
+		last_attacker_faction = int(af)
+		return
+	var rf = attacker.get("rts_faction")
+	last_attacker_faction = int(rf) if rf != null else -1
+
+
 func take_damage(amount: float, attacker: Node3D = null) -> void:
 	if not multiplayer.is_server():
 		# Client: route to server.
 		rpc_id(NetworkManager.server_peer_id, "rpc_take_damage", amount,
 			attacker.get_multiplayer_authority() if attacker != null else 0)
 		return
+	# Issue #266: kill attribution — the attacker node is available on
+	# the server path (RTS-unit attacks call this directly).
+	_note_attacker(attacker)
 	_apply_damage(amount)
 
 
@@ -288,11 +328,16 @@ func rpc_take_damage(amount: float, attacker_peer_id: int) -> void:
 	# Sender 0 is the trusted local path and applies unchanged.
 	var sender := multiplayer.get_remote_sender_id()
 	if sender == 0:
+		# Issue #266: trusted local path — the caller passed the
+		# attacker's peer id (player.gd's server branch); resolve it.
+		last_attacker_faction = _faction_for_peer(attacker_peer_id)
 		_apply_damage(amount)
 		return
 	var applied := _srv_validate_hit(amount, sender)
 	if applied < 0.0:
 		return
+	# Issue #266: the wire sender is the only identity (D7).
+	last_attacker_faction = _faction_for_peer(sender)
 	_apply_damage(applied)
 
 
@@ -370,6 +415,12 @@ func _apply_damage(amount: float) -> void:
 		hp = 0.0
 		destroyed = true
 		rpc("destroy_fx")
+		# Issue #266: record the destruction (server-side) before the
+		# elimination check — the results timeline needs the killer.
+		if multiplayer.is_server():
+			var m := _manager()
+			if m != null and m.has_method("record_building_destroyed"):
+				m.call("record_building_destroyed", faction, last_attacker_faction, building_type)
 		if rts_manager != null and rts_manager.has_method("on_building_destroyed"):
 			rts_manager.call("on_building_destroyed", self)
 
@@ -881,6 +932,13 @@ func add_build_work(amount: float) -> void:
 	if build_progress >= 1.0:
 		under_construction = false
 		_set_construction_dim(false)
+		# Issue #266: construction completions feed match stats.
+		# Server side only — never in sync_build_complete (the
+		# client-side apply, which would double-count).
+		if multiplayer.is_server():
+			var m := _manager()
+			if m != null and m.has_method("record_building_built"):
+				m.call("record_building_built", faction, building_type)
 		rpc("build_complete_fx")
 		# Issue #251: the FX rpc alone told the client
 		# nothing about the state — its copy stayed at

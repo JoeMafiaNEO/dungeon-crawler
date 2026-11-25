@@ -19,6 +19,11 @@ signal session_lost
 ## by the main menu (lobby phase) and the HUD (in-world), mirroring
 ## session_lost; the loading peer does NOT change scene.
 signal baked_version_mismatch(message: String)
+## Issue #266: a Warlord map failed validation on receipt or load
+## (tampered bytes, unknown version, or a hash mismatch). Presented
+## by the main menu, mirroring baked_version_mismatch; the loading
+## peer does NOT change scene.
+signal warlord_map_rejected(message: String)
 
 const GAME_TAG := "dungeon-crawler"
 const MAX_PLAYERS := 12
@@ -55,6 +60,32 @@ var lobby_visibility: String = "public"  # public, friends, private
 var lobby_player_cap: int = 4
 ## Allow strangers to join a continued save (fresh level-1 characters).
 var lobby_open_roster: bool = false
+## Issue #266: Warlord Standalone hosting. host_mode selects the
+## hosted game ("dungeon" default / "warlord"); a warlord lobby
+## carries the picked map (canonical JSON + its hash) and the
+## faction/AI-fill choices, published to Steam lobby data in
+## _on_lobby_created. Standalone matches write no run save, so
+## there is deliberately NO new SaveManager mode constant.
+var host_mode: String = "dungeon"  # dungeon, warlord
+var warlord_map_name: String = "standard"
+var warlord_map_json: String = ""
+var warlord_map_hash: String = ""
+var warlord_faction_count: int = 4
+var warlord_ai_fill: bool = true
+## Joined clients that acked the map (peer id -> true). Cleared on
+## every fresh host / leave — a stale ack must never satisfy the
+## launch guard for a new peer reusing the id.
+var warlord_map_acks: Dictionary = {}
+## The picked map, parsed (stamped by the menu's picker; the host
+## falls back to Standard in _ensure_warlord_map).
+var warlord_map: Dictionary = {}
+## The last Warlord launch refusal (start_warlord_match's bool +
+## error shape); the menu presents it in the lobby.
+var warlord_launch_error: String = ""
+## Issue #266: set by the match controller on Return to Lobby —
+## the lobby stays alive, so the menu reopens it instead of the
+## title phase. Cleared by the menu when consumed.
+var return_to_lobby: bool = false
 ## Issue #140: the continued run's roster, held by the session owner for
 ## the whole session. The dungeon captures its own copy from here at
 ## _ready; this store is set when a continued run launches and cleared
@@ -207,6 +238,13 @@ func host_lobby(slot: int = 0) -> void:
 	saved_class_notices = {}
 	_reset_vault_gate_state()  # Issue #182: a fresh session owns no cipher records.
 	active_run_mode = SaveManager.MODE_MP
+	if host_mode == "warlord":
+		# Issue #266: a Warlord lobby is its own run mode (NOT
+		# MODE_MP — standalone matches write no run save).
+		active_run_mode = "warlord"
+		_ensure_warlord_map()
+		warlord_map_acks = {}
+		warlord_launch_error = ""
 	active_run_slot = slot
 	_reset_peer()
 	peer = SteamMultiplayerPeer.new()
@@ -240,6 +278,15 @@ func _on_lobby_created(connect_result: int, new_lobby_id: int) -> void:
 	Steam.setLobbyData(lobby_id, "difficulty_preset", host_difficulty_preset)
 	Steam.setLobbyData(lobby_id, "player_cap", str(lobby_player_cap))
 	Steam.setLobbyData(lobby_id, "visibility", lobby_visibility)
+	if host_mode == "warlord":
+		# Issue #266: the Warlord lobby advertises its mode, map
+		# (name + hash only — the map itself travels by RPC on
+		# peer connect), faction count, and AI-fill choice.
+		Steam.setLobbyData(lobby_id, "mode", "warlord")
+		Steam.setLobbyData(lobby_id, "warlord_map_name", warlord_map_name)
+		Steam.setLobbyData(lobby_id, "warlord_map_hash", warlord_map_hash)
+		Steam.setLobbyData(lobby_id, "warlord_faction_count", str(warlord_faction_count))
+		Steam.setLobbyData(lobby_id, "warlord_ai_fill", "1" if warlord_ai_fill else "0")
 	if not lobby_password.is_empty():
 		Steam.setLobbyData(lobby_id, "has_password", "1")
 	if host_difficulty_preset == "advanced":
@@ -265,6 +312,13 @@ func host_lan(port: int = LAN_PORT) -> void:
 	_reset_vault_gate_state()  # Issue #182: a fresh session owns no cipher records.
 	transport = Transport.LAN
 	active_run_mode = "lan"
+	if host_mode == "warlord":
+		# Issue #266: same run mode as the Steam path; the
+		# transport stays LAN (no code keys on "lan").
+		active_run_mode = "warlord"
+		_ensure_warlord_map()
+		warlord_map_acks = {}
+		warlord_launch_error = ""
 	active_run_slot = 0
 	_reset_peer()
 	var enet := ENetMultiplayerPeer.new()
@@ -520,6 +574,123 @@ func start_game() -> void:
 	Steam.setLobbyJoinable(lobby_id, false)
 	Dungeon.saved_player_state = {}
 	rpc("load_dungeon", "village", seed, 1, baked_hash)
+
+
+# --- Issue #266: Warlord Standalone ----------------
+# The host's picked map is stamped by the menu's picker, but a host
+# that never touched the picker (or whose pick was cleared) still
+# needs a map — fall back to Standard. Cheap (canonical JSON + hash
+# only, no terrain build).
+func _ensure_warlord_map() -> void:
+	if warlord_map_json != "" and not warlord_map.is_empty():
+		return
+	var std := WarlordMap.standard_map()
+	if std.is_empty():
+		return
+	warlord_map_name = "standard"
+	warlord_map = std
+	warlord_map_json = WarlordMap.canonical_json(std)
+	warlord_map_hash = WarlordMap.map_hash(std)
+
+
+## Host-only Warlord launch. Guards in order; each refusal sets
+## warlord_launch_error and returns false (the menu presents it).
+## On pass the match load broadcasts with the map.
+func start_warlord_match() -> bool:
+	if not is_host:
+		warlord_launch_error = "only the host can start the match"
+		return false
+	if host_mode != "warlord":
+		warlord_launch_error = "not a Warlord lobby"
+		return false
+	var humans := 1 + multiplayer.get_peers().size()
+	var ai := 0
+	if warlord_ai_fill:
+		ai = maxi(0, warlord_faction_count - humans)
+	if humans + ai < 2:
+		warlord_launch_error = "a match needs at least 2 factions — turn AI fill on or wait for another player"
+		return false
+	for pid in multiplayer.get_peers():
+		if not warlord_map_acks.has(pid):
+			warlord_launch_error = "waiting for all players to receive the map"
+			return false
+	var err := WarlordMap.validate(warlord_map)
+	if err != "":
+		warlord_launch_error = err
+		return false
+	var starts := WarlordMap.start_count(warlord_map)
+	if starts < warlord_faction_count:
+		warlord_launch_error = "The %s map has %d starts — fewer than the %d factions chosen." % [warlord_map_name, starts, warlord_faction_count]
+		return false
+	if transport == Transport.STEAM and lobby_id != 0:
+		Steam.setLobbyJoinable(lobby_id, false)
+	rpc("load_warlord_match", warlord_map_json, warlord_map_hash, warlord_faction_count, warlord_ai_fill)
+	return true
+
+
+## Shared map validation for the Warlord RPCs (load_warlord_match
+## + client_receive_map). {"ok": bool, "map": Dictionary,
+## "error": String}. Order: parse, version, hash, full validation.
+func _validate_warlord_map(map_json: String, map_hash: String) -> Dictionary:
+	var parsed := WarlordMap.parse_map(map_json)
+	if not bool(parsed.get("ok", false)):
+		return {"ok": false, "map": {}, "error": "warlord map refused: %s" % str(parsed.get("error", "?"))}
+	var map_data: Dictionary = parsed["map"]
+	var ver := int(map_data.get("format_version", -1))
+	if ver not in WarlordMap.SUPPORTED_VERSIONS:
+		return {"ok": false, "map": {}, "error": "warlord map refused: unsupported format_version %d" % ver}
+	if WarlordMap.map_hash(map_data) != map_hash:
+		return {"ok": false, "map": {}, "error": "warlord map refused: hash mismatch (map bytes do not match the advertised hash)"}
+	var err := WarlordMap.validate(map_data)
+	if err != "":
+		return {"ok": false, "map": {}, "error": "warlord map refused: %s" % err}
+	return {"ok": true, "map": map_data, "error": ""}
+
+
+## Host broadcasts the match load with the map + its hash; every
+## peer validates before changing scene. ANY failure refuses LOUDLY
+## (the baked_version_mismatch pattern) and the peer never loads
+## an unverifiable map.
+@rpc("any_peer", "call_local")
+func load_warlord_match(map_json: String, map_hash: String, faction_count: int, ai_fill: bool) -> void:
+	var res := _validate_warlord_map(map_json, map_hash)
+	if not bool(res.get("ok", false)):
+		push_error("[Net] %s" % str(res.get("error", "?")))
+		warlord_map_rejected.emit(str(res.get("error", "?")))
+		return
+	warlord_map_json = map_json
+	warlord_map_hash = map_hash
+	warlord_map = res["map"]
+	warlord_faction_count = faction_count
+	warlord_ai_fill = ai_fill
+	active_run_mode = "warlord"
+	get_tree().change_scene_to_file("res://scenes/rts/warlord_match.tscn")
+
+
+## Host -> one joining client: the picked map's canonical JSON +
+## its hash, sent on peer connect before any scene load. Same
+## validation as the load; a failure refuses WITHOUT acking, so
+## the host's launch guard keeps waiting for this client.
+@rpc("any_peer", "call_local")
+func client_receive_map(map_json: String, map_hash: String) -> void:
+	var res := _validate_warlord_map(map_json, map_hash)
+	if not bool(res.get("ok", false)):
+		push_error("[Net] %s" % str(res.get("error", "?")))
+		warlord_map_rejected.emit(str(res.get("error", "?")))
+		return
+	warlord_map_json = map_json
+	warlord_map_hash = map_hash
+	warlord_map = res["map"]
+	warlord_map_name = WarlordMap.display_name(res["map"])
+	rpc_id(server_peer_id, "warlord_map_ack")
+
+
+## Client -> host: this peer received + validated the map.
+@rpc("any_peer")
+func warlord_map_ack() -> void:
+	if not is_host:
+		return
+	warlord_map_acks[multiplayer.get_remote_sender_id()] = true
 
 
 @rpc("any_peer", "call_local")
@@ -1350,6 +1521,11 @@ func _on_peer_connected(id: int) -> void:
 	if multiplayer.is_server() and Dungeon.floor_active():
 		rpc_id(id, "load_floor", Dungeon.floor_key,
 			Dungeon.floor_index, false)
+	# Issue #266: a joiner to a Warlord lobby receives the map
+	# before any scene load; the host does not start until every
+	# joined client has acked it (start_warlord_match guard 3).
+	if multiplayer.is_server() and active_run_mode == "warlord" and warlord_map_json != "":
+		rpc_id(id, "client_receive_map", warlord_map_json, warlord_map_hash)
 	_refresh_members()
 	lobby_members_changed.emit()
 	_push_saved_class_notices()
@@ -1450,6 +1626,8 @@ func leave_lobby() -> void:
 		Dungeon.continued_roster = []
 		continued_session_roster = []  # Issue #140: session store ends too.
 		saved_class_notices = {}
+		warlord_map_acks = {}  # Issue #266: acks die with the session.
+		warlord_launch_error = ""
 		_reset_vault_gate_state()  # Issue #182: the cipher record ends with the session.
 		_reset_peer()
 		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
@@ -1459,6 +1637,8 @@ func leave_lobby() -> void:
 		Steam.leaveLobby(lobby_id)
 	lobby_id = 0
 	is_host = false
+	warlord_map_acks = {}  # Issue #266: acks die with the session.
+	warlord_launch_error = ""
 	lobby_members.clear()
 	# Issue #4 Phase 4: a stale continued roster must never leak into the next
 	# session's rejoin matching (wrong slot's seats, phantom roster-lock).

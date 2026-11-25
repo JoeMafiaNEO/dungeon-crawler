@@ -20,6 +20,9 @@ var damage: float = 5.0
 var attack_range: float = 1.5
 var move_speed: float = 3.0
 var alive: bool = true
+## Issue #266: faction of the last attacker to damage this unit
+## (-1 = unknown/unattributed). Read at _die() for kill attribution.
+var last_attacker_faction: int = -1
 # Jesse 2026-10-11: manual velocity (was CharacterBody3D.velocity).
 var velocity: Vector3 = Vector3.ZERO
 
@@ -87,6 +90,53 @@ func _network_manager() -> Node:
 	if loop != null:
 		return loop.root.get_node_or_null("NetworkManager")
 	return null
+
+
+## Issue #266: manager resolution — the cached _rts_mgr when valid,
+## else the group lookup (same node either way; the cache exists to
+## avoid per-frame group scans).
+func _manager() -> RTSManager:
+	if _rts_mgr != null and is_instance_valid(_rts_mgr):
+		return _rts_mgr
+	var m := get_tree().get_first_node_in_group("rts_manager") as RTSManager
+	if m != null:
+		_rts_mgr = m
+	return m
+
+
+## Issue #266: ground height at a position from the host terrain
+## (0.0 when there is no manager — the flat dungeon floor).
+func _ground_height_at(pos: Vector3) -> float:
+	var m := _manager()
+	if m != null:
+		return m.host_ground_height(pos)
+	return 0.0
+
+
+## Issue #266: invert the manager's faction_peers to find the faction
+## a peer plays for (-1 when unknown). Used for kill attribution.
+func _faction_for_peer(peer_id: int) -> int:
+	var m := _manager()
+	if m == null:
+		return -1
+	for fid in m.faction_peers:
+		if int(m.faction_peers[fid]) == peer_id:
+			return int(fid)
+	return -1
+
+
+## Issue #266: read the attacker faction off a damage-dealing node
+## (RTS units carry "faction", player characters "rts_faction").
+func _note_attacker(attacker: Node3D) -> void:
+	if attacker == null:
+		last_attacker_faction = -1
+		return
+	var af = attacker.get("faction")
+	if af != null:
+		last_attacker_faction = int(af)
+		return
+	var rf = attacker.get("rts_faction")
+	last_attacker_faction = int(rf) if rf != null else -1
 
 
 ## Issue #165 (D5): selection is presentation, not authority —
@@ -693,6 +743,9 @@ func take_damage(amount: float, attacker: Node3D = null) -> void:
 		rpc_id(server_peer, "rpc_take_damage", amount,
 			attacker.get_multiplayer_authority() if attacker != null else 0)
 		return
+	# Issue #266: kill attribution — the attacker node is available on
+	# the server path (RTS-unit attacks call this directly).
+	_note_attacker(attacker)
 	_apply_damage(amount)
 
 
@@ -705,11 +758,16 @@ func rpc_take_damage(amount: float, attacker_peer_id: int) -> void:
 	# Sender 0 is the trusted local path and applies unchanged.
 	var sender := multiplayer.get_remote_sender_id()
 	if sender == 0:
+		# Issue #266: trusted local path — the caller passed the
+		# attacker's peer id (player.gd's server branch); resolve it.
+		last_attacker_faction = _faction_for_peer(attacker_peer_id)
 		_apply_damage(amount)
 		return
 	var applied := _srv_validate_hit(amount, sender)
 	if applied < 0.0:
 		return
+	# Issue #266: the wire sender is the only identity (D7).
+	last_attacker_faction = _faction_for_peer(sender)
 	_apply_damage(applied)
 
 
@@ -822,6 +880,10 @@ func _die() -> void:
 	rpc("client_unit_died")
 	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 	if mgr:
+		# Issue #266: record the kill (server-side) before the
+		# elimination check — the results timeline needs the killer.
+		if multiplayer.is_server():
+			mgr.record_unit_killed(faction, last_attacker_faction)
 		mgr.check_elimination()
 	queue_free()
 
@@ -865,7 +927,11 @@ func _apply_movement(delta: float) -> void:
 	if _is_ship():
 		global_position.y = 0.08
 	else:
-		global_position.y = 0.0
+		# Issue #266: stand on the host terrain — 0.0 on the dungeon's
+		# flat floor (identical behavior there), the tier height on a
+		# standalone map. Without this the safety clamp below would
+		# fight the movement integrator every frame on tiers.
+		global_position.y = _ground_height_at(global_position)
 	# Clamp to reasonable map bounds (200x200).
 	global_position.x = clampf(global_position.x, -100.0, 100.0)
 	global_position.z = clampf(global_position.z, -100.0, 100.0)
@@ -900,9 +966,13 @@ func _physics_process(delta: float) -> void:
 	# Safety: the map is flat — never let land units leave the ground plane.
 	# Dense crowds can pop units skyward via collision resolution (units have
 	# no gravity); without this they'd hover forever, out of attack range.
-	if not _is_ship() and (global_position.y < -1.0 or global_position.y > 1.5):
-		global_position = Vector3(global_position.x, 0.0, global_position.z)
-		velocity.y = 0.0
+	# Issue #266: the ground plane is the host terrain height (0.0 in the
+	# dungeon — identical behavior there).
+	if not _is_ship():
+		var gh := _ground_height_at(global_position)
+		if global_position.y < gh - 1.0 or global_position.y > gh + 1.5:
+			global_position = Vector3(global_position.x, gh, global_position.z)
+			velocity.y = 0.0
 
 	# Trade cart behavior: shuttle between markets.
 	if unit_type == "trade_cart" and _trade_target != null:
@@ -1049,6 +1119,9 @@ func _do_gather() -> void:
 	var gathered: int = _gather_node.gather(int(rate))
 	if gathered > 0:
 		mgr.add_resource(faction, _gather_node.resource_type, gathered)
+		# Issue #266: gather completions feed match stats (server-side).
+		if multiplayer.is_server():
+			mgr.record_resource_gathered(faction, _gather_node.resource_type, gathered)
 
 
 ## Trade loop: head to target market, earn gold by distance, return home, repeat.
@@ -1131,11 +1204,17 @@ func _complete_conversion() -> void:
 		return
 	if not bool(target.get("alive")):
 		return
+	# Issue #266: the victim's faction before the flip — a conversion
+	# counts as "lost" for the victim, never as a kill (gate ruling).
+	var from_faction := int(target.get("faction"))
 	target.convert_to(faction, civ)
 	target.rpc("convert_fx")
 	var mgr := get_tree().get_first_node_in_group("rts_manager") as RTSManager
 	if mgr != null:
 		mgr.sim_bump(faction, "conversions", 1)
+		# Issue #266: victim units_lost +1 (server-side).
+		if multiplayer.is_server():
+			mgr.record_conversion(from_faction, faction)
 		mgr.check_elimination()
 
 
@@ -1144,6 +1223,12 @@ func _is_ship() -> bool:
 
 
 func _is_on_water(pos: Vector3) -> bool:
+	# Issue #266: resolve through the manager's host seam (ponds in a
+	# standalone match, the river band in the dungeon); the legacy
+	# dungeon-group lookup applies when there is no manager.
+	var m := _manager()
+	if m != null:
+		return m.host_is_on_water(pos)
 	var d := get_tree().get_first_node_in_group("dungeon")
 	if d != null:
 		return bool(d.call("is_on_water", pos))

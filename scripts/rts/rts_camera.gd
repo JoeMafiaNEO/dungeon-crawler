@@ -456,11 +456,30 @@ func _update_drag_box(p1: Vector2, p2: Vector2) -> void:
 	_drag_box.size = rect.size
 
 
+## Issue #266: the scene node that owns this camera's manager (dungeon
+## or match controller). Resolves through the manager's match_host seam;
+## falls back to the legacy dungeon-group lookup when there is no manager.
+func _host() -> Node:
+	if _manager != null:
+		var h := _manager.host_node()
+		if h != null:
+			return h
+	return get_tree().get_first_node_in_group("dungeon")
+
+
+## Issue #266: ground height at a position from the host terrain
+## (0.0 when there is no manager — the flat dungeon floor).
+func _ground_height_at(pos: Vector3) -> float:
+	if _manager != null:
+		return _manager.host_ground_height(pos)
+	return 0.0
+
+
 func _update_ghost(screen_pos: Vector2) -> void:
 	if _ghost == null or not is_instance_valid(_ghost):
 		return
 	var ground := _screen_to_ground(screen_pos)
-	_ghost.position = Vector3(ground.x, 1.0, ground.z)
+	_ghost.position = Vector3(ground.x, _ground_height_at(ground) + 1.0, ground.z)
 	# Green if buildable here, red if not.
 	_ghost_valid = _is_valid_build_spot(ground)
 	var mat := _ghost.material_override as StandardMaterial3D
@@ -473,8 +492,15 @@ func _is_valid_build_spot(ground: Vector3) -> bool:
 	for b in get_tree().get_nodes_in_group("rts_buildings"):
 		if ground.distance_to(b.global_position) < 5.0:
 			return false
-	# Not on the river.
-	if Dungeon.is_on_water(ground):
+	# Not on water — the host's test (map ponds in a standalone match).
+	# The old static Dungeon.is_on_water hardcodes the |x|<4 river band,
+	# which is wrong on a riverless map.
+	var on_water := false
+	if _manager != null:
+		on_water = _manager.host_is_on_water(ground)
+	else:
+		on_water = Dungeon.is_on_water(ground)
+	if on_water:
 		return false
 	return true
 
@@ -495,16 +521,16 @@ func _confirm_placement(screen_pos: Vector2) -> void:
 			rhud.show_toast("Please select villager/s before building")
 		return
 	var ground := _screen_to_ground(screen_pos)
-	ground.y = 0.0
+	ground.y = _ground_height_at(ground)
 	var btype := _placing_type
 	cancel_placement()
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon != null and dungeon.has_method("rpc_start_construction"):
+	var host := _host()
+	if host != null and host.has_method("rpc_start_construction"):
 		# Issue #165 (D1/F1): the house direct-call pattern.
 		if multiplayer.is_server():
-			dungeon.rpc_start_construction(faction_id, btype, ground, builders)
+			host.rpc_start_construction(faction_id, btype, ground, builders)
 		else:
-			dungeon.rpc_id(_server_id(), "rpc_start_construction", faction_id, btype, ground, builders)
+			host.rpc_id(_server_id(), "rpc_start_construction", faction_id, btype, ground, builders)
 
 
 func _server_id() -> int:
@@ -512,9 +538,9 @@ func _server_id() -> int:
 
 
 func _find_rts_hud() -> Node:
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon != null:
-		return dungeon.get_node_or_null("RTSHUD")
+	var host := _host()
+	if host != null:
+		return host.get_node_or_null("RTSHUD")
 	return null
 
 
@@ -537,9 +563,10 @@ func start_placement(btype: String) -> void:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_ghost.material_override = mat
 	_ghost.position = Vector3(0, 1.0, 0)
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon != null:
-		dungeon.get_node("RTS").add_child(_ghost)
+	# Issue #266: the ghost lives under the host's "RTS" holder.
+	var host := _host()
+	if host != null:
+		host.get_node("RTS").add_child(_ghost)
 
 
 func cancel_placement() -> void:

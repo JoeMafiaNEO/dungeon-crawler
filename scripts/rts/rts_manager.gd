@@ -122,6 +122,235 @@ func sim_bump(faction_id: int, key: String, amount: int = 1, subkey: String = ""
 		s[key] = int(s.get(key, 0)) + amount
 
 
+## Issue #266 (standalone Warlord, P1): the match_host seam. The scene node
+## that owns this manager — the dungeon in the dungeon loop, the match
+## controller in a standalone match. Consumers that used to reach the
+## dungeon through the "dungeon" group resolve through here instead; when
+## match_host is null the legacy group lookup applies, so dungeon behavior
+## is unchanged.
+var match_host: Node = null
+
+
+func host_node() -> Node:
+	if match_host != null and is_instance_valid(match_host):
+		return match_host
+	return get_tree().get_first_node_in_group("dungeon")
+
+
+## Ground height at a position, from the host's terrain (0.0 on the
+## dungeon's flat floor — identical behavior there).
+func host_ground_height(pos: Vector3) -> float:
+	var host := host_node()
+	if host != null and host.has_method("ground_height_at"):
+		return float(host.call("ground_height_at", pos))
+	return 0.0
+
+
+## Water test at a position, from the host (river band in the dungeon,
+## map ponds in a standalone match).
+func host_is_on_water(pos: Vector3) -> bool:
+	var host := host_node()
+	if host != null and host.has_method("is_on_water"):
+		return bool(host.call("is_on_water", pos))
+	return false
+
+
+## Issue #266: per-faction match stats + timeline for a standalone match
+## (spec §3.7). Server-side only; recorded at the same sites that bump
+## sim_stats (plus new kill/loss hooks). sim_stats itself is untouched —
+## stat 12 (trade/conversions/fish) is mirrored from sim_stats at results
+## time, not re-recorded. Every record function no-ops unless a match is
+## in progress (the faction was zeroed by match_begin), so dungeon play
+## is unaffected.
+var match_stats: Dictionary = {}
+var match_timeline: Array = []
+var match_clock_sec: float = 0.0
+var match_eliminations: Array = []
+var match_last_killer: Dictionary = {}
+var match_first_blood_done: bool = false
+
+
+func _match_stat(faction_id: int) -> Dictionary:
+	return match_stats.get(faction_id, {})
+
+
+## Zero every §3.7 stat for the match's factions and open the timeline.
+## Server-only; the controller calls this once at launch.
+func match_begin(faction_ids: Array) -> void:
+	if not multiplayer.is_server():
+		return
+	match_stats = {}
+	match_timeline = []
+	match_clock_sec = 0.0
+	match_eliminations = []
+	match_last_killer = {}
+	match_first_blood_done = false
+	var facs: Array = []
+	for fid in faction_ids:
+		var id := int(fid)
+		match_stats[id] = {
+			"units_trained": {}, "units_killed": 0, "units_lost": 0,
+			"buildings_built": 0, "buildings_destroyed": 0, "buildings_lost": 0,
+			"resources_gathered": {"wood": 0, "food": 0, "gold": 0, "stone": 0},
+			"ages": [], "peak_population": 0, "peak_military": 0,
+		}
+		facs.append({"faction": id, "color": faction_color(id).to_html(false)})
+	match_timeline.append({"event": "match_start", "t": 0.0, "factions": facs})
+
+
+func record_unit_trained(faction_id: int, unit_type: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var s := _match_stat(faction_id)
+	if s.is_empty():
+		return
+	var trained: Dictionary = s.get("units_trained", {})
+	trained[unit_type] = int(trained.get(unit_type, 0)) + 1
+	s["units_trained"] = trained
+	match_sample_peaks()
+
+
+## Killer -1 = unknown, no kill credit. The first credited kill of the
+## match emits the first_blood timeline event once.
+func record_unit_killed(victim_faction: int, killer_faction: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var s := _match_stat(victim_faction)
+	if s.is_empty():
+		return
+	s["units_lost"] = int(s.get("units_lost", 0)) + 1
+	if killer_faction >= 0:
+		match_last_killer[victim_faction] = killer_faction
+		var k := _match_stat(killer_faction)
+		if not k.is_empty():
+			k["units_killed"] = int(k.get("units_killed", 0)) + 1
+		if not match_first_blood_done:
+			match_first_blood_done = true
+			match_timeline.append({"event": "first_blood", "t": match_clock_sec,
+				"killer": killer_faction, "victim": victim_faction})
+	match_sample_peaks()
+
+
+func record_building_built(faction_id: int, _btype: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var s := _match_stat(faction_id)
+	if s.is_empty():
+		return
+	s["buildings_built"] = int(s.get("buildings_built", 0)) + 1
+
+
+func record_building_destroyed(victim_faction: int, killer_faction: int, btype: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var s := _match_stat(victim_faction)
+	if s.is_empty():
+		return
+	s["buildings_lost"] = int(s.get("buildings_lost", 0)) + 1
+	if killer_faction >= 0:
+		match_last_killer[victim_faction] = killer_faction
+		var k := _match_stat(killer_faction)
+		if not k.is_empty():
+			k["buildings_destroyed"] = int(k.get("buildings_destroyed", 0)) + 1
+	if btype == "town_hall":
+		var ev := {"event": "town_hall_destroyed", "t": match_clock_sec, "faction": victim_faction}
+		if killer_faction >= 0:
+			ev["by"] = killer_faction
+		match_timeline.append(ev)
+
+
+func record_resource_gathered(faction_id: int, res_type: String, amount: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var s := _match_stat(faction_id)
+	if s.is_empty():
+		return
+	var gathered: Dictionary = s.get("resources_gathered", {})
+	if not gathered.has(res_type):
+		return
+	gathered[res_type] = int(gathered.get(res_type, 0)) + amount
+	s["resources_gathered"] = gathered
+
+
+func record_age_up(faction_id: int, new_age: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var s := _match_stat(faction_id)
+	if s.is_empty():
+		return
+	var ages: Array = s.get("ages", [])
+	ages.append({"age": new_age, "t": match_clock_sec})
+	s["ages"] = ages
+
+
+## A conversion counts as "lost" for the victim and never as a kill
+## (gate ruling); the converter's conversions mirror lives in sim_stats
+## and is read at results time, not re-recorded here.
+func record_conversion(from_faction: int, _to_faction: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var s := _match_stat(from_faction)
+	if s.is_empty():
+		return
+	s["units_lost"] = int(s.get("units_lost", 0)) + 1
+	match_sample_peaks()
+
+
+## Census living units per faction; update peak population / peak military.
+func match_sample_peaks() -> void:
+	if match_stats.is_empty():
+		return
+	var pop := {}
+	var mil := {}
+	for fid in match_stats:
+		pop[fid] = 0
+		mil[fid] = 0
+	for n in get_tree().get_nodes_in_group("rts_units"):
+		var u := n as RTSUnit
+		if u == null or not u.alive:
+			continue
+		if not pop.has(u.faction):
+			continue
+		pop[u.faction] = int(pop[u.faction]) + 1
+		if u.unit_type != "villager":
+			mil[u.faction] = int(mil[u.faction]) + 1
+	for fid in match_stats:
+		var s: Dictionary = match_stats[fid]
+		s["peak_population"] = maxi(int(s.get("peak_population", 0)), int(pop[fid]))
+		s["peak_military"] = maxi(int(s.get("peak_military", 0)), int(mil[fid]))
+
+
+## Build the §3.7 results payload: placements, per-faction stats (stat 12
+## mirrored from sim_stats), timeline + match_end. Winner -1 is the
+## mutual-wipe draw (the controller's path): placements are the reverse
+## elimination order starting at 1.
+func match_results(winner_faction: int) -> Dictionary:
+	var placements: Array = []
+	if winner_faction >= 0:
+		placements.append({"faction": winner_faction, "placement": 1})
+	var elim_rev := match_eliminations.duplicate()
+	elim_rev.reverse()
+	var place := 2 if winner_faction >= 0 else 1
+	for fid in elim_rev:
+		if int(fid) == winner_faction:
+			continue
+		placements.append({"faction": int(fid), "placement": place})
+		place += 1
+	var stats := {}
+	for fid in match_stats:
+		var s: Dictionary = (match_stats[fid] as Dictionary).duplicate(true)
+		var sim: Dictionary = sim_stats.get(fid, {})
+		s["trade_deliveries"] = int(sim.get("trade_deliveries", 0))
+		s["trade_gold"] = int(sim.get("trade_gold", 0))
+		s["conversions"] = int(sim.get("conversions", 0))
+		s["fish_food"] = int(sim.get("fish_food", 0))
+		stats[fid] = s
+	var tl := match_timeline.duplicate()
+	tl.append({"event": "match_end", "t": match_clock_sec, "winner": winner_faction})
+	return {"winner": winner_faction, "duration_sec": match_clock_sec,
+		"placements": placements, "stats": stats, "timeline": tl}
+
+
 func _ready() -> void:
 	add_to_group("rts_manager")
 	# Jesse 2026-10-11: spatial hash for O(1) neighborhood lookups.
@@ -441,6 +670,7 @@ func age_up(faction_id: int) -> bool:
 		return false
 	f["age"] = current_age + 1
 	age_changed.emit(faction_id, current_age + 1)
+	record_age_up(faction_id, current_age + 1)
 	return true
 
 
@@ -496,10 +726,13 @@ func spawn_unit(unit_type: String, faction_id: int, pos: Vector3, civ: CivData) 
 
 
 func _spawn_unit_local(unit_type: String, faction_id: int, pos: Vector3, civ_id: String, unit_id: int) -> void:
-	var dungeon := get_tree().get_first_node_in_group("dungeon")
-	if dungeon == null:
+	# Issue #266: the holder resolves through the match_host seam
+	# (the dungeon's "RTS" child, or the match controller's) — the
+	# legacy dungeon-group lookup applies when match_host is null.
+	var host := host_node()
+	if host == null:
 		return
-	var holder := dungeon.get_node_or_null("RTS")
+	var holder := host.get_node_or_null("RTS")
 	if holder == null:
 		return
 	var civ := CivData.for_civ_id(civ_id)
@@ -510,6 +743,7 @@ func _spawn_unit_local(unit_type: String, faction_id: int, pos: Vector3, civ_id:
 	u.position = pos
 	holder.add_child(u)
 	sim_bump(faction_id, "units_trained", 1, unit_type)
+	record_unit_trained(faction_id, unit_type)
 
 
 @rpc("any_peer", "call_local")
@@ -545,6 +779,17 @@ func check_elimination() -> void:
 				break
 		if not has_buildings and not has_units:
 			f["alive"] = false
+			# Issue #266: match bookkeeping (no-op outside a match —
+			# the faction is only tracked after match_begin). Recorded
+			# before the emit so signal handlers see consistent state.
+			if match_stats.has(faction_id):
+				match_eliminations.append(faction_id)
+				var ev := {"event": "faction_eliminated", "t": match_clock_sec,
+					"faction": faction_id}
+				var by := int(match_last_killer.get(faction_id, -1))
+				if by >= 0:
+					ev["by"] = by
+				match_timeline.append(ev)
 			faction_eliminated.emit(faction_id)
 			_check_winner()
 

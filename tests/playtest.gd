@@ -125,6 +125,7 @@ func _run() -> void:
 	_test_additive_tracks_261()
 	_test_threaded_bundle_264()
 	_test_chart_train_live_265()
+	_test_warlord_standalone_266()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -805,9 +806,12 @@ func _test_rts_command_part_a_165() -> void:
 	# (c) client-leg branch shape: every converted site carries
 	# both branches with the peer-id-safe remote leg.
 	var cam_src := FileAccess.get_file_as_string("res://scripts/rts/rts_camera.gd")
+	# Issue #266: the construction call routes through the match_host
+	# seam (host) now, not the dungeon node directly — same direct
+	# branch, same arguments.
 	_assert(cam_src.contains("mgr.rpc_order_move_squad(unit_ids, ground)")
 		and cam_src.contains("n.rpc_order_move(ground + offset)")
-		and cam_src.contains("dungeon.rpc_start_construction(faction_id, btype, ground, builders)"),
+		and cam_src.contains("host.rpc_start_construction(faction_id, btype, ground, builders)"),
 		"165A: camera sites carry the direct branch")
 	var pl_src := FileAccess.get_file_as_string("res://scripts/player/player.gd")
 	_assert(not pl_src.contains("server_id := 1") and not pl_src.contains("rpc_id(1,"),
@@ -9661,6 +9665,513 @@ func _test_chart_train_live_265() -> void:
 	print("[Playtest] Chart train marker live (issue #265) done.")
 
 
+## Issue #266 P1: standalone Warlord mode. (a) the shipped Standard map
+## parses, is canonical, hashes to the bake record, validates, and
+## carries 12 starts + >=1 node per type; the validator refuses one
+## mutation per rule. (b) WarlordSetup's pure values match the dungeon's
+## (grid 48/72/96/96, scale, ring positions, cluster/scatter shape).
+## (c) the dungeon loop is a thin caller over WarlordSetup with its
+## spine intact (the dungeon winner still clears the level). (d) host
+## UI + launch refusal + map refusal (Leaf A). (e) the match scene
+## composes and fills 1 human + 3 AI on the Standard map; one AI
+## faction is eliminated for real through take_damage. (f) results:
+## record API -> placements + timeline -> rendered screen, including
+## the mutual-wipe draw and the no-invented-attribution rules.
+## (g) Return to Lobby keeps the lobby, Quit to Menu leaves it —
+## source-pinned; the scene change itself is never driven in-suite.
+func _test_warlord_standalone_266() -> void:
+	print("[Playtest] Warlord standalone mode (issue #266)...")
+	# Red-before shape: on a tree without the feature these four
+	# fail as real FAIL lines before any load is attempted.
+	_assert(FileAccess.file_exists("res://scripts/rts/warlord_map.gd"),
+		"266: WarlordMap exists")
+	_assert(FileAccess.file_exists("res://scripts/rts/warlord_setup.gd"),
+		"266: WarlordSetup exists")
+	_assert(FileAccess.file_exists("res://scripts/rts/warlord_match.gd"),
+		"266: the match controller exists")
+	_assert(FileAccess.file_exists("res://data/maps/standard.json"),
+		"266: the Standard map exists")
+	var WM = load("res://scripts/rts/warlord_map.gd")
+	var WS = load("res://scripts/rts/warlord_setup.gd")
+	var MgrScript = load("res://scripts/rts/rts_manager.gd")
+	# (a) Standard map.
+	var std_text := FileAccess.get_file_as_string(
+		"res://data/maps/standard.json")
+	_assert(not std_text.is_empty(),
+		"266: the shipped Standard map file exists")
+	var parsed: Dictionary = WM.parse_map(std_text)
+	_assert(bool(parsed.get("ok", false)),
+		"266: the shipped Standard map parses")
+	var std: Dictionary = parsed.get("map", {})
+	_assert(WM.map_hash(std) == "6e8f7d96e94514badbea3b034ec049f117075bd2ae85b6d4f7a769f53e8ee80b",
+		"266: the Standard map hashes to the bake record (deterministic bake)")
+	# Canonical form is a fixed point: re-canonicalizing the parsed
+	# map is stable. (A byte-equality check against the file cannot
+	# hold: the bake wrote code-built ints — "1000" — and a JSON
+	# parse yields floats, which re-serialize as "1000.0".)
+	var canon_once: String = WM.canonical_json(std)
+	var reparsed: Dictionary = WM.parse_map(canon_once).get("map", {})
+	_assert(WM.canonical_json(reparsed) == canon_once,
+		"266: the Standard map file is canonical JSON")
+	_assert(WM.validate(std) == "",
+		"266: the Standard map validates")
+	_assert(WM.start_count(std) == 12,
+		"266: the Standard map has 12 starts")
+	_assert(int((std.get("zones", []) as Array).size()) == 26,
+		"266: Standard carries 26 zones")
+	_assert(int((std.get("ramps", []) as Array).size()) == 40,
+		"266: Standard carries 40 ramps")
+	_assert(int((std.get("ponds", []) as Array).size()) == 12,
+		"266: Standard carries 12 ponds")
+	var node_types := {}
+	for n in (std.get("nodes", []) as Array):
+		node_types[str((n as Dictionary).get("type", "?"))] = true
+	for t in ["wood", "food", "gold", "stone"]:
+		_assert(node_types.has(t),
+			"266: Standard has at least one %s node" % t)
+	# (a2) the validator refuses one mutation per rule. The probe map
+	# is minimal: one +6 zone, no ramps, two starts on the plateau.
+	var small := {
+		"format_version": 1, "name": "probe",
+		"display_name": "Probe", "size_m": 160, "seed": 1,
+		"zones": [{"center": [0, 0], "radius": 40.0, "height": 6,
+			"phase1": 0.0, "phase2": 0.0}],
+		"ramps": [], "ponds": [],
+		"starts": [{"faction": 0, "pos": [-20, 0]},
+			{"faction": 1, "pos": [20, 0]}],
+		"nodes": [{"type": "wood", "pos": [-10, 10], "amount": 1000},
+			{"type": "food", "pos": [10, 10], "amount": 800},
+			{"type": "gold", "pos": [-10, -10], "amount": 800},
+			{"type": "stone", "pos": [10, -10], "amount": 800}],
+	}
+	_assert(WM.validate(small) == "",
+		"266: the minimal probe map validates")
+	var mut: Dictionary = (small as Dictionary).duplicate(true)
+	mut["format_version"] = 99
+	_assert(WM.validate(mut) != "",
+		"266: the validator refuses an unknown format_version")
+	mut = (small as Dictionary).duplicate(true)
+	mut["size_m"] = 100
+	_assert(WM.validate(mut) != "",
+		"266: the validator refuses a size outside {160, 220}")
+	mut = (small as Dictionary).duplicate(true)
+	var mut_zone: Dictionary = (mut["zones"] as Array)[0]
+	mut_zone["height"] = 5
+	_assert(WM.validate(mut) != "",
+		"266: the validator refuses a zone height outside {3, 6, 9}")
+	mut = (small as Dictionary).duplicate(true)
+	mut["starts"] = [{"faction": 0, "pos": [-20, 0]}]
+	_assert(WM.validate(mut) != "",
+		"266: the validator refuses a single start")
+	mut = (small as Dictionary).duplicate(true)
+	var mut_node: Dictionary = (mut["nodes"] as Array)[0]
+	mut_node["amount"] = 0
+	_assert(WM.validate(mut) != "",
+		"266: the validator refuses a zero-amount node")
+	mut = (small as Dictionary).duplicate(true)
+	mut["starting_buildings"] = []
+	_assert(WM.validate(mut) != "",
+		"266: the validator refuses the starting_buildings key")
+	mut = (small as Dictionary).duplicate(true)
+	mut["tuning"] = {}
+	_assert(WM.validate(mut) != "",
+		"266: the validator refuses the tuning key")
+	_assert(WM.map_hash(mut) != WM.map_hash(small),
+		"266: the map hash binds the content")
+	# (b) WarlordSetup pure values match the dungeon's.
+	_assert(WS.grid_size_for(1) == 48
+			and WS.grid_size_for(2) == 72
+			and WS.grid_size_for(3) == 96
+			and WS.grid_size_for(4) == 96
+			and WS.grid_size_for(12) == 96,
+		"266: grid sizes are 48/72/96/96 for 1/2/3/4+ factions")
+	_assert(is_equal_approx(WS.map_scale_for(2), 1.0),
+		"266: map scale is 1.0 at 2 factions")
+	_assert(is_equal_approx(WS.map_scale_for(12), sqrt(6.0)),
+		"266: map scale is sqrt(6) at 12 factions")
+	var probe_mgr = MgrScript.new()
+	# register_faction syncs through the tree's MultiplayerAPI —
+	# a tree-less manager has none (is_server on null).
+	root.add_child(probe_mgr)
+	probe_mgr.register_faction(0, 1, "warrior")
+	probe_mgr.register_faction(1, 2, "rogue")
+	var p0: Vector3 = WS.spawn_pos(probe_mgr, 0, 1.0)
+	var p1: Vector3 = WS.spawn_pos(probe_mgr, 1, 1.0)
+	_assert(p0.distance_to(Vector3(30, 0, 0)) < 0.01,
+		"266: faction 0 spawns at +30 on the 2-faction ring")
+	_assert(p1.distance_to(Vector3(-30, 0, 0)) < 0.01,
+		"266: faction 1 spawns opposite on the 2-faction ring")
+	probe_mgr.free()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 5505
+	var cluster: Array = WS.starting_cluster_positions(
+		Vector3.ZERO, rng, func(_pos): return false)
+	_assert(cluster.size() == 15,
+		"266: the starting cluster is 6 wood + 4 food + 3 gold + 2 stone")
+	var rng2 := RandomNumberGenerator.new()
+	rng2.seed = 5505
+	var rng3 := RandomNumberGenerator.new()
+	rng3.seed = 5505
+	var sc1: Array = WS.scatter_positions(1.0, 2, 0, rng2,
+		func(_pos): return false)
+	var sc2: Array = WS.scatter_positions(1.0, 2, 0, rng3,
+		func(_pos): return false)
+	_assert(sc1.size() == 2 * 4 * 8 + 12,
+		"266: the scatter is per_res x types x factions + the 12-node centre ring")
+	_assert(str(sc1) == str(sc2),
+		"266: the scatter is deterministic for a seeded RNG")
+	# (c) the dungeon loop is a thin caller (source pins) with its
+	# spine intact.
+	var dsrc := FileAccess.get_file_as_string(
+		"res://scripts/dungeon/dungeon.gd")
+	_assert(_bughunt_body(dsrc, "_warlord_grid_size").contains(
+			"WarlordSetup.grid_size_for"),
+		"266: the dungeon grid delegates to WarlordSetup")
+	_assert(_bughunt_body(dsrc, "_warlord_map_scale").contains(
+			"WarlordSetup.map_scale_for"),
+		"266: the dungeon map scale delegates to WarlordSetup")
+	_assert(_bughunt_body(dsrc, "_faction_spawn_pos").contains(
+			"WarlordSetup.spawn_pos"),
+		"266: the dungeon spawn position delegates to WarlordSetup")
+	var setup_body := _bughunt_body(dsrc, "_setup_warlord")
+	_assert(setup_body.contains("match_host = self"),
+		"266: the dungeon sets itself as the RTS match_host")
+	_assert(setup_body.contains("WarlordSetup.register_and_place"),
+		"266: the dungeon fresh-run loop registers via WarlordSetup")
+	# The calls live in the helpers _setup_warlord calls, not in its
+	# own body — pin the helpers.
+	_assert(_bughunt_body(dsrc, "_spawn_faction_base").contains(
+			"WarlordSetup.starting_cluster_positions"),
+		"266: the dungeon cluster comes from WarlordSetup")
+	_assert(_bughunt_body(dsrc, "_spawn_resource_nodes").contains(
+			"WarlordSetup.scatter_positions"),
+		"266: the dungeon scatter comes from WarlordSetup")
+	_assert(setup_body.contains("spawn_rts_river")
+			and setup_body.contains("spawn_rts_dock"),
+		"266: the dungeon still builds its river + docks")
+	var wants_body := _bughunt_body(dsrc, "_warlord_wants_ai")
+	_assert(wants_body.contains("\"warlord\"")
+			and wants_body.contains("warlord_ai_fill"),
+		"266: the dungeon AI rule has the standalone branch (host decides AI fill)")
+	_assert(_bughunt_body(dsrc, "_on_warlord_winner").contains(
+			"complete_level_objective"),
+		"266(v): the dungeon winner spine still clears the level (pin v — the dungeon loop is unchanged)")
+	# (d) host UI (Leaf A, source pins).
+	var msrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/main_menu.gd")
+	_assert(msrc.contains("Warlord Standalone"),
+		"266(i): the host tab offers Warlord Standalone")
+	_assert(msrc.contains("Fill empty factions with AI"),
+		"266(ii): the host tab offers AI fill (default on)")
+	_assert(msrc.contains("Faction Count (2-12, default 4)"),
+		"266(ii): the host tab re-ranges the cap slider as a faction count")
+	_assert(_bughunt_body(msrc, "_refresh_host_tabs").contains(
+			"set_tab_disabled(1"),
+		"266(ii): picking Warlord disables Tab 2")
+	_assert(_bughunt_body(msrc, "_refresh_host_tabs").contains(
+			"_set_save_row_disabled(c, warlord)"),
+		"266(ii): picking Warlord disables the save picker rows")
+	_assert(not _bughunt_body(msrc, "_on_solo_pressed").contains(
+			"warlord"),
+		"266(i): no warlord path from the solo entry")
+	_assert(_bughunt_body(msrc, "_on_start_pressed").contains(
+			"start_warlord_match"),
+		"266: the lobby Start routes a Warlord lobby to start_warlord_match")
+	var nsrc := FileAccess.get_file_as_string(
+		"res://scripts/autoload/network_manager.gd")
+	_assert(nsrc.contains("warlord_faction_count: int = 4"),
+		"266(ii): the faction-count default is 4")
+	_assert(nsrc.contains("warlord_ai_fill: bool = true"),
+		"266(ii): AI fill defaults on")
+	_assert(_bughunt_body(nsrc, "start_warlord_match").contains(
+			"a match needs at least 2 factions"),
+		"266(iii): the launch refusal carries the exact >=2 message")
+	_assert(_bughunt_body(nsrc, "start_warlord_match").contains(
+			"load_warlord_match"),
+		"266(iii): the AI-fill launch path routes to load_warlord_match")
+	# (d2) launch refusal, behaviorally: 1 human + AI OFF.
+	var nm: Node = root.get_node("NetworkManager")
+	var saved_mode: String = str(nm.get("host_mode"))
+	var saved_fill: bool = bool(nm.get("warlord_ai_fill"))
+	var saved_count: int = int(nm.get("warlord_faction_count"))
+	var saved_map: Dictionary = (nm.get("warlord_map") as Dictionary).duplicate(true)
+	var saved_json: String = str(nm.get("warlord_map_json"))
+	var saved_hash: String = str(nm.get("warlord_map_hash"))
+	var saved_host: bool = bool(nm.get("is_host"))
+	var saved_err: String = str(nm.get("warlord_launch_error"))
+	nm.set("is_host", true)
+	nm.set("host_mode", "warlord")
+	nm.set("warlord_ai_fill", false)
+	nm.set("warlord_faction_count", 4)
+	nm.set("warlord_map", std)
+	nm.set("warlord_map_json", std_text)
+	nm.set("warlord_map_hash", WM.map_hash(std))
+	var launched: bool = bool(nm.call("start_warlord_match"))
+	_assert(not launched,
+		"266(iii): 1 human + AI OFF does not launch")
+	_assert(str(nm.get("warlord_launch_error")) == "a match needs at least 2 factions — turn AI fill on or wait for another player",
+		"266(iii): the refusal is the exact >=2 message")
+	# (d3) map refusal, behaviorally: hash mismatch, bad hash, bad
+	# version — each refuses loudly through warlord_map_rejected and
+	# never stamps the map vars.
+	var rejected: Array = []
+	var on_rej: Callable = func(msg: String) -> void: rejected.append(msg)
+	nm.connect("warlord_map_rejected", on_rej)
+	var tampered_map: Dictionary = (std as Dictionary).duplicate(true)
+	var tampered_node: Dictionary = (tampered_map["nodes"] as Array)[0]
+	tampered_node["amount"] = 1001
+	var tampered_json: String = WM.canonical_json(tampered_map)
+	nm.call("load_warlord_match", tampered_json, WM.map_hash(std), 4, true)
+	nm.call("load_warlord_match", std_text,
+		"0000000000000000000000000000000000000000000000000000000000000000", 4, true)
+	var v99: Dictionary = (std as Dictionary).duplicate(true)
+	v99["format_version"] = 99
+	var v99_json: String = WM.canonical_json(v99)
+	nm.call("load_warlord_match", v99_json, WM.map_hash(v99), 4, true)
+	nm.disconnect("warlord_map_rejected", on_rej)
+	_assert(rejected.size() == 3,
+		"266(iv): all three bad maps are refused (got %d rejections)" % rejected.size())
+	for r in rejected:
+		_assert(str(r).contains("warlord map refused"),
+			"266(iv): the refusal names the map (%s)" % str(r))
+	_assert(str(nm.get("warlord_map_json")) == std_text,
+		"266(iv): a refused map never stamps the host map vars")
+	nm.set("host_mode", saved_mode)
+	nm.set("warlord_ai_fill", saved_fill)
+	nm.set("warlord_faction_count", saved_count)
+	nm.set("warlord_map", saved_map)
+	nm.set("warlord_map_json", saved_json)
+	nm.set("warlord_map_hash", saved_hash)
+	nm.set("is_host", saved_host)
+	nm.set("warlord_launch_error", saved_err)
+	# (e) the match scene composes and fills 1 human + 3 AI.
+	# Fixture hygiene: earlier sections compose RTS fixtures — free
+	# any leaked RTS group nodes before counting this match's own.
+	for g in ["rts_units", "rts_buildings", "rts_resources",
+			"rts_manager", "rts_camera"]:
+		for n in root.get_tree().get_nodes_in_group(g):
+			n.free()
+	var match_scene: PackedScene = load(
+		"res://scenes/rts/warlord_match.tscn") as PackedScene
+	var wmatch: Node = match_scene.instantiate()
+	root.add_child(wmatch)
+	# take_damage drives destroy_fx -> AudioManager.sfx, which adds
+	# to the current scene — a -s run has none unless one is set.
+	var prev_scene: Node = current_scene
+	current_scene = wmatch
+	_assert(wmatch.get("_terrain") != null,
+		"266: the match scene builds its terrain from the map")
+	var h0: float = float(wmatch.call("ground_height_at", Vector3.ZERO))
+	_assert(is_finite(h0) and h0 > 0.0,
+		"266: the match terrain has ground height at the centre (%.2f)" % h0)
+	_assert(wmatch.get_node_or_null("RTS") != null,
+		"266: the match scene has its RTS holder")
+	wmatch.call("_do_faction_setup")
+	var mgr = wmatch.get("_rts_manager")
+	_assert(mgr != null,
+		"266: the match scene owns its RTSManager")
+	_assert(int((mgr.get("factions") as Dictionary).size()) == 4,
+		"266: 1 human + AI fill registers 4 factions")
+	_assert(wmatch.find_children("*", "AIWarlord", true, false).size() == 3,
+		"266: AI fill adds 3 AI warlords for the 3 empty factions")
+	_assert(root.get_tree().get_nodes_in_group("rts_units").size() == 12,
+		"266: 4 bases x 3 villagers are on the field")
+	_assert(root.get_tree().get_nodes_in_group("rts_buildings").size() == 4,
+		"266: 4 town halls are on the field")
+	_assert(root.get_tree().get_nodes_in_group("rts_resources").size() == 456,
+		"266: the field carries 60 cluster nodes + 396 map nodes")
+	_assert(int((mgr.get("match_stats") as Dictionary).size()) == 4,
+		"266: match_begin zeroed the stats for all 4 factions")
+	var tl0: Array = mgr.get("match_timeline") as Array
+	_assert(str((tl0[0] as Dictionary).get("event", "")) == "match_start",
+		"266: the timeline opens with match_start")
+	_assert(wmatch.get("_camera") != null
+			and bool(wmatch.get("_camera").get("active")),
+		"266: the match camera starts active")
+	_assert(wmatch.get("_hud") != null,
+		"266: the match HUD is built")
+	# (e2) one AI faction is eliminated for real through take_damage:
+	# its town hall + 3 villagers die with no attacker, so the kill
+	# is recorded as a loss with no attribution (gate ruling).
+	mgr.call("record_unit_trained", 0, "villager")
+	mgr.call("record_unit_trained", 0, "villager")
+	mgr.call("record_resource_gathered", 0, "wood", 50)
+	mgr.call("record_age_up", 0, 1)
+	mgr.call("record_unit_killed", 1, 0)
+	for b in root.get_tree().get_nodes_in_group("rts_buildings"):
+		if int(b.get("faction")) == 3:
+			b.call("take_damage", 100000.0)
+	for u in root.get_tree().get_nodes_in_group("rts_units"):
+		if int(u.get("faction")) == 3:
+			u.call("take_damage", 100000.0)
+	var elim: Array = mgr.get("match_eliminations") as Array
+	_assert(elim.size() == 1 and int(elim[0]) == 3,
+		"266: faction 3 is eliminated once its base + villagers die")
+	# (f) results payload + rendered screen.
+	var payload: Dictionary = mgr.call("match_results", 0) as Dictionary
+	_assert(int(payload.get("winner", -1)) == 0,
+		"266(vii): the results name faction 0 the winner")
+	_assert(float(payload.get("duration_sec", -1.0)) >= 0.0,
+		"266(vii): the results carry a duration")
+	var placements: Array = payload.get("placements", [])
+	_assert(placements.size() == 2,
+		"266(vii): placements list the winner + the eliminated faction")
+	_assert(int((placements[0] as Dictionary).get("faction", -1)) == 0
+			and int((placements[0] as Dictionary).get("placement", 0)) == 1,
+		"266(vii): the winner places first")
+	_assert(int((placements[1] as Dictionary).get("faction", -1)) == 3
+			and int((placements[1] as Dictionary).get("placement", 0)) == 2,
+		"266(vii): the eliminated faction places second")
+	var pstats: Dictionary = payload.get("stats", {})
+	var s0: Dictionary = pstats.get(0, {})
+	var s3: Dictionary = pstats.get(3, {})
+	_assert(int((s0.get("units_trained", {}) as Dictionary).get("villager", 0)) == 2,
+		"266(vii): faction 0 trained 2 villagers")
+	_assert(int((s0.get("resources_gathered", {}) as Dictionary).get("wood", 0)) == 50,
+		"266(vii): faction 0 gathered 50 wood")
+	_assert(int((s0.get("ages", []) as Array).size()) == 1
+			and int(((s0.get("ages", []) as Array)[0] as Dictionary).get("age", 0)) == 1,
+		"266(vii): faction 0 reached Age 1")
+	_assert(int(s0.get("units_killed", 0)) == 1,
+		"266(vii): faction 0 is credited the one attributed kill")
+	_assert(int(s3.get("units_lost", 0)) == 3,
+		"266(vii): faction 3 lost its 3 villagers")
+	_assert(int(s3.get("buildings_lost", 0)) == 1,
+		"266(vii): faction 3 lost its town hall")
+	var ptl: Array = payload.get("timeline", [])
+	_assert(str((ptl[0] as Dictionary).get("event", "")) == "match_start",
+		"266(vii): the timeline opens with match_start")
+	_assert(str((ptl[ptl.size() - 1] as Dictionary).get("event", "")) == "match_end",
+		"266(vii): the timeline closes with match_end")
+	var saw_first_blood := false
+	var saw_th := false
+	var saw_th_by := false
+	var saw_elim := false
+	var saw_elim_by := false
+	for ev in ptl:
+		var e: Dictionary = ev
+		var kind := str(e.get("event", ""))
+		if kind == "first_blood" and int(e.get("killer", -1)) == 0 \
+				and int(e.get("victim", -1)) == 1:
+			saw_first_blood = true
+		if kind == "town_hall_destroyed" and int(e.get("faction", -1)) == 3:
+			saw_th = true
+			if e.has("by"):
+				saw_th_by = true
+		if kind == "faction_eliminated" and int(e.get("faction", -1)) == 3:
+			saw_elim = true
+			if e.has("by"):
+				saw_elim_by = true
+	_assert(saw_first_blood,
+		"266(vii): the timeline carries first blood (killer 0, victim 1)")
+	_assert(saw_th and not saw_th_by,
+		"266(vii): the town-hall event names no killer (unprovable attribution is omitted)")
+	_assert(saw_elim and not saw_elim_by,
+		"266(vii): the elimination event names no killer (unprovable attribution is omitted)")
+	var ResScript = load("res://scripts/rts/warlord_results.gd")
+	var res: Node = ResScript.new()
+	res.call("setup", payload, null)
+	root.add_child(res)
+	var grids: Array = res.find_children("*", "GridContainer", true, false)
+	_assert(grids.size() == 1,
+		"266(vii): the results screen builds one stats table")
+	var grid: GridContainer = grids[0] as GridContainer
+	_assert(grid.get_child_count() == 36,
+		"266(vii): the stats table is 12 columns x 3 rows (header + 2 factions)")
+	_assert((grid.get_child(14) as Label).text == "1",
+		"266(vii): the winner's row places 1st")
+	_assert((grid.get_child(26) as Label).text == "2",
+		"266(vii): the eliminated faction's row places 2nd")
+	_assert((grid.get_child(13) as Label).text == "Faction 0",
+		"266(vii): the first faction row is faction 0")
+	_assert((grid.get_child(25) as Label).text == "Faction 3",
+		"266(vii): the second faction row is faction 3")
+	var all_labels: Array = res.find_children("*", "Label", true, false)
+	var saw_victory := false
+	var saw_first_blood_text := false
+	for l in all_labels:
+		var lt := (l as Label).text
+		if lt.contains("VICTORY"):
+			saw_victory = true
+		if lt.contains("First blood"):
+			saw_first_blood_text = true
+	_assert(saw_victory,
+		"266(vii): the results screen titles the win")
+	_assert(saw_first_blood_text,
+		"266(vii): the results screen lists the first-blood event")
+	res.free()
+	wmatch.free()
+	current_scene = prev_scene
+	# (f2) the mutual-wipe draw: no winner is ever invented.
+	var mgr2 = MgrScript.new()
+	root.add_child(mgr2)
+	mgr2.register_faction(0, 1, "warrior")
+	mgr2.register_faction(1, 2, "rogue")
+	mgr2.call("match_begin", [0, 1])
+	mgr2.call("check_elimination")
+	var elim2: Array = mgr2.get("match_eliminations") as Array
+	_assert(elim2.size() == 2,
+		"266: a match with no living units or buildings eliminates both factions")
+	var draw_payload: Dictionary = mgr2.call("match_results", -1) as Dictionary
+	_assert(int(draw_payload.get("winner", 0)) == -1,
+		"266: the mutual wipe renders as a draw (winner -1)")
+	var dplacements: Array = draw_payload.get("placements", [])
+	_assert(dplacements.size() == 2
+			and int((dplacements[0] as Dictionary).get("faction", -1)) == 1
+			and int((dplacements[0] as Dictionary).get("placement", 0)) == 1
+			and int((dplacements[1] as Dictionary).get("faction", -1)) == 0
+			and int((dplacements[1] as Dictionary).get("placement", 0)) == 2,
+		"266: the draw placements are the reverse elimination order starting at 1")
+	var res2: Node = ResScript.new()
+	res2.call("setup", draw_payload, null)
+	root.add_child(res2)
+	var draw_labels: Array = res2.find_children("*", "Label", true, false)
+	var saw_draw := false
+	for l in draw_labels:
+		if (l as Label).text.contains("DRAW"):
+			saw_draw = true
+	_assert(saw_draw,
+		"266: the results screen titles the mutual wipe as a draw")
+	res2.free()
+	mgr2.free()
+	# (g) teardown routes (source-pinned; the scene change itself is
+	# never driven in-suite) + the winner seam (pin vi).
+	var msrc2 := FileAccess.get_file_as_string(
+		"res://scripts/rts/warlord_match.gd")
+	# The broadcast + compute live in the helper _on_match_winner
+	# delegates to, not in the handler itself — pin the helper, and
+	# pin the wiring in the handler.
+	_assert(_bughunt_body(msrc2, "_on_match_winner").contains(
+			"_show_results"),
+		"266(vi): the match winner delegates to the results broadcast")
+	_assert(_bughunt_body(msrc2, "_show_results").contains(
+			"client_show_results"),
+		"266(vi): the match winner broadcasts the results payload")
+	_assert(_bughunt_body(msrc2, "_show_results").contains(
+			"match_results"),
+		"266(vi): the match winner computes results from the manager")
+	_assert(not _bughunt_body(msrc2, "_on_match_winner").contains(
+			"complete_level_objective"),
+		"266(vi): the match winner never calls the dungeon clear spine")
+	_assert(not _bughunt_body(msrc2, "_on_match_winner").contains(
+			"begin_reveal"),
+		"266(vi): the match winner never starts the reveal")
+	_assert(_bughunt_body(msrc2, "_ready").contains(
+			"winner_declared.connect(_on_match_winner)"),
+		"266(vi): the match winner hangs off winner_declared")
+	# The flag is set via .set() on the untyped NM node, not by
+	# assignment — pin the .set form.
+	_assert(_bughunt_body(msrc2, "return_to_lobby").contains(
+			"\"return_to_lobby\", true"),
+		"266(viii): Return to Lobby flags the lobby for re-entry")
+	_assert(not _bughunt_body(msrc2, "return_to_lobby").contains(
+			"leave_lobby"),
+		"266(viii): Return to Lobby keeps the lobby alive (no leave_lobby)")
+	_assert(_bughunt_body(msrc2, "quit_to_menu").contains("leave_lobby"),
+		"266(viii): Quit to Menu leaves the lobby")
+	print("[Playtest] Warlord standalone mode (issue #266) done.")
+
+
 func _test_scatter_207() -> void:
 	print("[Playtest] Scatter de-gridding (issue #207)...")
 	var WorldGenRes := load("res://scripts/world/world_gen.gd")
@@ -14232,8 +14743,11 @@ func _test_economy() -> void:
 	_assert(src.contains("func _process_node_respawns"), "_process_node_respawns exists")
 	_assert(src.contains("func _random_land_pos"), "_random_land_pos exists")
 	_assert(src.contains('"wood": 1000'), "Wood amount is 1000 in spawn_rts_node")
-	_assert(src.contains("nodes_per_resource_per_faction"), "Node count reads per-faction tuning")
-	_assert(src.contains("nodes_cycle_bonus"), "Node count reads cycle bonus tuning")
+	# Issue #266: the scatter math moved verbatim into
+	# WarlordSetup — the tuning reads live there now.
+	var ws_src := FileAccess.get_file_as_string("res://scripts/rts/warlord_setup.gd")
+	_assert(ws_src.contains("nodes_per_resource_per_faction"), "Node count reads per-faction tuning")
+	_assert(ws_src.contains("nodes_cycle_bonus"), "Node count reads cycle bonus tuning")
 	# Tuned defaults are unchanged: 8 nodes per resource per faction, +2 per cycle.
 	var tune := ConfigFile.new()
 	_assert(tune.load("res://scripts/rts/rts_tuning.cfg") == OK, "Tuning file loads")
@@ -17756,7 +18270,11 @@ func _test_warlord_spawn_avoids_river() -> void:
 	_assert(dsrc.contains("func _warlord_map_scale()"),
 		"warlord: map scale helper exists")
 	# Map scale: sqrt(n/2) keeps area-per-faction constant (1.0 at 2 players).
-	_assert(dsrc.contains("sqrt(float(maxi(2, _warlord_expected_players())) / 2.0)"),
+	# Issue #266: the formula moved verbatim into
+	# WarlordSetup.map_scale_for; the dungeon delegates (pinned in
+	# the #266 section).
+	var ws_src := FileAccess.get_file_as_string("res://scripts/rts/warlord_setup.gd")
+	_assert(ws_src.contains("sqrt(maxi(2, faction_count) / 2.0)"),
 		"warlord: map scales with player count")
 	_assert(dsrc.contains("func _warlord_assign_late_joiners()"),
 		"warlord: late joiners get a faction")

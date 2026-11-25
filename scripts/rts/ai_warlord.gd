@@ -250,9 +250,18 @@ func _order_build(btype: String) -> void:
 		return
 	# Build near the town hall with some randomness.
 	var pos := th.global_position + Vector3(randf_range(-8, 8), 0, randf_range(6, 10))
-	pos.y = 0.0
-	var dungeon = get_tree().get_first_node_in_group("dungeon")
-	if dungeon != null and dungeon.has_method("rpc_start_construction"):
+	# Issue #266: the host owns construction — resolve through the
+	# manager's match_host seam (dungeon or match controller); the
+	# legacy dungeon-group lookup applies when there is no manager.
+	# The build height comes from the host terrain (0.0 on the
+	# dungeon's flat floor — identical behavior there).
+	var host: Node = null
+	if manager != null:
+		host = manager.host_node()
+		pos.y = manager.host_ground_height(pos)
+	if host == null:
+		host = get_tree().get_first_node_in_group("dungeon")
+	if host != null and host.has_method("rpc_start_construction"):
 		# Call directly (we're the server). AI picks its own builders:
 		# idle villagers first (up to 3), else any villager of the faction.
 		var picks: Array = []
@@ -268,7 +277,7 @@ func _order_build(btype: String) -> void:
 				if int(u.get("faction")) == faction_id and str(u.get("unit_type")) == "villager":
 					picks.append(u.get_path())
 					break
-		dungeon.rpc_start_construction(faction_id, btype, pos, picks)
+		host.rpc_start_construction(faction_id, btype, pos, picks)
 
 
 func _attack(civ_id: String = "") -> void:

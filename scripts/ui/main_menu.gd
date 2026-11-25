@@ -280,6 +280,20 @@ var _host_pw_toggle: CheckButton = null
 var _host_vis_buttons: Dictionary = {}
 var _host_cap_slider: HSlider = null
 var _host_cap_val: Label = null
+## Issue #266: Warlord Standalone host controls. The mode picker
+## writes NetworkManager.host_mode; the cap slider doubles as the
+## faction count in warlord mode (lobby cap == faction count by
+## construction); the map picker lists Standard first, then every
+## map in user://maps/ (invalid ones greyed with their failure).
+var _host_mode_buttons: Dictionary = {}
+var _host_cap_label: Label = null
+var _host_warlord_section: VBoxContainer = null
+var _host_warlord_map_picker: OptionButton = null
+var _host_warlord_warn: Label = null
+var _host_ai_fill_toggle: CheckButton = null
+## Picker items after "Standard", in order: the list_user_maps()
+## entries they were built from (valid and invalid alike).
+var _warlord_map_entries: Array = []
 
 const CLASS_DESCS := {
 	"warrior": "Warrior — Tanky melee, totems and auras.",
@@ -306,6 +320,7 @@ func _ready() -> void:
 	NetworkManager.connection_failed.connect(_on_connection_failed)
 	NetworkManager.session_lost.connect(_on_session_lost)
 	NetworkManager.baked_version_mismatch.connect(_on_baked_version_mismatch)
+	NetworkManager.warlord_map_rejected.connect(_on_warlord_map_rejected)
 	NetworkManager.continue_staging_ready.connect(_on_staging_ready)
 	NetworkManager.saved_class_notice_received.connect(_on_saved_class_notice)
 	NetworkManager.lobby_members_changed.connect(_refresh_staging_roster)
@@ -318,6 +333,11 @@ func _ready() -> void:
 	# Jesse 2026-10-11: unlimited saves — wrap the solo slot list in a scroller.
 	_wrap_solo_slots()
 	_show_phase("TitlePhase")
+	# Issue #266: a match that returned to the lobby left the lobby
+	# alive — reopen it instead of the title phase.
+	if NetworkManager.return_to_lobby:
+		NetworkManager.return_to_lobby = false
+		_show_lobby("Warlord Lobby", true)
 
 
 ## Wrap SoloSlotsList in a ScrollContainer (once) for unlimited saves.
@@ -410,6 +430,12 @@ func _show_lobby(title: String, can_start: bool) -> void:
 	# no pick made yet, nothing awaiting a warning decision.
 	_lobby_class_touched = false
 	_pending_reselect_class = ""
+	# Issue #266: a fresh lobby showing starts with a clean
+	# warning line (Warlord launch refusals write into it).
+	_ensure_lobby_warn_label()
+	var _lw := %LobbyPanel.get_node_or_null("LobbyWarnLabel") as Label
+	if _lw != null:
+		_lw.visible = false
 	for p in _phases:
 		p.visible = false
 	%LobbyPanel.visible = true
@@ -507,6 +533,10 @@ func _menu_back() -> void:
 func _on_host_tab_changed(_tab: int) -> void:
 	if not %HostPhase.visible or _host_tab_container == null:
 		return
+	# Issue #266: maps can appear between sessions — refresh the
+	# picker whenever the Lobby tab shows.
+	if _tab == 2 and NetworkManager.host_mode == "warlord":
+		_refresh_warlord_map_picker()
 	var page := _host_tab_container.get_current_tab_control()
 	var in_page := FocusChain.collect(page) if page != null else []
 	FocusChain.apply(%HostPhase, in_page[0] if not in_page.is_empty() else null)
@@ -1061,6 +1091,38 @@ func _build_host_tabs() -> void:
 	lan_btn.toggled.connect(_on_host_conn_toggled.bind(true, lan_btn))
 	_style_one_button(lan_btn)
 	conn_row.add_child(lan_btn)
+	# Issue #266: the hosted game — Dungeon Loop (default) or
+	# Warlord Standalone. Warlord disables the save picker below
+	# and the Difficulty & Loot tab (see _refresh_host_tabs); a
+	# Warlord host never comes from a save.
+	var mode_label := Label.new()
+	mode_label.text = "Mode"
+	mode_label.add_theme_font_size_override("font_size", 18)
+	t1.add_child(mode_label)
+	var mode_row := HBoxContainer.new()
+	mode_row.add_theme_constant_override("separation", 12)
+	t1.add_child(mode_row)
+	var mode_group := ButtonGroup.new()
+	var dungeon_btn := Button.new()
+	dungeon_btn.name = "ModeDungeonBtn"
+	dungeon_btn.text = "Dungeon Loop"
+	dungeon_btn.toggle_mode = true
+	dungeon_btn.button_group = mode_group
+	dungeon_btn.button_pressed = (NetworkManager.host_mode == "dungeon")
+	dungeon_btn.toggled.connect(_on_host_mode_toggled.bind(false, dungeon_btn))
+	_style_one_button(dungeon_btn)
+	mode_row.add_child(dungeon_btn)
+	_host_mode_buttons["dungeon"] = dungeon_btn
+	var warlord_btn := Button.new()
+	warlord_btn.name = "ModeWarlordBtn"
+	warlord_btn.text = "Warlord Standalone"
+	warlord_btn.toggle_mode = true
+	warlord_btn.button_group = mode_group
+	warlord_btn.button_pressed = (NetworkManager.host_mode == "warlord")
+	warlord_btn.toggled.connect(_on_host_mode_toggled.bind(true, warlord_btn))
+	_style_one_button(warlord_btn)
+	mode_row.add_child(warlord_btn)
+	_host_mode_buttons["warlord"] = warlord_btn
 	var save_label := Label.new()
 	save_label.text = "Save File (optional — hosting from a save locks Difficulty & Loot)"
 	save_label.add_theme_font_size_override("font_size", 18)
@@ -1233,6 +1295,7 @@ func _build_host_tabs() -> void:
 	cap_label.text = "Player Cap (4-12, default 4)"
 	cap_label.add_theme_font_size_override("font_size", 18)
 	t3.add_child(cap_label)
+	_host_cap_label = cap_label
 	var cap_row := HBoxContainer.new()
 	cap_row.add_theme_constant_override("separation", 12)
 	t3.add_child(cap_row)
@@ -1269,6 +1332,42 @@ func _build_host_tabs() -> void:
 	open_toggle.button_pressed = NetworkManager.lobby_open_roster
 	open_toggle.toggled.connect(_on_host_open_roster_toggled)
 	open_row.add_child(open_toggle)
+	# --- Tab 3: Warlord Standalone section (issue #266) ---
+	# Visible only in Warlord mode (see _refresh_host_tabs).
+	_host_warlord_section = VBoxContainer.new()
+	_host_warlord_section.name = "WarlordSection"
+	t3.add_child(_host_warlord_section)
+	var wl_label := Label.new()
+	wl_label.text = "Warlord Standalone"
+	wl_label.add_theme_font_size_override("font_size", 18)
+	_host_warlord_section.add_child(wl_label)
+	var map_row := HBoxContainer.new()
+	map_row.add_theme_constant_override("separation", 12)
+	_host_warlord_section.add_child(map_row)
+	var map_label := Label.new()
+	map_label.text = "Map"
+	map_row.add_child(map_label)
+	var map_picker := OptionButton.new()
+	map_picker.name = "WarlordMapPicker"
+	map_picker.custom_minimum_size = Vector2(360, 0)
+	map_picker.item_selected.connect(_on_warlord_map_selected)
+	map_row.add_child(map_picker)
+	_host_warlord_map_picker = map_picker
+	var ai_toggle := CheckButton.new()
+	ai_toggle.text = "Fill empty factions with AI"
+	ai_toggle.button_pressed = NetworkManager.warlord_ai_fill
+	ai_toggle.toggled.connect(_on_host_ai_fill_toggled)
+	_host_warlord_section.add_child(ai_toggle)
+	_host_ai_fill_toggle = ai_toggle
+	var wl_warn := Label.new()
+	wl_warn.name = "WarlordWarn"
+	wl_warn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
+	wl_warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	wl_warn.custom_minimum_size = Vector2(500, 0)
+	wl_warn.text = ""
+	_host_warlord_section.add_child(wl_warn)
+	_host_warlord_warn = wl_warn
+	_refresh_warlord_map_picker()
 	# --- Bottom buttons ---
 	var bot_row := HBoxContainer.new()
 	bot_row.add_theme_constant_override("separation", 16)
@@ -1293,10 +1392,30 @@ func _refresh_host_tabs() -> void:
 	if _host_tab_container == null:
 		return
 	var from_save := NetworkManager.host_save_slot >= 0
-	# Tab 2 locked when hosting from a save.
-	_host_tab_container.set_tab_disabled(1, from_save)
-	if from_save and _host_tab_container.current_tab == 1:
+	var warlord := NetworkManager.host_mode == "warlord"
+	# Tab 2 locked when hosting from a save — and entirely in
+	# Warlord mode (no difficulty/loot for a standalone match).
+	_host_tab_container.set_tab_disabled(1, from_save or warlord)
+	if (from_save or warlord) and _host_tab_container.current_tab == 1:
 		_host_tab_container.current_tab = 0
+	# Mode buttons reflect the current host_mode (no signals).
+	for key in _host_mode_buttons:
+		(_host_mode_buttons[key] as Button).set_pressed_no_signal(key == NetworkManager.host_mode)
+	# The save picker is inert in Warlord mode (the list stays
+	# visible); the Warlord section shows only in Warlord mode.
+	if _host_save_list != null:
+		for c in _host_save_list.get_children():
+			_set_save_row_disabled(c, warlord)
+	if _host_warlord_section != null:
+		_host_warlord_section.visible = warlord
+	# The cap slider doubles as the faction count in Warlord mode:
+	# range 2-12 (dungeon: 4-12) with the matching label text.
+	if _host_cap_slider != null:
+		_host_cap_slider.min_value = 2.0 if warlord else 4.0
+		_host_cap_slider.max_value = 12.0
+	if _host_cap_label != null:
+		_host_cap_label.text = "Faction Count (2-12, default 4)" if warlord \
+			else "Player Cap (4-12, default 4)"
 	_refresh_host_button()
 	_refresh_host_lobby_controls()
 
@@ -1329,10 +1448,15 @@ static func lobby_settings_for_run(run: Dictionary) -> Dictionary:
 func _refresh_host_lobby_controls() -> void:
 	if _host_tab_container == null:
 		return
+	var warlord := NetworkManager.host_mode == "warlord"
 	var vis := NetworkManager.lobby_visibility
-	var cap := NetworkManager.lobby_player_cap
+	# Issue #266: in Warlord mode the slider shows the faction
+	# count (its own sticky value, default 4) — never a save's
+	# cap, since a Warlord host never comes from a save.
+	var cap := NetworkManager.warlord_faction_count if warlord \
+		else NetworkManager.lobby_player_cap
 	var pw := NetworkManager.lobby_password
-	if NetworkManager.host_save_slot >= 0:
+	if not warlord and NetworkManager.host_save_slot >= 0:
 		var run := SaveManager.load_run(SaveManager.MODE_MP, NetworkManager.host_save_slot)
 		if not run.is_empty():
 			var s := lobby_settings_for_run(run)
@@ -1350,6 +1474,8 @@ func _refresh_host_lobby_controls() -> void:
 	if _host_pw_field != null:
 		_host_pw_field.text = pw
 		_host_pw_field.editable = not pw.is_empty()
+	if _host_ai_fill_toggle != null:
+		_host_ai_fill_toggle.set_pressed_no_signal(NetworkManager.warlord_ai_fill)
 
 
 func _refresh_host_button() -> void:
@@ -1403,6 +1529,21 @@ func _refresh_host_save_list() -> void:
 	# on every rebuild (a freed focused row re-seeds per apply()).
 	if %HostPhase.visible:
 		FocusChain.apply(%HostPhase, null)
+	# Issue #266: the list is inert in Warlord mode — every button
+	# in it (Fresh Run, slot picks, and the delete buttons) disables.
+	if NetworkManager.host_mode == "warlord":
+		for c in _host_save_list.get_children():
+			_set_save_row_disabled(c, true)
+
+
+## Issue #266: recursively disable (or re-enable) every button
+## under a save-list row — the Fresh Run button is a direct child,
+## the slot pick + delete buttons sit inside HBox rows.
+func _set_save_row_disabled(node: Node, disabled: bool) -> void:
+	if node is Button:
+		(node as Button).disabled = disabled
+	for child in node.get_children():
+		_set_save_row_disabled(child, disabled)
 
 
 func _on_host_save_selected(pressed: bool, slot: int) -> void:
@@ -1413,6 +1554,134 @@ func _on_host_save_selected(pressed: bool, slot: int) -> void:
 		NetworkManager.host_save_slot = -1
 	_refresh_host_save_list()
 	_refresh_host_tabs()
+
+
+## Issue #266: the hosted-game mode picker. Warlord clears any
+## save selection first — a Warlord host never comes from a save,
+## so the save branches in _on_host_create_pressed can never fire
+## for this mode. Dungeon Loop restores the save picker + Tab 2.
+func _on_host_mode_toggled(pressed: bool, warlord: bool, _btn: Button) -> void:
+	AudioManager.sfx("ui_click")
+	if not pressed:
+		return
+	NetworkManager.host_mode = "warlord" if warlord else "dungeon"
+	if warlord:
+		NetworkManager.host_save_slot = -1
+		_refresh_host_save_list()
+	_refresh_host_tabs()
+
+
+## Issue #266: stamp the host's picked map into the NetworkManager
+## vars the host publishes and broadcasts (canonical JSON + hash).
+func _stamp_warlord_map(map_name: String, map_data: Dictionary) -> void:
+	NetworkManager.warlord_map_name = map_name
+	NetworkManager.warlord_map = map_data
+	NetworkManager.warlord_map_json = WarlordMap.canonical_json(map_data)
+	NetworkManager.warlord_map_hash = WarlordMap.map_hash(map_data)
+
+
+func _set_warlord_warn(message: String) -> void:
+	if _host_warlord_warn == null:
+		return
+	_host_warlord_warn.text = message
+	_host_warlord_warn.visible = message != ""
+
+
+## Issue #266: the picked map's start count vs the faction count.
+## Shows the shortfall (the launch guard refuses it too); clears
+## otherwise. Never clobbers a pick-refusal message — that path
+## returns before stamping, so this never runs for it.
+func _refresh_warlord_count_warn() -> void:
+	if _host_warlord_warn == null:
+		return
+	var sc := WarlordMap.start_count(NetworkManager.warlord_map)
+	if sc > 0 and sc < NetworkManager.warlord_faction_count:
+		_set_warlord_warn("The %s map has %d starts — fewer than the %d factions chosen." % [NetworkManager.warlord_map_name, sc, NetworkManager.warlord_faction_count])
+	else:
+		_set_warlord_warn("")
+
+
+## Issue #266: rebuild the map picker — Standard first, then every
+## map in user://maps/ (invalid ones greyed with their failure).
+## Maps can appear between sessions, so this runs on first build
+## and whenever the Lobby tab shows. The previous selection is
+## kept by map name; a missing map falls back to Standard.
+func _refresh_warlord_map_picker() -> void:
+	if _host_warlord_map_picker == null:
+		return
+	var picker := _host_warlord_map_picker
+	var keep_name := NetworkManager.warlord_map_name
+	picker.clear()
+	_warlord_map_entries = []
+	var std := WarlordMap.standard_map()
+	var std_starts := WarlordMap.start_count(std)
+	picker.add_item("Standard (2-%d factions)" % maxi(2, std_starts))
+	var sel := 0
+	for e in WarlordMap.list_user_maps():
+		var ed := e as Dictionary
+		var idx := picker.item_count
+		var nm := str(ed.get("name", ""))
+		if bool(ed.get("valid", false)):
+			var sc := WarlordMap.start_count(ed.get("map", {}))
+			picker.add_item("%s (2-%d factions)" % [nm, maxi(2, sc)])
+		else:
+			picker.add_item("%s (invalid: %s)" % [nm, str(ed.get("error", "?"))])
+			picker.set_item_disabled(idx, true)
+		_warlord_map_entries.append(ed)
+		if nm == keep_name:
+			sel = idx
+	picker.select(sel)
+	_apply_warlord_map_selection(sel, true)
+
+
+## Issue #266: apply a picker selection (index 0 = Standard).
+## A map with fewer starts than the faction count is refused with
+## a message naming its start count, keeping the previous valid
+## selection. Silent (refresh) applies without refusing — the
+## count warn + the launch guard cover a grown faction count.
+func _apply_warlord_map_selection(idx: int, silent: bool) -> void:
+	if idx <= 0:
+		_stamp_warlord_map("standard", WarlordMap.standard_map())
+		_refresh_warlord_count_warn()
+		return
+	if idx - 1 >= _warlord_map_entries.size():
+		return
+	var ed: Dictionary = _warlord_map_entries[idx - 1]
+	if not bool(ed.get("valid", false)):
+		return
+	var m: Dictionary = ed.get("map", {})
+	var sc := WarlordMap.start_count(m)
+	if sc < NetworkManager.warlord_faction_count and not silent:
+		_set_warlord_warn("That map has %d starts — fewer than the %d factions chosen. Pick a map with at least %d starts or lower the faction count." % [sc, NetworkManager.warlord_faction_count, NetworkManager.warlord_faction_count])
+		AudioManager.sfx("ui_error")
+		_select_warlord_map_by_name(NetworkManager.warlord_map_name)
+		return
+	_stamp_warlord_map(str(ed.get("name", "")), m)
+	_refresh_warlord_count_warn()
+
+
+func _select_warlord_map_by_name(map_name: String) -> void:
+	if _host_warlord_map_picker == null:
+		return
+	if map_name == "standard" or map_name == "":
+		_host_warlord_map_picker.select(0)
+		return
+	for i in _warlord_map_entries.size():
+		var ed: Dictionary = _warlord_map_entries[i]
+		if str(ed.get("name", "")) == map_name:
+			_host_warlord_map_picker.select(i + 1)
+			return
+	_host_warlord_map_picker.select(0)
+
+
+func _on_warlord_map_selected(idx: int) -> void:
+	AudioManager.sfx("ui_click")
+	_apply_warlord_map_selection(idx, false)
+
+
+func _on_host_ai_fill_toggled(pressed: bool) -> void:
+	AudioManager.sfx("ui_click")
+	NetworkManager.warlord_ai_fill = pressed
 
 
 func _on_host_diff_preset(pressed: bool, preset: String) -> void:
@@ -1626,6 +1895,11 @@ func _on_host_visibility(pressed: bool, vis: String) -> void:
 
 func _on_host_cap_changed(value: float) -> void:
 	NetworkManager.lobby_player_cap = int(value)
+	# Issue #266: in Warlord mode the slider IS the faction count
+	# (lobby cap == faction count by construction).
+	if NetworkManager.host_mode == "warlord":
+		NetworkManager.warlord_faction_count = int(value)
+		_refresh_warlord_count_warn()
 	if _host_tab_container != null:
 		var lab := _host_tab_container.find_child("CapVal", true, false) as Label
 		if lab != null:
@@ -1634,8 +1908,10 @@ func _on_host_cap_changed(value: float) -> void:
 
 func _on_host_create_pressed() -> void:
 	AudioManager.sfx("ui_click")
-	# Validate rarity total if custom.
-	if not NetworkManager.custom_rarity.is_empty():
+	# Validate rarity total if custom. Warlord matches use no
+	# loot at all, so the check is skipped in Warlord mode (a stale
+	# custom rarity must never silently block a Warlord host).
+	if NetworkManager.host_mode != "warlord" and not NetworkManager.custom_rarity.is_empty():
 		var total := 0.0
 		for r in NetworkManager.custom_rarity.values():
 			total += float(r)
@@ -1703,7 +1979,7 @@ func _on_host_create_pressed() -> void:
 					get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 				return
 		NetworkManager.host_lan()
-		_show_lobby("LAN Lobby", true)
+		_show_lobby("Warlord Lobby" if NetworkManager.host_mode == "warlord" else "LAN Lobby", true)
 	else:
 		var slot := NetworkManager.host_save_slot
 		if slot >= 0:
@@ -2678,6 +2954,13 @@ func _on_start_pressed() -> void:
 	# Continued run: use the save path; fresh run: normal start.
 	if not NetworkManager._continued_run.is_empty():
 		NetworkManager.start_continued_run()
+	elif NetworkManager.host_mode == "warlord":
+		# Issue #266: the Warlord launch refuses with its message
+		# instead of starting (a match needs >= 2 factions, every
+		# joined client acked the map, a valid map for the count).
+		if not NetworkManager.start_warlord_match():
+			_show_lobby_warn(NetworkManager.warlord_launch_error)
+			AudioManager.sfx("ui_error")
 	else:
 		NetworkManager.start_game()
 
@@ -2830,7 +3113,7 @@ func _on_staging_back_pressed() -> void:
 # --- Network callbacks ---
 
 func _on_host_ready() -> void:
-	_show_lobby("Your Lobby", true)
+	_show_lobby("Warlord Lobby" if NetworkManager.host_mode == "warlord" else "Your Lobby", true)
 
 
 func _on_join_ready() -> void:
@@ -2878,6 +3161,48 @@ func _on_session_lost() -> void:
 ## explains the rest (the in-world case is the HUD's dialog).
 func _on_baked_version_mismatch(message: String) -> void:
 	if not NetworkManager.is_host and NetworkManager.peer != null:
+		NetworkManager.leave_lobby()
+	%JoinStatusLabel.text = message
+	_show_phase("JoinPhase")
+
+
+## Issue #266: the lobby warning line (Warlord launch refusals).
+## Added under the Start button the first time a lobby shows;
+## there is no warning label in the lobby scene itself.
+func _ensure_lobby_warn_label() -> void:
+	if %LobbyPanel.get_node_or_null("LobbyWarnLabel") != null:
+		return
+	var warn := Label.new()
+	warn.name = "LobbyWarnLabel"
+	warn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
+	warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	warn.custom_minimum_size = Vector2(500, 0)
+	warn.visible = false
+	%LobbyPanel.add_child(warn)
+	%LobbyPanel.move_child(warn, %LobbyPanel.get_children().find(%StartButton) + 1)
+
+
+func _show_lobby_warn(message: String) -> void:
+	_ensure_lobby_warn_label()
+	var warn := %LobbyPanel.get_node_or_null("LobbyWarnLabel") as Label
+	if warn != null:
+		warn.text = message
+		warn.visible = true
+
+
+## Issue #266: a Warlord map failed validation on receipt or load
+## (tampered bytes, unknown version, or a hash mismatch) — the load
+## was refused before any scene change. Mirrors
+## _on_baked_version_mismatch: a client leaves the incompatible
+## lobby; the host stays and sees the refusal in the lobby (the
+## host's own invalid map is already covered by the launch guard
+## in _on_start_pressed, so this is the join-time path).
+func _on_warlord_map_rejected(message: String) -> void:
+	if NetworkManager.is_host:
+		_show_lobby_warn(message)
+		AudioManager.sfx("ui_error")
+		return
+	if NetworkManager.peer != null:
 		NetworkManager.leave_lobby()
 	%JoinStatusLabel.text = message
 	_show_phase("JoinPhase")
