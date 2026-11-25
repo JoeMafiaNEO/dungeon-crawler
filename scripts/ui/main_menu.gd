@@ -740,6 +740,15 @@ func _on_solo_pressed() -> void:
 	_show_phase("SoloPhase")
 
 
+## Issue #266 P2: the RTS level editor opens from the Mode phase,
+## beside the Multiplayer/Solo branch (spec §4.1) — not inside the
+## multiplayer host flow. Editing is local; the editor scene owns
+## its teardown and returns here.
+func _on_editor_pressed() -> void:
+	AudioManager.sfx("ui_click")
+	get_tree().change_scene_to_file("res://scenes/rts/warlord_editor.tscn")
+
+
 func _on_mode_back_pressed() -> void:
 	AudioManager.sfx("ui_click")
 	_show_phase("TitlePhase")

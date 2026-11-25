@@ -9,6 +9,10 @@ extends CanvasLayer
 ## the controller (Return to Lobby / Quit to Menu).
 
 var _controller: Node = null
+## Issue #266 P2: set by the match controller for an editor playtest —
+## the exit reads "Return to Editor" and the menu button hides (both
+## controller exits return to the editor in that mode).
+var playtest_mode := false
 
 
 func setup(payload: Dictionary, controller: Node) -> void:
@@ -69,12 +73,13 @@ func setup(payload: Dictionary, controller: Node) -> void:
 	buttons.add_theme_constant_override("separation", 16)
 	vbox.add_child(buttons)
 	var to_lobby := Button.new()
-	to_lobby.text = "Return to Lobby"
+	to_lobby.text = "Return to Editor" if playtest_mode else "Return to Lobby"
 	to_lobby.pressed.connect(_on_return_to_lobby)
 	buttons.add_child(to_lobby)
 	var to_menu := Button.new()
 	to_menu.text = "Quit to Menu"
 	to_menu.pressed.connect(_on_quit_to_menu)
+	to_menu.visible = not playtest_mode
 	buttons.add_child(to_menu)
 
 

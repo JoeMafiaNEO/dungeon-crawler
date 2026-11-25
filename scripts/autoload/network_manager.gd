@@ -82,6 +82,14 @@ var warlord_map: Dictionary = {}
 ## The last Warlord launch refusal (start_warlord_match's bool +
 ## error shape); the menu presents it in the lobby.
 var warlord_launch_error: String = ""
+## Issue #266 P2: the editor's solo-skirmish playtest. Set by the
+## editor at launch; the match controller's teardown returns to the
+## editor scene (not the lobby/menu) while it is set, and clears it.
+## warlord_editor_map stashes the editor's working map across the
+## scene hop so the editor restores it as it was (the skirmish
+## writes nothing to the map file).
+var warlord_editor_playtest: bool = false
+var warlord_editor_map: Dictionary = {}
 ## Issue #266: set by the match controller on Return to Lobby —
 ## the lobby stays alive, so the menu reopens it instead of the
 ## title phase. Cleared by the menu when consumed.

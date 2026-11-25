@@ -25,6 +25,7 @@ extends Node3D
 
 const WARLORD_SETUP_TIMEOUT_MSEC := 15000
 const MATCH_SCENE_MENU := "res://scenes/ui/main_menu.tscn"
+const MATCH_SCENE_EDITOR := "res://scenes/rts/warlord_editor.tscn"
 const AI_CLASSES: Array[String] = ["warrior", "rogue", "mage"]
 
 var _map: Dictionary = {}
@@ -38,6 +39,10 @@ var _results_screen: WarlordResults = null
 
 var _faction_count: int = 4
 var _ai_fill: bool = true
+## Issue #266 P2: true when this match is the editor's solo-skirmish
+## playtest — teardown returns to the editor scene (the map is
+## stashed in NM), and an Exit Playtest button rides the match.
+var _playtest := false
 var _rng := RandomNumberGenerator.new()
 var _local_faction: int = -1
 
@@ -56,6 +61,20 @@ func _ready() -> void:
 		_map = nm.get("warlord_map") as Dictionary
 		_faction_count = int(nm.get("warlord_faction_count"))
 		_ai_fill = bool(nm.get("warlord_ai_fill"))
+		_playtest = bool(nm.get("warlord_editor_playtest"))
+	if _playtest:
+		# A playtest match may never end (the AI cannot reach the
+		# human on a disconnected map) — the exit must not wait for
+		# the results screen.
+		var layer := CanvasLayer.new()
+		layer.layer = 45
+		add_child(layer)
+		var exit_btn := Button.new()
+		exit_btn.text = "Exit Playtest"
+		exit_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+		exit_btn.position = Vector2(-150, 40)
+		exit_btn.pressed.connect(quit_to_menu)
+		layer.add_child(exit_btn)
 	if _map.is_empty():
 		_map = WarlordMap.standard_map()
 	if _map.is_empty():
@@ -576,11 +595,15 @@ func client_show_results(results: Dictionary) -> void:
 	if _results_screen != null and is_instance_valid(_results_screen):
 		return
 	_results_screen = load("res://scripts/rts/warlord_results.gd").new()
+	_results_screen.playtest_mode = _playtest
 	add_child(_results_screen)
 	_results_screen.setup(results, self)
 
 
 func return_to_lobby() -> void:
+	if _playtest:
+		_return_to_editor()
+		return
 	var nm: Node = get_tree().root.get_node_or_null("NetworkManager")
 	if nm != null:
 		nm.set("return_to_lobby", true)
@@ -588,10 +611,23 @@ func return_to_lobby() -> void:
 
 
 func quit_to_menu() -> void:
+	if _playtest:
+		_return_to_editor()
+		return
 	var nm: Node = get_tree().root.get_node_or_null("NetworkManager")
 	if nm != null:
 		nm.call("leave_lobby")
 	get_tree().change_scene_to_file(MATCH_SCENE_MENU)
+
+
+## Issue #266 P2: a playtest has no lobby — both exits return to the
+## editor, which restores the stashed map as it was. The flag clears
+## so a later real match never inherits the editor return.
+func _return_to_editor() -> void:
+	var nm: Node = get_tree().root.get_node_or_null("NetworkManager")
+	if nm != null:
+		nm.set("warlord_editor_playtest", false)
+	get_tree().change_scene_to_file(MATCH_SCENE_EDITOR)
 
 
 func _on_peer_disconnected(peer_id: int) -> void:

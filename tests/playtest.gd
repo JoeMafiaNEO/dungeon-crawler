@@ -126,6 +126,7 @@ func _run() -> void:
 	_test_threaded_bundle_264()
 	_test_chart_train_live_265()
 	_test_warlord_standalone_266()
+	_test_warlord_editor_266p2()
 	_test_reveal_rts_retire_230()
 	_test_world_204()
 	_test_scatter_207()
@@ -10170,6 +10171,255 @@ func _test_warlord_standalone_266() -> void:
 	_assert(_bughunt_body(msrc2, "quit_to_menu").contains("leave_lobby"),
 		"266(viii): Quit to Menu leaves the lobby")
 	print("[Playtest] Warlord standalone mode (issue #266) done.")
+
+
+## Issue #266 P2 — RTS level editor (spec §4 + §6 P2). Pins: (i) every
+## v1 tool writes the §5 format and round-trips; (ii) an unplayable
+## map cannot be saved and cannot be hosted (the picker list names
+## the failure); (iii) height-aware picking lands on a +6 tier (the
+## base camera's y=0 projection misplaces — asserted as the
+## red-before defect); (iv) the skirmish prepares on the edited map
+## with AI fill and the return path restores the map unchanged (the
+## real scene hop is Xvfb-proven — the suite never drives
+## change_scene); (v) a saved user map appears in the picker list
+## valid and hosts a match at its starts; (vi) the skirmish is not a
+## standalone-mode entry (no menu path).
+func _test_warlord_editor_266p2() -> void:
+	print("[Playtest] Warlord level editor (issue #266 P2)...")
+	# Head (red-before shape): the editor files must exist before any
+	# load — on the P1 base tree these fail as real FAIL lines.
+	_assert(FileAccess.file_exists("res://scripts/rts/warlord_editor.gd"),
+		"266p2: the editor controller script exists")
+	_assert(FileAccess.file_exists("res://scripts/rts/rts_editor_camera.gd"),
+		"266p2: the editor camera script exists")
+	_assert(FileAccess.file_exists("res://scenes/rts/warlord_editor.tscn"),
+		"266p2: the editor scene exists")
+	var nm: Node = root.get_node("NetworkManager")
+	var saved_stash: Dictionary = nm.get("warlord_editor_map") as Dictionary
+	var saved_playtest: bool = bool(nm.get("warlord_editor_playtest"))
+	var saved_wmap: Dictionary = nm.get("warlord_map") as Dictionary
+	var saved_count: int = int(nm.get("warlord_faction_count"))
+	var saved_fill: bool = bool(nm.get("warlord_ai_fill"))
+	var saved_host: bool = bool(nm.get("is_host"))
+	var saved_mode: String = str(nm.get("active_run_mode"))
+	nm.set("warlord_editor_map", {})
+	nm.set("warlord_editor_playtest", false)
+	# Compose the editor scene.
+	for g in ["rts_units", "rts_buildings", "rts_resources",
+			"rts_manager", "rts_camera"]:
+		for n in root.get_tree().get_nodes_in_group(g):
+			n.free()
+	var editor: Node = load("res://scenes/rts/warlord_editor.tscn").instantiate()
+	root.add_child(editor)
+	_assert(editor.get("_terrain") != null,
+		"266p2: the editor composes with a terrain")
+	_assert(editor.get("_camera") != null,
+		"266p2: the editor composes with its camera")
+	# (i) Round-trip: every v1 tool writes the §5 format; save -> load
+	# -> identical canonical JSON. The geometry mirrors ring12
+	# proportions so the validator accepts it.
+	editor.call("new_map", 160)
+	_assert(bool(editor.call("place_zone", Vector2(30, 0), 3, 24.0)),
+		"266p2(i): a +3 tier places")
+	_assert(bool(editor.call("place_zone", Vector2(30, 0), 6, 12.0)),
+		"266p2(i): a +6 tier places on the +3")
+	_assert(bool(editor.call("place_zone", Vector2(30, 0), 9, 6.0)),
+		"266p2(i): a +9 tier places on the +6 (staircase)")
+	_assert(not bool(editor.call("place_zone", Vector2(-60, -40), 9, 6.0)),
+		"266p2(i): a +9 tier off a +6 is refused by the tool")
+	_assert(bool(editor.call("place_ramp", Vector2(56, 0), Vector2(-1, 0),
+		8.0, 9.0)), "266p2(i): a 0->3 ramp places")
+	_assert(bool(editor.call("place_ramp", Vector2(48, 0), Vector2(-1, 0),
+		10.0, 9.0)), "266p2(i): a 3->6 ramp places")
+	editor.call("place_pond", Vector2(-30, 30), 5.0)
+	editor.call("place_node", "wood", Vector2(-50, -20))
+	editor.call("place_node", "food", Vector2(-50, 20))
+	editor.call("place_node", "gold", Vector2(-20, -30))
+	editor.call("place_node", "stone", Vector2(60, -30))
+	_assert(bool(editor.call("place_start", Vector2(-60, 0))),
+		"266p2(i): start 0 places")
+	_assert(bool(editor.call("place_start", Vector2(-60, 40))),
+		"266p2(i): start 1 places")
+	var emap: Dictionary = editor.call("map_dict")
+	_assert(int(emap.get("size_m", 0)) == 160,
+		"266p2(i): the map carries the chosen size")
+	_assert((emap.get("zones", []) as Array).size() == 3,
+		"266p2(i): three tier zones written")
+	_assert((emap.get("ramps", []) as Array).size() == 2,
+		"266p2(i): two ramps written")
+	_assert((emap.get("ponds", []) as Array).size() == 1,
+		"266p2(i): one pond written")
+	var node_amounts_ok := true
+	var expect_amounts := {"wood": 1000, "food": 800, "gold": 800,
+		"stone": 800}
+	for n in emap.get("nodes", []):
+		var nd: Dictionary = n
+		if int(nd.get("amount", -1)) != int(expect_amounts.get(
+				str(nd.get("type", "")), -2)):
+			node_amounts_ok = false
+	_assert(node_amounts_ok and (emap.get("nodes", []) as Array).size() == 4,
+		"266p2(i): nodes carry the shipped amounts")
+	_assert(str(editor.call("validation_error")) == "",
+		"266p2(i): the built map validates (editor readout)")
+	_assert(str(editor.call("save_map", "p2_roundtrip", true)) == "",
+		"266p2(i): the valid map saves")
+	# save_map stamps name/display_name into the map before writing
+	# (the file's name field is its filename) — the round-trip
+	# comparison is against the post-save map.
+	var canon_before: String = WarlordMap.canonical_json(editor.call("map_dict"))
+	_assert(str(editor.call("load_map",
+		"user://maps/p2_roundtrip.json")) == "",
+		"266p2(i): the saved map loads back")
+	# JSON.parse_string returns numbers as floats, so a code-built
+	# dict's ints ("3") re-serialize as "3.0" after a file round-trip
+	# (the P1 Leaf A quirk — Standard's own file carries ints). The
+	# format's identity is defined on parsed maps: the round-trip
+	# pin is canonical idempotence + hash equality, the same shape
+	# P1 pinned for Standard.
+	var reparsed: Dictionary = WarlordMap.parse_map(canon_before)
+	var loaded_map: Dictionary = editor.call("map_dict")
+	_assert(WarlordMap.canonical_json(loaded_map)
+		== WarlordMap.canonical_json(reparsed.get("map", {})),
+		"266p2(i): save -> load round-trips (canonical idempotence)")
+	_assert(WarlordMap.map_hash(loaded_map)
+		== WarlordMap.map_hash(reparsed.get("map", {})),
+		"266p2(i): save -> load round-trips (map hash stable)")
+	# (ii) An unplayable map cannot be saved; written directly, the
+	# picker list names its failure (the greyed pick).
+	editor.call("new_map", 160)
+	editor.call("place_start", Vector2(0, 0))
+	var save_err: String = str(editor.call("save_map", "p2_bad", true))
+	_assert(save_err != "" and save_err != "exists",
+		"266p2(ii): an unplayable map cannot be saved (proof named)")
+	var bad_path := "user://maps/p2_bad.json"
+	if not DirAccess.dir_exists_absolute("user://maps"):
+		DirAccess.make_dir_recursive_absolute("user://maps")
+	var bf := FileAccess.open(bad_path, FileAccess.WRITE)
+	_assert(bf != null, "266p2(ii): the invalid map file writes")
+	if bf != null:
+		bf.store_string(WarlordMap.canonical_json(editor.call("map_dict")))
+		bf.close()
+	var bad_entry: Dictionary = {}
+	for e in WarlordMap.list_user_maps():
+		var ed: Dictionary = e
+		if str(ed.get("path", "")) == bad_path:
+			bad_entry = ed
+	_assert(not bad_entry.is_empty() and not bool(bad_entry.get("valid", true))
+		and str(bad_entry.get("error", "")) != "",
+		"266p2(ii): the picker list greys the unplayable map with its failure")
+	DirAccess.remove_absolute(bad_path)
+	# (iii) Height-aware picking: a +6 tier offset from the camera
+	# axis; the editor camera lands on it, the base camera's y=0
+	# projection misplaces off it (the red-before defect).
+	editor.call("new_map", 160)
+	editor.call("place_zone", Vector2(50, 0), 6, 6.0)
+	var ecam: Node = editor.get("_camera")
+	var screen_pos: Vector2 = ecam.call("unproject_position",
+		Vector3(50, 6, 0))
+	var picked: Vector3 = editor.call("pick_ground", screen_pos)
+	_assert(absf(picked.y - 6.0) < 0.6,
+		"266p2(iii): height-aware picking lands at tier height")
+	_assert(Vector2(picked.x, picked.z).distance_to(Vector2(50, 0)) < 2.0,
+		"266p2(iii): height-aware picking lands on the clicked tier point")
+	var old_cam: Node = load("res://scripts/rts/rts_camera.gd").new()
+	root.add_child(old_cam)
+	old_cam.set("position", Vector3(0, 40, 0))
+	old_cam.set("rotation", Vector3(-PI / 2.0, 0, 0))
+	old_cam.call("make_current")
+	var old_screen: Vector2 = old_cam.call("unproject_position",
+		Vector3(50, 6, 0))
+	var old_hit: Vector3 = old_cam.call("_screen_to_ground", old_screen)
+	var eterrain: Node = editor.get("_terrain")
+	_assert(float(eterrain.call("get_ground_height", old_hit)) < 3.0,
+		"266p2(iii): the base y=0 projection misplaces off the tier (red-before)")
+	old_cam.free()
+	ecam.call("make_current")
+	# (iv) Playtest preparation: NM vars stamped, AI fill to the
+	# map's start count, the stash holds the map unchanged; the
+	# match composes from those vars (1 human + AI).
+	editor.call("load_map", "user://maps/p2_roundtrip.json")
+	var pre_canon: String = WarlordMap.canonical_json(editor.call("map_dict"))
+	_assert(str(editor.call("prepare_playtest")) == "",
+		"266p2(iv): the playtest prepares on the edited map")
+	_assert(int(nm.get("warlord_faction_count")) == 2,
+		"266p2(iv): the skirmish fills to the map's start count")
+	_assert(bool(nm.get("warlord_ai_fill")),
+		"266p2(iv): the skirmish fills with AI")
+	_assert(bool(nm.get("warlord_editor_playtest")),
+		"266p2(iv): the playtest flag is set for the return path")
+	_assert(WarlordMap.canonical_json(nm.get("warlord_editor_map")) == pre_canon,
+		"266p2(iv): the stashed map is the edited map, unchanged")
+	var wmatch: Node = load("res://scenes/rts/warlord_match.tscn").instantiate()
+	root.add_child(wmatch)
+	wmatch.call("_do_faction_setup")
+	var mgr: Node = wmatch.get("_rts_manager")
+	_assert((mgr.get("factions") as Dictionary).size() == 2,
+		"266p2(iv): the skirmish launches with 1 human + AI fill")
+	_assert(root.get_tree().get_nodes_in_group("rts_buildings").size() == 2,
+		"266p2(iv): the skirmish bases stand at the map's starts")
+	wmatch.free()
+	# (v) The saved user map appears in the picker list valid and
+	# hosts a match from the file's own dict.
+	var good_entry: Dictionary = {}
+	for e in WarlordMap.list_user_maps():
+		var ed: Dictionary = e
+		if str(ed.get("path", "")) == "user://maps/p2_roundtrip.json":
+			good_entry = ed
+	_assert(not good_entry.is_empty() and bool(good_entry.get("valid", false)),
+		"266p2(v): the editor-saved map appears in the picker list valid")
+	nm.set("warlord_map", (good_entry.get("map", {}) as Dictionary).duplicate(true))
+	nm.set("warlord_faction_count", 2)
+	nm.set("warlord_ai_fill", true)
+	nm.set("warlord_editor_playtest", false)
+	var wmatch2: Node = load("res://scenes/rts/warlord_match.tscn").instantiate()
+	root.add_child(wmatch2)
+	wmatch2.call("_do_faction_setup")
+	var bases_ok := true
+	var want_starts := [Vector2(-60, 0), Vector2(-60, 40)]
+	var seen := 0
+	for b in root.get_tree().get_nodes_in_group("rts_buildings"):
+		var bp: Vector3 = b.global_position
+		var near := false
+		for ws in want_starts:
+			if Vector2(bp.x, bp.z).distance_to(ws) < 1.0:
+				near = true
+		if near:
+			seen += 1
+		else:
+			bases_ok = false
+	_assert(bases_ok and seen == 2,
+		"266p2(v): the user map hosts a match with bases at its starts")
+	wmatch2.free()
+	# (vi) The skirmish is not a standalone-mode entry: the menu opens
+	# the editor; no menu path launches a playtest.
+	var menusrc := FileAccess.get_file_as_string(
+		"res://scripts/ui/main_menu.gd")
+	_assert(menusrc.contains("_on_editor_pressed")
+		and menusrc.contains("warlord_editor.tscn"),
+		"266p2(vi): the menu's editor button opens the editor scene")
+	_assert(not menusrc.contains("playtest"),
+		"266p2(vi): no menu path launches a playtest")
+	var matchsrc := FileAccess.get_file_as_string(
+		"res://scripts/rts/warlord_match.gd")
+	_assert(matchsrc.contains("_return_to_editor")
+		and matchsrc.contains("warlord_editor_playtest"),
+		"266p2(iv): the match teardown returns to the editor in playtest mode")
+	var editorsrc := FileAccess.get_file_as_string(
+		"res://scripts/rts/warlord_editor.gd")
+	_assert(editorsrc.contains("launch_playtest")
+		and editorsrc.contains("warlord_editor_map"),
+		"266p2(iv): the editor launches and restores the playtest")
+	# Cleanup: test map files, instances, NM vars.
+	DirAccess.remove_absolute("user://maps/p2_roundtrip.json")
+	editor.free()
+	nm.set("warlord_editor_map", saved_stash)
+	nm.set("warlord_editor_playtest", saved_playtest)
+	nm.set("warlord_map", saved_wmap)
+	nm.set("warlord_faction_count", saved_count)
+	nm.set("warlord_ai_fill", saved_fill)
+	nm.set("is_host", saved_host)
+	nm.set("active_run_mode", saved_mode)
+	print("[Playtest] Warlord level editor (issue #266 P2) done.")
 
 
 func _test_scatter_207() -> void:

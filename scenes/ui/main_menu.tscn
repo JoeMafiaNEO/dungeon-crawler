@@ -155,6 +155,11 @@ layout_mode = 2
 size_flags_horizontal = 4
 text = "Solo"
 
+[node name="EditorButton" type="Button" parent="ModePhase" unique_id=266266266]
+layout_mode = 2
+size_flags_horizontal = 4
+text = "Level Editor"
+
 [node name="DailyButton" type="Button" parent="ModePhase" unique_id=1891270110]
 unique_name_in_owner = true
 layout_mode = 2
@@ -640,6 +645,7 @@ text = "Leave"
 [connection signal="pressed" from="TitlePhase/SettingsButton" to="." method="_on_settings_pressed"]
 [connection signal="pressed" from="ModePhase/MultiButton" to="." method="_on_multi_pressed"]
 [connection signal="pressed" from="ModePhase/SoloButton" to="." method="_on_solo_pressed"]
+[connection signal="pressed" from="ModePhase/EditorButton" to="." method="_on_editor_pressed"]
 [connection signal="pressed" from="ModePhase/DailyButton" to="." method="_on_daily_pressed"]
 [connection signal="pressed" from="ModePhase/ModeBackButton" to="." method="_on_mode_back_pressed"]
 [connection signal="pressed" from="MultiPhase/HostButton" to="." method="_on_host_pressed"]
